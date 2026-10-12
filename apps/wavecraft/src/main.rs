@@ -8,6 +8,7 @@
 
 mod app;
 mod player;
+mod spectrum;
 
 use std::path::PathBuf;
 

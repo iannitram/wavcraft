@@ -4,9 +4,11 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
-use wavecraft_core::{Document, Selection, SpectrogramParams, Viewport, format_time, spectrogram};
+use wavecraft_core::spectrogram::Columns;
+use wavecraft_core::{Document, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::player::Player;
+use crate::spectrum::{Job, Renderer};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
 const WAVE: Color32 = Color32::from_rgb(64, 200, 140);
@@ -15,9 +17,9 @@ const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
 const RULER_HEIGHT: f32 = 22.0;
 
-/// The spectrogram picture for one view, kept until the view changes.
+/// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
 struct SpectrumCache {
-    key: (u64, u64, u32, u32, usize),
+    job: Job,
     textures: Vec<TextureHandle>,
 }
 
@@ -32,7 +34,7 @@ pub struct WaveApp {
     show_waveform: bool,
     show_spectrum: bool,
     spectrum: Option<SpectrumCache>,
-    palette: Vec<Color32>,
+    renderer: Renderer,
     opening: Option<(PathBuf, Receiver<Result<Document, String>>)>,
     error: Option<String>,
     fit_on_next_frame: bool,
@@ -52,7 +54,7 @@ impl WaveApp {
             show_waveform: true,
             show_spectrum: true,
             spectrum: None,
-            palette: palette(),
+            renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
             error: None,
             fit_on_next_frame: false,
@@ -268,25 +270,32 @@ impl WaveApp {
         }
 
         if let Some(area) = spectrum_area {
-            // Half resolution across, capped rows: plenty for the eye, a few milliseconds of FFTs.
-            let cols = (area.width() * 0.5).round().clamp(1.0, 2048.0) as usize;
+            // Half resolution across, capped rows: plenty for the eye. The columns sit on a grid
+            // fixed to the file, so scrolling moves the picture without changing it.
+            let cols = (area.width() * 0.5).round().clamp(1.0, 2048.0);
             let rows = (area.height() / channels as f32).round().clamp(1.0, 384.0) as usize;
-            let key = (start.to_bits(), end.to_bits(), cols as u32, rows as u32 + if self.params.log_freq { 1 << 16 } else { 0 }, self.generation);
-            if self.spectrum.as_ref().is_none_or(|c| c.key != key) {
-                let textures = (0..channels)
-                    .map(|ch| {
-                        let samples = doc.audio.channels.get(ch).map_or(&[][..], Vec::as_slice);
-                        let levels = spectrogram::render(samples, rate, start, end, cols, rows, &self.params);
-                        let pixels = levels.iter().map(|l| self.palette.get(usize::from(*l)).copied().unwrap_or(Color32::BLACK)).collect();
-                        ui.ctx().load_texture(format!("spectrum-{ch}"), egui::ColorImage::new([cols, rows], pixels), TextureOptions::LINEAR)
-                    })
-                    .collect();
-                self.spectrum = Some(SpectrumCache { key, textures });
+            let columns = Columns::covering(start, end, self.view.frames_per_px * f64::from(area.width() / cols), &self.params);
+            self.renderer.ask(Job { generation: self.generation, columns, rows, params: self.params }, &doc.audio);
+            if let Some(picture) = self.renderer.take()
+                && picture.job.generation == self.generation
+                && picture.job.params == self.params
+            {
+                let texture = |(ch, image)| ui.ctx().load_texture(format!("spectrum-{ch}"), image, TextureOptions::LINEAR);
+                self.spectrum = Some(SpectrumCache { job: picture.job, textures: picture.images.into_iter().enumerate().map(texture).collect() });
             }
             if let Some(cache) = &self.spectrum {
+                // A picture is drawn where its own frames are on screen. While the next one is
+                // being made, the last one still lines up with the ruler and the waveform.
+                let (left, right) = (area.left() + self.view.x_of(cache.job.columns.start), area.left() + self.view.x_of(cache.job.columns.end));
                 let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
                 for (ch, texture) in cache.textures.iter().enumerate() {
-                    painter.image(texture.id(), lane(area, ch, channels).shrink2(vec2(0.0, 1.0)), uv, Color32::WHITE);
+                    let lane = lane(area, ch, channels).shrink2(vec2(0.0, 1.0));
+                    painter.with_clip_rect(lane).image(
+                        texture.id(),
+                        Rect::from_min_max(pos2(left, lane.top()), pos2(right, lane.bottom())),
+                        uv,
+                        Color32::WHITE,
+                    );
                 }
             }
         }

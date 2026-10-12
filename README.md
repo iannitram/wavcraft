@@ -42,16 +42,22 @@ Rust 1.95 or later. On Linux the audio output needs the ALSA headers (`libasound
 - `apps/wavecraft`: the egui window and the audio output.
 
 The whole file is decoded into memory, as in SoundCraft today (about 1.4 GB per hour of 48 kHz
-stereo). The spectrogram is not precomputed: each pixel column is one FFT centred on its moment,
-so any view costs the same and memory stays flat.
+stereo). The spectrogram is not precomputed, so memory stays flat. Zoomed in (a pixel column spans
+one 2048-frame FFT window or less) each column is one FFT centred on its moment. Zoomed out, a
+column shows the loudest level in each frequency band across all the audio it spans: FFTs are taken
+half a window apart on a grid fixed to the file, and each column keeps the per-bin maximum of the
+ones inside it. So nothing audible falls between two columns, and scrolling moves the picture
+without changing it. The price is that a zoomed-out view costs time in proportion to the audio on
+screen (about 140 ms per channel for three hours at 48 kHz, on 24 threads), so pictures are made
+on a worker thread and the window draws the last one, in its right place, until the next arrives.
+`cargo run --release -p wavecraft-core --example spectrogram_cost` measures it.
 
 ### Known limits (found in the 2026-10-12 review, not fixed yet)
 
-- **Zoomed out, the spectrogram shows a sample of the audio, not all of it.** A column analyses
-  about 43 ms however much time it covers: with a three-hour file fitted to the window that is
-  about 0.25 % of the audio, and a one-second tone can be missing from the picture altogether
-  (the waveform lane still shows it). Columns also shift as the view scrolls. The fix is to take
-  the loudest of several FFTs across each column, on a grid fixed to the file.
+- **Zoomed far out on a long file, the spectrogram trails the view.** Each new view of three
+  hours takes about 140 ms per channel, so while zooming or scrolling there the picture updates
+  a few times a second (the old one is stretched into place meanwhile). A cached overview would
+  make it instant; there is none yet. This one is the price of the review's spectrogram fix.
 - **Files over 2^30 samples do not open** (3 h 06 min of 48 kHz stereo): the decode limit of
   `soundcraft-audio-io`.
 - **Opening needs several times the file's size in memory for a moment**, a load cannot be
