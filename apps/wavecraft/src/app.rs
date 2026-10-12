@@ -1,7 +1,7 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavecraft_core::{Document, Selection, SpectrogramParams, Viewport, format_time, spectrogram};
@@ -36,6 +36,8 @@ pub struct WaveApp {
     opening: Option<(PathBuf, Receiver<Result<Document, String>>)>,
     error: Option<String>,
     fit_on_next_frame: bool,
+    /// The window title last sent. Sending one asks for a repaint, so it is only sent on change.
+    title: String,
 }
 
 impl WaveApp {
@@ -54,6 +56,7 @@ impl WaveApp {
             opening: None,
             error: None,
             fit_on_next_frame: false,
+            title: String::new(),
         };
         if let Some(path) = file {
             app.open(path, &cc.egui_ctx);
@@ -75,7 +78,12 @@ impl WaveApp {
 
     fn finish_opening(&mut self) {
         let Some((path, rx)) = &self.opening else { return };
-        let Ok(result) = rx.try_recv() else { return };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            // The worker ended without an answer: say so instead of showing "Opening…" forever.
+            Err(TryRecvError::Disconnected) => Err("the decoder stopped unexpectedly".to_string()),
+        };
         match result {
             Ok(doc) => {
                 self.player.set_audio(Some(doc.audio.clone()));
@@ -165,6 +173,7 @@ impl WaveApp {
                 ui.separator();
                 match &self.player.error {
                     Some(e) => ui.colored_label(CURSOR, format!("No sound: {e}")),
+                    None if self.player.failed() => ui.colored_label(CURSOR, "No sound: the output device stopped (Play tries it again)"),
                     None => ui.label(format!("Out: {}", self.player.device)),
                 };
             } else {
@@ -203,6 +212,10 @@ impl WaveApp {
                 }
             }
         }
+        // Keep the playhead on screen while playing (not while the pointer is busy in the editor).
+        if self.player.is_playing() && !response.is_pointer_button_down_on() {
+            self.view.reveal(self.player.position() as f64, width, frames);
+        }
         self.view.clamp(width, frames);
 
         // Click places the cursor, drag selects.
@@ -210,7 +223,10 @@ impl WaveApp {
         if response.drag_started()
             && let Some(pos) = response.interact_pointer_pos()
         {
-            self.selection = Selection::at(frame_at(&self.view, pos));
+            // A drag is only reported once the pointer has moved a few pixels: anchor the
+            // selection where the button went down, not where the pointer has got to.
+            let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
+            self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
         } else if response.dragged()
             && let Some(pos) = response.interact_pointer_pos()
         {
@@ -300,7 +316,8 @@ impl eframe::App for WaveApp {
         let ctx = ui.ctx().clone();
         let (space, open, home, fit, dropped) = ctx.input(|i| {
             (
-                i.key_pressed(Key::Space),
+                // Not `key_pressed`: that also counts auto-repeat, so a long press would toggle again.
+                i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Space, pressed: true, repeat: false, .. })),
                 i.modifiers.command && i.key_pressed(Key::O),
                 i.key_pressed(Key::Home),
                 i.key_pressed(Key::Backslash),
@@ -325,7 +342,10 @@ impl eframe::App for WaveApp {
             self.open(path, &ctx);
         }
         let title = self.doc.as_ref().map_or_else(|| "WaveCraft".to_string(), |d| format!("{} — WaveCraft", d.name()));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
@@ -355,15 +375,14 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32) {
             continue;
         }
         painter.line_segment([pos2(x, rect.bottom() - 6.0), pos2(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(140)));
-        let frame = (t * f64::from(rate)).round() as usize;
-        painter.text(
-            pos2(x + 3.0, rect.top() + 3.0),
-            egui::Align2::LEFT_TOP,
-            format_time(frame, rate),
-            egui::FontId::monospace(11.0),
-            Color32::from_gray(190),
-        );
+        painter.text(pos2(x + 3.0, rect.top() + 3.0), egui::Align2::LEFT_TOP, tick_label(t), egui::FontId::monospace(11.0), Color32::from_gray(190));
     }
+}
+
+/// The label of the tick at `seconds`, to the millisecond. (Going through a rounded frame number
+/// loses a millisecond at rates that 1000 does not divide: 3 ms at 44.1 kHz read "0.002".)
+fn tick_label(seconds: f64) -> String {
+    format_time((seconds.max(0.0) * 1000.0).round() as usize, 1000)
 }
 
 /// The smallest "round" number of seconds that is at least `min_seconds`.
@@ -404,6 +423,15 @@ mod tests {
         assert_eq!(ruler_step(0.7), 1.0);
         assert_eq!(ruler_step(45.0), 60.0);
         assert_eq!(ruler_step(5000.0), 3600.0);
+    }
+
+    #[test]
+    fn tick_labels_are_exact_at_any_sample_rate() {
+        let labels: Vec<String> = (0..8).map(|k| tick_label(f64::from(k) * 0.001)).collect();
+        assert_eq!(labels, ["0:00.000", "0:00.001", "0:00.002", "0:00.003", "0:00.004", "0:00.005", "0:00.006", "0:00.007"]);
+        assert_eq!(tick_label(3723.5), "1:02:03.500");
+        // The old route, through a frame at 44.1 kHz, dropped a millisecond.
+        assert_eq!(format_time((0.003f64 * 44_100.0).round() as usize, 44_100), "0:00.002");
     }
 
     #[test]

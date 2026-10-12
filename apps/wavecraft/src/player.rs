@@ -17,12 +17,14 @@ struct Shared {
     /// Frame to stop at, an `f64` stored as bits.
     end: AtomicU64,
     playing: AtomicBool,
+    /// Set by the stream's error callback (the device went away, for example).
+    failed: AtomicBool,
 }
 
 /// The output stream and the play state shared with its callback.
 pub struct Player {
     shared: Arc<Shared>,
-    _stream: Option<cpal::Stream>,
+    stream: Option<cpal::Stream>,
     /// Why there is no sound, if the device could not be opened.
     pub error: Option<String>,
     /// The output device's name, for the status bar.
@@ -37,11 +39,30 @@ impl Player {
             pos: AtomicU64::new(0f64.to_bits()),
             end: AtomicU64::new(0f64.to_bits()),
             playing: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
         });
-        match open_stream(&shared) {
-            Ok((stream, device)) => Player { shared, _stream: Some(stream), error: None, device },
-            Err(e) => Player { shared, _stream: None, error: Some(e), device: String::new() },
+        let mut player = Player { shared, stream: None, error: None, device: String::new() };
+        player.reopen();
+        player
+    }
+
+    /// (Re)open the default output device, replacing any stream there was.
+    fn reopen(&mut self) {
+        self.stream = None;
+        self.shared.failed.store(false, Ordering::Relaxed);
+        match open_stream(&self.shared) {
+            Ok((stream, device)) => {
+                self.stream = Some(stream);
+                self.device = device;
+                self.error = None;
+            }
+            Err(e) => self.error = Some(e),
         }
+    }
+
+    /// Whether the output stream has reported an error since it was opened.
+    pub fn failed(&self) -> bool {
+        self.shared.failed.load(Ordering::Relaxed)
     }
 
     /// Hand over the audio to play (stops playback).
@@ -52,8 +73,16 @@ impl Player {
         }
     }
 
-    /// Play `[from, to)` in file frames.
-    pub fn play(&self, from: usize, to: usize) {
+    /// Play `[from, to)` in file frames. Without a working output (none at start-up, or one that
+    /// has since failed) the device is tried again first; if there still is none, nothing starts,
+    /// so the playhead does not sit there "playing" with no callback to move it.
+    pub fn play(&mut self, from: usize, to: usize) {
+        if self.stream.is_none() || self.failed() {
+            self.reopen();
+        }
+        if self.stream.is_none() {
+            return;
+        }
         self.shared.pos.store((from as f64).to_bits(), Ordering::Relaxed);
         self.shared.end.store((to as f64).to_bits(), Ordering::Relaxed);
         self.shared.playing.store(to > from, Ordering::Relaxed);
@@ -93,6 +122,7 @@ fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, shared: &Arc<Sha
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
+    let on_error = Arc::clone(shared);
     let shared = Arc::clone(shared);
     let channels = usize::from(config.channels).max(1);
     let device_rate = f64::from(config.sample_rate.0.max(1));
@@ -100,7 +130,11 @@ where
         .build_output_stream(
             config,
             move |out: &mut [T], _: &cpal::OutputCallbackInfo| render(&shared, out, channels, device_rate),
-            |err| log::warn!("audio output: {err}"),
+            move |err| {
+                log::warn!("audio output: {err}");
+                on_error.failed.store(true, Ordering::Relaxed);
+                on_error.playing.store(false, Ordering::Relaxed);
+            },
             None,
         )
         .map_err(|e| e.to_string())
@@ -129,13 +163,25 @@ fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T
         }
         let i = pos as usize;
         let frac = (pos - i as f64) as f32;
-        for (c, slot) in frame.iter_mut().enumerate() {
-            // Mono plays on both speakers; a stereo file leaves any further device channels silent.
-            let source = if file_channels == 1 { audio.channels.first() } else { audio.channels.get(c) };
-            let Some(source) = source.filter(|_| c < file_channels.max(2)) else { continue };
+        let sample = |source: &Vec<f32>| {
             let a = source.get(i).copied().unwrap_or(0.0);
             let b = source.get(i + 1).copied().unwrap_or(a);
-            *slot = T::from_sample(a + (b - a) * frac);
+            a + (b - a) * frac
+        };
+        if channels == 1 && file_channels > 1 {
+            // A one-channel device gets the average of the file's channels, not just the left
+            // one (a host-left, guest-right recording would lose the guest).
+            let sum: f32 = audio.channels.iter().map(sample).sum();
+            if let Some(slot) = frame.first_mut() {
+                *slot = T::from_sample(sum / file_channels as f32);
+            }
+        } else {
+            for (c, slot) in frame.iter_mut().enumerate() {
+                // Mono plays on both speakers; a stereo file leaves any further device channels silent.
+                let source = if file_channels == 1 { audio.channels.first() } else { audio.channels.get(c) };
+                let Some(source) = source.filter(|_| c < file_channels.max(2)) else { continue };
+                *slot = T::from_sample(sample(source));
+            }
         }
         pos += step;
     }
@@ -152,6 +198,7 @@ mod tests {
             pos: AtomicU64::new(0f64.to_bits()),
             end: AtomicU64::new(0f64.to_bits()),
             playing: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
         }
     }
 
@@ -196,6 +243,16 @@ mod tests {
         let mut ints = vec![7i16; 8];
         render(&shared, &mut ints, 1, 24_000.0);
         assert!(ints[0] != 0 && ints[1] != 0 && ints[2..].iter().all(|v| *v == 0), "{ints:?}");
+    }
+
+    /// Regression: a one-channel device played only the file's left channel.
+    #[test]
+    fn a_mono_device_gets_every_channel_of_the_file() {
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 100], vec![0.5; 100]] });
+        play(&shared, 0.0, 100.0);
+        let mut out = vec![9.0f32; 16];
+        render(&shared, &mut out, 1, 48_000.0);
+        assert!(out.iter().all(|v| *v == 0.25), "left silent, right at 0.5: {out:?}");
     }
 
     #[test]
