@@ -6,7 +6,7 @@ members = ["crates/core", "apps/wavecraft"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.90"
+rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
@@ -14,7 +14,7 @@ wavecraft-core = { path = "crates/core" }
 
 # SoundCraft's engine crates, pinned to one commit of our fork (upstream v0.5.0 plus our merged
 # fixes: long-file handling, parallel WAV/AIFF decode). Bump deliberately; see README.
-soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "2689e443faa7c80aecfc71a550358ebbb165bf48" }
+soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "3527bb4371a5b9e195186778a41aa80049824cc5" }
 
 rustfft = "6"
 rayon = "1"
