@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "apps/wavecraft"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+publish = false
+
+[workspace.dependencies]
+wavecraft-core = { path = "crates/core" }
+
+# SoundCraft's engine crates, pinned to one commit of our fork (upstream v0.5.0 plus our merged
+# fixes: long-file handling, parallel WAV/AIFF decode). Bump deliberately; see README.
+soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "2689e443faa7c80aecfc71a550358ebbb165bf48" }
+
+rustfft = "6"
+rayon = "1"
+log = "0.4"
+cpal = "0.16"
+egui = "0.36"
+eframe = { version = "0.36", default-features = false }
+rfd = "0.17"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

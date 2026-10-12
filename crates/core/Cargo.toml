@@ -1,0 +1,16 @@
+[package]
+name = "wavecraft-core"
+description = "WaveCraft core: one audio file in memory, with the waveform and spectrogram views a single-file editor draws"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+soundcraft-audio-io.workspace = true
+rustfft.workspace = true
+rayon.workspace = true
+
+[lints]
+workspace = true
