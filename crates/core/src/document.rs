@@ -144,13 +144,18 @@ mod tests {
     use soundcraft_audio_io::{BitDepth, EncodeOptions};
 
     fn ramp(frames: usize, channels: usize) -> AudioBuffer {
-        AudioBuffer { sample_rate: 48_000, channels: (0..channels).map(|c| (0..frames).map(|i| (i as f32 / frames as f32) * if c == 0 { 1.0 } else { -1.0 }).collect()).collect() }
+        AudioBuffer {
+            sample_rate: 48_000,
+            channels: (0..channels).map(|c| (0..frames).map(|i| (i as f32 / frames as f32) * if c == 0 { 1.0 } else { -1.0 }).collect()).collect(),
+        }
     }
 
     #[test]
     fn a_wav_opens_with_its_format_and_one_overview_per_channel() {
         let buf = ramp(48_000, 2);
-        let bytes = soundcraft_audio_io::encode(&buf, &EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, ..EncodeOptions::default() }).unwrap();
+        let bytes =
+            soundcraft_audio_io::encode(&buf, &EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, ..EncodeOptions::default() })
+                .unwrap();
         let doc = Document::from_bytes(Path::new("take 1.wav"), &bytes).unwrap();
         assert_eq!((doc.frames(), doc.sample_rate(), doc.channels()), (48_000, 48_000, 2));
         assert_eq!(doc.info.sample_format, SampleFormat::Float32);

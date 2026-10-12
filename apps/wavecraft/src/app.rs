@@ -1,0 +1,426 @@
+//! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
+
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, channel};
+
+use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
+use wavecraft_core::{Document, Selection, SpectrogramParams, Viewport, format_time, spectrogram};
+
+use crate::player::Player;
+
+const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
+const WAVE: Color32 = Color32::from_rgb(64, 200, 140);
+const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
+const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
+const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
+const RULER_HEIGHT: f32 = 22.0;
+
+/// The spectrogram picture for one view, kept until the view changes.
+struct SpectrumCache {
+    key: (u64, u64, u32, u32, usize),
+    textures: Vec<TextureHandle>,
+}
+
+pub struct WaveApp {
+    doc: Option<Document>,
+    /// Bumped on every open, so cached pictures of the previous file are dropped.
+    generation: usize,
+    view: Viewport,
+    selection: Selection,
+    player: Player,
+    params: SpectrogramParams,
+    show_waveform: bool,
+    show_spectrum: bool,
+    spectrum: Option<SpectrumCache>,
+    palette: Vec<Color32>,
+    opening: Option<(PathBuf, Receiver<Result<Document, String>>)>,
+    error: Option<String>,
+    fit_on_next_frame: bool,
+}
+
+impl WaveApp {
+    pub fn new(cc: &eframe::CreationContext<'_>, file: Option<PathBuf>) -> WaveApp {
+        let mut app = WaveApp {
+            doc: None,
+            generation: 0,
+            view: Viewport { start: 0.0, frames_per_px: 1.0 },
+            selection: Selection::default(),
+            player: Player::new(),
+            params: SpectrogramParams::default(),
+            show_waveform: true,
+            show_spectrum: true,
+            spectrum: None,
+            palette: palette(),
+            opening: None,
+            error: None,
+            fit_on_next_frame: false,
+        };
+        if let Some(path) = file {
+            app.open(path, &cc.egui_ctx);
+        }
+        app
+    }
+
+    /// Decode `path` on a worker thread; the window stays responsive for long files.
+    fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
+        let (tx, rx) = channel();
+        let (ctx, job_path) = (ctx.clone(), path.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Document::open(&job_path).map_err(|e| e.to_string()));
+            ctx.request_repaint();
+        });
+        self.opening = Some((path, rx));
+        self.error = None;
+    }
+
+    fn finish_opening(&mut self) {
+        let Some((path, rx)) = &self.opening else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        match result {
+            Ok(doc) => {
+                self.player.set_audio(Some(doc.audio.clone()));
+                self.doc = Some(doc);
+                self.generation += 1;
+                self.selection = Selection::default();
+                self.spectrum = None;
+                self.fit_on_next_frame = true;
+            }
+            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+        }
+        self.opening = None;
+    }
+
+    fn pick_file(&mut self, ctx: &egui::Context) {
+        let picked =
+            rfd::FileDialog::new().add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "caf"]).pick_file();
+        if let Some(path) = picked {
+            self.open(path, ctx);
+        }
+    }
+
+    fn toggle_play(&mut self) {
+        let Some(doc) = &self.doc else { return };
+        if self.player.is_playing() {
+            self.player.stop();
+        } else if self.selection.is_empty() {
+            self.player.play(self.selection.start(), doc.frames());
+        } else {
+            self.player.play(self.selection.start(), self.selection.end());
+        }
+    }
+
+    fn menu(&mut self, ui: &mut egui::Ui) {
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                if ui.button("Open…  Ctrl+O").clicked() {
+                    self.pick_file(ui.ctx());
+                }
+                if ui.button("Quit").clicked() {
+                    ui.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            ui.menu_button("View", |ui| {
+                ui.checkbox(&mut self.show_waveform, "Waveform");
+                ui.checkbox(&mut self.show_spectrum, "Spectral frequency display");
+                if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
+                    self.spectrum = None;
+                }
+                if ui.button("Zoom out full  \\").clicked() {
+                    self.fit_on_next_frame = true;
+                }
+            });
+            let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
+            if ui.button(label).on_hover_text("Space").clicked() {
+                self.toggle_play();
+            }
+        });
+    }
+
+    fn status(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if let Some((path, _)) = &self.opening {
+                ui.spinner();
+                ui.label(format!("Opening {}…", path.display()));
+            } else if let Some(e) = &self.error {
+                ui.colored_label(CURSOR, e);
+            } else if let Some(doc) = &self.doc {
+                let rate = doc.sample_rate();
+                ui.label(doc.name());
+                ui.separator();
+                ui.label(format!(
+                    "{:?} {:?} · {} Hz · {} ch · {}",
+                    doc.info.format,
+                    doc.info.sample_format,
+                    rate,
+                    doc.channels(),
+                    format_time(doc.frames(), rate)
+                ));
+                ui.separator();
+                if self.selection.is_empty() {
+                    ui.label(format!("Cursor {}", format_time(self.selection.start(), rate)));
+                } else {
+                    let (a, b) = (self.selection.start(), self.selection.end());
+                    ui.label(format!("Selection {} – {}  ({})", format_time(a, rate), format_time(b, rate), format_time(b - a, rate)));
+                }
+                ui.separator();
+                match &self.player.error {
+                    Some(e) => ui.colored_label(CURSOR, format!("No sound: {e}")),
+                    None => ui.label(format!("Out: {}", self.player.device)),
+                };
+            } else {
+                ui.label("File › Open, or drop an audio file here.");
+            }
+        });
+    }
+
+    fn editor(&mut self, ui: &mut egui::Ui) {
+        let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
+        let rect = response.rect;
+        painter.rect_filled(rect, 0.0, BACKGROUND);
+        let Some(doc) = &self.doc else { return };
+        let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
+        let width = rect.width().max(1.0);
+        if self.fit_on_next_frame {
+            self.view = Viewport::fit(frames, width);
+            self.fit_on_next_frame = false;
+        }
+
+        // Wheel zooms around the pointer; Shift+wheel and sideways scrolling move through time.
+        if let Some(pointer) = response.hover_pos() {
+            let (scroll, pinch, shift) = ui.input(|i| (i.smooth_scroll_delta(), i.zoom_delta(), i.modifiers.shift));
+            let x = pointer.x - rect.left();
+            if pinch != 1.0 {
+                self.view.zoom_at(f64::from(pinch), x, width, frames);
+            }
+            if shift {
+                self.view.scroll_by(-(scroll.x + scroll.y), width, frames);
+            } else {
+                if scroll.y != 0.0 {
+                    self.view.zoom_at(f64::from((scroll.y * 0.01).exp()), x, width, frames);
+                }
+                if scroll.x != 0.0 {
+                    self.view.scroll_by(-scroll.x, width, frames);
+                }
+            }
+        }
+        self.view.clamp(width, frames);
+
+        // Click places the cursor, drag selects.
+        let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
+        if response.drag_started()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            self.selection = Selection::at(frame_at(&self.view, pos));
+        } else if response.dragged()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            self.selection.head = frame_at(&self.view, pos);
+        } else if response.clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            self.selection = Selection::at(frame_at(&self.view, pos));
+        }
+
+        let (start, end) = (self.view.start, self.view.end(width));
+        let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
+        let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
+        draw_ruler(&painter, ruler, &self.view, rate);
+
+        let (wave_area, spectrum_area) = match (self.show_waveform, self.show_spectrum) {
+            (true, true) => {
+                let split = body.top() + body.height() * 0.5;
+                (Some(Rect::from_min_max(body.min, pos2(body.right(), split))), Some(Rect::from_min_max(pos2(body.left(), split), body.max)))
+            }
+            (true, false) => (Some(body), None),
+            (false, true) => (None, Some(body)),
+            (false, false) => (None, None),
+        };
+
+        if let Some(area) = wave_area {
+            let cols = area.width().round().max(1.0) as usize;
+            for ch in 0..channels {
+                let lane = lane(area, ch, channels);
+                let mid = lane.center().y;
+                painter.line_segment([pos2(lane.left(), mid), pos2(lane.right(), mid)], Stroke::new(1.0, Color32::from_gray(50)));
+                let half = lane.height() * 0.5 - 2.0;
+                for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
+                    let x = lane.left() + i as f32 + 0.5;
+                    let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);
+                    painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, WAVE));
+                }
+            }
+        }
+
+        if let Some(area) = spectrum_area {
+            // Half resolution across, capped rows: plenty for the eye, a few milliseconds of FFTs.
+            let cols = (area.width() * 0.5).round().clamp(1.0, 2048.0) as usize;
+            let rows = (area.height() / channels as f32).round().clamp(1.0, 384.0) as usize;
+            let key = (start.to_bits(), end.to_bits(), cols as u32, rows as u32 + if self.params.log_freq { 1 << 16 } else { 0 }, self.generation);
+            if self.spectrum.as_ref().is_none_or(|c| c.key != key) {
+                let textures = (0..channels)
+                    .map(|ch| {
+                        let samples = doc.audio.channels.get(ch).map_or(&[][..], Vec::as_slice);
+                        let levels = spectrogram::render(samples, rate, start, end, cols, rows, &self.params);
+                        let pixels = levels.iter().map(|l| self.palette.get(usize::from(*l)).copied().unwrap_or(Color32::BLACK)).collect();
+                        ui.ctx().load_texture(format!("spectrum-{ch}"), egui::ColorImage::new([cols, rows], pixels), TextureOptions::LINEAR)
+                    })
+                    .collect();
+                self.spectrum = Some(SpectrumCache { key, textures });
+            }
+            if let Some(cache) = &self.spectrum {
+                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                for (ch, texture) in cache.textures.iter().enumerate() {
+                    painter.image(texture.id(), lane(area, ch, channels).shrink2(vec2(0.0, 1.0)), uv, Color32::WHITE);
+                }
+            }
+        }
+
+        // Selection, cursor and playhead over everything.
+        if !self.selection.is_empty() {
+            let (a, b) = (rect.left() + self.view.x_of(self.selection.start() as f64), rect.left() + self.view.x_of(self.selection.end() as f64));
+            painter.rect_filled(Rect::from_min_max(pos2(a.max(rect.left()), body.top()), pos2(b.min(rect.right()), body.bottom())), 0.0, SELECTION);
+        }
+        let line = |frame: usize, color: Color32| {
+            let x = rect.left() + self.view.x_of(frame as f64);
+            if x >= rect.left() && x <= rect.right() {
+                painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(1.0, color));
+            }
+        };
+        line(self.selection.start(), CURSOR);
+        if self.player.is_playing() {
+            line(self.player.position(), PLAYHEAD);
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+impl eframe::App for WaveApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.finish_opening();
+        let ctx = ui.ctx().clone();
+        let (space, open, home, fit, dropped) = ctx.input(|i| {
+            (
+                i.key_pressed(Key::Space),
+                i.modifiers.command && i.key_pressed(Key::O),
+                i.key_pressed(Key::Home),
+                i.key_pressed(Key::Backslash),
+                i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()),
+            )
+        });
+        if space {
+            self.toggle_play();
+        }
+        if open {
+            self.pick_file(&ctx);
+        }
+        if home {
+            self.player.stop();
+            self.selection = Selection::default();
+            self.view.start = 0.0;
+        }
+        if fit {
+            self.fit_on_next_frame = true;
+        }
+        if let Some(path) = dropped {
+            self.open(path, &ctx);
+        }
+        let title = self.doc.as_ref().map_or_else(|| "WaveCraft".to_string(), |d| format!("{} — WaveCraft", d.name()));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+
+        egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
+        egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
+    }
+}
+
+/// The vertical slice of `area` for channel `ch` of `channels`.
+fn lane(area: Rect, ch: usize, channels: usize) -> Rect {
+    let h = area.height() / channels.max(1) as f32;
+    Rect::from_min_max(pos2(area.left(), area.top() + h * ch as f32), pos2(area.right(), area.top() + h * (ch + 1) as f32))
+}
+
+/// Tick marks and times along the top, at a round step that leaves room for the labels.
+fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32) {
+    painter.rect_filled(rect, 0.0, Color32::from_gray(32));
+    let seconds_per_px = view.frames_per_px / f64::from(rate.max(1));
+    let step = ruler_step(seconds_per_px * 110.0);
+    let first = (view.start / f64::from(rate.max(1)) / step).floor() as i64;
+    for k in first..first + 200 {
+        let t = k as f64 * step;
+        let x = rect.left() + view.x_of(t * f64::from(rate));
+        if x > rect.right() {
+            break;
+        }
+        if x < rect.left() || t < 0.0 {
+            continue;
+        }
+        painter.line_segment([pos2(x, rect.bottom() - 6.0), pos2(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(140)));
+        let frame = (t * f64::from(rate)).round() as usize;
+        painter.text(
+            pos2(x + 3.0, rect.top() + 3.0),
+            egui::Align2::LEFT_TOP,
+            format_time(frame, rate),
+            egui::FontId::monospace(11.0),
+            Color32::from_gray(190),
+        );
+    }
+}
+
+/// The smallest "round" number of seconds that is at least `min_seconds`.
+fn ruler_step(min_seconds: f64) -> f64 {
+    const STEPS: [f64; 19] = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0];
+    STEPS.iter().copied().find(|s| *s >= min_seconds).unwrap_or(3600.0)
+}
+
+/// 256 colours from black through blue, magenta and orange to pale yellow.
+fn palette() -> Vec<Color32> {
+    const STOPS: [(f32, [f32; 3]); 6] = [
+        (0.0, [0.0, 0.0, 0.0]),
+        (0.3, [20.0, 12.0, 80.0]),
+        (0.55, [140.0, 30.0, 120.0]),
+        (0.75, [235.0, 90.0, 40.0]),
+        (0.9, [250.0, 200.0, 60.0]),
+        (1.0, [255.0, 250.0, 215.0]),
+    ];
+    (0..256)
+        .map(|i| {
+            let t = i as f32 / 255.0;
+            let hi = STOPS.iter().position(|s| s.0 >= t).unwrap_or(STOPS.len() - 1).max(1);
+            let (a, b) = (STOPS.get(hi - 1).copied().unwrap_or(STOPS[0]), STOPS.get(hi).copied().unwrap_or(STOPS[5]));
+            let f = ((t - a.0) / (b.0 - a.0).max(1e-6)).clamp(0.0, 1.0);
+            let mix = |k: usize| (a.1[k] + (b.1[k] - a.1[k]) * f).round() as u8;
+            Color32::from_rgb(mix(0), mix(1), mix(2))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ruler_steps_are_round_and_wide_enough() {
+        assert_eq!(ruler_step(0.0004), 0.001);
+        assert_eq!(ruler_step(0.7), 1.0);
+        assert_eq!(ruler_step(45.0), 60.0);
+        assert_eq!(ruler_step(5000.0), 3600.0);
+    }
+
+    #[test]
+    fn the_palette_runs_dark_to_light() {
+        let p = palette();
+        assert_eq!(p.len(), 256);
+        assert_eq!(p[0], Color32::from_rgb(0, 0, 0));
+        assert_eq!(p[255], Color32::from_rgb(255, 250, 215));
+        let brightness = |c: Color32| u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b());
+        assert!(p.windows(2).all(|w| brightness(w[1]) + 3 >= brightness(w[0])), "brightness never drops");
+    }
+
+    #[test]
+    fn lanes_stack_without_gaps() {
+        let area = Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 300.0));
+        assert_eq!(lane(area, 0, 2), Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 200.0)));
+        assert_eq!(lane(area, 1, 2), Rect::from_min_max(pos2(0.0, 200.0), pos2(800.0, 300.0)));
+        assert_eq!(lane(area, 0, 0), area);
+    }
+}
