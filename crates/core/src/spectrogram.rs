@@ -1,13 +1,18 @@
 //! The spectral frequency display: energy over time and frequency, rendered for whatever time
 //! range and pixel size the screen asks for.
 //!
-//! Nothing is precomputed, so memory stays flat. Zoomed in (a pixel column spans one FFT window
-//! or less) each column is one windowed FFT centred on its moment in the file. Zoomed out, a
-//! column shows the loudest level in each frequency band across all the audio it spans: FFTs are
-//! taken half a window apart on a grid fixed to the file, and each column keeps the per-bin
-//! maximum of the ones centred inside it. Nothing falls between two columns, at the price that a
-//! view costs time in proportion to the audio on screen.
+//! Zoomed in (a pixel column spans one FFT window or less) each column is one windowed FFT
+//! centred on its moment in the file. Zoomed out, a column shows the loudest level in each
+//! frequency band across all the audio it spans: FFTs are taken half a window apart on a grid
+//! fixed to the file, and each column keeps the per-bin maximum of the ones centred inside it.
+//! Nothing falls between two columns, at the price that a view costs time in proportion to the
+//! audio on screen.
+//!
+//! An [`Overview`] pays that price once per file: it keeps the per-bin maximum of every
+//! [`BLOCK_HOPS`] FFTs of the grid, as levels. A column that holds whole blocks reads them and
+//! runs FFTs only for the ends that stick out, and comes to the same picture.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -95,6 +100,150 @@ impl Columns {
     }
 }
 
+/// What every FFT of one set of parameters shares: the transform, its window and the dB scale.
+struct Analysis {
+    fft: Arc<dyn Fft<f32>>,
+    /// Hann window, as long as the FFT.
+    window: Vec<f32>,
+    /// `steps[k]` is the smallest squared magnitude drawn as level `k + 1`; not a number where no
+    /// magnitude reaches that level.
+    steps: Vec<f32>,
+}
+
+impl Analysis {
+    fn new(p: &SpectrogramParams) -> Analysis {
+        let n = p.fft_len();
+        let window: Vec<f32> = (0..n).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()).collect();
+        // Scaled so a full-scale sine reads 0 dBFS.
+        let gain = 2.0 / window.iter().sum::<f32>().max(f32::MIN_POSITIVE);
+        let span = (p.ceil_db - p.floor_db).max(1e-3);
+        let scale = |peak: f32| {
+            let db = 10.0 * (peak * gain * gain).max(1e-20).log10();
+            (((db - p.floor_db) / span).clamp(0.0, 1.0) * 255.0).round() as u8
+        };
+        // The scale as a table of steps, found by bisection over the bit patterns of the positive
+        // floats (which sort like the floats). A table cannot put a louder sound below a quieter
+        // one, whatever `log10` does in its last bit, and that is what lets the loudest level of
+        // some FFTs be kept in place of their loudest magnitude (see `Overview`).
+        let mut low = 0u32;
+        let steps = (1..=255u8)
+            .map(|level| {
+                let mut high = f32::INFINITY.to_bits();
+                if scale(f32::from_bits(high)) < level {
+                    return f32::NAN;
+                }
+                while low < high {
+                    let mid = low + (high - low) / 2;
+                    if scale(f32::from_bits(mid)) >= level { high = mid } else { low = mid + 1 }
+                }
+                f32::from_bits(low)
+            })
+            .collect();
+        Analysis { fft: FftPlanner::new().plan_fft_forward(n), window, steps }
+    }
+
+    /// The level (0..=255) drawn for the squared magnitude `peak`.
+    fn level(&self, peak: f32) -> u8 {
+        self.steps.partition_point(|step| *step <= peak) as u8
+    }
+
+    fn analyser(&self) -> Analyser<'_> {
+        Analyser::new(self.fft.clone(), &self.window)
+    }
+
+    /// Frames between two FFTs of the zoomed-out grid: half a window. FFT `g` of the grid is
+    /// centred on frame `(g + 0.5) * hop`.
+    fn hop(&self) -> usize {
+        (self.window.len() / 2).max(1)
+    }
+
+    /// One past the last FFT of the grid whose window can reach a file of `frames` frames. The
+    /// first that can is -1.
+    fn grid_end(&self, frames: usize) -> i64 {
+        (frames / self.hop()) as i64 + 2
+    }
+}
+
+/// How many FFTs of the grid one block of an [`Overview`] holds.
+///
+/// A block costs one byte per frequency bin, which comes to one byte per 16 frames at any FFT
+/// length: 10.8 MB for an hour of one channel at 48 kHz, 1.6 % of what its samples take. A
+/// column still runs the FFTs at its two ends that fill no whole block, 15 on average, and they
+/// are nearly all a far view costs. So blocks twice as long would halve the memory and double the
+/// time of every far view (measured: 6 to 20 ms for three hours against 4 to 10 ms).
+pub const BLOCK_HOPS: usize = 16;
+
+/// One channel's spectrogram at a coarse time step, for drawing views far zoomed out without
+/// analysing all the audio on screen again.
+///
+/// It holds, for each block of [`BLOCK_HOPS`] FFTs of the zoomed-out grid, the level of the
+/// loudest of them in every frequency bin. It depends on the FFT length and the dB scale it was
+/// built for, not on the frequency axis or the picture's size.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Overview {
+    fft_len: usize,
+    floor_db: f32,
+    ceil_db: f32,
+    /// Length of the audio it was built from, in frames.
+    frames: usize,
+    /// Frequency bins per block: 0 Hz to Nyquist.
+    bins: usize,
+    /// One level per bin, block after block. Only whole blocks are kept.
+    levels: Vec<u8>,
+}
+
+impl Overview {
+    /// Analyse all of `samples` with `p`'s FFT length and dB scale. This runs every FFT a view of
+    /// the whole file would, once.
+    pub fn build(samples: &[f32], p: &SpectrogramParams) -> Overview {
+        let analysis = Analysis::new(p);
+        let hop = analysis.hop() as i64;
+        let bins = analysis.window.len() / 2 + 1;
+        let blocks = analysis.grid_end(samples.len()) as usize / BLOCK_HOPS;
+        let mut levels = vec![0u8; blocks * bins];
+        levels.par_chunks_mut(bins).enumerate().for_each_init(
+            || analysis.analyser(),
+            |analyser, (block, levels)| {
+                analyser.peaks.fill(0.0);
+                let first = (block * BLOCK_HOPS) as i64;
+                for g in first..first + BLOCK_HOPS as i64 {
+                    analyser.add(samples, g * hop - hop / 2);
+                }
+                for (level, peak) in levels.iter_mut().zip(&analyser.peaks) {
+                    *level = analysis.level(*peak);
+                }
+            },
+        );
+        Overview { fft_len: p.fft_len(), floor_db: p.floor_db, ceil_db: p.ceil_db, frames: samples.len(), bins, levels }
+    }
+
+    /// Memory held, in bytes.
+    pub fn bytes(&self) -> usize {
+        self.levels.len()
+    }
+
+    /// Whether this overview can stand in for FFTs of `frames` frames of audio analysed with `p`.
+    fn serves(&self, frames: usize, p: &SpectrogramParams) -> bool {
+        self.frames == frames && self.fft_len == p.fft_len() && self.floor_db == p.floor_db && self.ceil_db == p.ceil_db
+    }
+
+    /// Raise `into` (one level per bin) to the loudest of the whole blocks inside the grid range
+    /// `[from, to)`, and return the part of the range those blocks cover: empty when there are none.
+    fn fold(&self, from: i64, to: i64, into: &mut [u8]) -> Range<i64> {
+        let per = BLOCK_HOPS as i64;
+        let first = from.saturating_add(per - 1).div_euclid(per).max(0);
+        let last = to.div_euclid(per);
+        let held = usize::try_from(first).ok().zip(usize::try_from(last).ok()).filter(|(first, last)| first < last);
+        let Some(blocks) = held.and_then(|(first, last)| self.levels.get(first * self.bins..last * self.bins)) else { return from..from };
+        for block in blocks.chunks_exact(self.bins.max(1)) {
+            for (level, held) in into.iter_mut().zip(block) {
+                *level = (*level).max(*held);
+            }
+        }
+        first * per..last * per
+    }
+}
+
 /// One FFT after another over the same scratch memory, keeping the loudest level per bin.
 struct Analyser<'a> {
     fft: Arc<dyn Fft<f32>>,
@@ -141,6 +290,21 @@ impl<'a> Analyser<'a> {
 /// A column spanning more than one FFT window shows the loudest level across its whole span;
 /// take the range from [`Columns::covering`] to keep those columns still while scrolling.
 pub fn render(samples: &[f32], sample_rate: u32, start: f64, end: f64, cols: usize, rows: usize, p: &SpectrogramParams) -> Vec<u8> {
+    render_columns(samples, sample_rate, Columns { start, end, cols }, rows, p, None)
+}
+
+/// [`render`] for `columns`, reading what it can from `overview`: the same picture, sooner once
+/// a column spans [`BLOCK_HOPS`] FFTs or more. The overview must have been built from these
+/// `samples`; one built for another length, FFT length or dB scale is left unused.
+pub fn render_columns(
+    samples: &[f32],
+    sample_rate: u32,
+    columns: Columns,
+    rows: usize,
+    p: &SpectrogramParams,
+    overview: Option<&Overview>,
+) -> Vec<u8> {
+    let Columns { start, end, cols } = columns;
     let (cols, rows) = (cols.min(MAX_SIDE), rows.min(MAX_SIDE));
     let mut image = vec![0u8; cols * rows];
     let per_col = (end - start) / cols.max(1) as f64;
@@ -156,10 +320,8 @@ pub fn render(samples: &[f32], sample_rate: u32, start: f64, end: f64, cols: usi
         return image;
     }
     let n = p.fft_len();
-    let fft: Arc<dyn Fft<f32>> = FftPlanner::new().plan_fft_forward(n);
-    // Hann window, scaled so a full-scale sine reads 0 dBFS.
-    let window: Vec<f32> = (0..n).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()).collect();
-    let gain = 2.0 / window.iter().sum::<f32>().max(f32::MIN_POSITIVE);
+    let analysis = Analysis::new(p);
+    let overview = overview.filter(|o| o.serves(samples.len(), p));
     // Which FFT bins each row covers: [first, last), at least one bin.
     let bin_hz = sample_rate as f32 / n as f32;
     let half = n / 2;
@@ -172,23 +334,26 @@ pub fn render(samples: &[f32], sample_rate: u32, start: f64, end: f64, cols: usi
             (first, last)
         })
         .collect();
-    let span = (p.ceil_db - p.floor_db).max(1e-3);
     // Zoomed out: the grid's FFTs are centred on the odd multiples of half a hop, so a column
     // that starts and ends on a hop (see `Columns`) holds a whole number of them, evenly inside
     // it. Only those whose window reaches the file are computed, however wide the request.
-    let hop = (n / 2) as i64;
-    let grid_end = (samples.len() / (n / 2)) as i64 + 2;
+    let hop = analysis.hop() as i64;
+    let grid_end = analysis.grid_end(samples.len());
     let grid_index = |frame: f64| (frame / hop as f64 - 0.5).ceil() as i64;
 
     // Column-major while computing (each column is its own FFTs), transposed to rows at the end.
     let mut by_column = vec![0u8; cols * rows];
     by_column.par_chunks_mut(rows).enumerate().for_each_init(
-        || Analyser::new(fft.clone(), &window),
-        |analyser, (c, column)| {
+        || (analysis.analyser(), vec![0u8; half + 1]),
+        |(analyser, held), (c, column)| {
             analyser.peaks.fill(0.0);
+            // The loudest level per bin of the overview's blocks inside this column, if any.
+            held.fill(0);
             if per_col > n as f64 {
-                let (from, to) = (grid_index(start + c as f64 * per_col), grid_index(start + (c + 1) as f64 * per_col));
-                for g in from.max(-1)..to.min(grid_end) {
+                let from = grid_index(start + c as f64 * per_col).max(-1);
+                let to = grid_index(start + (c + 1) as f64 * per_col).min(grid_end);
+                let read = overview.map_or(from..from, |o| o.fold(from, to, held));
+                for g in (from..read.start).chain(read.end..to) {
                     analyser.add(samples, g * hop - hop / 2);
                 }
             } else {
@@ -197,8 +362,8 @@ pub fn render(samples: &[f32], sample_rate: u32, start: f64, end: f64, cols: usi
             }
             for (level, (lo, hi)) in column.iter_mut().zip(&bands) {
                 let peak = analyser.peaks.get(*lo..*hi).unwrap_or(&[]).iter().copied().fold(0.0f32, f32::max);
-                let db = 10.0 * (peak * gain * gain).max(1e-20).log10();
-                *level = (((db - p.floor_db) / span).clamp(0.0, 1.0) * 255.0).round() as u8;
+                let read = held.get(*lo..*hi).unwrap_or(&[]).iter().copied().max().unwrap_or(0);
+                *level = analysis.level(peak).max(read);
             }
         },
     );
@@ -337,6 +502,106 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Hiss that swells and fades with a few short tones in it, so no two stretches look alike.
+    fn busy(frames: usize, rate: u32) -> Vec<f32> {
+        let mut x: Vec<f32> = noise(frames, 0.3).into_iter().enumerate().map(|(i, v)| v * (0.55 + 0.45 * (i as f32 / 9_000.0).sin())).collect();
+        for (k, at) in (frames / 7..frames).step_by(frames / 5).enumerate() {
+            let tone = sine(500.0 + 700.0 * k as f32, 0.9, 900, rate);
+            x[at..at + 900].copy_from_slice(&tone);
+        }
+        x
+    }
+
+    #[test]
+    fn an_overview_draws_the_same_picture_as_the_audio() {
+        let rate = 8_000;
+        // A block is 16 hops of 128 frames. The file ends 1,691 frames into a block.
+        let block = BLOCK_HOPS * 128;
+        let frames = 300 * block + 1_691;
+        let x = busy(frames, rate);
+        for (log_freq, rows) in [(true, 96), (false, 41)] {
+            let p = SpectrogramParams { fft_size: 256, log_freq, ..SpectrogramParams::default() };
+            let overview = Overview::build(&x, &p);
+            assert_eq!(overview.bytes(), 300 * 129, "whole blocks only, one byte per bin");
+            let same = |what: &str, c: Columns| {
+                let live = render(&x, rate, c.start, c.end, c.cols, rows, &p);
+                assert!(live.iter().any(|v| *v > 100), "{what}: there is something to see");
+                let read = render_columns(&x, rate, c, rows, &p, Some(&overview));
+                let differ = live.iter().zip(&read).filter(|(a, b)| a != b).count();
+                assert_eq!(differ, 0, "{what}, log {log_freq}: {differ} of {} levels differ", live.len());
+            };
+            // The whole file fitted to four widths, as the cost example asks for it: columns that
+            // are not a whole number of hops.
+            for cols in [3, 37, 150, 640] {
+                same(&format!("fitted to {cols} columns"), Columns { start: 0.0, end: frames as f64, cols });
+            }
+            // As the window asks: columns of whole hops on the file's grid, from under one block
+            // to many, in views that start and end part-way through a block.
+            for hops in [10.0, 16.0, 23.0, 32.0, 39.0, 1_000.0] {
+                let per_col = hops * 128.0;
+                for start in [0.0, 1_000.0, 2.5 * block as f64, 131.0 * block as f64 + 777.0] {
+                    let c = Columns::covering(start, (start + 500.0 * per_col).min(frames as f64), per_col, &p);
+                    same(&format!("{per_col} frames a column from {start}"), c);
+                }
+            }
+            // A view that begins before the file and ends after it.
+            same("wider than the file", Columns { start: -3.3 * block as f64, end: frames as f64 + 5.1 * block as f64, cols: 61 });
+            same("far wider than the file", Columns { start: -1e12, end: 1e12, cols: 2_000 });
+        }
+    }
+
+    #[test]
+    fn far_views_are_read_from_the_overview_and_near_ones_are_not() {
+        let rate = 8_000;
+        let p = SpectrogramParams { fft_size: 256, ..SpectrogramParams::default() };
+        let (frames, rows) = (200 * BLOCK_HOPS * 128, 32);
+        let silence = vec![0.0; frames];
+        // An overview of other audio of the same length: wrong on purpose, to see where it is read.
+        let loud = Overview::build(&noise(frames, 0.5), &p);
+        let far = Columns { start: 0.0, end: frames as f64, cols: 50 };
+        assert!(render_columns(&silence, rate, far, rows, &p, Some(&loud)).iter().all(|v| *v > 100), "four blocks a column: read");
+        let near = Columns { start: 0.0, end: frames as f64 / 10.0, cols: 40 };
+        assert!(render_columns(&silence, rate, near, rows, &p, Some(&loud)).iter().all(|v| *v == 0), "half a block a column: analysed");
+        // Built for another FFT length, dB scale or file length, it is not used at all.
+        for other in [SpectrogramParams { fft_size: 512, ..p }, SpectrogramParams { floor_db: -90.0, ..p }, SpectrogramParams { ceil_db: -6.0, ..p }]
+        {
+            assert!(render_columns(&silence, rate, far, rows, &other, Some(&loud)).iter().all(|v| *v == 0), "{other:?}");
+        }
+        assert!(render_columns(&silence[..frames - 1], rate, far, rows, &p, Some(&loud)).iter().all(|v| *v == 0));
+        // The frequency axis and the picture's height are not part of it.
+        let linear = SpectrogramParams { log_freq: false, min_hz: 300.0, ..p };
+        assert!(render_columns(&silence, rate, far, 7, &linear, Some(&loud)).iter().all(|v| *v > 100));
+        // Nothing to analyse, nothing kept.
+        assert_eq!(Overview::build(&[], &p).bytes(), 0);
+        assert_eq!(Overview::build(&silence[..1_000], &p).bytes(), 0);
+    }
+
+    #[test]
+    fn the_level_table_is_the_decibel_scale() {
+        for p in [
+            SpectrogramParams::default(),
+            SpectrogramParams { fft_size: 256, floor_db: -72.5, ceil_db: -3.0, ..SpectrogramParams::default() },
+            SpectrogramParams { floor_db: -300.0, ..SpectrogramParams::default() },
+        ] {
+            let analysis = Analysis::new(&p);
+            let gain = 2.0 / analysis.window.iter().sum::<f32>();
+            let scale = |peak: f32| {
+                let db = 10.0 * (peak * gain * gain).max(1e-20).log10();
+                (((db - p.floor_db) / (p.ceil_db - p.floor_db)).clamp(0.0, 1.0) * 255.0).round() as u8
+            };
+            assert!(analysis.steps.windows(2).all(|w| w[0] <= w[1]), "steps rise");
+            // Every step and its neighbours, then a walk through the floats.
+            let around = analysis.steps.iter().flat_map(|s| [s.to_bits().saturating_sub(1), s.to_bits(), s.to_bits() + 1]);
+            for bits in around.chain((0..f32::INFINITY.to_bits()).step_by(104_729)).chain([0, f32::INFINITY.to_bits()]) {
+                let peak = f32::from_bits(bits);
+                assert_eq!(analysis.level(peak), scale(peak), "{peak:e} with {p:?}");
+            }
+        }
+        // A scale that is not a number draws black, as before.
+        let wild = Analysis::new(&SpectrogramParams { floor_db: f32::NAN, ..SpectrogramParams::default() });
+        assert_eq!((wild.level(0.0), wild.level(1e9), wild.level(f32::INFINITY)), (0, 0, 0));
     }
 
     #[test]
