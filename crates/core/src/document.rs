@@ -43,7 +43,12 @@ impl Document {
 
     /// [`open`](Self::open) with progress (0 to 1, for the streaming part) and a cancel flag.
     pub fn open_with(path: &Path, progress: &mut dyn FnMut(f64), cancel: &AtomicBool) -> Result<Document, OpenError> {
-        let state = crate::io::open(path, &OpenOptions::default(), progress, cancel)?;
+        Document::open_in(path, &OpenOptions::default(), progress, cancel)
+    }
+
+    /// [`open_with`](Self::open_with) with the session folder and store set by `opts`.
+    pub fn open_in(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), cancel: &AtomicBool) -> Result<Document, OpenError> {
+        let state = crate::io::open(path, opts, progress, cancel)?;
         let audio = state.to_audio_buffer().map_err(|e| OpenError::Io(e.to_string()))?;
         let src = state.source();
         let info = AudioInfo {

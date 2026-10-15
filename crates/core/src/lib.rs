@@ -5,6 +5,8 @@
 //! - [`store`]: the session folder of append-only pack files, blocks, and the block cache.
 //! - [`doc`]: the piece table ([`DocState`]) and its one read path.
 //! - [`io`]: streamed open into the store.
+//! - [`space`]: the store's size for a file and the free space on its disk.
+//! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
 //!   and its waveform peaks.
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
@@ -15,6 +17,8 @@
 pub mod doc;
 pub mod document;
 pub mod io;
+pub mod settings;
+pub mod space;
 pub mod spectrogram;
 pub mod store;
 pub mod view;

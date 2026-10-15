@@ -29,6 +29,22 @@ cargo run --release -p wavcraft -- path/to/file.wav
 
 Rust 1.95 or later. On Linux the audio output needs the ALSA headers (`libasound2-dev`).
 
+**The session folder** (where an opened file is kept while you work on it, about 1.4 GB per hour
+of 48 kHz stereo; see "Where the samples live" below) is under the system cache folder unless
+you choose another, for example a bigger disk. The first of these that is set wins:
+
+1. `--session-dir DIR` on the command line (this run only);
+2. the `WAVCRAFT_SESSION_DIR` environment variable;
+3. File › Session Folder… in the app, which saves the choice in `settings.txt` in WavCraft's
+   config folder (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on
+   a Mac, `~/.config/wavcraft` on Linux) as `session_folder = <path>`. File › Use the Default
+   Session Folder clears it;
+4. the default, `<system cache folder>/wavcraft/sessions`.
+
+A folder that can't be made or written to is not used: WavCraft says why and uses the default.
+Before opening a file WavCraft checks that the folder's disk has room for it (see below) and
+refuses with the size needed and the space free if not.
+
 | Do this | To |
 |---|---|
 | File › Open, Ctrl+O, or drop a file on the window (dropping does not work under Wayland yet) | open a file (WAV, AIFF, FLAC, MP3, OGG, M4A, CAF) |
@@ -58,7 +74,12 @@ Rust 1.95 or later. On Linux the audio output needs the ALSA headers (`libasound
 folder under the system cache directory (`wavcraft/sessions/<id>/`, removed when the file is
 closed): append-only pack files of 32-bit float blocks (1 GiB each). The document is a list of
 pieces of those blocks per channel, so an edit (task 04) will only rearrange pieces, and RAM holds
-only a block cache with a budget (1/16 of physical memory, 256 MB to 1 GB). WAV, RF64 and AIFF are
+only a block cache with a budget (1/16 of physical memory, 256 MB to 1 GB). Every sample takes 4
+bytes there whatever the file's own format, so a 16-bit file needs twice its size: before
+writing, opening checks the session folder's disk for frames × channels × 4 bytes plus 1 % and
+64 MB (for a compressed file whose length the decoder can't tell, the length is guessed from its
+size at 128 kbit/s), and a disk that fills up anyway stops the open with an error and removes the
+partial session. WAV, RF64 and AIFF are
 read by our own chunk reader, converting exactly as `soundcraft-audio-io` does (tests compare every
 sample); everything else is decoded packet by packet with `symphonia`. There is no length limit
 apart from disk space. **For now** the app still reads the whole document back into memory after

@@ -114,11 +114,15 @@ pub struct StoreOptions {
     pub cache_bytes: u64,
     /// Leave the session folder on disk when the store is dropped.
     pub keep: bool,
+    /// Refuse an append that would take the bytes written past this, with the error a full
+    /// disk gives (`StorageFull`). `None`: no limit but the disk. Tests use it to act out a disk
+    /// filling up.
+    pub max_bytes: Option<u64>,
 }
 
 impl Default for StoreOptions {
     fn default() -> Self {
-        StoreOptions { pack_bytes: DEFAULT_PACK_BYTES, cache_bytes: default_cache_bytes(), keep: false }
+        StoreOptions { pack_bytes: DEFAULT_PACK_BYTES, cache_bytes: default_cache_bytes(), keep: false, max_bytes: None }
     }
 }
 
@@ -178,6 +182,9 @@ struct Inner {
     packs: Mutex<HashMap<u32, Pack>>,
     cache: Mutex<Cache>,
     live_bytes: AtomicU64,
+    max_bytes: Option<u64>,
+    /// Bytes appended since the store was made (never goes down).
+    written: AtomicU64,
 }
 
 struct Writer {
@@ -221,6 +228,8 @@ impl Store {
                 packs: Mutex::new(HashMap::new()),
                 cache: Mutex::new(Cache::new(opts.cache_bytes)),
                 live_bytes: AtomicU64::new(0),
+                max_bytes: opts.max_bytes,
+                written: AtomicU64::new(0),
             }),
         })
     }
@@ -269,6 +278,9 @@ impl Store {
         let bytes = u64::from(frames) * BYTES_PER_SAMPLE;
         let inner = &self.inner;
         let mut w = lock(&inner.writer);
+        if inner.max_bytes.is_some_and(|max| inner.written.load(Ordering::Relaxed) + bytes > max) {
+            return Err(io::Error::new(io::ErrorKind::StorageFull, "the session store reached its size limit"));
+        }
         if w.out.is_none() || w.len + bytes > inner.pack_bytes {
             self.roll_over(&mut w)?;
         }
@@ -284,6 +296,7 @@ impl Store {
             return Err(e);
         }
         w.len += bytes;
+        inner.written.fetch_add(bytes, Ordering::Relaxed);
         let id = BlockId(inner.next_id.fetch_add(1, Ordering::Relaxed));
         {
             let mut packs = lock(&inner.packs);

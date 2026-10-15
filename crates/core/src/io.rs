@@ -30,6 +30,8 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 use crate::doc::{Channel, ChunkInfo, DocState, Piece, SourceFormat};
+use crate::settings::HOW_TO_CHANGE;
+use crate::space::{FreeSpaceFn, format_bytes, frames_from_file_size, store_bytes};
 use crate::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 /// Why a file could not be opened.
@@ -43,6 +45,13 @@ pub enum OpenError {
     Empty,
     /// The cancel flag was set. The session folder is gone.
     Cancelled,
+    /// Checked before writing: the disk holding the session folder `folder` has `free` bytes,
+    /// and the store needs about `needed` (`estimated`: guessed from a compressed file's size).
+    /// Nothing was written.
+    NoSpace { needed: u64, free: u64, folder: PathBuf, estimated: bool },
+    /// The disk holding the session folder `folder` filled up while the store was written. The
+    /// partial session is gone.
+    DiskFull { folder: PathBuf },
 }
 
 impl std::fmt::Display for OpenError {
@@ -52,6 +61,23 @@ impl std::fmt::Display for OpenError {
             OpenError::Decode(e) => write!(f, "cannot decode the file: {e}"),
             OpenError::Empty => write!(f, "the file holds no audio"),
             OpenError::Cancelled => write!(f, "opening was cancelled"),
+            OpenError::NoSpace { needed, free, folder, estimated } => write!(
+                f,
+                "not enough disk space to open it: it needs about {}{} in the session folder {}, and that disk has {} free. \
+                 Free some space there, or choose another session folder ({}).",
+                format_bytes(*needed),
+                if *estimated { " (estimated from the file's size)" } else { "" },
+                folder.display(),
+                format_bytes(*free),
+                HOW_TO_CHANGE
+            ),
+            OpenError::DiskFull { folder } => write!(
+                f,
+                "the disk holding the session folder {} filled up while opening it; nothing was kept. \
+                 Free some space there, or choose another session folder ({}).",
+                folder.display(),
+                HOW_TO_CHANGE
+            ),
         }
     }
 }
@@ -79,6 +105,9 @@ pub struct OpenOptions {
     /// `None`).
     pub sessions_root: Option<PathBuf>,
     pub store: StoreOptions,
+    /// How free space is measured before writing ([`space::free_space`](crate::space::free_space)
+    /// when `None`; tests pass their own). When it returns `None` the check is skipped.
+    pub free_space: Option<FreeSpaceFn>,
 }
 
 /// Frames per chunk read (and per block written).
@@ -89,6 +118,11 @@ const HEAD_BYTES: u64 = 1 << 16;
 /// Open `path` into a new session store. `progress` gets the fraction of the file read so far
 /// (0 to 1), now and then. If `cancel` becomes true, opening stops, the store and its folder are
 /// removed, and the result is [`OpenError::Cancelled`].
+///
+/// Before the first sample is written, the store's size is estimated
+/// ([`space::store_bytes`](crate::space::store_bytes)) and checked against the free space on
+/// the session folder's disk: too little gives [`OpenError::NoSpace`]. A disk that fills up
+/// anyway gives [`OpenError::DiskFull`]. Either way the session folder is removed.
 pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), cancel: &AtomicBool) -> Result<DocState, OpenError> {
     let mut file = File::open(path)?;
     let file_len = file.metadata()?.len();
@@ -99,7 +133,8 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
     let store = Store::create_session(opts.sessions_root.as_deref(), opts.store.clone())?;
     let mut src = SourceFormat::synthetic(0, 0);
     src.path = path.to_path_buf();
-    let mut job = Job { file: &mut file, file_len, progress, cancel };
+    let free_space = opts.free_space.unwrap_or(crate::space::free_space);
+    let mut job = Job { file: &mut file, file_len, progress, cancel, free_space };
     let built = if is_wav(&head) {
         open_wav(&mut job, &store, &mut src)
     } else if is_aiff(&head) {
@@ -115,6 +150,8 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
     if built.channels.is_empty() || built.channels.iter().all(Channel::is_empty) || src.sample_rate == 0 {
         return Err(OpenError::Empty);
     }
+    // The last writes may still sit in the store's buffer: a full disk shows up here too.
+    store.flush().map_err(|e| write_error(&store, e))?;
     (job.progress)(1.0);
     for w in &src.warnings {
         log::warn!("{}: {w}", path.display());
@@ -128,6 +165,7 @@ struct Job<'a> {
     file_len: u64,
     progress: &'a mut dyn FnMut(f64),
     cancel: &'a AtomicBool,
+    free_space: FreeSpaceFn,
 }
 
 impl Job<'_> {
@@ -139,12 +177,39 @@ impl Job<'_> {
         Ok(())
     }
 
+    /// Refuse to go on if the disk holding `store` has less room than `frames` frames of
+    /// `channels` channels need. An unknown free space passes.
+    fn check_space(&self, store: &Store, frames: u64, channels: usize, estimated: bool) -> Result<(), OpenError> {
+        let needed = store_bytes(frames, channels as u64);
+        match (self.free_space)(store.dir()) {
+            Some(free) if free < needed => Err(OpenError::NoSpace { needed, free, folder: sessions_folder(store), estimated }),
+            Some(_) => Ok(()),
+            None => {
+                log::warn!("free space on {} unknown; opening without checking it", store.dir().display());
+                Ok(())
+            }
+        }
+    }
+
     /// Up to `len` bytes at `offset` (fewer at the end of the file).
     fn read_at(&mut self, offset: u64, len: u64) -> io::Result<Vec<u8>> {
         self.file.seek(SeekFrom::Start(offset))?;
         let mut out = Vec::new();
         (&mut *self.file).take(len).read_to_end(&mut out)?;
         Ok(out)
+    }
+}
+
+/// The folder session folders are made in (what a person sets), for messages.
+fn sessions_folder(store: &Store) -> PathBuf {
+    store.dir().parent().unwrap_or(store.dir()).to_path_buf()
+}
+
+/// A write to the store failed: a full disk (or quota) is [`OpenError::DiskFull`].
+fn write_error(store: &Store, e: io::Error) -> OpenError {
+    match e.kind() {
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => OpenError::DiskFull { folder: sessions_folder(store) },
+        _ => OpenError::Io(format!("writing the session store in {}: {e}", store.dir().display())),
     }
 }
 
@@ -165,12 +230,12 @@ impl Builder {
     }
 
     /// Append what the planes hold as one block per channel, and empty them.
-    fn flush(&mut self) -> io::Result<()> {
+    fn flush(&mut self) -> Result<(), OpenError> {
         for (plane, ch) in self.planes.iter_mut().zip(self.channels.iter_mut()) {
             if plane.is_empty() {
                 continue;
             }
-            let block = self.store.append(plane)?;
+            let block = self.store.append(plane).map_err(|e| write_error(&self.store, e))?;
             if let Some(p) = Piece::whole(block) {
                 ch.push(p);
             }
@@ -285,6 +350,7 @@ fn deinterleave(data: &[u8], kind: PcmKind, planes: &mut [Vec<f32>]) {
 
 /// Read `frames` frames of `kind` PCM from `data_start` into the store, a chunk at a time.
 fn stream_pcm(job: &mut Job<'_>, store: &Store, data_start: u64, frames: u64, kind: PcmKind, channels: usize) -> Result<Builder, OpenError> {
+    job.check_space(store, frames, channels, false)?;
     let mut b = Builder::new(store, channels);
     let block = (kind.bytes() * channels) as u64;
     let mut buf = vec![0u8; CHUNK_FRAMES * block as usize];
@@ -745,6 +811,13 @@ fn decode_symphonia(
     src.format = format_from_codec(params.codec, detected);
     src.sample_format = sample_format_of(&params);
     let mut decoder = symphonia::default::get_codecs().make(&params, &DecoderOptions::default()).map_err(sym_err)?;
+    // The decoder's frame count when the container gives one (FLAC, most MP3s, M4A), else a
+    // guess from the file's size. An unknown channel count is taken as stereo.
+    let (expected_frames, estimated) = match params.n_frames {
+        Some(n) if n > 0 => (n, false),
+        _ => (frames_from_file_size(job.file_len, src.sample_rate), true),
+    };
+    job.check_space(store, expected_frames, params.channels.map_or(2, |c| c.count()).max(1), estimated)?;
 
     let mut built: Option<Builder> = None;
     let mut frames: u64 = 0;
