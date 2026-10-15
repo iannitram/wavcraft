@@ -10,8 +10,9 @@ audiobooks, files of one to three hours.
 **Clean room:** its behaviour is copied from Audition's published behaviour and documentation only.
 No code from Audacity (GPL) or any other GPL-family project is read or used. See [Rules](#rules).
 
-**Status: Phase 1, viewer.** It opens a file, draws it, zooms, scrolls and plays. It does not
-edit or save yet.
+**Status: Phase 1, viewer; Phase 2 under way.** It opens a file, draws it, zooms, scrolls and
+plays. It does not edit or save yet. Underneath, the editor's storage is in place (task 03): an
+opened file is streamed into an on-disk store and held as a piece table, ready for edits and undo.
 
 | Phase | Goal | State |
 |---|---|---|
@@ -41,18 +42,30 @@ Rust 1.95 or later. On Linux the audio output needs the ALSA headers (`libasound
 
 ## How it is built
 
-- `crates/core` (`wavcraft-core`): no UI. The open file, waveform columns at any zoom, the
-  spectrogram for any time range at screen resolution, and the zoom, scroll, selection and
-  time-format arithmetic. Everything here has tests.
+- `crates/core` (`wavcraft-core`): no UI. The on-disk sample store (`store`), the document as a
+  piece table over it (`doc`), streamed open (`io`), the open file as the app sees it
+  (`document`), waveform columns at any zoom, the spectrogram for any time range at screen
+  resolution, and the zoom, scroll, selection and time-format arithmetic. Everything here has tests.
 - `apps/wavcraft`: the egui window and the audio output.
-- `crates/testkit` (`wavcraft-testkit`): `wavcraft-testkit OUT_DIR [--long]` writes the
+- `crates/testkit` (`wavcraft-testkit`): `wavcraft-testkit OUT_DIR [--long] [--huge]` writes the
   synthetic test files (same seed, same bytes; keep them outside the repo), and
-  `wavcraft-bench FILE` measures open, memory, peaks, spectrogram and read times. Numbers:
+  `wavcraft-bench FILE` measures open, memory, peaks, spectrogram and read times, and
+  `wavcraft-store-bench FILE` the store's streamed open and reads. Numbers:
   `docs/baseline.md`. Layout of the code: `docs/code-map.md`. The bench's one Windows memory call
   is the only `unsafe` in the tree (that crate denies `unsafe` instead of forbidding it).
 
-The whole file is decoded into memory, as in SoundCraft today (about 1.4 GB per hour of 48 kHz
-stereo). Zoomed in (a pixel column spans one 2048-frame FFT window or less) each spectrogram
+**Where the samples live.** Opening streams the file, 64 K frames at a time, into a session
+folder under the system cache directory (`wavcraft/sessions/<id>/`, removed when the file is
+closed): append-only pack files of 32-bit float blocks (1 GiB each). The document is a list of
+pieces of those blocks per channel, so an edit (task 04) will only rearrange pieces, and RAM holds
+only a block cache with a budget (1/16 of physical memory, 256 MB to 1 GB). WAV, RF64 and AIFF are
+read by our own chunk reader, converting exactly as `soundcraft-audio-io` does (tests compare every
+sample); everything else is decoded packet by packet with `symphonia`. There is no length limit
+apart from disk space. **For now** the app still reads the whole document back into memory after
+opening (about 1.4 GB per hour of 48 kHz stereo), because its views and player want one buffer per
+channel; task 05 moves them onto the store.
+
+Zoomed in (a pixel column spans one 2048-frame FFT window or less) each spectrogram
 column is one FFT centred on its moment. Zoomed out, a column shows the loudest level in each
 frequency band across all the audio it spans: FFTs are taken half a window apart on a grid fixed
 to the file, and each column keeps the per-bin maximum of the ones inside it. So nothing audible
@@ -78,10 +91,8 @@ screen is short. The overview does not depend on the frequency axis or the pictu
   12 ms per channel at any zoom (it was 140 ms per channel zoomed out on three hours before the
   overview), and the old one is stretched into place meanwhile. The file's first picture waits
   for the overview: about 170 ms per channel for three hours, as long as that picture took before.
-- **Files over 2^30 samples do not open** (3 h 06 min of 48 kHz stereo): the decode limit of
-  `soundcraft-audio-io`.
-- **Opening needs several times the file's size in memory for a moment**, a load cannot be
-  cancelled, and opening a second file while the first is loading decodes both.
+- **The app still holds the whole file in memory after opening** (see above; task 05), and needs
+  the file's length in disk space for its session store too.
 - **The output device is chosen at start-up.** It is tried again on Play after an error or when
   there was none, but a change of the system's default device is not followed.
 - When the file's rate differs from the device's, playback converts with plain linear

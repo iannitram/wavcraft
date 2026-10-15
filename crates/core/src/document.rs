@@ -1,33 +1,20 @@
 //! The open file: decoded audio and per-channel waveform peaks.
+//!
+//! Since task 03 a file is opened by streaming it into the session store ([`crate::io::open`]),
+//! and the [`DocState`] it makes is read back here into one whole-channel buffer, because the
+//! views and the player still want one. That adapter is temporary: task 05 moves them onto
+//! [`DocState::read`] and removes it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use soundcraft_audio_io::peaks::Peaks;
 use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 
-/// Why a file could not be opened.
-#[derive(Debug, Clone, PartialEq)]
-pub enum OpenError {
-    /// Reading the file failed.
-    Io(String),
-    /// The bytes are not audio we can decode.
-    Decode(String),
-    /// The file decoded to no audio at all.
-    Empty,
-}
-
-impl std::fmt::Display for OpenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OpenError::Io(e) => write!(f, "cannot read the file: {e}"),
-            OpenError::Decode(e) => write!(f, "cannot decode the file: {e}"),
-            OpenError::Empty => write!(f, "the file holds no audio"),
-        }
-    }
-}
-
-impl std::error::Error for OpenError {}
+use crate::doc::DocState;
+pub use crate::io::OpenError;
+use crate::io::OpenOptions;
 
 /// One audio file, decoded whole into memory.
 ///
@@ -43,13 +30,33 @@ pub struct Document {
     pub audio: Arc<AudioBuffer>,
     /// One waveform overview per channel, for drawing at any zoom.
     pub peaks: Vec<Peaks>,
+    /// The document in the session store, when it was opened from a file (`None` for audio
+    /// made in memory). `audio` is a copy of it until task 05.
+    pub state: Option<DocState>,
 }
 
 impl Document {
-    /// Read and decode `path`.
+    /// Stream `path` into a new session store, then read it back whole (see the module notes).
     pub fn open(path: &Path) -> Result<Document, OpenError> {
-        let bytes = std::fs::read(path).map_err(|e| OpenError::Io(e.to_string()))?;
-        Document::from_bytes(path, &bytes)
+        Document::open_with(path, &mut |_| {}, &AtomicBool::new(false))
+    }
+
+    /// [`open`](Self::open) with progress (0 to 1, for the streaming part) and a cancel flag.
+    pub fn open_with(path: &Path, progress: &mut dyn FnMut(f64), cancel: &AtomicBool) -> Result<Document, OpenError> {
+        let state = crate::io::open(path, &OpenOptions::default(), progress, cancel)?;
+        let audio = state.to_audio_buffer().map_err(|e| OpenError::Io(e.to_string()))?;
+        let src = state.source();
+        let info = AudioInfo {
+            format: src.format,
+            sample_format: src.sample_format,
+            sample_rate: state.sample_rate(),
+            channels: u16::try_from(state.channel_count()).unwrap_or(u16::MAX),
+            frames: state.len_frames(),
+            bwf: src.bwf.clone(),
+        };
+        let mut doc = Document::build(path.to_path_buf(), info, audio)?;
+        doc.state = Some(state);
+        Ok(doc)
     }
 
     /// Decode a file already in memory. `path` supplies the extension hint and the display name.
@@ -81,7 +88,7 @@ impl Document {
             let jobs: Vec<_> = audio.channels.iter().map(|ch| s.spawn(move || Peaks::build(ch))).collect();
             jobs.into_iter().zip(&audio.channels).map(|(job, ch)| job.join().unwrap_or_else(|_| Peaks::build(ch))).collect()
         });
-        Ok(Document { path, info, audio: Arc::new(audio), peaks })
+        Ok(Document { path, info, audio: Arc::new(audio), peaks, state: None })
     }
 
     /// Length in frames.

@@ -1,7 +1,7 @@
-//! `wavcraft-testkit OUT_DIR [--long] [--seed N] [--speech CLEAN.wav --noise NOISE.wav]`
+//! `wavcraft-testkit OUT_DIR [--long] [--huge] [--seed N] [--speech CLEAN.wav --noise NOISE.wav]`
 //!
 //! Writes WavCraft's synthetic test files into OUT_DIR (keep it outside the repo). Same seed,
-//! same bytes. `--long` adds the 3-hour file (about 2 GB). `--speech` and `--noise` together add
+//! same bytes. `--long` adds the 3-hour file (about 2 GB); `--huge` the 4 h 10 min RF64 file (about 4.3 GB). `--speech` and `--noise` together add
 //! mixes at 10 dB and 20 dB SNR plus the clean reference; without them nothing is mixed.
 
 #![forbid(unsafe_code)]
@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use wavcraft_testkit::{KitOptions, write_kit};
 
-const USAGE: &str = "usage: wavcraft-testkit OUT_DIR [--long] [--seed N] [--speech CLEAN.wav --noise NOISE.wav]";
+const USAGE: &str = "usage: wavcraft-testkit OUT_DIR [--long] [--huge] [--seed N] [--speech CLEAN.wav --noise NOISE.wav]";
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -23,6 +23,7 @@ fn main() -> ExitCode {
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--long") => opts.long = true,
+            Some("--huge") => opts.huge = true,
             Some("--seed") => match args.next().and_then(|v| v.to_str().and_then(|v| v.parse::<u64>().ok())) {
                 Some(seed) => opts.seed = seed,
                 None => return fail("--seed needs a whole number"),
