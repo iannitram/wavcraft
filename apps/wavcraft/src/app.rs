@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
+use wavcraft_core::io::OpenOptions;
+use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
+use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{Document, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::player::Player;
@@ -49,13 +52,26 @@ pub struct WaveApp {
     renderer: Renderer,
     opening: Option<Opening>,
     error: Option<String>,
+    /// A message that is not an error (the session folder was changed).
+    notice: Option<String>,
+    /// Where opened files' session stores go, and how that was chosen.
+    sessions: SessionFolder,
+    settings: Settings,
+    /// The settings file (`None` when the system has no config folder).
+    settings_path: Option<PathBuf>,
     fit_on_next_frame: bool,
     /// The window title last sent. Sending one asks for a repaint, so it is only sent on change.
     title: String,
 }
 
 impl WaveApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, file: Option<PathBuf>) -> WaveApp {
+    /// `session_dir`: the `--session-dir` flag, which wins over the environment variable and the
+    /// settings file for this run.
+    pub fn new(cc: &eframe::CreationContext<'_>, file: Option<PathBuf>, session_dir: Option<PathBuf>) -> WaveApp {
+        let settings_path = Settings::default_path();
+        let settings = settings_path.as_deref().map(Settings::load).unwrap_or_default();
+        let env = std::env::var_os(settings::ENV_SESSION_DIR);
+        let sessions = settings::resolve_session_folder(session_dir, env, &settings, default_sessions_root(), settings::check_folder);
         let mut app = WaveApp {
             doc: None,
             generation: 0,
@@ -68,7 +84,11 @@ impl WaveApp {
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
-            error: None,
+            error: sessions.warning.clone(),
+            notice: None,
+            sessions,
+            settings,
+            settings_path,
             fit_on_next_frame: false,
             title: String::new(),
         };
@@ -87,6 +107,7 @@ impl WaveApp {
         let (tx, rx) = channel();
         let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
         let (ctx, job_path, job_cancel, job_progress) = (ctx.clone(), path.clone(), cancel.clone(), progress.clone());
+        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), ..OpenOptions::default() };
         std::thread::spawn(move || {
             let mut last = 0;
             let mut report = |p: f64| {
@@ -97,12 +118,13 @@ impl WaveApp {
                     ctx.request_repaint();
                 }
             };
-            let result = Document::open_with(&job_path, &mut report, &job_cancel).map_err(|e| e.to_string());
+            let result = Document::open_in(&job_path, &opts, &mut report, &job_cancel).map_err(|e| e.to_string());
             let _ = tx.send(result);
             ctx.request_repaint();
         });
         self.opening = Some(Opening { path, result: rx, cancel, progress });
         self.error = None;
+        self.notice = None;
     }
 
     fn finish_opening(&mut self) {
@@ -135,6 +157,40 @@ impl WaveApp {
         }
     }
 
+    /// File › Session Folder…: pick a folder, check it, use it from the next open and save it.
+    fn pick_session_folder(&mut self) {
+        let Some(path) = rfd::FileDialog::new().set_directory(&self.sessions.path).pick_folder() else { return };
+        self.set_session_folder(Some(path));
+    }
+
+    /// Use `path` (the default when `None`) for the next opens, and keep it in the settings.
+    fn set_session_folder(&mut self, path: Option<PathBuf>) {
+        let (path, source) = match path {
+            Some(p) => (p, FolderSource::SettingsFile),
+            None => (default_sessions_root(), FolderSource::Default),
+        };
+        if let Err(why) = settings::check_folder(&path) {
+            self.error = Some(format!("The session folder {} can't be used: {why}. Still using {}.", path.display(), self.sessions.path.display()));
+            self.notice = None;
+            return;
+        }
+        let overridden = matches!(self.sessions.source, FolderSource::CommandLine | FolderSource::Environment);
+        self.settings.session_folder = (source == FolderSource::SettingsFile).then(|| path.clone());
+        let saved = match &self.settings_path {
+            Some(file) => self.settings.save(file).map_err(|e| format!("could not save the setting to {}: {e}", file.display())),
+            None => Err("this system has no settings folder, so it lasts until WavCraft closes".to_string()),
+        };
+        self.sessions = SessionFolder { path, source, warning: None };
+        let mut msg = format!("Session folder: {} (from the next file opened)", self.sessions.path.display());
+        match saved {
+            Ok(()) if overridden => msg.push_str(". Saved, but --session-dir or WAVCRAFT_SESSION_DIR will win again at the next start"),
+            Ok(()) => {}
+            Err(e) => msg.push_str(&format!("; {e}")),
+        }
+        self.error = None;
+        self.notice = Some(msg);
+    }
+
     fn toggle_play(&mut self) {
         let Some(doc) = &self.doc else { return };
         if self.player.is_playing() {
@@ -152,6 +208,15 @@ impl WaveApp {
                 if ui.button("Open…  Ctrl+O").clicked() {
                     self.pick_file(ui.ctx());
                 }
+                ui.separator();
+                let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
+                if ui.button("Session Folder…").on_hover_text(&now).clicked() {
+                    self.pick_session_folder();
+                }
+                if ui.button("Use the Default Session Folder").on_hover_text(default_sessions_root().display().to_string()).clicked() {
+                    self.set_session_folder(None);
+                }
+                ui.separator();
                 if ui.button("Quit").clicked() {
                     ui.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -181,6 +246,8 @@ impl WaveApp {
                 ui.label(format!("Opening {}… {}%", o.path.display(), permille / 10));
             } else if let Some(e) = &self.error {
                 ui.colored_label(CURSOR, e);
+            } else if let Some(n) = &self.notice {
+                ui.label(n);
             } else if let Some(doc) = &self.doc {
                 let rate = doc.sample_rate();
                 ui.label(doc.name());

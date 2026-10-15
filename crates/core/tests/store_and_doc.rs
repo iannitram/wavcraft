@@ -29,7 +29,7 @@ impl Drop for TempDir {
 }
 
 fn store(dir: &Path, pack_bytes: u64, cache_bytes: u64) -> Store {
-    Store::create_with(dir, StoreOptions { pack_bytes, cache_bytes, keep: false }).unwrap()
+    Store::create_with(dir, StoreOptions { pack_bytes, cache_bytes, keep: false, max_bytes: None }).unwrap()
 }
 
 /// Sample `i` of test block `k`: exact in f32, different for every (k, i) that matters here.
@@ -356,7 +356,7 @@ fn channels_of_different_lengths_are_refused() {
 #[test]
 fn the_session_folder_is_removed_on_drop_and_kept_with_keep() {
     let root = TempDir::new("t12");
-    let s = Store::create_session(Some(&root.0), StoreOptions { pack_bytes: 1 << 20, cache_bytes: 1 << 20, keep: false }).unwrap();
+    let s = Store::create_session(Some(&root.0), StoreOptions { pack_bytes: 1 << 20, cache_bytes: 1 << 20, keep: false, max_bytes: None }).unwrap();
     let dir = s.dir().to_path_buf();
     assert!(dir.starts_with(&root.0) && dir.join(LOCK_FILE).exists());
     // A second store cannot take a folder in use.
@@ -368,7 +368,7 @@ fn the_session_folder_is_removed_on_drop_and_kept_with_keep() {
     drop(h);
     assert!(!dir.exists(), "gone with the last handle");
 
-    let s = Store::create_session(Some(&root.0), StoreOptions { pack_bytes: 1 << 20, cache_bytes: 1 << 20, keep: false }).unwrap();
+    let s = Store::create_session(Some(&root.0), StoreOptions { pack_bytes: 1 << 20, cache_bytes: 1 << 20, keep: false, max_bytes: None }).unwrap();
     s.set_keep(true);
     let dir = s.dir().to_path_buf();
     let h = s.append(&[1.0, 2.0]).unwrap();

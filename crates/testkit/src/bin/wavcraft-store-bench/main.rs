@@ -57,7 +57,11 @@ fn main() -> ExitCode {
     println!("working set at rest: {}", gb(rest.now));
 
     // 1. Streamed open.
-    let opts = OpenOptions { sessions_root: sessions, store: StoreOptions { cache_bytes: cache_mb << 20, ..StoreOptions::default() } };
+    let opts = OpenOptions {
+        sessions_root: sessions,
+        store: StoreOptions { cache_bytes: cache_mb << 20, ..StoreOptions::default() },
+        ..OpenOptions::default()
+    };
     let t = Instant::now();
     let doc = match open(&path, &opts, &mut |_| {}, &AtomicBool::new(false)) {
         Ok(d) => d,
