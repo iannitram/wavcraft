@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use soundcraft_audio_io::{AudioBuffer, BitDepth, EncodeOptions, FileFormat, SampleFormat};
 use wavcraft_core::doc::DocState;
 use wavcraft_core::io::{OpenError, OpenOptions, open};
+use wavcraft_core::store::Encoding;
 use wavcraft_testkit::*;
 
 /// A folder in the system's temp directory, removed when dropped.
@@ -52,7 +53,28 @@ fn same_as_audio_io(path: &Path, root: &Path) -> DocState {
     let src = doc.source();
     assert_eq!((src.format, src.sample_format), (info.format, info.sample_format), "{name}");
     assert_eq!(src.bwf, info.bwf, "{name}");
+    // Task 04b: 16- and 24-bit WAV, AIFF and FLAC are stored as integers, all else as f32.
+    let want_encoding = match (src.format, src.sample_format) {
+        (FileFormat::Wav | FileFormat::Aiff | FileFormat::Flac, SampleFormat::Int16) => Encoding::I16,
+        (FileFormat::Wav | FileFormat::Aiff | FileFormat::Flac, SampleFormat::Int24) => Encoding::I24,
+        _ => Encoding::F32,
+    };
+    assert_eq!(encodings(&doc), vec![want_encoding], "{name}: block encodings");
     doc
+}
+
+/// Every encoding the document's (non-zero) blocks use, without repeats.
+fn encodings(doc: &DocState) -> Vec<Encoding> {
+    let mut out = Vec::new();
+    for ch in doc.channels() {
+        for p in ch.pieces() {
+            let e = p.block().encoding();
+            if !p.block().is_zero() && !out.contains(&e) {
+                out.push(e);
+            }
+        }
+    }
+    out
 }
 
 fn write(path: &Path, bytes: &[u8]) -> PathBuf {
@@ -188,6 +210,43 @@ fn streamed_open_matches_audio_io_for_every_kit_file_and_layout() {
     }
     // Every session folder made above was removed when its document dropped.
     assert_eq!(std::fs::read_dir(&root.0).unwrap().count(), 0);
+}
+
+/// Task 04b test 2: one file per source format, and the encoding its blocks get.
+#[test]
+fn each_source_format_is_stored_in_its_encoding() {
+    let dir = TempDir::new("encodings");
+    let root = TempDir::new("encodings-sessions");
+    let buf = awkward(2, 70_000);
+    let enc = |format, bit_depth| soundcraft_audio_io::encode(&buf, &EncodeOptions { format, bit_depth, dither: false, bwf: None }).unwrap();
+    let rf64 =
+        soundcraft_audio_io::encode_wav_rf64(&buf, &EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int24, dither: false, bwf: None })
+            .unwrap();
+    let bytes: Vec<u8> = (0..60_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
+    let mp3: Vec<u8> = (0..40).flat_map(|_| mp3_frame()).collect();
+    let cases: Vec<(&str, Vec<u8>, Encoding)> = vec![
+        ("u8.wav", hand_wav(1, 8, 2, &bytes, false), Encoding::F32),
+        ("i16.wav", enc(FileFormat::Wav, BitDepth::Int16), Encoding::I16),
+        ("i24.wav", enc(FileFormat::Wav, BitDepth::Int24), Encoding::I24),
+        ("i20-in-24.wav", hand_wav(1, 20, 2, &bytes[..59_994], true), Encoding::I24),
+        ("i32.wav", enc(FileFormat::Wav, BitDepth::Int32), Encoding::F32),
+        ("f32.wav", enc(FileFormat::Wav, BitDepth::Float32), Encoding::F32),
+        ("rf64-24.wav", rf64, Encoding::I24),
+        ("i16.aiff", enc(FileFormat::Aiff, BitDepth::Int16), Encoding::I16),
+        ("i24.aiff", enc(FileFormat::Aiff, BitDepth::Int24), Encoding::I24),
+        ("i32.aiff", enc(FileFormat::Aiff, BitDepth::Int32), Encoding::F32),
+        ("f32.aiff", enc(FileFormat::Aiff, BitDepth::Float32), Encoding::F32),
+        ("i16.flac", enc(FileFormat::Flac, BitDepth::Int16), Encoding::I16),
+        ("i24.flac", enc(FileFormat::Flac, BitDepth::Int24), Encoding::I24),
+        ("silence.mp3", mp3, Encoding::F32),
+    ];
+    for (name, file, want) in cases {
+        let p = write(&dir.0.join(name), &file);
+        let doc = stream(&p, &root.0).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(encodings(&doc), vec![want], "{name}");
+        let frames = doc.len_frames() * doc.channel_count() as u64;
+        assert_eq!(doc.disk_bytes_referenced(), frames * want.width(), "{name}: bytes on disk follow the encoding");
+    }
 }
 
 /// Test 9: the ramp file streams in as its formula.

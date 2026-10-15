@@ -2,6 +2,10 @@
 //! undo and redo (3-5), the disk cap (6), silence writes nothing (7), `replace_range` streams and
 //! cancels (7b), crossfades (8, 9d), paste channel rules (9), and the history's own behaviour.
 //! The kit-file tests (1 on `ramp`, 9b, 9c, 10) are in `crates/testkit/tests/edits.rs`.
+//!
+//! Task 04b test 5: the documents here are 16-bit, as a 16-bit file opens: their test values are
+//! 16-bit steps and [`doc_from`] stores them as `I16` blocks, so every edit cuts and splices
+//! integer blocks. New audio (effects, crossfades, mixes) is `F32`.
 
 use std::collections::HashSet;
 use std::io;
@@ -14,7 +18,7 @@ use proptest::prelude::*;
 use wavcraft_core::doc::edit::{self, Change, ChannelMask, Clip, Crossfades, EditError, PasteAt};
 use wavcraft_core::doc::history::{History, NoSpace};
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
-use wavcraft_core::store::{BLOCK_FRAMES, BlockId, Store, StoreOptions};
+use wavcraft_core::store::{BLOCK_FRAMES, BlockHandle, BlockId, Encoding, Store, StoreOptions, f32_to_i16_exact};
 
 const RATE: u32 = 48_000;
 const NONE: Crossfades = Crossfades::NONE;
@@ -41,13 +45,28 @@ fn store(dir: &Path, pack_bytes: u64) -> Store {
     Store::create_with(dir, StoreOptions { pack_bytes, cache_bytes: 64 << 20, ..StoreOptions::default() }).unwrap()
 }
 
-/// A document holding `data` (one `Vec` per channel), written in blocks of `block` frames.
+/// A document holding `data` (one `Vec` per channel), written in blocks of `block` frames: as
+/// `I16` blocks where every sample is a 16-bit step (as open stores a 16-bit file), else `F32`.
 fn doc_from(s: &Store, data: &[Vec<f32>], block: usize) -> DocState {
+    doc_with(s, data, block, true)
+}
+
+/// [`doc_from`], with `F32` blocks only when `ints` is false.
+fn doc_with(s: &Store, data: &[Vec<f32>], block: usize, ints: bool) -> DocState {
     let chans = data
         .iter()
-        .map(|c| Channel::from_pieces(c.chunks(block.clamp(1, BLOCK_FRAMES)).map(|b| Piece::whole(s.append(b).unwrap()).unwrap())))
+        .map(|c| Channel::from_pieces(c.chunks(block.clamp(1, BLOCK_FRAMES)).map(|b| Piece::whole(append16(s, b, ints)).unwrap())))
         .collect();
     DocState::new(s.clone(), chans, RATE, SourceFormat::synthetic(RATE, data.len() as u16)).unwrap()
+}
+
+/// `samples` as an `I16` block when they are all 16-bit steps (and `ints`), else `F32`.
+fn append16(s: &Store, samples: &[f32], ints: bool) -> std::sync::Arc<BlockHandle> {
+    match samples.iter().map(|&x| f32_to_i16_exact(x)).collect::<Option<Vec<i16>>>() {
+        Some(v) if ints => s.append_i16(&v),
+        _ => s.append(samples),
+    }
+    .unwrap()
 }
 
 fn content(doc: &DocState) -> Vec<Vec<f32>> {
@@ -74,11 +93,9 @@ fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
     v.iter().map(|c| c.iter().map(|x| x.to_bits()).collect()).collect()
 }
 
-/// Distinct test values, exact in f32.
+/// Distinct test values (65,536 in a row), each a 16-bit step, so exact in f32 and in `I16`.
 fn data(channels: usize, frames: usize, seed: usize) -> Vec<Vec<f32>> {
-    (0..channels)
-        .map(|c| (0..frames).map(|i| (((i * 31 + c * 7_919 + seed * 104_729) % 1_000_003) as f32 - 500_000.0) / 524_288.0).collect())
-        .collect()
+    (0..channels).map(|c| (0..frames).map(|i| (((i * 31 + c * 7_919 + seed * 104_729) % 65_536) as f32 - 32_768.0) / 32_768.0).collect()).collect()
 }
 
 fn sine(frames: usize, phase: f64) -> Vec<f32> {
@@ -416,7 +433,8 @@ fn disk_cap_drops_the_oldest_steps_and_their_packs() {
     let mib = 1u64 << 20;
     let s = store(&dir.0.join("s"), mib);
     let frames = (mib / 4) as usize; // 1 MiB of f32, mono
-    let doc = doc_from(&s, &data(1, frames, 6), BLOCK_FRAMES);
+    // The start is f32 too here, so each state is 1 MiB and fills one pack.
+    let doc = doc_with(&s, &data(1, frames, 6), BLOCK_FRAMES, false);
     let mut h = History::new(doc, 10 * mib);
     let mut dropped = 0;
     for k in 0..20 {
@@ -474,7 +492,8 @@ fn silence_writes_nothing_and_is_exact_zeros() {
 fn replace_range_streams_and_cancels() {
     let dir = TempDir::new("t7b");
     let s = store(&dir.0.join("s"), 64 << 20);
-    let one = s.append(&data(1, BLOCK_FRAMES, 77)[0]).unwrap();
+    let one = append16(&s, &data(1, BLOCK_FRAMES, 77)[0], true);
+    assert_eq!(one.encoding(), Encoding::I16);
     let frames = 10 * 60 * u64::from(RATE);
     let mut ch = Channel::new();
     while ch.len() < frames {
@@ -765,7 +784,7 @@ fn history_clear_go_to_labels_and_space() {
     let s = store(&dir.0.join("s"), 1 << 20);
     let doc = doc_from(&s, &data(2, 10_000, 12), 2_000);
     let mut h = History::new(doc.clone(), u64::MAX);
-    assert_eq!(h.steps()[0].made_bytes(), 2 * 10_000 * 4);
+    assert_eq!(h.steps()[0].made_bytes(), 2 * 10_000 * 2, "16-bit blocks: 2 bytes a sample");
     assert_eq!(h.undo_label(), None);
     let (ed, clip) = edit::cut(&doc, 100..200, ChannelMask::ALL, NONE).unwrap();
     h.push_edit(ed);
@@ -799,4 +818,42 @@ fn history_clear_go_to_labels_and_space() {
     assert!(e.to_string().starts_with("needs 3.0 GB, 5.0 GB free"));
     let h = h.with_free_space(|_| None);
     assert!(h.can_afford(u64::MAX).is_ok());
+}
+
+/// Task 04b test 5: on a 16-bit document, a whole-document `replace_range` writes `F32` blocks and
+/// leaves the original `I16` blocks as they were (the undo step still reads them bit-exact); a
+/// partial one changes only its range, and the blocks outside it stay `I16`.
+#[test]
+fn effects_on_a_16_bit_document_write_f32_and_leave_the_rest_i16() {
+    let dir = TempDir::new("t04b5");
+    let s = store(&dir.0.join("s"), 1 << 20);
+    let start = data(2, 200_000, 5);
+    let doc = doc_from(&s, &start, BLOCK_FRAMES);
+    let enc = |d: &DocState| -> Vec<Encoding> {
+        let mut v: Vec<Encoding> =
+            d.channels().iter().flat_map(|c| c.pieces().iter().filter(|p| !p.block().is_zero()).map(|p| p.block().encoding())).collect();
+        v.dedup();
+        v
+    };
+    assert_eq!(enc(&doc), vec![Encoding::I16]);
+    assert_eq!(doc.disk_bytes_referenced(), 200_000 * 2 * 2);
+    let mut h = History::new(doc, u64::MAX);
+    let all = replace(h.current(), 0..200_000, ChannelMask::ALL, Crossfades::default());
+    assert_eq!(enc(&all.state), vec![Encoding::F32], "a whole-document effect makes f32 blocks");
+    h.push_edit(all);
+    h.undo().unwrap();
+    assert_eq!(enc(h.current()), vec![Encoding::I16], "the untouched start is still I16");
+    check(h.current(), &Model(start.clone()), "undo");
+    // A partial effect: only the range (and its crossfades, inside it) is new.
+    let part = replace(h.current(), 70_000..80_000, ChannelMask::only(0), NONE);
+    let pieces = part.state.channel(0).unwrap().pieces();
+    let encs: Vec<Encoding> = pieces.iter().map(|p| p.block().encoding()).collect();
+    assert!(encs.contains(&Encoding::F32) && encs.iter().filter(|e| **e == Encoding::I16).count() >= 2, "{encs:?}");
+    assert!(part.state.channel(1).unwrap().pieces().iter().all(|p| p.block().encoding() == Encoding::I16));
+    let mut m = Model(start);
+    m.replace(70_000..80_000, ChannelMask::only(0));
+    check(&part.state, &m, "partial effect");
+    // The bytes count each block once, at its own width: every I16 block (both sides of the
+    // range still use the one it cut) plus the new f32 range.
+    assert_eq!(part.state.disk_bytes_referenced(), 200_000 * 2 * 2 + 10_000 * 4);
 }

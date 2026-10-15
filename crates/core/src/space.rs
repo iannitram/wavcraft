@@ -1,10 +1,11 @@
 //! Disk space for the session store: how much opening a file will write, and how much room the
 //! disk holding the session folder has.
 //!
-//! The store keeps every sample as a 32-bit float, so a file needs
-//! `frames × channels × 4` bytes whatever its own sample format (a 16-bit file takes twice its
-//! size, a 3-hour 48 kHz stereo episode about 4.1 GB). [`store_bytes`] adds a small margin on
-//! top. For a compressed file whose decoder can't say how many frames it holds,
+//! The store keeps a 16-bit source as 16-bit integers (2 bytes a sample), a 24-bit source as
+//! 24-bit integers (3 bytes) and everything else as 32-bit floats (4 bytes)
+//! ([`io::store_encoding`](crate::io::store_encoding)), so a file needs
+//! `frames × channels × width` bytes: a 3-hour 48 kHz stereo 16-bit episode about 2.1 GB, its
+//! own size. [`store_bytes`] adds a small margin on top. For a compressed file whose decoder can't say how many frames it holds,
 //! [`frames_from_file_size`] guesses from the file's size.
 
 use std::path::{Path, PathBuf};
@@ -21,15 +22,16 @@ pub const MARGIN_BYTES: u64 = 64 << 20;
 /// second). Spoken-word MP3s are mostly 64 to 192 kbit/s.
 pub const ASSUMED_BITRATE: u64 = 128_000;
 
-/// The bytes `frames` frames of `channels` channels take in the store (no margin).
-pub fn raw_store_bytes(frames: u64, channels: u64) -> u64 {
-    frames.saturating_mul(channels).saturating_mul(4)
+/// The bytes `frames` frames of `channels` channels take in the store at `width` bytes a sample
+/// ([`Encoding::width`](crate::store::Encoding::width)), no margin.
+pub fn raw_store_bytes(frames: u64, channels: u64, width: u64) -> u64 {
+    frames.saturating_mul(channels).saturating_mul(width)
 }
 
-/// The space to ask for before writing `frames` frames of `channels` channels: the store's
-/// bytes plus 1 % plus [`MARGIN_BYTES`].
-pub fn store_bytes(frames: u64, channels: u64) -> u64 {
-    let raw = raw_store_bytes(frames, channels);
+/// The space to ask for before writing `frames` frames of `channels` channels at `width` bytes
+/// a sample: the store's bytes plus 1 % plus [`MARGIN_BYTES`].
+pub fn store_bytes(frames: u64, channels: u64, width: u64) -> u64 {
+    let raw = raw_store_bytes(frames, channels, width);
     raw.saturating_add(raw / 100).saturating_add(MARGIN_BYTES)
 }
 
