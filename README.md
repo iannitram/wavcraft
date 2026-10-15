@@ -40,6 +40,11 @@ Rust 1.95 or later. On Linux the audio output needs the ALSA headers (`libasound
   spectrogram for any time range at screen resolution, and the zoom, scroll, selection and
   time-format arithmetic. Everything here has tests.
 - `apps/wavecraft`: the egui window and the audio output.
+- `crates/testkit` (`wavecraft-testkit`): `wavecraft-testkit OUT_DIR [--long]` writes the
+  synthetic test files (same seed, same bytes; keep them outside the repo), and
+  `wavecraft-bench FILE` measures open, memory, peaks, spectrogram and read times. Numbers:
+  `docs/baseline.md`. Layout of the code: `docs/code-map.md`. The bench's one Windows memory call
+  is the only `unsafe` in the tree (that crate denies `unsafe` instead of forbidding it).
 
 The whole file is decoded into memory, as in SoundCraft today (about 1.4 GB per hour of 48 kHz
 stereo). Zoomed in (a pixel column spans one 2048-frame FFT window or less) each spectrogram

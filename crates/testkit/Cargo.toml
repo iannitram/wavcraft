@@ -1,0 +1,33 @@
+[package]
+name = "wavecraft-testkit"
+description = "WaveCraft test kit: deterministic synthetic test files, and a bench for open, peaks, spectrogram and read times"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "wavecraft-testkit"
+path = "src/main.rs"
+
+[[bin]]
+name = "wavecraft-bench"
+path = "src/bin/wavecraft-bench/main.rs"
+
+[dependencies]
+wavecraft-core.workspace = true
+soundcraft-audio-io.workspace = true
+rayon.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+# The workspace forbids `unsafe`. This crate only denies it, so the bench's one call into the
+# Windows API (process memory counters) can be allowed where it is made, and nowhere else.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
