@@ -592,3 +592,105 @@ fn speech_plus_noise(dir: &Path, speech: &Path, noise: &Path) -> io::Result<Vec<
     written.push(txt);
     Ok(written)
 }
+
+// ---------------------------------------------------------------------------------------------
+// Random edits (task 04's long test and the edit bench)
+
+/// One random edit made and pushed by [`random_edit`].
+#[derive(Debug, Clone)]
+pub struct RandomEdit {
+    pub label: String,
+    /// Time to make the new state.
+    pub edit: std::time::Duration,
+    /// Time for `History::push_edit`, the disk-cap sum included.
+    pub push: std::time::Duration,
+    /// Steps behind the cursor when it was pushed.
+    pub behind: usize,
+}
+
+/// Make one random edit on the history's current state and push it: Delete (all channels or one),
+/// Cut, Copy then Paste (insert or over a range), Silence, Insert Silence, a gentle Crop (keeps at
+/// least 90 %), or a `replace_range` gain of up to 10 s. Ranges are up to `max_range` frames.
+pub fn random_edit(
+    h: &mut wavcraft_core::History,
+    rng: &mut Rng,
+    xf: wavcraft_core::Crossfades,
+    max_range: u64,
+    clipboard: &mut Option<wavcraft_core::Clip>,
+) -> Result<RandomEdit, wavcraft_core::EditError> {
+    use wavcraft_core::doc::edit::{self, ChannelMask, PasteAt};
+    let doc = h.current().clone();
+    let len = doc.len_frames();
+    let n = doc.channel_count();
+    let s = rng.below(len + 1);
+    let e = (s + rng.below(max_range.min(len - s) + 1)).min(len);
+    let one = ChannelMask::only(rng.below(n as u64) as usize);
+    let t = std::time::Instant::now();
+    let ed = match rng.below(9) {
+        0 => edit::delete(&doc, s..e, ChannelMask::ALL, xf)?,
+        1 => edit::delete(&doc, s..e, one, xf)?,
+        2 => {
+            let (ed, clip) = edit::cut(&doc, s..e, ChannelMask::ALL, xf)?;
+            *clipboard = Some(clip);
+            ed
+        }
+        3 | 4 => {
+            let clip = match clipboard.take() {
+                Some(c) => c,
+                None => edit::copy(&doc, s..e, ChannelMask::ALL)?,
+            };
+            let at = rng.below(len + 1);
+            let target = if rng.below(2) == 0 { PasteAt::Insert(at) } else { PasteAt::Replace(at..(at + rng.below(max_range) + 1).min(len)) };
+            let ed = edit::paste(&doc, target, &clip, xf)?;
+            *clipboard = Some(clip);
+            ed
+        }
+        5 => edit::silence(&doc, s..e, if rng.below(2) == 0 { ChannelMask::ALL } else { one }, xf)?,
+        6 => edit::insert_silence(&doc, s, rng.below(10 * u64::from(doc.sample_rate())) + 1, xf)?,
+        7 => {
+            let keep = len - len / 10;
+            let from = rng.below(len - keep + 1);
+            edit::crop(&doc, from..from + keep)?
+        }
+        _ => {
+            let e = (s + rng.below(10 * u64::from(doc.sample_rate())) + 1).min(len);
+            let gain = 10f32.powf(rng.range(-12.0, 6.0) as f32 / 20.0);
+            edit::replace_range(&doc, s..e, ChannelMask::ALL, "Amplify", xf, &std::sync::atomic::AtomicBool::new(false), |_, i, o| {
+                for (a, b) in i.iter().zip(o.iter_mut()) {
+                    for (x, y) in a.iter().zip(b.iter_mut()) {
+                        *y = x * gain;
+                    }
+                }
+                Ok(())
+            })?
+        }
+    };
+    let made = t.elapsed();
+    let label = ed.label.clone();
+    let behind = h.cursor();
+    let t = std::time::Instant::now();
+    h.push_edit(ed);
+    Ok(RandomEdit { label, edit: made, push: t.elapsed(), behind })
+}
+
+/// A hash of every sample of every channel, read 64 K frames at a time.
+pub fn content_hash(doc: &wavcraft_core::DocState) -> io::Result<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut buf = vec![0.0f32; wavcraft_core::store::BLOCK_FRAMES];
+    doc.len_frames().hash(&mut h);
+    for c in 0..doc.channel_count() {
+        let mut at = 0;
+        while at < doc.len_frames() {
+            let n = doc.read(c, at, &mut buf)?;
+            if n == 0 {
+                return Err(io::Error::other("document shorter than its length"));
+            }
+            for x in buf.iter().take(n) {
+                x.to_bits().hash(&mut h);
+            }
+            at += n as u64;
+        }
+    }
+    Ok(h.finish())
+}
