@@ -76,7 +76,9 @@ fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
 
 /// Distinct test values, exact in f32.
 fn data(channels: usize, frames: usize, seed: usize) -> Vec<Vec<f32>> {
-    (0..channels).map(|c| (0..frames).map(|i| (((i * 31 + c * 7_919 + seed * 104_729) % 1_000_003) as f32 - 500_000.0) / 524_288.0).collect()).collect()
+    (0..channels)
+        .map(|c| (0..frames).map(|i| (((i * 31 + c * 7_919 + seed * 104_729) % 1_000_003) as f32 - 500_000.0) / 524_288.0).collect())
+        .collect()
 }
 
 fn sine(frames: usize, phase: f64) -> Vec<f32> {
@@ -321,18 +323,8 @@ fn each_edit_at_every_kind_of_place_matches_the_model() {
     let start = data(2, frames, 3);
     let doc = doc_from(&s, &start, block as usize);
     let len = frames as u64;
-    let ranges: Vec<Range<u64>> = vec![
-        0..1_000,
-        9_000..11_000,
-        len - 1_000..len,
-        block - 10..block + 10,
-        block..2 * block,
-        block - 1..block,
-        7..8,
-        len - 1..len,
-        0..1,
-        0..len,
-    ];
+    let ranges: Vec<Range<u64>> =
+        vec![0..1_000, 9_000..11_000, len - 1_000..len, block - 10..block + 10, block..2 * block, block - 1..block, 7..8, len - 1..len, 0..1, 0..len];
     let masks = [ChannelMask::ALL, ChannelMask::only(0), ChannelMask::only(1)];
     let clip_src = edit::copy(&doc, 100..1_300, ChannelMask::ALL).unwrap();
     let clip_want = Model(start.clone()).copy(100..1_300, ChannelMask::ALL);
@@ -658,10 +650,17 @@ fn paste_maps_channels_as_specified() {
     m.paste(0..0, &data(2, 1_000, 11));
     check(&out.state, &m, "clip from another store");
     // Other sample rates and channel layouts are refused.
-    let other_rate = DocState::new(s.clone(), vec![Channel::from_pieces([Piece::zeros(100).unwrap()])], 44_100, SourceFormat::synthetic(44_100, 1)).unwrap();
+    let other_rate =
+        DocState::new(s.clone(), vec![Channel::from_pieces([Piece::zeros(100).unwrap()])], 44_100, SourceFormat::synthetic(44_100, 1)).unwrap();
     let c44 = edit::copy(&other_rate, 0..100, ChannelMask::ALL).unwrap();
     assert!(matches!(edit::paste(&stereo, PasteAt::Insert(0), &c44, NONE), Err(EditError::SampleRate { clip: 44_100, doc: 48_000 })));
-    let three = DocState::new(s.clone(), (0..3).map(|_| Channel::from_pieces([Piece::zeros(100).unwrap()])).collect(), RATE, SourceFormat::synthetic(RATE, 3)).unwrap();
+    let three = DocState::new(
+        s.clone(),
+        (0..3).map(|_| Channel::from_pieces([Piece::zeros(100).unwrap()])).collect(),
+        RATE,
+        SourceFormat::synthetic(RATE, 3),
+    )
+    .unwrap();
     let c3 = edit::copy(&three, 0..100, ChannelMask::ALL).unwrap();
     assert!(matches!(edit::paste(&stereo, PasteAt::Insert(0), &c3, NONE), Err(EditError::Channels { clip: 3, doc: 2 })));
 }

@@ -19,6 +19,10 @@ path = "src/bin/wavcraft-bench/main.rs"
 name = "wavcraft-store-bench"
 path = "src/bin/wavcraft-store-bench/main.rs"
 
+[[bin]]
+name = "wavcraft-edit-bench"
+path = "src/bin/wavcraft-edit-bench/main.rs"
+
 [dependencies]
 wavcraft-core.workspace = true
 soundcraft-audio-io.workspace = true

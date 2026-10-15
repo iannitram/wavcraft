@@ -11,13 +11,16 @@ audiobooks, files of one to three hours.
 No code from Audacity (GPL) or any other GPL-family project is read or used. See [Rules](#rules).
 
 **Status: Phase 1, viewer; Phase 2 under way.** It opens a file, draws it, zooms, scrolls and
-plays. It does not edit or save yet. Underneath, the editor's storage is in place (task 03): an
-opened file is streamed into an on-disk store and held as a piece table, ready for edits and undo.
+plays. It does not edit or save yet in the app. Underneath, the editor's storage is in place (task 03):
+an opened file is streamed into an on-disk store and held as a piece table; and the core has the
+edits and the undo history (task 04: delete, cut, copy, paste, silence, insert silence, crop, and
+the streamed `replace_range` effects will use, with Audition's edit crossfades), not yet wired to
+the app's menus (tasks 05 and 07).
 
 | Phase | Goal | State |
 |---|---|---|
 | 1. Viewer | Open, waveform + spectral display, zoom, play | first version |
-| 2. Editor | Selection edits (cut, copy, paste, delete, silence), undo history, save | not started |
+| 2. Editor | Selection edits (cut, copy, paste, delete, silence), undo history, save | under way: store, document model and core edits with undo done |
 | 3. Repair | Effects rack, noise reduction from a noise print, match loudness | not started |
 | 4. Feel | Audition-style layout and shortcuts | not started |
 
@@ -59,21 +62,24 @@ refuses with the size needed and the space free if not.
 ## How it is built
 
 - `crates/core` (`wavcraft-core`): no UI. The on-disk sample store (`store`), the document as a
-  piece table over it (`doc`), streamed open (`io`), the open file as the app sees it
+  piece table over it (`doc`), the edits (`doc::edit`) and undo history with a disk cap
+  (`doc::history`), streamed open (`io`), the open file as the app sees it
   (`document`), waveform columns at any zoom, the spectrogram for any time range at screen
   resolution, and the zoom, scroll, selection and time-format arithmetic. Everything here has tests.
 - `apps/wavcraft`: the egui window and the audio output.
 - `crates/testkit` (`wavcraft-testkit`): `wavcraft-testkit OUT_DIR [--long] [--huge]` writes the
   synthetic test files (same seed, same bytes; keep them outside the repo), and
   `wavcraft-bench FILE` measures open, memory, peaks, spectrogram and read times, and
-  `wavcraft-store-bench FILE` the store's streamed open and reads. Numbers:
+  `wavcraft-store-bench FILE` the store's streamed open and reads, and `wavcraft-edit-bench FILE`
+  the edits, undo and history on a long file. Numbers:
   `docs/baseline.md`. Layout of the code: `docs/code-map.md`. The bench's one Windows memory call
   is the only `unsafe` in the tree (that crate denies `unsafe` instead of forbidding it).
 
 **Where the samples live.** Opening streams the file, 64 K frames at a time, into a session
 folder under the system cache directory (`wavcraft/sessions/<id>/`, removed when the file is
 closed): append-only pack files of 32-bit float blocks (1 GiB each). The document is a list of
-pieces of those blocks per channel, so an edit (task 04) will only rearrange pieces, and RAM holds
+pieces of those blocks per channel, so an edit only rearranges pieces (new blocks only for new
+audio: effects, crossfades, a stereo clip mixed to mono), undo keeps old piece lists, and RAM holds
 only a block cache with a budget (1/16 of physical memory, 256 MB to 1 GB). Every sample takes 4
 bytes there whatever the file's own format, so a 16-bit file needs twice its size: before
 writing, opening checks the session folder's disk for frames × channels × 4 bytes plus 1 % and

@@ -97,7 +97,11 @@ pub struct History {
 
 impl fmt::Debug for History {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("History").field("steps", &self.steps.len()).field("cursor", &self.cursor).field("cap_disk_bytes", &self.cap_disk_bytes).finish()
+        f.debug_struct("History")
+            .field("steps", &self.steps.len())
+            .field("cursor", &self.cursor)
+            .field("cap_disk_bytes", &self.cap_disk_bytes)
+            .finish()
     }
 }
 
@@ -118,16 +122,8 @@ fn blocks(state: &DocState) -> HashMap<BlockId, u64> {
 impl History {
     /// A history whose first step ("Open") is `initial`.
     pub fn new(initial: DocState, cap_disk_bytes: u64) -> History {
-        let mut h = History {
-            steps: Vec::new(),
-            cursor: 0,
-            cap_disk_bytes,
-            counts: HashMap::new(),
-            held_bytes: 0,
-            current_bytes: 0,
-            dropped: 0,
-            free_space,
-        };
+        let mut h =
+            History { steps: Vec::new(), cursor: 0, cap_disk_bytes, counts: HashMap::new(), held_bytes: 0, current_bytes: 0, dropped: 0, free_space };
         let state = Arc::new(initial);
         let made = h.add_counts(&state);
         h.current_bytes = state.disk_bytes_referenced();

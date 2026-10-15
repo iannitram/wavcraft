@@ -55,7 +55,8 @@ fn edits_on_the_ramp_match_the_model() {
     let model: Vec<f32> = (0..len).map(|n| ramp_value(n) as f32 / 32_768.0).collect();
     assert_eq!(content(&doc)[0], model.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
     let b = 65_536u64;
-    let ranges: Vec<Range<u64>> = vec![0..10_000, 200_000..260_000, len - 10_000..len, b - 100..b + 100, b..3 * b, 2 * b - 1..2 * b + 1, 12_345..12_346, len - 1..len, 0..len];
+    let ranges: Vec<Range<u64>> =
+        vec![0..10_000, 200_000..260_000, len - 10_000..len, b - 100..b + 100, b..3 * b, 2 * b - 1..2 * b + 1, 12_345..12_346, len - 1..len, 0..len];
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
     let clip = edit::copy(&doc, 1_000..70_000, ChannelMask::ALL).unwrap();
     let clip_model = model[1_000..70_000].to_vec();
@@ -169,7 +170,7 @@ fn long_file_200_random_edits_then_undo_all() {
     let mut clipboard = None;
     let mut edits: Vec<RandomEdit> = Vec::new();
     for _ in 0..200 {
-        edits.push(random_edit(&mut h, &mut rng, Crossfades::default(), 10 * 60 * 48_000, &mut clipboard).unwrap());
+        edits.push(random_edit(&mut h, &mut rng, Crossfades::default(), 60 * 48_000, &mut clipboard).unwrap());
     }
     report(&edits);
     println!("steps kept: {}, dropped by the cap: {}, history holds {} beyond the current state", h.steps().len(), h.dropped_total(), h.held_bytes());
@@ -191,7 +192,6 @@ fn long_file_200_random_edits_then_undo_all() {
     println!("test 10 total: {:.1} s", total.elapsed().as_secs_f64());
 }
 
-
 fn report(edits: &[RandomEdit]) {
     let mut by: std::collections::BTreeMap<&str, Vec<Duration>> = std::collections::BTreeMap::new();
     for e in edits {
@@ -203,5 +203,10 @@ fn report(edits: &[RandomEdit]) {
     }
     let mut push: Vec<Duration> = edits.iter().map(|e| e.push).collect();
     push.sort();
-    println!("  push: median {:?}, slowest {:?}; with 199 steps behind: {:?}", push[push.len() / 2], push.last().unwrap(), edits.last().unwrap().push);
+    println!(
+        "  push: median {:?}, slowest {:?}; with 199 steps behind: {:?}",
+        push[push.len() / 2],
+        push.last().unwrap(),
+        edits.last().unwrap().push
+    );
 }

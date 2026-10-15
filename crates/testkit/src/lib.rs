@@ -609,8 +609,8 @@ pub struct RandomEdit {
 }
 
 /// Make one random edit on the history's current state and push it: Delete (all channels or one),
-/// Cut, Copy then Paste (insert or over a range), Silence, Insert Silence, a gentle Crop (keeps at
-/// least 90 %), or a `replace_range` gain of up to 10 s. Ranges are up to `max_range` frames.
+/// Cut, Copy then Paste (insert or over a range), Silence, Insert Silence, a gentle Crop (keeps
+/// 99 %), or a `replace_range` gain of up to 10 s. Ranges are up to `max_range` frames.
 pub fn random_edit(
     h: &mut wavcraft_core::History,
     rng: &mut Rng,
@@ -648,7 +648,7 @@ pub fn random_edit(
         5 => edit::silence(&doc, s..e, if rng.below(2) == 0 { ChannelMask::ALL } else { one }, xf)?,
         6 => edit::insert_silence(&doc, s, rng.below(10 * u64::from(doc.sample_rate())) + 1, xf)?,
         7 => {
-            let keep = len - len / 10;
+            let keep = len - len / 100;
             let from = rng.below(len - keep + 1);
             edit::crop(&doc, from..from + keep)?
         }

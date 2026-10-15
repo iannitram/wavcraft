@@ -170,12 +170,21 @@ impl Edit {
 #[derive(Debug)]
 pub enum EditError {
     /// The range runs past the end (or starts after it ends).
-    OutOfRange { range: Range<u64>, len: u64 },
+    OutOfRange {
+        range: Range<u64>,
+        len: u64,
+    },
     /// A clip at another sample rate (Audition converts; WavCraft refuses for now).
-    SampleRate { clip: u32, doc: u32 },
+    SampleRate {
+        clip: u32,
+        doc: u32,
+    },
     /// A clip whose channels don't map onto the document's (equal counts, mono into any, or any
     /// into mono are the cases that do).
-    Channels { clip: usize, doc: usize },
+    Channels {
+        clip: usize,
+        doc: usize,
+    },
     /// The cancel flag was set. Blocks already written die with the pieces that held them.
     Cancelled,
     Io(io::Error),
@@ -285,7 +294,8 @@ pub fn delete(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Cros
 /// Copy `range` of the channels in `channels` (in channel order). Shares blocks; no sample copy.
 pub fn copy(doc: &DocState, range: Range<u64>, channels: ChannelMask) -> Result<Clip, EditError> {
     check_range(doc, &range)?;
-    let chans = channels.active(doc.channel_count()).into_iter().filter_map(|c| doc.channel(c)).map(|ch| Arc::new(slice(ch, range.clone()))).collect();
+    let chans =
+        channels.active(doc.channel_count()).into_iter().filter_map(|c| doc.channel(c)).map(|ch| Arc::new(slice(ch, range.clone()))).collect();
     Ok(Clip { store: doc.store().clone(), channels: chans, sample_rate: doc.sample_rate() })
 }
 
@@ -321,7 +331,11 @@ pub fn paste(doc: &DocState, at: PasteAt, clip: &Clip, xf: Crossfades) -> Result
     let foreign = !store.same_store(&clip.store);
     // One source channel per document channel.
     let sources: Vec<Arc<Channel>> = if k == n {
-        if foreign { clip.channels.iter().map(|c| import(store, &clip.store, &[c]).map(Arc::new)).collect::<io::Result<_>>()? } else { clip.channels.clone() }
+        if foreign {
+            clip.channels.iter().map(|c| import(store, &clip.store, &[c]).map(Arc::new)).collect::<io::Result<_>>()?
+        } else {
+            clip.channels.clone()
+        }
     } else if k == 1 {
         let c = if foreign { Arc::new(import(store, &clip.store, &[&clip.channels[0]])?) } else { clip.channels[0].clone() };
         vec![c; n]
