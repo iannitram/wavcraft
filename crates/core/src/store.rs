@@ -87,6 +87,11 @@ impl BlockHandle {
     pub fn is_zero(&self) -> bool {
         self.block.is_zero()
     }
+
+    /// Whether this block lives in `store` (the zero block belongs to every store).
+    pub fn belongs_to(&self, store: &Store) -> bool {
+        self.store.as_ref().is_none_or(|s| s.same_store(store))
+    }
 }
 
 impl std::fmt::Debug for BlockHandle {
@@ -250,6 +255,11 @@ impl Store {
             }
         }
         Err(io::Error::other("could not find a free session folder name"))
+    }
+
+    /// Whether `other` is a handle to this same store.
+    pub fn same_store(&self, other: &Store) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     /// The session folder.

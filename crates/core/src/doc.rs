@@ -19,6 +19,9 @@ use soundcraft_audio_io::{AudioBuffer, BwfInfo, FileFormat, SampleFormat};
 
 use crate::store::{BLOCK_FRAMES, BlockHandle, BlockId, Store};
 
+pub mod edit;
+pub mod history;
+
 /// Part of one block.
 #[derive(Debug, Clone)]
 pub struct Piece {
@@ -99,6 +102,21 @@ impl Channel {
         }
         self.ends.push(self.len() + u64::from(piece.len));
         self.pieces.push(piece);
+    }
+
+    /// Add a piece at the end, joining it to the last piece when it continues that piece in the
+    /// same block (so cutting and pasting back does not leave the piece list longer).
+    pub fn push_merged(&mut self, piece: Piece) {
+        if let (Some(last), Some(end)) = (self.pieces.last_mut(), self.ends.last_mut())
+            && Arc::ptr_eq(&last.block, &piece.block)
+            && u64::from(last.offset) + u64::from(last.len) == u64::from(piece.offset)
+            && let Some(len) = last.len.checked_add(piece.len)
+        {
+            last.len = len;
+            *end += u64::from(piece.len);
+            return;
+        }
+        self.push(piece);
     }
 
     /// Add `frames` of silence at the end (zero-block pieces of at most `u32::MAX` frames).

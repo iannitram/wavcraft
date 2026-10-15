@@ -85,3 +85,35 @@ To repeat: `wavcraft-testkit B:/dev/craft/wavcraft-testkit-out --long --huge`, t
 `wavcraft-store-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav` and
 `wavcraft-store-bench B:/dev/craft/wavcraft-testkit-out/huge-4h10m-48k-stereo-24-rf64.wav --huge`,
 all through the gate.
+
+## Task 04: edits and undo history (2026-10-15, Hyperion)
+
+*Release build, `wavcraft-edit-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav`
+(block cache 512 MB, as on an 8 GB Mac) and test 10 (`cargo test --release -p wavcraft-testkit
+--test edits -- --ignored --nocapture`), both through the build gate in the default slot. Session
+store on C: (Samsung 970 EVO Plus NVMe), history cap 78 GB (half the free space). Gate status
+around the runs: build slot free, 12.6 to 13.2 GB memory free, GPU 15 to 21 % (not ours), no
+upscaler seen; PhotoCraft had been running tests in the build slot just before. Four bench runs;
+the numbers are from the last, the others agree within the noise noted.*
+
+| Measure | Result | Target |
+|---|---|---|
+| Cut 1 hour out of the middle | 0.34 to 0.36 ms with crossfades 0, nothing written; 0.94 to 0.99 ms with the default 2 ms join, 768 bytes written (one 96-frame block per channel) | < 50 ms, nothing written |
+| History push of that cut | 1.0 to 1.2 ms | |
+| Undo of the cut | 0.58 to 0.60 ms | < 50 ms |
+| Paste the hour back | 0.55 to 0.67 ms (7,917 pieces per channel after, from 7,911) | < 50 ms |
+| `replace_range` of 1 minute, both channels (gain) | 12 to 15 ms; store grew 23 MB; working set +0.0 to +0.5 MB | disk ≈ 23 MB, RAM growth < 10 MB |
+| `replace_range` of the whole 3 hours (gain) | 3.9 to 6.5 s; store grew 4.147 GB; peak working set 0.555 GB (the 512 MB cache full, plus 1 MB) | under 30 s; peak within 1.5 GB |
+| 200 random edits (60 s ranges at most, default crossfades), history kept | 0.45 to 0.95 s in all; per kind, medians 0.2 ms (Crop) to 2.5 ms (Amplify of up to 10 s) | |
+| Working set after them, 202 steps kept | **0.633 GB** (peak 0.633 GB) | under 1.5 GB |
+| History push with 200 steps behind it (disk-cap sum included) | 1.0 to 1.1 ms (5,711 pieces per channel by then) | < 5 ms |
+| Undo all 200 | 31 to 81 ms in all, slowest single undo 0.64 ms; bit-identical to the opened file | |
+| Test 10 total (open, hash, 200 edits, undo all, hash) | 8.7 s (open 1.92 s, each whole-file hash about 3.1 s) | record |
+
+The slowest push of a run (310 to 450 ms) is always the first after the whole-file
+`replace_range` was undone: it drops that redo step, which releases 15,800 blocks and deletes
+4.1 GB of packs on the calling thread. Moving pack deletion off the UI thread is left for task 05
+or 07.
+
+To repeat: `wavcraft-edit-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav` and
+test 10 as above, through the gate.

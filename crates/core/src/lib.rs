@@ -3,7 +3,8 @@
 //! testable without a window.
 //!
 //! - [`store`]: the session folder of append-only pack files, blocks, and the block cache.
-//! - [`doc`]: the piece table ([`DocState`]) and its one read path.
+//! - [`doc`]: the piece table ([`DocState`]) and its one read path; [`doc::edit`], the edits
+//!   (pure functions from one state to the next), and [`doc::history`], undo with a disk cap.
 //! - [`io`]: streamed open into the store.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`settings`]: the settings file and where the session folder is.
@@ -23,6 +24,8 @@ pub mod spectrogram;
 pub mod store;
 pub mod view;
 
+pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
+pub use doc::history::History;
 pub use doc::{Channel, DocState, Piece, SourceFormat};
 
 pub use document::{Document, OpenError};

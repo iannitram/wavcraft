@@ -1,7 +1,9 @@
 # Code map
 
 *Written 2026-10-15 (task 02) from the tree at `3cdf38f`, for a session that has seen nothing.
-Update it when the layout changes. The test kit and bench (task 02) are listed at the end.*
+Update it when the layout changes. The test kit and bench (task 02) are listed at the end.
+Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `random_edit` and
+`content_hash`, and the `wavcraft-edit-bench` binary.*
 
 ## Crates and modules
 
@@ -10,6 +12,8 @@ Update it when the layout changes. The test kit and bench (task 02) are listed a
 | `crates/core` (`wavcraft-core`, library, no UI) | `lib.rs` | Re-exports `Document`, `OpenError`, `SpectrogramParams`, `Viewport`, `Selection`, `format_time`, and audio-io's `AudioBuffer`, `AudioInfo`, `FileFormat`, `SampleFormat` |
 | | `store.rs` (task 03) | `Store`: the session folder, append-only `pack-NNNN.f32` files (1 GiB rollover), `append` → `Arc<BlockHandle>` (≤ 65,536 frames of one channel), `read` through an LRU block cache with a byte budget (positioned reads, no mmap), live counts per pack (a sealed pack with none is deleted), the zero block, `bytes_on_disk`/`bytes_live`, `keep` |
 | | `doc.rs` (task 03) | The piece table: `Piece` (block, offset, len), `Channel` (pieces + running ends; `locate`, `split_at`, `read`), `DocState` (one `Arc<Channel>` per channel, all one length; `read`, `read_frames`, `disk_bytes_referenced`, and the temporary `to_audio_buffer`), `SourceFormat` (format, chunks with offsets, warnings) |
+| | `doc/edit.rs` (task 04) | The edits, pure functions `&DocState -> Edit { state, label, change }`: `delete` (a `ChannelMask`; with only some channels it silences in place, label "Delete Audio"), `copy` → `Clip` (pieces, no sample copy), `cut`, `paste` (`PasteAt::Insert`/`Replace`; equal channel counts, mono into any, any into mono as the mean; other sample rates refused; a clip from another store copied in), `silence`, `insert_silence`, `crop`, `replace_range` (a producer fills 64 K-frame chunks; cancel flag). `Crossfades { cut_join: 2 ms, edge: 5 ms }` (raised-cosine curve, one new block per fade, shortened where the audio runs out). `Change` (`None`, `SameLength`, `LengthFrom`) for the views |
+| | `doc/history.rs` (task 04) | `History`: steps of `(label, Arc<DocState>, made_bytes, change)` and a cursor; `push`/`push_edit` (drops redo steps; a no-op records nothing), `undo`, `redo`, `go_to`, labels, `clear`; the disk cap (bytes the kept steps hold beyond the current state, kept by per-block step counts; drops the oldest steps and says how many), `default_cap`, `can_afford` (keeps 2 GB free) |
 | | `space.rs` (item 03b) | `store_bytes(frames, channels)` (4 bytes a sample + 1 % + `MARGIN_BYTES` 64 MiB), `frames_from_file_size` (at `ASSUMED_BITRATE` 128 kbit/s), `free_space(path)` (sysinfo's disk list, longest mount point), `FreeSpaceFn`, `format_bytes` |
 | | `settings.rs` (item 03b) | `Settings` (`settings.txt` in `dirs::config_dir()/wavcraft`: `session_folder = …`), `check_folder` (make it, write a probe), `resolve_session_folder` (flag > `WAVCRAFT_SESSION_DIR` > settings file > default; a folder that fails falls back to the default with a warning), `HOW_TO_CHANGE` |
 | | `io.rs` (task 03) | `open(path, opts, progress, cancel) -> DocState`: our own WAV/RF64/AIFF chunk reader converting exactly as audio-io, `symphonia` packet by packet for the rest; `OpenError`. Since item 03b: `OpenOptions::free_space` (injectable), a space check before the first block is written (`OpenError::NoSpace`), a full disk while writing (`OpenError::DiskFull`, session removed) |
@@ -163,6 +167,10 @@ Both are in the same fork at the same commit, so adding them as git dependencies
   open time and peak memory above rest, sequential reads, 10,000 random 4,096-frame reads.
 - `--huge` writes `huge-4h10m-48k-stereo-24-rf64.wav` (4.32 GB, RF64: `WavWriter` writes RF64 above
   4 GiB); its right channel is a frame counter (`huge_counter`).
+- Binary `wavcraft-edit-bench FILE [--cache-mb N] [--sessions DIR] [--edits N]` (task 04): cut an
+  hour out of the middle, undo, paste back, `replace_range` over a minute and the whole file, N
+  random edits (`random_edit`) with push times and memory, undo all and a bit-identical check.
+  Test 10 (`crates/testkit/tests/edits.rs`, `#[ignore]`) runs the same random edits.
 - Binary `wavcraft-bench FILE`: open time and peak memory, peaks, overview and picture times
   (the worker's own calls, channel by channel), a full ordered read. Results: `docs/baseline.md`.
   It reads process memory through `windows-sys` on Windows (the only `unsafe` in the tree, in
