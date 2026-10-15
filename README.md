@@ -1,4 +1,4 @@
-# WaveCraft (working title)
+# WavCraft (working title)
 
 A single-file waveform editor in the style of Adobe Audition's Waveform view, built on
 [SoundCraft](https://github.com/storytold/soundcraft)'s engine crates. Open one file, see it as a
@@ -18,7 +18,7 @@ edit or save yet.
 ## Run it
 
 ```sh
-cargo run --release -p wavecraft -- path/to/file.wav
+cargo run --release -p wavcraft -- path/to/file.wav
 ```
 
 Rust 1.95 or later. On Linux the audio output needs the ALSA headers (`libasound2-dev`).
@@ -36,13 +36,13 @@ Rust 1.95 or later. On Linux the audio output needs the ALSA headers (`libasound
 
 ## How it is built
 
-- `crates/core` (`wavecraft-core`): no UI. The open file, waveform columns at any zoom, the
+- `crates/core` (`wavcraft-core`): no UI. The open file, waveform columns at any zoom, the
   spectrogram for any time range at screen resolution, and the zoom, scroll, selection and
   time-format arithmetic. Everything here has tests.
-- `apps/wavecraft`: the egui window and the audio output.
-- `crates/testkit` (`wavecraft-testkit`): `wavecraft-testkit OUT_DIR [--long]` writes the
+- `apps/wavcraft`: the egui window and the audio output.
+- `crates/testkit` (`wavcraft-testkit`): `wavcraft-testkit OUT_DIR [--long]` writes the
   synthetic test files (same seed, same bytes; keep them outside the repo), and
-  `wavecraft-bench FILE` measures open, memory, peaks, spectrogram and read times. Numbers:
+  `wavcraft-bench FILE` measures open, memory, peaks, spectrogram and read times. Numbers:
   `docs/baseline.md`. Layout of the code: `docs/code-map.md`. The bench's one Windows memory call
   is the only `unsafe` in the tree (that crate denies `unsafe` instead of forbidding it).
 
@@ -65,7 +65,7 @@ out, which gives the same picture, level for level, in 4 to 12 ms per channel fo
 640 to 2048 columns. Blocks twice as long would halve the memory and double those times. Views
 closer than one block per column are analysed from the audio as before, and there the audio on
 screen is short. The overview does not depend on the frequency axis or the picture's size.
-`cargo run --release -p wavecraft-core --example spectrogram_cost` measures all of this.
+`cargo run --release -p wavcraft-core --example spectrogram_cost` measures all of this.
 
 ### Known limits (found in the 2026-10-12 review, not fixed yet)
 
@@ -87,6 +87,7 @@ screen is short. The overview does not depend on the frequency axis or the pictu
 `soundcraft-audio-io` is a git dependency pinned to one commit in the root `Cargo.toml`.
 Today that is our fork's merged build (upstream 0.6.1 plus long-file fixes and parallel decode),
 tagged `wavecraft-pin-2026-10-12` on the fork so the commit stays fetchable if its branch goes.
+(The tag keeps the app's old name, WaveCraft; it is on another repo, so it stays as it is.)
 To move it: tag the new commit on the fork, change `rev`, run
 `cargo update -p soundcraft-audio-io`, run the tests. Pin a commit or a tag, never a branch name.
 

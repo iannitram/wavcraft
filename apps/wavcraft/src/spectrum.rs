@@ -4,7 +4,7 @@
 //! per channel for three hours, far longer than a frame. So the window asks for a picture and
 //! goes on drawing the one it has until the new one arrives.
 //!
-//! The worker also keeps the open file's overviews (see `wavecraft_core::spectrogram::Overview`),
+//! The worker also keeps the open file's overviews (see `wavcraft_core::spectrogram::Overview`),
 //! from which a far view takes a few milliseconds. It builds them before the file's first
 //! picture: that picture shows the whole file, so it would run the same FFTs anyway.
 
@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use egui::{Color32, ColorImage};
-use wavecraft_core::spectrogram::{self, Columns, Overview};
-use wavecraft_core::{AudioBuffer, SpectrogramParams};
+use wavcraft_core::spectrogram::{self, Columns, Overview};
+use wavcraft_core::{AudioBuffer, SpectrogramParams};
 
 /// Which picture: of which file, which columns of it, how tall, analysed how.
 #[derive(Debug, Clone, Copy, PartialEq)]

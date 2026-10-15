@@ -1,18 +1,18 @@
 //! The test kit's acceptance tests (task 02): the same bytes every run, every file opens through
-//! WaveCraft's own open path, and the ramp file reads back as its formula. Plus checks that each
+//! WavCraft's own open path, and the ramp file reads back as its formula. Plus checks that each
 //! file holds what its name says.
 
 use std::path::{Path, PathBuf};
 
-use wavecraft_core::Document;
-use wavecraft_testkit::*;
+use wavcraft_core::Document;
+use wavcraft_testkit::*;
 
 /// A folder in the system's temp directory, removed when dropped.
 struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> TempDir {
-        let dir = std::env::temp_dir().join(format!("wavecraft-testkit-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("wavcraft-testkit-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         TempDir(dir)
@@ -64,7 +64,7 @@ fn the_kit_is_the_same_bytes_every_time() {
 
 /// Acceptance test 2: every kit file opens through `Document::open` with the right shape.
 #[test]
-fn every_kit_file_opens_in_wavecrafts_open_path() {
+fn every_kit_file_opens_in_wavcrafts_open_path() {
     let dir = kit("open");
     for e in expected(false) {
         let doc = open(&dir.0, e.name);
@@ -129,7 +129,7 @@ fn left_and_right_hold_different_tones() {
     // 30 s of 440 Hz and 660 Hz, give or take the first crossing.
     assert!(ups(&doc.audio.channels[0]).abs_diff(30 * 440) <= 1);
     assert!(ups(&doc.audio.channels[1]).abs_diff(30 * 660) <= 1);
-    assert_eq!(doc.info.sample_format, wavecraft_core::SampleFormat::Float32);
+    assert_eq!(doc.info.sample_format, wavcraft_core::SampleFormat::Float32);
 }
 
 #[test]

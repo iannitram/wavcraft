@@ -9,14 +9,14 @@
 //! level drawn for the tone. Three hours needs about 2 GB of memory.
 //!
 //! ```sh
-//! cargo run --release -p wavecraft-core --example spectrogram_cost [MINUTES]
+//! cargo run --release -p wavcraft-core --example spectrogram_cost [MINUTES]
 //! ```
 
 use std::time::Instant;
 
 use rayon::prelude::*;
-use wavecraft_core::SpectrogramParams;
-use wavecraft_core::spectrogram::{BLOCK_HOPS, Columns, Overview, render_columns};
+use wavcraft_core::SpectrogramParams;
+use wavcraft_core::spectrogram::{BLOCK_HOPS, Columns, Overview, render_columns};
 
 const RATE: u32 = 48_000;
 const ROWS: usize = 384;

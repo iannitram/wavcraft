@@ -1,4 +1,4 @@
-//! `wavecraft-bench FILE`: how fast and how big WaveCraft is on one file, with no window.
+//! `wavcraft-bench FILE`: how fast and how big WavCraft is on one file, with no window.
 //!
 //! One line per measure: open time and the process's peak memory during it, memory held after
 //! it, the waveform peaks' build time, the spectrogram overview's build time and the time of a
@@ -18,8 +18,8 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use soundcraft_audio_io::peaks::Peaks;
-use wavecraft_core::spectrogram::{Columns, Overview, render_columns};
-use wavecraft_core::{Document, SpectrogramParams};
+use wavcraft_core::spectrogram::{Columns, Overview, render_columns};
+use wavcraft_core::{Document, SpectrogramParams};
 
 /// Rows per channel of a picture: the most the app asks for.
 const ROWS: usize = 384;
@@ -50,7 +50,7 @@ fn timed(runs: usize, mut work: impl FnMut()) -> (f64, f64) {
 
 fn main() -> ExitCode {
     let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) else {
-        eprintln!("usage: wavecraft-bench FILE");
+        eprintln!("usage: wavcraft-bench FILE");
         return ExitCode::FAILURE;
     };
     let size = std::fs::metadata(&path).map_or(0, |m| m.len());
@@ -63,7 +63,7 @@ fn main() -> ExitCode {
     let doc = match Document::open(&path) {
         Ok(doc) => doc,
         Err(e) => {
-            eprintln!("wavecraft-bench: {}: {e}", path.display());
+            eprintln!("wavcraft-bench: {}: {e}", path.display());
             return ExitCode::FAILURE;
         }
     };
@@ -147,7 +147,7 @@ fn main() -> ExitCode {
     // 5. Where open's time goes: the same steps again, one at a time.
     let t = Instant::now();
     let Ok(bytes) = std::fs::read(&path) else {
-        eprintln!("wavecraft-bench: cannot read {} again", path.display());
+        eprintln!("wavcraft-bench: cannot read {} again", path.display());
         return ExitCode::FAILURE;
     };
     let read_ms = ms(t);

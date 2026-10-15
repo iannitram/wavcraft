@@ -3012,7 +3012,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wavecraft"
+name = "wavcraft"
 version = "0.1.0"
 dependencies = [
  "cpal",
@@ -3020,11 +3020,11 @@ dependencies = [
  "egui",
  "log",
  "rfd",
- "wavecraft-core",
+ "wavcraft-core",
 ]
 
 [[package]]
-name = "wavecraft-core"
+name = "wavcraft-core"
 version = "0.1.0"
 dependencies = [
  "rayon",
@@ -3033,12 +3033,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "wavecraft-testkit"
+name = "wavcraft-testkit"
 version = "0.1.0"
 dependencies = [
  "rayon",
  "soundcraft-audio-io",
- "wavecraft-core",
+ "wavcraft-core",
  "windows-sys 0.61.2",
 ]
 

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
-use wavecraft_core::spectrogram::Columns;
-use wavecraft_core::{Document, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::spectrogram::Columns;
+use wavcraft_core::{Document, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
@@ -350,7 +350,7 @@ impl eframe::App for WaveApp {
         if let Some(path) = dropped {
             self.open(path, &ctx);
         }
-        let title = self.doc.as_ref().map_or_else(|| "WaveCraft".to_string(), |d| format!("{} — WaveCraft", d.name()));
+        let title = self.doc.as_ref().map_or_else(|| "WavCraft".to_string(), |d| format!("{} — WavCraft", d.name()));
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/testkit", "apps/wavecraft"]
+members = ["crates/core", "crates/testkit", "apps/wavcraft"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,10 +10,13 @@ rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
-wavecraft-core = { path = "crates/core" }
+wavcraft-core = { path = "crates/core" }
 
 # SoundCraft's engine crates, pinned to one commit of our fork (upstream v0.5.0 plus our merged
 # fixes: long-file handling, parallel WAV/AIFF decode). Bump deliberately; see README.
+# This commit is tagged `wavecraft-pin-2026-10-12` on iannitram/soundcraft. The tag keeps the
+# app's old name (WaveCraft, renamed WavCraft 2026-10-15) on purpose: it lives on another repo,
+# and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
 soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "3527bb4371a5b9e195186778a41aa80049824cc5" }
 
 rustfft = "6"

@@ -1,6 +1,6 @@
-//! `wavecraft-testkit OUT_DIR [--long] [--seed N] [--speech CLEAN.wav --noise NOISE.wav]`
+//! `wavcraft-testkit OUT_DIR [--long] [--seed N] [--speech CLEAN.wav --noise NOISE.wav]`
 //!
-//! Writes WaveCraft's synthetic test files into OUT_DIR (keep it outside the repo). Same seed,
+//! Writes WavCraft's synthetic test files into OUT_DIR (keep it outside the repo). Same seed,
 //! same bytes. `--long` adds the 3-hour file (about 2 GB). `--speech` and `--noise` together add
 //! mixes at 10 dB and 20 dB SNR plus the clean reference; without them nothing is mixed.
 
@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use wavecraft_testkit::{KitOptions, write_kit};
+use wavcraft_testkit::{KitOptions, write_kit};
 
-const USAGE: &str = "usage: wavecraft-testkit OUT_DIR [--long] [--seed N] [--speech CLEAN.wav --noise NOISE.wav]";
+const USAGE: &str = "usage: wavcraft-testkit OUT_DIR [--long] [--seed N] [--speech CLEAN.wav --noise NOISE.wav]";
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -59,6 +59,6 @@ fn main() -> ExitCode {
 }
 
 fn fail(why: &str) -> ExitCode {
-    eprintln!("wavecraft-testkit: {why}\n{USAGE}");
+    eprintln!("wavcraft-testkit: {why}\n{USAGE}");
     ExitCode::FAILURE
 }

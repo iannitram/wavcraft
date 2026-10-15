@@ -1,4 +1,4 @@
-//! WaveCraft's test kit: synthetic audio files that are the same, byte for byte, every time they
+//! WavCraft's test kit: synthetic audio files that are the same, byte for byte, every time they
 //! are written with the same seed.
 //!
 //! [`write_kit`] writes every file of the kit into a folder (keep it outside the repo: audio is
@@ -302,7 +302,7 @@ fn tone(dir: &Path) -> io::Result<Vec<PathBuf>> {
         let v = 0.1 * sine(1_000, n, 48_000);
         out.extend([v, v]);
     })?;
-    // The copies hold the WAV's own samples, read back through the decoder WaveCraft uses.
+    // The copies hold the WAV's own samples, read back through the decoder WavCraft uses.
     let bytes = std::fs::read(&wav)?;
     let (_, audio) = soundcraft_audio_io::decode(&bytes, Some("wav")).map_err(|e| invalid(&e.to_string()))?;
     let mut paths = vec![wav];

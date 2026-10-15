@@ -1,4 +1,4 @@
-//! WaveCraft core: one audio file held in memory, plus what a single-file waveform editor needs
+//! WavCraft core: one audio file held in memory, plus what a single-file waveform editor needs
 //! to draw it. No UI code lives here, so everything is testable without a window.
 //!
 //! - [`Document`]: the open file (decoded through SoundCraft's `audio-io`) and its waveform peaks.

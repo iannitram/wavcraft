@@ -7,12 +7,12 @@ Update it when the layout changes. The test kit and bench (task 02) are listed a
 
 | Crate | Module | What it holds |
 |---|---|---|
-| `crates/core` (`wavecraft-core`, library, no UI) | `lib.rs` | Re-exports `Document`, `OpenError`, `SpectrogramParams`, `Viewport`, `Selection`, `format_time`, and audio-io's `AudioBuffer`, `AudioInfo`, `FileFormat`, `SampleFormat` |
+| `crates/core` (`wavcraft-core`, library, no UI) | `lib.rs` | Re-exports `Document`, `OpenError`, `SpectrogramParams`, `Viewport`, `Selection`, `format_time`, and audio-io's `AudioBuffer`, `AudioInfo`, `FileFormat`, `SampleFormat` |
 | | `document.rs` | `Document`: open/decode a file, its samples and per-channel waveform peaks, `waveform_columns()` for drawing |
 | | `spectrogram.rs` | The spectral display maths: `SpectrogramParams`, `Columns` (file-fixed column grid), `Overview` (coarse per-channel cache), `render()` / `render_columns()`. Private: `Analysis` (FFT plan, Hann window, dB→level table), `Analyser` (FFT scratch, per-bin max) |
 | | `view.rs` | `Viewport` (zoom/scroll in frames), `Selection` (anchor/head), `format_time` |
 | | `examples/spectrogram_cost.rs` | Measures overview build and far-view render times on a synthetic 3-hour mono file |
-| `apps/wavecraft` (`wavecraft`, binary, egui/eframe 0.36, wgpu DX12 on Windows) | `main.rs` | Window options, DX12-only wgpu on Windows, runs `WaveApp` |
+| `apps/wavcraft` (`wavcraft`, binary, egui/eframe 0.36, wgpu DX12 on Windows) | `main.rs` | Window options, DX12-only wgpu on Windows, runs `WaveApp` |
 | | `app.rs` | `WaveApp`: menu, status bar, the editor painter (ruler, waveform lanes, spectral lanes, selection, cursor, playhead), input (wheel zoom, drag select, Space, Home, `\`, Ctrl+O, drop), opening on a worker thread |
 | | `player.rs` | `Player`: cpal output stream, play/stop, playhead position |
 | | `spectrum.rs` | `Renderer`: the spectrogram worker thread and its overview cache |
@@ -53,7 +53,7 @@ itself when zoomed closer. Nothing is cached per view; columns are recomputed ev
 
 ## Spectrogram and its overview
 
-- Maths in `core::spectrogram`; the worker and its cache in `apps/wavecraft/src/spectrum.rs`.
+- Maths in `core::spectrogram`; the worker and its cache in `apps/wavcraft/src/spectrum.rs`.
 - **Worker:** one long-lived `std::thread` started by `Renderer::new`. It reads `(Job, Arc<AudioBuffer>)`
   from its inbox, drops all but the newest, and per channel calls
   `spectrogram::render_columns(samples, rate, job.columns, job.rows, &params, overview)`, colours
@@ -78,7 +78,7 @@ itself when zoomed closer. Nothing is cached per view; columns are recomputed ev
 
 ## Playback
 
-- `cpal` 0.16 **directly**, in `apps/wavecraft/src/player.rs`. SoundCraft's `playback` crate is not
+- `cpal` 0.16 **directly**, in `apps/wavcraft/src/player.rs`. SoundCraft's `playback` crate is not
   used, and can't be on its own: its `Player::new` takes a SoundCraft `Session` (engine/mix model).
 - Default host, default output device, its default config (f32, i16, u16 or i32 samples). The
   stream is opened at start-up and reopened on Play after an error or when there was none.
@@ -143,12 +143,12 @@ Both are in the same fork at the same commit, so adding them as git dependencies
 
 ## Test kit and bench (task 02)
 
-- `crates/testkit` (`wavecraft-testkit`): `lib.rs` writes the synthetic test files
+- `crates/testkit` (`wavcraft-testkit`): `lib.rs` writes the synthetic test files
   (deterministic; its own streaming WAV writer, audio-io's `encode` for the AIFF and FLAC copies).
-  Binary `wavecraft-testkit OUT_DIR [--long] [--seed N] [--speech WAV --noise WAV]`.
+  Binary `wavcraft-testkit OUT_DIR [--long] [--seed N] [--speech WAV --noise WAV]`.
   `tests/kit.rs` holds acceptance tests 1-3 (byte-identical runs, every file opens through
   `Document::open`, the ramp oracle).
-- Binary `wavecraft-bench FILE`: open time and peak memory, peaks, overview and picture times
+- Binary `wavcraft-bench FILE`: open time and peak memory, peaks, overview and picture times
   (the worker's own calls, channel by channel), a full ordered read. Results: `docs/baseline.md`.
   It reads process memory through `windows-sys` on Windows (the only `unsafe` in the tree, in
-  `src/bin/wavecraft-bench/memory.rs`) and `/proc/self/status` on Linux.
+  `src/bin/wavcraft-bench/memory.rs`) and `/proc/self/status` on Linux.

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use wavecraft_core::AudioBuffer;
+use wavcraft_core::AudioBuffer;
 
 struct Shared {
     audio: Mutex<Option<Arc<AudioBuffer>>>,

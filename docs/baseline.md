@@ -2,9 +2,9 @@
 
 *Measured 2026-10-15 on Hyperion (Windows 11, 24 rayon threads, 32 GB), release build, by task 02
 (`plan/tasks/02-code-map-test-kit-baseline.md` in the vault). Code: commit `4176652` (the binaries
-were built from `50e8dfe`; `4176652` only reformats the source). Tool: `wavecraft-bench FILE`
+were built from `50e8dfe`; `4176652` only reformats the source). Tool: `wavcraft-bench FILE`
 (`crates/testkit`), run through the build gate in the default slot. Files from
-`wavecraft-testkit OUT --long` (seed 1463899717), in `B:\dev\craft\wavecraft-testkit-out\`.*
+`wavcraft-testkit OUT --long` (seed 1463899717), in `B:\dev\craft\wavcraft-testkit-out\`.*
 
 **What else was running.** Gate status just before the 3-hour run: 11.0 GB free, GPU at 0 %, upscaler
 not seen. The build slot was held by Adobe After Effects test renders (`ae_render_one.py`, 6–7 s
@@ -46,5 +46,5 @@ samples made in memory):
 - Open's memory peak is the file's bytes plus the decoded samples plus the peaks (2.07 + 4.15 +
   about 0.35 GB), as the code map says. That is the number task 03's blocks should not make worse.
 
-To repeat: `wavecraft-testkit B:/dev/craft/wavecraft-testkit-out --long`, then
-`wavecraft-bench B:/dev/craft/wavecraft-testkit-out/long-3h-48k-stereo-16.wav`, both through the gate.
+To repeat: `wavcraft-testkit B:/dev/craft/wavcraft-testkit-out --long`, then
+`wavcraft-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav`, both through the gate.
