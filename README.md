@@ -1,9 +1,14 @@
-# WavCraft (working title)
+# WavCraft
+
+An Audition-like audio editor, built in Rust for Linux, Mac, and Windows.
 
 A single-file waveform editor in the style of Adobe Audition's Waveform view, built on
 [SoundCraft](https://github.com/storytold/soundcraft)'s engine crates. Open one file, see it as a
 waveform and a spectrogram, select, fix, save. Made for spoken-word cleanup: podcasts and
 audiobooks, files of one to three hours.
+
+**Clean room:** its behaviour is copied from Audition's published behaviour and documentation only.
+No code from Audacity (GPL) or any other GPL-family project is read or used. See [Rules](#rules).
 
 **Status: Phase 1, viewer.** It opens a file, draws it, zooms, scrolls and plays. It does not
 edit or save yet.
@@ -93,8 +98,8 @@ To move it: tag the new commit on the fork, change `rev`, run
 
 ## Rules
 
-- **Clean room.** Audition and Audacity are references for behaviour only. No GPL, LGPL or AGPL
-  code or dependencies. Dependencies are MIT, Apache-2.0, BSD, Zlib or ISC compatible, with two
+- **Clean room.** Audition's published behaviour and documentation are the only reference. Audacity
+  is GPL: its code is never read or copied. No GPL, LGPL or AGPL code or dependencies. Dependencies are MIT, Apache-2.0, BSD, Zlib or ISC compatible, with two
   exceptions that come in unmodified: the `symphonia` decoders (MPL-2.0, through
   `soundcraft-audio-io`) and egui's default fonts (OFL-1.1 and the Ubuntu Font Licence). Both
   need a third-party notices file before any binary is handed out; there is none yet.
