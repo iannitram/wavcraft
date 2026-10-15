@@ -360,7 +360,8 @@ fn left_right(dir: &Path) -> io::Result<PathBuf> {
 /// Sorted, no repeats. The values alternate +0.5 and -0.5 of full scale (16384 and -16384).
 pub fn click_positions(seed: u64, frames: u64) -> Vec<(u64, i32)> {
     let mut rng = Rng::new(seed, CLICKS);
-    let mut at: Vec<u64> = vec![0, 1, 31, 32, 33, 127, 128, 1_023, 1_024, 44_099, 44_100, 44_101, frames / 2, frames.saturating_sub(2), frames.saturating_sub(1)];
+    let mut at: Vec<u64> =
+        vec![0, 1, 31, 32, 33, 127, 128, 1_023, 1_024, 44_099, 44_100, 44_101, frames / 2, frames.saturating_sub(2), frames.saturating_sub(1)];
     at.extend((0..40).map(|_| rng.below(frames)));
     at.retain(|f| *f < frames);
     at.sort_unstable();
@@ -527,7 +528,8 @@ fn speech_plus_noise(dir: &Path, speech: &Path, noise: &Path) -> io::Result<Vec<
         f64::from(src.get(n % noise_frames).copied().unwrap_or(0.0))
     };
     let speech_at = |ch: usize, n: usize| -> f64 { f64::from(speech_audio.channels.get(ch).and_then(|c| c.get(n)).copied().unwrap_or(0.0)) };
-    let power = |f: &dyn Fn(usize, usize) -> f64| (0..channels).flat_map(|ch| (0..frames).map(move |n| (ch, n))).map(|(ch, n)| f(ch, n).powi(2)).sum::<f64>();
+    let power =
+        |f: &dyn Fn(usize, usize) -> f64| (0..channels).flat_map(|ch| (0..frames).map(move |n| (ch, n))).map(|(ch, n)| f(ch, n).powi(2)).sum::<f64>();
     let (ps, pn) = (power(&speech_at), power(&noise_at));
     if pn <= 0.0 || ps <= 0.0 {
         return Err(invalid("speech or noise is silent"));

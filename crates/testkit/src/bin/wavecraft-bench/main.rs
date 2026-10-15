@@ -70,12 +70,7 @@ fn main() -> ExitCode {
     let open_ms = ms(t);
     let after_open = memory::read();
     let (frames, channels, rate) = (doc.frames(), doc.channels(), doc.sample_rate());
-    println!(
-        "opened: {:?} {:?}, {rate} Hz, {channels} ch, {frames} frames ({:.1} s)",
-        doc.info.format,
-        doc.info.sample_format,
-        doc.duration_secs()
-    );
+    println!("opened: {:?} {:?}, {rate} Hz, {channels} ch, {frames} frames ({:.1} s)", doc.info.format, doc.info.sample_format, doc.duration_secs());
     println!("open (read + decode + peaks): {open_ms:.0} ms");
     println!("peak working set during open: {}", gb(after_open.peak));
     println!("working set after open: {}", gb(after_open.now));
