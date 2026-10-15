@@ -8,7 +8,10 @@ Update it when the layout changes. The test kit and bench (task 02) are listed a
 | Crate | Module | What it holds |
 |---|---|---|
 | `crates/core` (`wavcraft-core`, library, no UI) | `lib.rs` | Re-exports `Document`, `OpenError`, `SpectrogramParams`, `Viewport`, `Selection`, `format_time`, and audio-io's `AudioBuffer`, `AudioInfo`, `FileFormat`, `SampleFormat` |
-| | `document.rs` | `Document`: open/decode a file, its samples and per-channel waveform peaks, `waveform_columns()` for drawing |
+| | `store.rs` (task 03) | `Store`: the session folder, append-only `pack-NNNN.f32` files (1 GiB rollover), `append` → `Arc<BlockHandle>` (≤ 65,536 frames of one channel), `read` through an LRU block cache with a byte budget (positioned reads, no mmap), live counts per pack (a sealed pack with none is deleted), the zero block, `bytes_on_disk`/`bytes_live`, `keep` |
+| | `doc.rs` (task 03) | The piece table: `Piece` (block, offset, len), `Channel` (pieces + running ends; `locate`, `split_at`, `read`), `DocState` (one `Arc<Channel>` per channel, all one length; `read`, `read_frames`, `disk_bytes_referenced`, and the temporary `to_audio_buffer`), `SourceFormat` (format, chunks with offsets, warnings) |
+| | `io.rs` (task 03) | `open(path, opts, progress, cancel) -> DocState`: our own WAV/RF64/AIFF chunk reader converting exactly as audio-io, `symphonia` packet by packet for the rest; `OpenError` |
+| | `document.rs` | `Document`: the open file as the app sees it: streamed open, then read back whole (`audio`) until task 05, the `DocState` kept in `state`, per-channel waveform peaks, `waveform_columns()` for drawing |
 | | `spectrogram.rs` | The spectral display maths: `SpectrogramParams`, `Columns` (file-fixed column grid), `Overview` (coarse per-channel cache), `render()` / `render_columns()`. Private: `Analysis` (FFT plan, Hann window, dB→level table), `Analyser` (FFT scratch, per-bin max) |
 | | `view.rs` | `Viewport` (zoom/scroll in frames), `Selection` (anchor/head), `format_time` |
 | | `examples/spectrogram_cost.rs` | Measures overview build and far-view render times on a synthetic 3-hour mono file |
@@ -22,14 +25,20 @@ workspace lints. Tests: 21 in the core, 9 in the app (before task 02).
 
 ## Where the samples live after open
 
+*Since task 03 (2026-10-15):* `Document::open` streams the file into a session store
+(`core::io::open`, see `store.rs`/`doc.rs` above) and keeps the `DocState` in `Document.state`.
+It then reads the whole document back into the `AudioBuffer` below, because every consumer
+listed here still wants whole channels. Task 05 moves them onto `DocState::read` and drops the
+copy. What follows describes those consumers, unchanged.
+
 - Type: `soundcraft_audio_io::AudioBuffer { sample_rate: u32, channels: Vec<Vec<f32>> }`: planar
   `f32`, **one contiguous `Vec<f32>` per channel for the whole file**. No chunks or blocks.
 - Owner: `Document.audio: Arc<AudioBuffer>`; the app keeps `WaveApp.doc: Option<Document>`.
-- Opening (`Document::open`): `std::fs::read` the whole file into a `Vec<u8>`, then
-  `soundcraft_audio_io::decode(bytes, ext)`, then one `Peaks` per channel on scoped threads. The
-  byte buffer is dropped when `open` returns, so for a moment the process holds the file's bytes
-  and the decoded `f32` together. The app runs `open` on a `std::thread::spawn` worker and polls an
-  `mpsc` channel each frame (`finish_opening`).
+- Opening (`Document::open_with`): stream into the store (a few MB of RAM), read it back into one
+  `Vec<f32>` per channel, then one `Peaks` per channel on scoped threads. (`Document::from_bytes`
+  still decodes bytes with audio-io; tests use it.) The app runs it on a `std::thread::spawn` worker
+  with a cancel flag and progress, cancels it when another file is opened, and polls an `mpsc`
+  channel each frame (`finish_opening`).
 - How the parts reach the samples:
   - **UI (waveform):** `doc.waveform_columns(ch, start, end, cols)` borrows
     `self.audio.channels[ch]` and `self.peaks[ch]` directly, every frame.
@@ -148,6 +157,10 @@ Both are in the same fork at the same commit, so adding them as git dependencies
   Binary `wavcraft-testkit OUT_DIR [--long] [--seed N] [--speech WAV --noise WAV]`.
   `tests/kit.rs` holds acceptance tests 1-3 (byte-identical runs, every file opens through
   `Document::open`, the ramp oracle).
+- Binary `wavcraft-store-bench FILE [--cache-mb N] [--sessions DIR] [--huge]` (task 03): streamed
+  open time and peak memory above rest, sequential reads, 10,000 random 4,096-frame reads.
+- `--huge` writes `huge-4h10m-48k-stereo-24-rf64.wav` (4.32 GB, RF64: `WavWriter` writes RF64 above
+  4 GiB); its right channel is a frame counter (`huge_counter`).
 - Binary `wavcraft-bench FILE`: open time and peak memory, peaks, overview and picture times
   (the worker's own calls, channel by channel), a full ordered read. Results: `docs/baseline.md`.
   It reads process memory through `windows-sys` on Windows (the only `unsafe` in the tree, in

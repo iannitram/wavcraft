@@ -405,7 +405,9 @@ impl Store {
             }
         }
         let file = self.pack_file(block.pack)?;
-        let mut samples = vec![0.0f32; block.frames as usize];
+        // A buffer an evicted block left behind, when there is one: no allocation, no zeroing.
+        let mut samples = lock(&inner.cache).spare.pop().unwrap_or_default();
+        samples.resize(block.frames as usize, 0.0);
         read_exact_at(&file, bytemuck::cast_slice_mut(&mut samples), block.byte_offset)?;
         #[cfg(target_endian = "big")]
         for x in samples.iter_mut() {
@@ -541,11 +543,27 @@ struct Cache {
     peak_bytes: u64,
     hits: u64,
     misses: u64,
+    /// Buffers of evicted blocks nobody else held, for the next miss to reuse.
+    spare: Vec<Vec<f32>>,
 }
+
+/// How many evicted buffers are kept for reuse (1 MiB of them).
+const SPARE_BUFFERS: usize = 4;
 
 impl Cache {
     fn new(budget: u64) -> Cache {
-        Cache { budget, bytes: 0, tick: 0, map: HashMap::new(), order: BTreeMap::new(), peak_blocks: 0, peak_bytes: 0, hits: 0, misses: 0 }
+        Cache {
+            budget,
+            bytes: 0,
+            tick: 0,
+            map: HashMap::new(),
+            order: BTreeMap::new(),
+            peak_blocks: 0,
+            peak_bytes: 0,
+            hits: 0,
+            misses: 0,
+            spare: Vec::new(),
+        }
     }
 
     fn get(&mut self, id: BlockId) -> Option<Samples> {
@@ -594,6 +612,11 @@ impl Cache {
     fn remove_entry(&mut self, id: BlockId) {
         if let Some((s, _)) = self.map.remove(&id) {
             self.bytes = self.bytes.saturating_sub(s.len() as u64 * BYTES_PER_SAMPLE);
+            if self.spare.len() < SPARE_BUFFERS
+                && let Ok(v) = Arc::try_unwrap(s)
+            {
+                self.spare.push(v);
+            }
         }
     }
 

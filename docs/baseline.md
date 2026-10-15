@@ -48,3 +48,40 @@ samples made in memory):
 
 To repeat: `wavcraft-testkit B:/dev/craft/wavcraft-testkit-out --long`, then
 `wavcraft-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav`, both through the gate.
+
+## Task 03: the store and streamed open (2026-10-15, Hyperion)
+
+*Release build, `wavcraft-store-bench FILE` (`crates/testkit`), run through the build gate in the
+default slot, branch `feat/03-store-and-document`. Session store on C: (Samsung SSD 970 EVO Plus
+1 TB, NVMe), under `%LOCALAPPDATA%\wavcraft\sessions\`. Source files on B:, written by the test
+kit minutes before, so read from the OS file cache. Block cache budget 512 MB. Gate status around
+the runs: build slot free before each, 14.3-14.5 GB free, GPU 16-19 % (not ours), a PhotoCraft
+evaluation script had just run in the build slot; other sessions' ungated tools may have used CPU
+and disk. Three runs on the 3-hour file; the range is given.*
+
+| Measure | `long-3h-48k-stereo-16.wav` (2.07 GB, 518,400,000 frames) | Task 02 (whole-file decode) | Target |
+|---|---|---|---|
+| Streamed open: time | 1.75 / 1.85 / 1.92 s, once 3.46 s (store written: 4.147 GB of f32, 7,911 blocks per channel; 1.2-2.4 GB/s) | 1.55 s | under 10 s |
+| Streamed open: peak memory above the process at rest | **5.3 MB** (peak working set 13-14 MB) | 6.58 GB peak | ≤ 300 MB |
+| Sequential read of the whole document, 64 K frames at a time, block cache cleared first | 1,292-1,443 ms (2.9-3.2 GB/s of f32); again: 1,539-1,673 ms | 598 ms (from RAM) | record |
+| 10,000 random 4,096-frame reads, 512 MB cache (12 % of the document; 86 % of reads miss) | median **50.8-52.2 µs**, p90 108-125 µs, p99 222-258 µs, worst 405-632 µs (first run, before reusing evicted buffers: median 60.7 µs) | n/a | median under 50 µs |
+| Closing (session folder deleted) | 468 ms | n/a | |
+
+**Cold disk:** the OS file cache could not be emptied (Windows has no per-file drop and Hyperion has
+32 GB), so the "cleared" runs above are cold for WavCraft's block cache only; the packs were still
+in the OS cache. A real cold read from this NVMe would be slower. Not measured.
+
+**Random reads:** a miss reads the whole 256 KB block with one positioned read, and most of the
+50 µs is that copy out of the OS cache. A hit takes a few µs. Views and playback read sequentially
+and locally, so they mostly hit; this random pattern is the worst case.
+
+**Files over 4 GiB:** `huge-4h10m-48k-stereo-24-rf64.wav` (`wavcraft-testkit OUT --huge`: 4,320,000,080
+bytes, RF64, 4 h 10 min 48 kHz stereo 24-bit, 1.44 billion samples, past audio-io's 2^30 decode
+limit) opens: 720,000,000 frames, as expected, and the right channel's frame counter is right at
+four places including the last 1,000 frames. Open 3.31 s (5.760 GB written), 6.2 MB above rest;
+sequential read 2.0-2.1 s; random reads median 53.1 µs.
+
+To repeat: `wavcraft-testkit B:/dev/craft/wavcraft-testkit-out --long --huge`, then
+`wavcraft-store-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav` and
+`wavcraft-store-bench B:/dev/craft/wavcraft-testkit-out/huge-4h10m-48k-stereo-24-rf64.wav --huge`,
+all through the gate.
