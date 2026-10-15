@@ -1,6 +1,8 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
@@ -16,6 +18,16 @@ const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
 const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
 const RULER_HEIGHT: f32 = 22.0;
+
+/// A file being opened on a worker thread.
+struct Opening {
+    path: PathBuf,
+    result: Receiver<Result<Document, String>>,
+    /// Set to stop it (another file was opened meanwhile).
+    cancel: Arc<AtomicBool>,
+    /// How far the streaming has got, in thousandths.
+    progress: Arc<AtomicU32>,
+}
 
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
 struct SpectrumCache {
@@ -35,7 +47,7 @@ pub struct WaveApp {
     show_spectrum: bool,
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
-    opening: Option<(PathBuf, Receiver<Result<Document, String>>)>,
+    opening: Option<Opening>,
     error: Option<String>,
     fit_on_next_frame: bool,
     /// The window title last sent. Sending one asks for a repaint, so it is only sent on change.
@@ -66,20 +78,35 @@ impl WaveApp {
         app
     }
 
-    /// Decode `path` on a worker thread; the window stays responsive for long files.
+    /// Stream `path` into a session store on a worker thread; the window stays responsive for
+    /// long files. A file still opening is cancelled first.
     fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if let Some(old) = self.opening.take() {
+            old.cancel.store(true, Ordering::Relaxed);
+        }
         let (tx, rx) = channel();
-        let (ctx, job_path) = (ctx.clone(), path.clone());
+        let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
+        let (ctx, job_path, job_cancel, job_progress) = (ctx.clone(), path.clone(), cancel.clone(), progress.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(Document::open(&job_path).map_err(|e| e.to_string()));
+            let mut last = 0;
+            let mut report = |p: f64| {
+                let permille = (p.clamp(0.0, 1.0) * 1000.0) as u32;
+                job_progress.store(permille, Ordering::Relaxed);
+                if permille >= last + 10 {
+                    last = permille;
+                    ctx.request_repaint();
+                }
+            };
+            let result = Document::open_with(&job_path, &mut report, &job_cancel).map_err(|e| e.to_string());
+            let _ = tx.send(result);
             ctx.request_repaint();
         });
-        self.opening = Some((path, rx));
+        self.opening = Some(Opening { path, result: rx, cancel, progress });
         self.error = None;
     }
 
     fn finish_opening(&mut self) {
-        let Some((path, rx)) = &self.opening else { return };
+        let Some(Opening { path, result: rx, .. }) = &self.opening else { return };
         let result = match rx.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
@@ -148,9 +175,10 @@ impl WaveApp {
 
     fn status(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if let Some((path, _)) = &self.opening {
+            if let Some(o) = &self.opening {
                 ui.spinner();
-                ui.label(format!("Opening {}…", path.display()));
+                let permille = o.progress.load(Ordering::Relaxed);
+                ui.label(format!("Opening {}… {}%", o.path.display(), permille / 10));
             } else if let Some(e) = &self.error {
                 ui.colored_label(CURSOR, e);
             } else if let Some(doc) = &self.doc {

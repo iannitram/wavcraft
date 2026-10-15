@@ -37,6 +37,10 @@ pub const RAMP: &str = "ramp-48k-mono-16.wav";
 pub const TONES: &str = "tones-10min-48k-mono-16.wav";
 pub const TONES_TXT: &str = "tones-10min-48k-mono-16.txt";
 pub const LONG: &str = "long-3h-48k-stereo-16.wav";
+/// Over 4 GiB, so written as RF64: 4 h 10 min of 48 kHz stereo 24-bit (4.32 GB).
+pub const HUGE: &str = "huge-4h10m-48k-stereo-24-rf64.wav";
+/// The huge file's length in frames.
+pub const HUGE_FRAMES: u64 = (4 * 3600 + 10 * 60) * 48_000;
 pub const SPEECH_CLEAN: &str = "speech-clean.wav";
 pub const SPEECH_SNR10: &str = "speech-plus-noise-snr10.wav";
 pub const SPEECH_SNR20: &str = "speech-plus-noise-snr20.wav";
@@ -77,13 +81,15 @@ pub struct KitOptions {
     pub seed: u64,
     /// Also write the 3-hour file (about 2 GB).
     pub long: bool,
+    /// Also write the 4 h 10 min RF64 file (about 4.3 GB).
+    pub huge: bool,
     /// A clean speech WAV and a noise WAV to mix at 10 and 20 dB SNR.
     pub speech: Option<(PathBuf, PathBuf)>,
 }
 
 impl Default for KitOptions {
     fn default() -> Self {
-        KitOptions { seed: DEFAULT_SEED, long: false, speech: None }
+        KitOptions { seed: DEFAULT_SEED, long: false, huge: false, speech: None }
     }
 }
 
@@ -100,6 +106,9 @@ pub fn write_kit(dir: &Path, opts: &KitOptions) -> io::Result<Vec<PathBuf>> {
     written.extend(tones(dir, seed)?);
     if opts.long {
         written.push(long(dir, seed)?);
+    }
+    if opts.huge {
+        written.push(huge(dir)?);
     }
     if let Some((speech, noise)) = &opts.speech {
         written.extend(speech_plus_noise(dir, speech, noise)?);
@@ -184,7 +193,8 @@ pub struct WavWriter {
 }
 
 impl WavWriter {
-    /// Create `path` for `frames` frames of `channels` channels.
+    /// Create `path` for `frames` frames of `channels` channels. Above 4 GiB the file is RF64
+    /// (`RF64` with a `ds64` chunk holding the 64-bit sizes, EBU Tech 3306).
     pub fn create(path: &Path, channels: u16, sample_rate: u32, encoding: Encoding, frames: u64) -> io::Result<WavWriter> {
         let bytes = encoding.bytes() as u64;
         let data_len = frames.checked_mul(u64::from(channels)).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("WAV too long"))?;
@@ -193,13 +203,25 @@ impl WavWriter {
         let fmt_len: u32 = if float { 18 } else { 16 };
         let fact = if float { 12 } else { 0 };
         let riff_len = 4 + (8 + u64::from(fmt_len)) + fact + 8 + data_len + (data_len & 1);
-        let riff_len = u32::try_from(riff_len).map_err(|_| invalid("WAV over 4 GiB"))?;
-        let data_len32 = u32::try_from(data_len).map_err(|_| invalid("WAV over 4 GiB"))?;
+        let rf64 = u32::try_from(riff_len).is_err();
         let block_align = channels.checked_mul(bytes as u16).ok_or_else(|| invalid("too many channels"))?;
         let mut out = BufWriter::with_capacity(1 << 20, File::create(path)?);
-        out.write_all(b"RIFF")?;
-        out.write_all(&riff_len.to_le_bytes())?;
-        out.write_all(b"WAVEfmt ")?;
+        if rf64 {
+            // ds64: RIFF size, data size, sample count (frames), table length.
+            out.write_all(b"RF64")?;
+            out.write_all(&u32::MAX.to_le_bytes())?;
+            out.write_all(b"WAVEds64")?;
+            out.write_all(&28u32.to_le_bytes())?;
+            out.write_all(&(riff_len + 36).to_le_bytes())?;
+            out.write_all(&data_len.to_le_bytes())?;
+            out.write_all(&frames.to_le_bytes())?;
+            out.write_all(&0u32.to_le_bytes())?;
+            out.write_all(b"fmt ")?;
+        } else {
+            out.write_all(b"RIFF")?;
+            out.write_all(&(riff_len as u32).to_le_bytes())?;
+            out.write_all(b"WAVEfmt ")?;
+        }
         out.write_all(&fmt_len.to_le_bytes())?;
         out.write_all(&(if float { 3u16 } else { 1u16 }).to_le_bytes())?;
         out.write_all(&channels.to_le_bytes())?;
@@ -212,10 +234,10 @@ impl WavWriter {
             out.write_all(&0u16.to_le_bytes())?;
             out.write_all(b"fact")?;
             out.write_all(&4u32.to_le_bytes())?;
-            out.write_all(&u32::try_from(frames).map_err(|_| invalid("too many frames"))?.to_le_bytes())?;
+            out.write_all(&u32::try_from(frames).unwrap_or(u32::MAX).to_le_bytes())?;
         }
         out.write_all(b"data")?;
-        out.write_all(&data_len32.to_le_bytes())?;
+        out.write_all(&u32::try_from(data_len).unwrap_or(u32::MAX).to_le_bytes())?;
         Ok(WavWriter { out, encoding, remaining: frames * u64::from(channels), data_len, bytes: Vec::new() })
     }
 
@@ -500,6 +522,22 @@ fn long(dir: &Path, seed: u64) -> io::Result<PathBuf> {
             _ => (0.0, 0.0),
         };
         out.extend([l + speech * gl, r + speech * gr]);
+    })
+}
+
+/// The value the huge file's right channel holds at frame `n`, as a 24-bit integer: a counter
+/// that wraps every 2^24 frames (5.8 minutes), so any frame's position can be checked.
+pub fn huge_counter(n: u64) -> i32 {
+    (n % (1 << 24)) as i32 - (1 << 23)
+}
+
+/// 4 h 10 min, 48 kHz stereo 24-bit, as RF64: a 440 Hz sine at -12 dBFS on the left, and the
+/// frame counter [`huge_counter`] on the right. Proves files over 4 GiB (and past the old 2^30
+/// sample decode limit) open.
+fn huge(dir: &Path) -> io::Result<PathBuf> {
+    let table: Vec<f64> = (0..48_000u64).map(|n| 0.25 * sine(440, n, 48_000)).collect();
+    write_wav(&dir.join(HUGE), 2, 48_000, Encoding::Int24, HUGE_FRAMES, |n, out| {
+        out.extend([table.get((n % 48_000) as usize).copied().unwrap_or(0.0), f64::from(huge_counter(n)) / f64::from(1u32 << 23)]);
     })
 }
 

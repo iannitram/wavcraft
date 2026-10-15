@@ -1,6 +1,6 @@
 [package]
 name = "wavcraft-core"
-description = "WavCraft core: one audio file in memory, with the waveform and spectrogram views a single-file editor draws"
+description = "WavCraft core: the on-disk sample store, the document model, streamed open, and the waveform and spectrogram views a single-file editor draws"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,14 @@ publish.workspace = true
 soundcraft-audio-io.workspace = true
 rustfft.workspace = true
 rayon.workspace = true
+symphonia.workspace = true
+bytemuck.workspace = true
+dirs.workspace = true
+sysinfo.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true
