@@ -654,6 +654,14 @@ fn frames_dur(frames: u64) -> Duration {
 /// across the fade, which briefly raises the frequency. Measured worst cases over every phase for
 /// this curve (raised cosine, gains summing to 1): 6.6 % at 64 frames, 3.1 % at 96 (2 ms), 0.5 %
 /// at 240 (5 ms); an equal-power curve: 41-43 %; a hard splice: up to 864 %.
+///
+/// **These hold for a full-scale sine at 1 kHz and above only** (the tests use 1 kHz), not for
+/// any audio. Lower down, the sine's own largest step shrinks while the 2 ms fade's slope does
+/// not, so the ratio grows without any discontinuity: the Legion Go measured Delete at 1.43 × at
+/// 220 Hz and 4.12 × at 50 Hz, Paste at 1.10 × and 1.43 × (`verification-by-legiongo.md` W6,
+/// 2026-10-16). At 50 Hz that step is about 0.027 of full scale, which is the fade's own slope,
+/// not a click. A test of "no click" at low frequencies needs another measure (for example the
+/// step against the fade's slope); none is written yet.
 const STEP_TOLERANCE_64: f32 = 1.07;
 const STEP_TOLERANCE_96: f32 = 1.035;
 

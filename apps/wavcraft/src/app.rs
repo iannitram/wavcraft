@@ -260,6 +260,12 @@ impl WaveApp {
                     doc.channels(),
                     format_time(doc.frames(), rate)
                 ));
+                // What was wrong with the file that still opened: the first in the bar, all of
+                // them on hover.
+                if let Some(first) = doc.warnings().first() {
+                    ui.separator();
+                    ui.colored_label(CURSOR, format!("Warning: {first}")).on_hover_text(doc.warnings().join("\n"));
+                }
                 ui.separator();
                 if self.selection.is_empty() {
                     ui.label(format!("Cursor {}", format_time(self.selection.start(), rate)));

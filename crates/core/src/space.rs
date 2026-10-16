@@ -42,8 +42,35 @@ pub fn frames_from_file_size(file_bytes: u64, sample_rate: u32) -> u64 {
 
 /// The bytes free (to this user) on the disk that holds `path`, which should exist. `None` when
 /// the system won't say.
+///
+/// On Unix the file system holding the folder itself is asked (`statvfs`), so a folder on a
+/// tmpfs such as `/tmp` or `/dev/shm` gets that file system's figure (the Legion Go review's W7:
+/// sysinfo's disk list has no tmpfs, so `/tmp` used to be matched to `/`). Elsewhere, or when
+/// that call fails, the folder is matched to the longest mount point in sysinfo's disk list.
 pub fn free_space(path: &Path) -> Option<u64> {
-    let path = plain_path(&std::fs::canonicalize(path).ok()?);
+    let path = std::fs::canonicalize(path).ok()?;
+    folder_free_space(&path).or_else(|| mount_free_space(&path))
+}
+
+/// The bytes free to this user on the file system holding `path`, asked of the OS directly.
+#[cfg(unix)]
+fn folder_free_space(path: &Path) -> Option<u64> {
+    let st = rustix::fs::statvfs(path).ok()?;
+    // Blocks are counted in fragments (`f_frsize`); a system that leaves it 0 means `f_bsize`.
+    let unit = if st.f_frsize > 0 { st.f_frsize } else { st.f_bsize };
+    Some(st.f_bavail.saturating_mul(unit))
+}
+
+/// Not asked directly here: Windows' call needs `unsafe`, which the workspace forbids, and
+/// sysinfo's volume list there covers every drive and mounted folder.
+#[cfg(not(unix))]
+fn folder_free_space(_path: &Path) -> Option<u64> {
+    None
+}
+
+/// The bytes free on the longest mount point in sysinfo's disk list that holds `path`.
+fn mount_free_space(path: &Path) -> Option<u64> {
+    let path = plain_path(path);
     let disks = sysinfo::Disks::new_with_refreshed_list();
     disks
         .list()
@@ -83,6 +110,39 @@ mod tests {
     fn verbatim_prefixes_are_dropped() {
         assert_eq!(plain_path(Path::new(r"\\?\C:\Users\x")), PathBuf::from(r"C:\Users\x"));
         assert_eq!(plain_path(Path::new("/home/x")), PathBuf::from("/home/x"));
+    }
+
+    /// W7 (the Legion Go review): a folder on a tmpfs reports that file system's free space, not
+    /// that of `/`. Linux only (it runs on the Z13 or the Legion Go); skipped when neither
+    /// `/dev/shm` nor `/tmp` is a tmpfs, or when `/` is one itself.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_tmpfs_folder_reports_its_own_free_space() {
+        let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+        // The last line for a mount point wins, as the kernel lists them in mount order.
+        let fs_type = |mount: &str| {
+            mounts.lines().rev().find_map(|l| {
+                let mut f = l.split_whitespace();
+                let (_, at, kind) = (f.next()?, f.next()?, f.next()?);
+                (at == mount).then(|| kind.to_string())
+            })
+        };
+        if fs_type("/").as_deref() == Some("tmpfs") {
+            eprintln!("skipped: / is a tmpfs here");
+            return;
+        }
+        let Some(folder) = ["/dev/shm", "/tmp"].into_iter().find(|m| fs_type(*m).as_deref() == Some("tmpfs")) else {
+            eprintln!("skipped: neither /dev/shm nor /tmp is a tmpfs here");
+            return;
+        };
+        let got = free_space(Path::new(folder)).expect("free space of a tmpfs folder");
+        let st = rustix::fs::statvfs(folder).expect("statvfs");
+        let total = st.f_blocks.saturating_mul(if st.f_frsize > 0 { st.f_frsize } else { st.f_bsize });
+        assert!(got <= total, "{folder}: {got} bytes free, more than the tmpfs holds ({total})");
+        let root = free_space(Path::new("/")).expect("free space of /");
+        assert_ne!(got, root, "{folder} reported the same free space as /, as when it was matched to /");
+        // The sysinfo match this replaced gives `/`'s figure for it (no tmpfs in its list).
+        println!("{folder}: {got} bytes free (tmpfs of {total}); / has {root}; sysinfo's match says {:?}", mount_free_space(Path::new(folder)));
     }
 
     #[test]

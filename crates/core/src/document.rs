@@ -116,6 +116,13 @@ impl Document {
         self.audio.duration_secs()
     }
 
+    /// What was wrong with the file that still opened (a header claiming more data than is
+    /// there, an unusual sample size…), for the app to show. Empty for a sound file or a
+    /// document made in memory.
+    pub fn warnings(&self) -> &[String] {
+        self.state.as_ref().map(|s| s.source().warnings.as_slice()).unwrap_or(&[])
+    }
+
     /// File name for a title bar ("Untitled" for a document made in memory).
     pub fn name(&self) -> String {
         self.path.file_name().map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned())

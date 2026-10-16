@@ -3276,6 +3276,7 @@ dependencies = [
  "proptest",
  "rayon",
  "rustfft",
+ "rustix 1.1.5",
  "soundcraft-audio-io",
  "symphonia",
  "sysinfo",

@@ -35,6 +35,11 @@ bytemuck = "1.25"
 dirs = "6"
 sysinfo = { version = "0.37", default-features = false, features = ["system", "disk"] }
 proptest = "1.11"
+# The Legion Go review's W7 (2026-10-16): free space asked of the session folder's own file
+# system (`statvfs`) on Unix, so a tmpfs isn't matched to `/`. Already in Cargo.lock (1.1.5,
+# through tempfile and others), so no new crate; its safe API keeps `unsafe` forbidden here.
+# Licence Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT.
+rustix = { version = "1.1", features = ["fs"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
