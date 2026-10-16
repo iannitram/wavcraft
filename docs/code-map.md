@@ -12,7 +12,7 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | `crates/core` (`wavcraft-core`, library, no UI) | `lib.rs` | Re-exports `Document`, `OpenError`, `SpectrogramParams`, `Viewport`, `Selection`, `format_time`, and audio-io's `AudioBuffer`, `AudioInfo`, `FileFormat`, `SampleFormat` |
 | | `store.rs` (task 03) | `Store`: the session folder, append-only `pack-NNNN.f32` files (1 GiB rollover), `append` → `Arc<BlockHandle>` (≤ 65,536 frames of one channel), `read` through an LRU block cache with a byte budget (positioned reads, no mmap), live counts per pack (a sealed pack with none is deleted), the zero block, `bytes_on_disk`/`bytes_live`, `keep` |
 | | `doc.rs` (task 03) | The piece table: `Piece` (block, offset, len), `Channel` (pieces + running ends; `locate`, `split_at`, `read`), `DocState` (one `Arc<Channel>` per channel, all one length; `read`, `read_frames`, `disk_bytes_referenced`, and the temporary `to_audio_buffer`), `SourceFormat` (format, chunks with offsets, warnings) |
-| | `doc/edit.rs` (task 04) | The edits, pure functions `&DocState -> Edit { state, label, change }`: `delete` (a `ChannelMask`; with only some channels it silences in place, label "Delete Audio"), `copy` → `Clip` (pieces, no sample copy), `cut`, `paste` (`PasteAt::Insert`/`Replace`; equal channel counts, mono into any, any into mono as the mean; other sample rates refused; a clip from another store copied in), `silence`, `insert_silence`, `crop`, `replace_range` (a producer fills 64 K-frame chunks; cancel flag). `Crossfades { cut_join: 2 ms, edge: 5 ms }` (raised-cosine curve, one new block per fade, shortened where the audio runs out). `Change` (`None`, `SameLength`, `LengthFrom`) for the views |
+| | `doc/edit.rs` (task 04) | The edits, pure functions `&DocState -> Edit { state, label, change }`: `delete` (a `ChannelMask`; with only some channels it silences in place, label "Delete Audio"), `copy` → `Clip` (pieces, no sample copy), `cut`, `paste` (`PasteAt::Insert`/`Replace`, a `ChannelMask`; equal channel counts, mono into any, any into mono as the mean; other sample rates refused; a clip from another store copied in; with only some channels it overwrites them from the insert frame or the range's start for the clip's length and keeps the length, clip frames past the end dropped), `silence`, `insert_silence`, `crop` (a `ChannelMask`; with only some channels it silences everything outside the range in them and keeps the length; an empty range is no edit), `replace_range` (a producer fills 64 K-frame chunks; cancel flag). `Crossfades { cut_join: 2 ms, edge: 5 ms }` (raised-cosine curve, one new block per fade, shortened where the audio runs out). `Change` (`None`, `SameLength`, `LengthFrom`) for the views |
 | | `doc/history.rs` (task 04) | `History`: steps of `(label, Arc<DocState>, made_bytes, change)` and a cursor; `push`/`push_edit` (drops redo steps; a no-op records nothing), `undo`, `redo`, `go_to`, labels, `clear`; the disk cap (bytes the kept steps hold beyond the current state, kept by per-block step counts; drops the oldest steps and says how many), `default_cap`, `can_afford` (keeps 2 GB free) |
 | | `space.rs` (item 03b) | `store_bytes(frames, channels)` (4 bytes a sample + 1 % + `MARGIN_BYTES` 64 MiB), `frames_from_file_size` (at `ASSUMED_BITRATE` 128 kbit/s), `free_space(path)` (sysinfo's disk list, longest mount point), `FreeSpaceFn`, `format_bytes` |
 | | `settings.rs` (item 03b) | `Settings` (`settings.txt` in `dirs::config_dir()/wavcraft`: `session_folder = …`), `check_folder` (make it, write a probe), `resolve_session_folder` (flag > `WAVCRAFT_SESSION_DIR` > settings file > default; a folder that fails falls back to the default with a warning), `HOW_TO_CHANGE` |
@@ -28,6 +28,19 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 
 Workspace: `Cargo.toml` at the root; `unsafe_code = "forbid"` for every crate that inherits the
 workspace lints. Tests: 21 in the core, 9 in the app (before task 02).
+
+## Known differences from Audition
+
+Choices made where Audition 26.5.0.82 was not seen (`plan/tasks/audition-check.md`, 2026-10-16
+Result, has what was seen):
+
+- **One-channel Paste near the end of the file:** the clip is cut short at the end; the length
+  never grows. Audition was only seen pasting mid-file.
+- **One-channel Paste over a selection:** the clip overwrites from the selection's start for the
+  clip's length, whatever the selection's length. Audition was only seen pasting at a cursor.
+- **History labels:** one-channel Crop, Cut and Paste are labelled "Crop", "Cut" and "Paste";
+  Audition says "Crop Audio", "Cut Audio" and "Paste Audio" (one-channel Delete is "Delete Audio"
+  in both).
 
 ## Where the samples live after open
 
