@@ -108,6 +108,30 @@ fn unsupported(what: impl std::fmt::Display) -> OpenError {
     OpenError::Decode(format!("unsupported audio: {what}"))
 }
 
+/// The highest sample rate a file may declare (Hz). 768 kHz is the top of what converters and
+/// DXD work use; a header above it is damaged or hostile, and is refused before anything is
+/// written (the README's rule: numbers from a file are checked before use).
+pub const MAX_SAMPLE_RATE_HZ: u32 = 768_000;
+
+/// Refuse a sample rate of 0 or above [`MAX_SAMPLE_RATE_HZ`]; `what` names the file's kind.
+fn check_rate(rate: u32, what: &str) -> Result<(), OpenError> {
+    if rate == 0 {
+        return Err(malformed(format!("{what} declares a zero sample rate")));
+    }
+    if rate > MAX_SAMPLE_RATE_HZ {
+        return Err(malformed(format!("{what} declares a sample rate of {rate} Hz; WavCraft opens up to {MAX_SAMPLE_RATE_HZ} Hz")));
+    }
+    Ok(())
+}
+
+/// The warning for a sample size under 8 bits (`bits`), which is read as whole bytes: the WAV and
+/// AIFF formats store every sample left-justified in whole bytes, so the low bits are padding.
+/// Sizes of 9 bits or more that aren't whole bytes (12- or 20-bit recorders) are stored the same
+/// way and are not warned about.
+fn small_sample_warning(bits: u16) -> Option<String> {
+    (bits < 8).then(|| format!("the header gives {bits} bits per sample; read as 8-bit samples, the whole byte each is stored in"))
+}
+
 /// Where the session store goes and how it is set up.
 #[derive(Debug, Clone, Default)]
 pub struct OpenOptions {
@@ -426,6 +450,8 @@ struct Fmt {
     sample_rate: u32,
     bits: u16,
     valid_bits: u16,
+    /// Bytes a frame takes, as the header says (checked against the format before use).
+    block_align: u16,
 }
 
 fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
@@ -436,8 +462,8 @@ fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
         sample_rate: le_u32(c, 4).ok_or_else(short)?,
         bits: le_u16(c, 14).unwrap_or(0),
         valid_bits: 0,
+        block_align: le_u16(c, 12).ok_or_else(short)?,
     };
-    le_u16(c, 12).ok_or_else(short)?;
     fmt.valid_bits = fmt.bits;
     if fmt.tag == WAVE_FORMAT_EXTENSIBLE {
         match (le_u16(c, 18), le_u16(c, 24)) {
@@ -528,9 +554,7 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
     if fmt.channels == 0 {
         return Err(malformed("WAV declares zero channels"));
     }
-    if fmt.sample_rate == 0 {
-        return Err(malformed("WAV declares a zero sample rate"));
-    }
+    check_rate(fmt.sample_rate, "WAV")?;
     src.sample_rate = fmt.sample_rate;
     src.channels = fmt.channels;
     let channels = usize::from(fmt.channels);
@@ -558,8 +582,20 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
         }
     };
     src.sample_format = sample_format;
-    let (start, len, declared, zero) = data.ok_or_else(|| malformed("WAV has no data chunk"))?;
+    // Only for the PCM and float layouts read here: other codecs (ADPCM…) use block-align for
+    // their own packets and went to symphonia above.
     let block = (kind.bytes() * channels) as u64;
+    if u64::from(fmt.block_align) != block {
+        return Err(malformed(format!(
+            "the WAV header's block-align is {} bytes, but {channels} channel(s) of {}-byte samples take {block} bytes a frame",
+            fmt.block_align,
+            kind.bytes()
+        )));
+    }
+    if let PcmKind::Int { .. } = kind {
+        src.warnings.extend(small_sample_warning(fmt.bits));
+    }
+    let (start, len, declared, zero) = data.ok_or_else(|| malformed("WAV has no data chunk"))?;
     let frames = len / block;
     if zero {
         src.warnings.push(format!("the data chunk's size is 0 (an unfinished recording?): opened the {frames} frames the file holds"));
@@ -574,7 +610,7 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
 // ---------------------------------------------------------------------------------------------
 // AIFF
 
-const MAX_SAMPLE_RATE: f64 = 10_000_000.0;
+const MAX_SAMPLE_RATE: f64 = MAX_SAMPLE_RATE_HZ as f64;
 
 /// An 80-bit IEEE 754 extended float.
 fn extended_to_f64(b: &[u8]) -> Option<f64> {
@@ -674,6 +710,9 @@ fn open_aiff(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result
         }
     };
     src.sample_format = sample_format;
+    if let PcmKind::Int { .. } = kind {
+        src.warnings.extend(small_sample_warning(bits as u16));
+    }
     let (start, data_len, declared) = ssnd.unwrap_or((file_len, 0, 0));
     let block = (kind.bytes() * channels as usize).max(1) as u64;
     let frames = u64::from(comm_frames).min(data_len / block);
@@ -820,6 +859,7 @@ fn decode_symphonia(
     let track_id = track.id;
     let params = track.codec_params.clone();
     src.sample_rate = params.sample_rate.filter(|&r| r > 0).ok_or_else(|| malformed("unknown sample rate"))?;
+    check_rate(src.sample_rate, "the file")?;
     src.channels = u16::try_from(params.channels.map(|c| c.count()).unwrap_or(0)).map_err(|_| unsupported("too many channels"))?;
     src.format = format_from_codec(params.codec, detected);
     src.sample_format = sample_format_of(&params);
