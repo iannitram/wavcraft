@@ -9,19 +9,23 @@
 //! Rules:
 //!
 //! - A range is a half-open `Range<u64>` of frames. An empty range is a no-op: the edit returns
-//!   the same state, with [`Change::None`], and the history records nothing.
-//! - Channels never differ in length, so an edit that changes the length acts on all channels.
-//!   [`delete`] (and so [`cut`]) with only some channels in its mask silences that range in those
-//!   channels and keeps the length, as Audition does (History: "Delete Audio"). [`crop`] and
-//!   [`paste`] act on all channels.
+//!   the same state, with [`Change::None`], and the history records nothing (Audition greys
+//!   Crop, Cut and Delete out with nothing selected).
+//! - Channels never differ in length, so an edit that changes the length acts on all channels,
+//!   and with only some channels in its mask an edit keeps the length, as the installed Audition
+//!   does (26.5.0.82, `plan/tasks/audition-check.md`, 2026-10-16 Result): [`delete`] (and so
+//!   [`cut`]) silences the range in those channels (History: "Delete Audio"); [`crop`] silences
+//!   everything outside the range in those channels; [`paste`] overwrites in those channels from
+//!   its start for the clip's length instead of inserting, stopping at the end of the file.
 //! - Samples are copied only where new audio is made: [`replace_range`], a stereo clip mixed into
 //!   a mono document, a clip from another document's store, and the crossfades.
 //! - **Crossfades** ([`Crossfades`], on by default at 2 ms and 5 ms, as Audition's Preferences >
 //!   Data): `cut_join` where Delete or Cut closes a gap, `edge` at every other boundary an edit
-//!   makes (both ends of a paste, of a silence, of an inserted silence, of a `replace_range`).
-//!   Crop has none. Each crossfade is one small new block, built from the audio that runs past the
-//!   boundary on each side; where there isn't enough (the start or end of the file, a short
-//!   paste) it shortens to what there is. Zero turns a crossfade off, and tests for exact content
+//!   makes (both ends of a paste, of a silence, of an inserted silence, of a `replace_range`, of
+//!   the silences a one-channel crop makes). A crop of all channels has none. Each crossfade is
+//!   one small new block, built from the audio that runs past the boundary on each side; where
+//!   there isn't enough (the start or end of the file, a short paste) it shortens to what there
+//!   is. Zero turns a crossfade off, and tests for exact content
 //!   use [`Crossfades::NONE`].
 //! - The crossfade curve is a raised cosine with the two gains summing to 1 (see
 //!   [`crossfade_gain`]), not equal-power: equal-power lifts correlated audio by up to 3 dB in
@@ -308,11 +312,21 @@ pub fn cut(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Crossfa
     Ok((edit, clip))
 }
 
-/// Paste `clip` at a frame or over a range, on every channel. Equal channel counts paste channel
-/// to channel; a mono clip goes to every channel; a clip of several channels into a mono
-/// document is mixed to mono (their mean: the only case that makes new blocks, apart from a clip
-/// from another document's store, which is copied in). A clip at another sample rate is refused.
-pub fn paste(doc: &DocState, at: PasteAt, clip: &Clip, xf: Crossfades) -> Result<Edit, EditError> {
+/// Paste `clip` at a frame or over a range, into the channels in `channels`.
+///
+/// Equal channel counts paste channel to channel; a mono clip goes to every channel it pastes
+/// into; a clip of several channels into a mono document is mixed to mono (their mean, (L+R)/2
+/// for stereo, as Audition writes: the only case that makes new blocks, apart from a clip from
+/// another document's store, which is copied in). A clip at another sample rate is refused.
+///
+/// With every channel in `channels`, `Insert` puts the clip in and `Replace` puts it in place of
+/// the range. With only some (Audition: "Paste Audio", seen at a cursor mid-file) the length
+/// stays the same: the clip overwrites those channels from the insert frame, or from the start
+/// of a `Replace` range whatever that range's length, for the clip's length, and the other
+/// channels are untouched. Clip frames that would run past the end of the file are dropped (our
+/// choice: Audition was not seen pasting near the end). The overwritten stretch is the edit's
+/// [`Change::SameLength`] range, the one to select afterwards.
+pub fn paste(doc: &DocState, at: PasteAt, clip: &Clip, channels: ChannelMask, xf: Crossfades) -> Result<Edit, EditError> {
     let range = match &at {
         PasteAt::Insert(f) => *f..*f,
         PasteAt::Replace(r) => r.clone(),
@@ -324,40 +338,70 @@ pub fn paste(doc: &DocState, at: PasteAt, clip: &Clip, xf: Crossfades) -> Result
     let n = doc.channel_count();
     let k = clip.channel_count();
     let clip_len = clip.len_frames();
-    if clip_len == 0 || k == 0 {
+    let mask = channels.within(n);
+    if clip_len == 0 || k == 0 || mask == ChannelMask::NONE {
         return Ok(Edit::noop(doc, PASTE));
     }
     let store = doc.store();
-    let foreign = !store.same_store(&clip.store);
-    // One source channel per document channel.
-    let sources: Vec<Arc<Channel>> = if k == n {
-        if foreign {
-            clip.channels.iter().map(|c| import(store, &clip.store, &[c]).map(Arc::new)).collect::<io::Result<_>>()?
-        } else {
-            clip.channels.clone()
-        }
-    } else if k == 1 {
-        let c = if foreign { Arc::new(import(store, &clip.store, &[&clip.channels[0]])?) } else { clip.channels[0].clone() };
-        vec![c; n]
-    } else if n == 1 {
-        let all: Vec<&Arc<Channel>> = clip.channels.iter().collect();
-        vec![Arc::new(import(store, &clip.store, &all)?)]
-    } else {
-        return Err(EditError::Channels { clip: k, doc: n });
-    };
     let len = doc.len_frames();
     let edge = Crossfades::frames(xf.edge, doc.sample_rate());
+    if !mask.covers_all(n) {
+        // Overwrite in place: `[range.start, range.start + written)` of the active channels.
+        let written = clip_len.min(len - range.start);
+        if written == 0 {
+            return Ok(Edit::noop(doc, PASTE));
+        }
+        let end = range.start + written;
+        let mut out: Vec<Arc<Channel>> = doc.channels().to_vec();
+        for (c, src) in paste_sources(store, clip, n, &mask.active(n))? {
+            let Some(ch) = doc.channel(c) else { continue };
+            let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(&src, 0, written, edge), Seg::new(ch, end, len - end, edge)];
+            out[c] = Arc::new(build(store, &segs)?);
+        }
+        return finish(doc, out, PASTE, Change::SameLength { range: range.start..end, channels: mask });
+    }
     let mut out = Vec::with_capacity(n);
-    for (ch, src) in doc.channels().iter().zip(&sources) {
-        let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(src, 0, clip_len, edge), Seg::new(ch, range.end, len - range.end, edge)];
+    for (c, src) in paste_sources(store, clip, n, &mask.active(n))? {
+        let Some(ch) = doc.channel(c) else { continue };
+        let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(&src, 0, clip_len, edge), Seg::new(ch, range.end, len - range.end, edge)];
         out.push(Arc::new(build(store, &segs)?));
     }
     let change = if range.end - range.start == clip_len {
-        Change::SameLength { range: range.start..range.end, channels: ChannelMask::ALL.within(n) }
+        Change::SameLength { range: range.start..range.end, channels: mask }
     } else {
         Change::LengthFrom { frame: range.start }
     };
     finish(doc, out, PASTE, change)
+}
+
+/// The clip channel each of the document channels in `active` gets, as `(channel, source)`:
+/// channel to channel for equal counts, the one channel of a mono clip to each, or the clip's
+/// channels mixed to their mean for a mono document. A clip from another store is copied in
+/// (only the channels used; a mono clip once).
+fn paste_sources(store: &Store, clip: &Clip, n: usize, active: &[usize]) -> Result<Vec<(usize, Arc<Channel>)>, EditError> {
+    let k = clip.channels.len();
+    let foreign = !store.same_store(&clip.store);
+    let bring =
+        |c: &Arc<Channel>| -> io::Result<Arc<Channel>> { if foreign { Ok(Arc::new(import(store, &clip.store, &[c])?)) } else { Ok(c.clone()) } };
+    if k == n {
+        let mut out = Vec::with_capacity(active.len());
+        for &c in active {
+            if let Some(src) = clip.channels.get(c) {
+                out.push((c, bring(src)?));
+            }
+        }
+        Ok(out)
+    } else if k == 1 {
+        let Some(first) = clip.channels.first() else { return Ok(Vec::new()) };
+        let src = bring(first)?;
+        Ok(active.iter().map(|&c| (c, src.clone())).collect())
+    } else if n == 1 {
+        let all: Vec<&Arc<Channel>> = clip.channels.iter().collect();
+        let mixed = Arc::new(import(store, &clip.store, &all)?);
+        Ok(active.iter().map(|&c| (c, mixed.clone())).collect())
+    } else {
+        Err(EditError::Channels { clip: k, doc: n })
+    }
 }
 
 /// Silence `range` in `channels`: the zero block, same length, nothing written to disk (apart
@@ -405,14 +449,41 @@ pub fn insert_silence(doc: &DocState, at: u64, frames: u64, xf: Crossfades) -> R
     finish(doc, out, INSERT_SILENCE, Change::LengthFrom { frame: at })
 }
 
-/// Keep only `range`, on every channel. No crossfades: its ends become the file's.
-pub fn crop(doc: &DocState, range: Range<u64>) -> Result<Edit, EditError> {
+/// Keep only `range`. With every channel in `channels`: everything else goes, on every channel,
+/// with no crossfades (its ends become the file's). With only some (Audition: "Crop Audio"):
+/// everything outside `range` is silenced in those channels and the length stays the same; the
+/// other channels are untouched, and an `edge` crossfade inside each silence fades the audio out
+/// and in, as [`silence`] does. An empty range is no edit (Audition greys Crop out with nothing
+/// selected), and so is a range that already covers the whole file.
+pub fn crop(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Crossfades) -> Result<Edit, EditError> {
     check_range(doc, &range)?;
-    if range.is_empty() || (range.start == 0 && range.end == doc.len_frames()) {
+    let n = doc.channel_count();
+    let mask = channels.within(n);
+    let len = doc.len_frames();
+    if range.is_empty() || (range.start == 0 && range.end == len) || mask == ChannelMask::NONE {
         return Ok(Edit::noop(doc, CROP));
     }
-    let out = doc.channels().iter().map(|ch| Arc::new(slice(ch, range.clone()))).collect();
-    finish(doc, out, CROP, Change::LengthFrom { frame: 0 })
+    if mask.covers_all(n) {
+        let out = doc.channels().iter().map(|ch| Arc::new(slice(ch, range.clone()))).collect();
+        return finish(doc, out, CROP, Change::LengthFrom { frame: 0 });
+    }
+    let edge = Crossfades::frames(xf.edge, doc.sample_rate());
+    let before = zeros(range.start);
+    let after = zeros(len - range.end);
+    let mut out = Vec::with_capacity(n);
+    for (c, ch) in doc.channels().iter().enumerate() {
+        if mask.contains(c) {
+            let segs = [
+                Seg::new(&before, 0, before.len(), 0),
+                Seg::new(ch, range.start, range.end - range.start, edge),
+                Seg::new(&after, 0, after.len(), edge),
+            ];
+            out.push(Arc::new(build(doc.store(), &segs)?));
+        } else {
+            out.push(ch.clone());
+        }
+    }
+    finish(doc, out, CROP, Change::SameLength { range: 0..len, channels: mask })
 }
 
 /// The general path effects use: new audio for `range` of `channels`, made chunk by chunk.

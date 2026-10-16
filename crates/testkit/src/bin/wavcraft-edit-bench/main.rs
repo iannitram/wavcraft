@@ -120,7 +120,7 @@ fn run() -> Result<(), String> {
     let t_undo = t.elapsed();
     h.redo().ok_or("redo")?;
     let t = Instant::now();
-    let ed = edit::paste(h.current(), PasteAt::Insert(mid.start), &clip, Crossfades::default()).map_err(|e| e.to_string())?;
+    let ed = edit::paste(h.current(), PasteAt::Insert(mid.start), &clip, ChannelMask::ALL, Crossfades::default()).map_err(|e| e.to_string())?;
     let t_paste = t.elapsed();
     h.push_edit(ed);
     println!("cut + push: {} + {}; undo of the cut: {}; paste the hour back: {}", ms(t_cut), ms(t_push), ms(t_undo), ms(t_paste));

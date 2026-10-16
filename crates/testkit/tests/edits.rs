@@ -77,11 +77,19 @@ fn edits_on_the_ramp_match_the_model() {
 
         let mut m = model.clone();
         m.splice(ru.clone(), clip_model.iter().copied());
-        assert_eq!(content(&edit::paste(&doc, PasteAt::Replace(r.clone()), &clip, NONE).unwrap().state)[0], bits(&m), "paste over {r:?}");
+        assert_eq!(
+            content(&edit::paste(&doc, PasteAt::Replace(r.clone()), &clip, ChannelMask::ALL, NONE).unwrap().state)[0],
+            bits(&m),
+            "paste over {r:?}"
+        );
 
         let mut m = model.clone();
         m.splice(ru.start..ru.start, clip_model.iter().copied());
-        assert_eq!(content(&edit::paste(&doc, PasteAt::Insert(r.start), &clip, NONE).unwrap().state)[0], bits(&m), "paste at {r:?}");
+        assert_eq!(
+            content(&edit::paste(&doc, PasteAt::Insert(r.start), &clip, ChannelMask::ALL, NONE).unwrap().state)[0],
+            bits(&m),
+            "paste at {r:?}"
+        );
 
         let mut m = model.clone();
         m.splice(ru.end..ru.end, std::iter::repeat_n(0.0, 1_001));
@@ -89,7 +97,7 @@ fn edits_on_the_ramp_match_the_model() {
 
         let m = model[ru.clone()].to_vec();
         if !r.is_empty() {
-            assert_eq!(content(&edit::crop(&doc, r.clone()).unwrap().state)[0], bits(&m), "crop {r:?}");
+            assert_eq!(content(&edit::crop(&doc, r.clone(), ChannelMask::ALL, NONE).unwrap().state)[0], bits(&m), "crop {r:?}");
         }
 
         let m: Vec<f32> = model.iter().enumerate().map(|(i, x)| if ru.contains(&i) { x * 0.5 } else { *x }).collect();

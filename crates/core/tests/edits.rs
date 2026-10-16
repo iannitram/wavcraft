@@ -1,6 +1,7 @@
 //! Task 04 acceptance tests on synthetic data: the edits against a reference model (tests 1, 2),
 //! undo and redo (3-5), the disk cap (6), silence writes nothing (7), `replace_range` streams and
-//! cancels (7b), crossfades (8, 9d), paste channel rules (9), and the history's own behaviour.
+//! cancels (7b), crossfades (8, 9d), paste channel rules (9), one-channel crop and paste, the empty-range
+//! regression (W1), and the history's own behaviour.
 //! The kit-file tests (1 on `ramp`, 9b, 9c, 10) are in `crates/testkit/tests/edits.rs`.
 
 use std::collections::HashSet;
@@ -112,11 +113,25 @@ impl Model {
         self.0.iter().enumerate().filter(|(c, _)| mask.contains(*c)).map(|(_, v)| v[r.clone()].to_vec()).collect()
     }
 
-    fn paste(&mut self, r: Range<usize>, clip: &[Vec<f32>]) {
+    /// Every channel in `mask`: insert (or replace `r`). Only some: overwrite those channels from
+    /// `r.start` for the clip's length, stopping at the end; the length stays the same.
+    fn paste(&mut self, r: Range<usize>, clip: &[Vec<f32>], mask: ChannelMask) {
         if clip.is_empty() || clip[0].is_empty() {
             return;
         }
         let n = self.0.len();
+        if !mask.covers_all(n) {
+            let len = self.len();
+            let written = clip[0].len().min(len - r.start);
+            for (c, ch) in self.0.iter_mut().enumerate() {
+                if !mask.contains(c) {
+                    continue;
+                }
+                let src = if clip.len() == n { &clip[c] } else { &clip[0] };
+                ch[r.start..r.start + written].copy_from_slice(&src[..written]);
+            }
+            return;
+        }
         let src: Vec<Vec<f32>> = if clip.len() == n {
             clip.to_vec()
         } else if clip.len() == 1 {
@@ -150,7 +165,23 @@ impl Model {
         }
     }
 
-    fn crop(&mut self, r: Range<usize>) {
+    /// Crop of an empty range is no edit: Audition greys Crop out with nothing selected and Ctrl+T
+    /// leaves the file as it is (`plan/tasks/audition-check.md`, 2026-10-16 Result, item 6).
+    /// Every channel in `mask`: keep only `r`. Only some (Audition's one-channel Crop, the same
+    /// Result, item 4a): silence everything outside `r` in those channels, same length.
+    fn crop(&mut self, r: Range<usize>, mask: ChannelMask) {
+        if r.is_empty() {
+            return;
+        }
+        if !mask.covers_all(self.0.len()) {
+            for (i, c) in self.0.iter_mut().enumerate() {
+                if mask.contains(i) {
+                    c[..r.start].fill(0.0);
+                    c[r.end..].fill(0.0);
+                }
+            }
+            return;
+        }
         for c in &mut self.0 {
             *c = c[r.clone()].to_vec();
         }
@@ -229,12 +260,15 @@ fn apply(op: &Op, h: &mut History, model: &mut Model, clipboard: &mut Option<(Cl
         }
         3 => {
             let Some((clip, want)) = clipboard.as_ref() else { return };
+            // The top bit of `b` picks the op's own mask (one channel or both) over all channels;
+            // `op.mask` still picks insert (1) or replace (2, 3).
+            let pmask = if op.b & 0x8000_0000 != 0 { mask } else { ChannelMask::ALL };
             if op.mask == 1 {
-                model.paste(s as usize..s as usize, want);
-                edit::paste(&doc, PasteAt::Insert(s), clip, NONE).unwrap()
+                model.paste(s as usize..s as usize, want, pmask);
+                edit::paste(&doc, PasteAt::Insert(s), clip, pmask, NONE).unwrap()
             } else {
-                model.paste(ru, want);
-                edit::paste(&doc, PasteAt::Replace(r), clip, NONE).unwrap()
+                model.paste(ru, want, pmask);
+                edit::paste(&doc, PasteAt::Replace(r), clip, pmask, NONE).unwrap()
             }
         }
         4 => {
@@ -249,8 +283,9 @@ fn apply(op: &Op, h: &mut History, model: &mut Model, clipboard: &mut Option<(Cl
         6 => {
             // Keep crops from emptying the document too often: at least half of it.
             let e = (s + len / 2 + u64::from(op.b) % (len / 2 + 1)).min(len);
-            model.crop(s as usize..e as usize);
-            edit::crop(&doc, s..e).unwrap()
+            // Mask 3 is both channels (the length changes); 1 or 2 one channel (silences, same length).
+            model.crop(s as usize..e as usize, mask);
+            edit::crop(&doc, s..e, mask, NONE).unwrap()
         }
         _ => {
             model.replace(ru, mask);
@@ -312,6 +347,54 @@ proptest! {
     }
 }
 
+/// W1 (the Legion Go's verification, 2026-10-15): a Crop of an empty range, at the end of the file
+/// (`s == len`, what the property test kept drawing) and in the middle (`s == e`), leaves a
+/// non-empty document unchanged and adds no history step, in the edit and in the model; so do
+/// Delete and Cut of an empty range. Fixed inputs, no random draw (`plan/tasks/audition-check.md`,
+/// 2026-10-16 Result, item 6).
+#[test]
+fn crop_of_an_empty_range_changes_nothing() {
+    let dir = TempDir::new("w1");
+    let s = store(&dir.0.join("s"), 1 << 20);
+    let frames = 10_000usize;
+    let start = data(2, frames, 21);
+    let doc = doc_from(&s, &start, 3_000);
+    let len = frames as u64;
+    for r in [len..len, 4_321..4_321, 0..0] {
+        let ru = r.start as usize..r.end as usize;
+        let mut h = History::new(doc.clone(), u64::MAX);
+        let mut m = Model(start.clone());
+        m.crop(ru.clone(), ChannelMask::ALL);
+        assert_eq!(m, Model(start.clone()), "model crop {r:?}");
+        m.delete(ru.clone(), ChannelMask::ALL);
+        assert_eq!(m, Model(start.clone()), "model delete {r:?}");
+        let eds = [
+            edit::crop(&doc, r.clone(), ChannelMask::ALL, NONE).unwrap(),
+            edit::delete(&doc, r.clone(), ChannelMask::ALL, NONE).unwrap(),
+            edit::delete(&doc, r.clone(), ChannelMask::only(0), NONE).unwrap(),
+            edit::cut(&doc, r.clone(), ChannelMask::ALL, NONE).unwrap().0,
+            edit::cut(&doc, r.clone(), ChannelMask::only(1), NONE).unwrap().0,
+        ];
+        for ed in eds {
+            assert!(ed.is_noop(), "{} {r:?}", ed.label);
+            assert_eq!(ed.state.len_frames(), len);
+            assert!(ed.state.channels().iter().zip(doc.channels()).all(|(a, b)| std::sync::Arc::ptr_eq(a, b)));
+            check(&ed.state, &m, &format!("{} {r:?}", ed.label));
+            assert_eq!(h.push_edit(ed), 0);
+        }
+        assert_eq!(h.steps().len(), 1, "no history step for {r:?}");
+    }
+    // The property test's own path, with the draw that failed on main: kind 6 (Crop), `a == len`
+    // so `s == len`, both channels.
+    let mut h = History::new(doc.clone(), u64::MAX);
+    let mut model = Model(start.clone());
+    let mut clipboard = None;
+    apply(&Op { kind: 6, a: frames as u32, b: 0, mask: 3 }, &mut h, &mut model, &mut clipboard);
+    check(h.current(), &model, "kind 6 at s == len");
+    assert_eq!(model.len(), frames);
+    assert_eq!(h.steps().len(), 1);
+}
+
 /// Test 1 (synthetic part): each edit at the start, middle and end, across block edges, a
 /// 1-frame range and the whole file, crossfades 0, against the model.
 #[test]
@@ -346,19 +429,23 @@ fn each_edit_at_every_kind_of_place_matches_the_model() {
             let mut m = Model(start.clone());
             m.replace(ru.clone(), mask);
             check(&replace(&doc, r.clone(), mask, NONE).state, &m, &format!("replace {r:?} {mask:?}"));
-        }
-        let mut m = Model(start.clone());
-        m.crop(ru.clone());
-        check(&edit::crop(&doc, r.clone()).unwrap().state, &m, &format!("crop {r:?}"));
 
-        let mut m = Model(start.clone());
-        m.paste(ru.clone(), &clip_want);
-        check(&edit::paste(&doc, PasteAt::Replace(r.clone()), &clip_src, NONE).unwrap().state, &m, &format!("paste over {r:?}"));
-
-        for at in [r.start, r.end] {
             let mut m = Model(start.clone());
-            m.paste(at as usize..at as usize, &clip_want);
-            check(&edit::paste(&doc, PasteAt::Insert(at), &clip_src, NONE).unwrap().state, &m, &format!("paste at {at}"));
+            m.crop(ru.clone(), mask);
+            check(&edit::crop(&doc, r.clone(), mask, NONE).unwrap().state, &m, &format!("crop {r:?} {mask:?}"));
+
+            let mut m = Model(start.clone());
+            m.paste(ru.clone(), &clip_want, mask);
+            let ed = edit::paste(&doc, PasteAt::Replace(r.clone()), &clip_src, mask, NONE).unwrap();
+            check(&ed.state, &m, &format!("paste over {r:?} {mask:?}"));
+
+            for at in [r.start, r.end] {
+                let mut m = Model(start.clone());
+                m.paste(at as usize..at as usize, &clip_want, mask);
+                check(&edit::paste(&doc, PasteAt::Insert(at), &clip_src, mask, NONE).unwrap().state, &m, &format!("paste at {at} {mask:?}"));
+            }
+        }
+        for at in [r.start, r.end] {
             let mut m = Model(start.clone());
             m.insert_silence(at as usize, 777);
             check(&edit::insert_silence(&doc, at, 777, NONE).unwrap().state, &m, &format!("insert silence at {at}"));
@@ -369,7 +456,17 @@ fn each_edit_at_every_kind_of_place_matches_the_model() {
     for ed in [
         edit::delete(&doc, 5..5, ChannelMask::ALL, NONE).unwrap(),
         edit::silence(&doc, 5..5, ChannelMask::ALL, NONE).unwrap(),
-        edit::crop(&doc, 5..5).unwrap(),
+        edit::crop(&doc, 5..5, ChannelMask::ALL, NONE).unwrap(),
+        edit::crop(&doc, len..len, ChannelMask::ALL, NONE).unwrap(),
+        edit::crop(&doc, 0..0, ChannelMask::ALL, NONE).unwrap(),
+        edit::crop(&doc, 5..5, ChannelMask::only(0), NONE).unwrap(),
+        edit::crop(&doc, 0..len, ChannelMask::only(1), NONE).unwrap(),
+        edit::crop(&doc, 5..50, ChannelMask::NONE, NONE).unwrap(),
+        edit::paste(&doc, PasteAt::Insert(len), &clip_src, ChannelMask::only(0), NONE).unwrap(),
+        edit::paste(&doc, PasteAt::Insert(5), &clip_src, ChannelMask::NONE, NONE).unwrap(),
+        edit::cut(&doc, 5..5, ChannelMask::ALL, NONE).unwrap().0,
+        edit::cut(&doc, len..len, ChannelMask::only(1), NONE).unwrap().0,
+        edit::delete(&doc, len..len, ChannelMask::ALL, NONE).unwrap(),
         edit::insert_silence(&doc, 5, 0, NONE).unwrap(),
         replace(&doc, 5..5, ChannelMask::ALL, NONE),
         edit::delete(&doc, 5..50, ChannelMask::NONE, NONE).unwrap(),
@@ -617,43 +714,46 @@ fn paste_maps_channels_as_specified() {
     let mono = doc_from(&s, &mo, 3_000);
     // mono -> stereo: both channels get it.
     let clip = edit::copy(&mono, 100..600, ChannelMask::ALL).unwrap();
-    let out = edit::paste(&stereo, PasteAt::Insert(5_000), &clip, NONE).unwrap();
+    let out = edit::paste(&stereo, PasteAt::Insert(5_000), &clip, ChannelMask::ALL, NONE).unwrap();
     let mut m = Model(st.clone());
-    m.paste(5_000..5_000, &[mo[0][100..600].to_vec()]);
+    m.paste(5_000..5_000, &[mo[0][100..600].to_vec()], ChannelMask::ALL);
     check(&out.state, &m, "mono into stereo");
     assert_eq!(out.change, Change::LengthFrom { frame: 5_000 });
     // stereo -> mono: mixed (the mean), as new blocks.
     let clip = edit::copy(&stereo, 2_000..2_500, ChannelMask::ALL).unwrap();
-    let out = edit::paste(&mono, PasteAt::Replace(10..510), &clip, NONE).unwrap();
+    let out = edit::paste(&mono, PasteAt::Replace(10..510), &clip, ChannelMask::ALL, NONE).unwrap();
     let mix: Vec<f32> = (2_000..2_500).map(|i| (st[0][i] + st[1][i]) * 0.5).collect();
     let mut m = Model(mo.clone());
-    m.paste(10..510, &[mix]);
+    m.paste(10..510, &[mix], ChannelMask::ALL);
     check(&out.state, &m, "stereo into mono");
     assert_eq!(out.change, Change::SameLength { range: 10..510, channels: ChannelMask::only(0) });
     // stereo -> stereo: channel to channel.
-    let out = edit::paste(&stereo, PasteAt::Insert(0), &clip, NONE).unwrap();
+    let out = edit::paste(&stereo, PasteAt::Insert(0), &clip, ChannelMask::ALL, NONE).unwrap();
     let mut m = Model(st.clone());
-    m.paste(0..0, &Model(st.clone()).copy(2_000..2_500, ChannelMask::ALL));
+    m.paste(0..0, &Model(st.clone()).copy(2_000..2_500, ChannelMask::ALL), ChannelMask::ALL);
     check(&out.state, &m, "stereo into stereo");
     // A one-channel clip (right only) into stereo goes to both.
     let right = edit::copy(&stereo, 0..100, ChannelMask::only(1)).unwrap();
-    let out = edit::paste(&stereo, PasteAt::Insert(0), &right, NONE).unwrap();
+    let out = edit::paste(&stereo, PasteAt::Insert(0), &right, ChannelMask::ALL, NONE).unwrap();
     assert_eq!(content(&out.state)[0][..100], st[1][..100]);
     // A clip from another document's store is copied in.
     let dir2 = TempDir::new("t9-other");
     let s2 = store(&dir2.0.join("s"), 1 << 20);
     let other = doc_from(&s2, &data(2, 1_000, 11), 1_000);
     let foreign = edit::copy(&other, 0..1_000, ChannelMask::ALL).unwrap();
-    let out = edit::paste(&stereo, PasteAt::Insert(0), &foreign, NONE).unwrap();
+    let out = edit::paste(&stereo, PasteAt::Insert(0), &foreign, ChannelMask::ALL, NONE).unwrap();
     assert!(out.state.channels().iter().all(|c| c.pieces().iter().all(|p| p.block().belongs_to(&s))));
     let mut m = Model(st.clone());
-    m.paste(0..0, &data(2, 1_000, 11));
+    m.paste(0..0, &data(2, 1_000, 11), ChannelMask::ALL);
     check(&out.state, &m, "clip from another store");
     // Other sample rates and channel layouts are refused.
     let other_rate =
         DocState::new(s.clone(), vec![Channel::from_pieces([Piece::zeros(100).unwrap()])], 44_100, SourceFormat::synthetic(44_100, 1)).unwrap();
     let c44 = edit::copy(&other_rate, 0..100, ChannelMask::ALL).unwrap();
-    assert!(matches!(edit::paste(&stereo, PasteAt::Insert(0), &c44, NONE), Err(EditError::SampleRate { clip: 44_100, doc: 48_000 })));
+    assert!(matches!(
+        edit::paste(&stereo, PasteAt::Insert(0), &c44, ChannelMask::ALL, NONE),
+        Err(EditError::SampleRate { clip: 44_100, doc: 48_000 })
+    ));
     let three = DocState::new(
         s.clone(),
         (0..3).map(|_| Channel::from_pieces([Piece::zeros(100).unwrap()])).collect(),
@@ -662,7 +762,100 @@ fn paste_maps_channels_as_specified() {
     )
     .unwrap();
     let c3 = edit::copy(&three, 0..100, ChannelMask::ALL).unwrap();
-    assert!(matches!(edit::paste(&stereo, PasteAt::Insert(0), &c3, NONE), Err(EditError::Channels { clip: 3, doc: 2 })));
+    assert!(matches!(edit::paste(&stereo, PasteAt::Insert(0), &c3, ChannelMask::ALL, NONE), Err(EditError::Channels { clip: 3, doc: 2 })));
+}
+
+/// One channel active (Audition 26.5.0.82, `plan/tasks/audition-check.md`, 2026-10-16 Result,
+/// item 4a): Crop of one channel of a stereo document, at the start, middle and end, silences
+/// everything outside the range in that channel, keeps the length, and leaves the other channel
+/// byte-identical (the same `Arc`).
+#[test]
+fn one_channel_crop_silences_outside_and_keeps_the_length() {
+    let dir = TempDir::new("crop1");
+    let s = store(&dir.0.join("s"), 1 << 20);
+    let frames = 20_000usize;
+    let len = frames as u64;
+    let start = data(2, frames, 31);
+    let doc = doc_from(&s, &start, 3_000);
+    for ch in 0..2 {
+        let other = 1 - ch;
+        for r in [0..3_000u64, 8_000..12_000, 17_000..len, 0..1, len - 1..len] {
+            let ru = r.start as usize..r.end as usize;
+            let what = format!("crop {r:?} channel {ch}");
+            let ed = edit::crop(&doc, r.clone(), ChannelMask::only(ch), NONE).unwrap();
+            assert_eq!(ed.label, edit::CROP);
+            assert_eq!(ed.change, Change::SameLength { range: 0..len, channels: ChannelMask::only(ch) }, "{what}");
+            assert_eq!(ed.state.len_frames(), len, "{what}");
+            assert!(std::sync::Arc::ptr_eq(&ed.state.channels()[other], &doc.channels()[other]), "{what}");
+            let got = content(&ed.state);
+            assert_eq!(bits(&got[other..other + 1]), bits(&start[other..other + 1]), "{what}");
+            assert!(got[ch][..ru.start].iter().chain(&got[ch][ru.end..]).all(|x| x.to_bits() == 0), "{what}");
+            assert_eq!(bits(&[got[ch][ru.clone()].to_vec()]), bits(&[start[ch][ru.clone()].to_vec()]), "{what}");
+            let mut m = Model(start.clone());
+            m.crop(ru, ChannelMask::only(ch));
+            check(&ed.state, &m, &what);
+        }
+    }
+    // Default crossfades: the fades sit inside the silences, so the kept range is exact.
+    let ed = edit::crop(&doc, 8_000..12_000, ChannelMask::only(0), Crossfades::default()).unwrap();
+    assert_eq!(fade_spans(&doc, &ed.state), vec![(8_000 - 240, 240), (12_000, 240)]);
+    let got = content(&ed.state);
+    assert_eq!(bits(&[got[0][8_000..12_000].to_vec()]), bits(&[start[0][8_000..12_000].to_vec()]));
+    assert!(got[0][..8_000 - 240].iter().chain(&got[0][12_000 + 240..]).all(|x| x.to_bits() == 0));
+    assert!(std::sync::Arc::ptr_eq(&ed.state.channels()[1], &doc.channels()[1]));
+}
+
+/// One channel active (the same Result, item 4c): Paste into one channel of a stereo document
+/// overwrites that channel from the cursor (or a selection's start, whatever the selection's
+/// length) for the clip's length, keeps the length, leaves the other channel byte-identical,
+/// and reports the pasted range (what is selected afterwards). Near the end of the file the clip
+/// is cut short (our choice: Audition was only seen mid-file).
+#[test]
+fn one_channel_paste_overwrites_and_keeps_the_length() {
+    let dir = TempDir::new("paste1");
+    let s = store(&dir.0.join("s"), 1 << 20);
+    let frames = 20_000usize;
+    let len = frames as u64;
+    let start = data(2, frames, 41);
+    let doc = doc_from(&s, &start, 3_000);
+    let mono = edit::copy(&doc, 1_000..2_000, ChannelMask::only(1)).unwrap();
+    let mono_want = Model(start.clone()).copy(1_000..2_000, ChannelMask::only(1));
+    let stereo = edit::copy(&doc, 5_000..6_500, ChannelMask::ALL).unwrap();
+    let stereo_want = Model(start.clone()).copy(5_000..6_500, ChannelMask::ALL);
+    let targets =
+        [PasteAt::Insert(0), PasteAt::Insert(9_500), PasteAt::Insert(len - 300), PasteAt::Replace(8_000..8_010), PasteAt::Replace(3_000..12_000)];
+    for ch in 0..2 {
+        let other = 1 - ch;
+        let mask = ChannelMask::only(ch);
+        for (clip, want) in [(&mono, &mono_want), (&stereo, &stereo_want)] {
+            for at in &targets {
+                let r = match at {
+                    PasteAt::Insert(f) => *f as usize..*f as usize,
+                    PasteAt::Replace(r) => r.start as usize..r.end as usize,
+                };
+                let (f, t) = (r.start, (r.start + clip.len_frames() as usize).min(frames));
+                let what = format!("paste {at:?} channel {ch}, a {}-channel clip", clip.channel_count());
+                let ed = edit::paste(&doc, at.clone(), clip, mask, NONE).unwrap();
+                assert_eq!(ed.label, edit::PASTE);
+                assert_eq!(ed.change, Change::SameLength { range: f as u64..t as u64, channels: mask }, "{what}");
+                assert_eq!(ed.state.len_frames(), len, "{what}");
+                assert!(std::sync::Arc::ptr_eq(&ed.state.channels()[other], &doc.channels()[other]), "{what}");
+                let got = content(&ed.state);
+                let src = if want.len() == 2 { &want[ch] } else { &want[0] };
+                assert_eq!(bits(&[got[ch][f..t].to_vec()]), bits(&[src[..t - f].to_vec()]), "{what}");
+                assert_eq!(
+                    bits(&[got[ch][..f].to_vec(), got[ch][t..].to_vec()]),
+                    bits(&[start[ch][..f].to_vec(), start[ch][t..].to_vec()]),
+                    "{what}"
+                );
+                let mut m = Model(start.clone());
+                m.paste(r, want, mask);
+                check(&ed.state, &m, &what);
+            }
+        }
+        // At the very end there is nothing to overwrite.
+        assert!(edit::paste(&doc, PasteAt::Insert(len), &mono, mask, NONE).unwrap().is_noop());
+    }
 }
 
 /// Test 9d: default crossfades (2 ms / 5 ms) inside a full-scale 1 kHz sine: a Delete, a paste, a
@@ -696,11 +889,11 @@ fn default_crossfades_leave_no_click_and_have_their_lengths() {
 
     // A clip of the sine at another phase, pasted in and over a range.
     let clip = edit::copy(&doc, 1_011..20_000, ChannelMask::ALL).unwrap();
-    let ins = edit::paste(&doc, PasteAt::Insert(70_005), &clip, xf).unwrap().state;
+    let ins = edit::paste(&doc, PasteAt::Insert(70_005), &clip, ChannelMask::ALL, xf).unwrap().state;
     no_click(&ins, "paste insert");
     let l = 20_000 - 1_011;
     assert_eq!(fade_spans(&doc, &ins), vec![(70_005, 240), (70_005 + l - 240, 240)]);
-    let over = edit::paste(&doc, PasteAt::Replace(70_005..80_000), &clip, xf).unwrap().state;
+    let over = edit::paste(&doc, PasteAt::Replace(70_005..80_000), &clip, ChannelMask::ALL, xf).unwrap().state;
     no_click(&over, "paste over");
     assert_eq!(fade_spans(&doc, &over), vec![(70_005, 240), (70_005 + l - 240, 240)]);
 
@@ -749,7 +942,7 @@ fn fades_shorten_at_the_file_ends() {
     assert_eq!(fade_spans(&doc, &d), vec![(0, 96)]);
     // Paste a short clip: the two fades share it.
     let clip = edit::copy(&doc, 500..600, ChannelMask::ALL).unwrap();
-    let p = edit::paste(&doc, PasteAt::Insert(5_000), &clip, xf).unwrap().state;
+    let p = edit::paste(&doc, PasteAt::Insert(5_000), &clip, ChannelMask::ALL, xf).unwrap().state;
     assert_eq!(fade_spans(&doc, &p), vec![(5_000, 100)]);
     // One-channel delete: the right channel is the same Arc.
     let one = edit::delete(&doc, 2_000..3_000, ChannelMask::only(0), xf).unwrap();
@@ -770,7 +963,7 @@ fn history_clear_go_to_labels_and_space() {
     let (ed, clip) = edit::cut(&doc, 100..200, ChannelMask::ALL, NONE).unwrap();
     h.push_edit(ed);
     assert_eq!(h.undo_label(), Some("Cut"));
-    let ed = edit::paste(h.current(), PasteAt::Insert(0), &clip, NONE).unwrap();
+    let ed = edit::paste(h.current(), PasteAt::Insert(0), &clip, ChannelMask::ALL, NONE).unwrap();
     h.push_edit(ed);
     assert_eq!(h.steps()[2].made_bytes(), 0, "a paste shares blocks");
     let ed = replace(h.current(), 0..1_000, ChannelMask::only(1), NONE);

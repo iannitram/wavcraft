@@ -641,7 +641,7 @@ pub fn random_edit(
             };
             let at = rng.below(len + 1);
             let target = if rng.below(2) == 0 { PasteAt::Insert(at) } else { PasteAt::Replace(at..(at + rng.below(max_range) + 1).min(len)) };
-            let ed = edit::paste(&doc, target, &clip, xf)?;
+            let ed = edit::paste(&doc, target, &clip, ChannelMask::ALL, xf)?;
             *clipboard = Some(clip);
             ed
         }
@@ -650,7 +650,7 @@ pub fn random_edit(
         7 => {
             let keep = len - len / 100;
             let from = rng.below(len - keep + 1);
-            edit::crop(&doc, from..from + keep)?
+            edit::crop(&doc, from..from + keep, ChannelMask::ALL, xf)?
         }
         _ => {
             let e = (s + rng.below(10 * u64::from(doc.sample_rate())) + 1).min(len);
