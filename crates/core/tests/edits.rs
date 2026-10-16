@@ -150,7 +150,12 @@ impl Model {
         }
     }
 
+    /// Crop of an empty range is no edit: Audition greys Crop out with nothing selected and Ctrl+T
+    /// leaves the file as it is (`plan/tasks/audition-check.md`, 2026-10-16 Result, item 6).
     fn crop(&mut self, r: Range<usize>) {
+        if r.is_empty() {
+            return;
+        }
         for c in &mut self.0 {
             *c = c[r.clone()].to_vec();
         }
@@ -312,6 +317,54 @@ proptest! {
     }
 }
 
+/// W1 (the Legion Go's verification, 2026-10-15): a Crop of an empty range, at the end of the file
+/// (`s == len`, what the property test kept drawing) and in the middle (`s == e`), leaves a
+/// non-empty document unchanged and adds no history step, in the edit and in the model; so do
+/// Delete and Cut of an empty range. Fixed inputs, no random draw (`plan/tasks/audition-check.md`,
+/// 2026-10-16 Result, item 6).
+#[test]
+fn crop_of_an_empty_range_changes_nothing() {
+    let dir = TempDir::new("w1");
+    let s = store(&dir.0.join("s"), 1 << 20);
+    let frames = 10_000usize;
+    let start = data(2, frames, 21);
+    let doc = doc_from(&s, &start, 3_000);
+    let len = frames as u64;
+    for r in [len..len, 4_321..4_321, 0..0] {
+        let ru = r.start as usize..r.end as usize;
+        let mut h = History::new(doc.clone(), u64::MAX);
+        let mut m = Model(start.clone());
+        m.crop(ru.clone());
+        assert_eq!(m, Model(start.clone()), "model crop {r:?}");
+        m.delete(ru.clone(), ChannelMask::ALL);
+        assert_eq!(m, Model(start.clone()), "model delete {r:?}");
+        let eds = [
+            edit::crop(&doc, r.clone()).unwrap(),
+            edit::delete(&doc, r.clone(), ChannelMask::ALL, NONE).unwrap(),
+            edit::delete(&doc, r.clone(), ChannelMask::only(0), NONE).unwrap(),
+            edit::cut(&doc, r.clone(), ChannelMask::ALL, NONE).unwrap().0,
+            edit::cut(&doc, r.clone(), ChannelMask::only(1), NONE).unwrap().0,
+        ];
+        for ed in eds {
+            assert!(ed.is_noop(), "{} {r:?}", ed.label);
+            assert_eq!(ed.state.len_frames(), len);
+            assert!(ed.state.channels().iter().zip(doc.channels()).all(|(a, b)| std::sync::Arc::ptr_eq(a, b)));
+            check(&ed.state, &m, &format!("{} {r:?}", ed.label));
+            assert_eq!(h.push_edit(ed), 0);
+        }
+        assert_eq!(h.steps().len(), 1, "no history step for {r:?}");
+    }
+    // The property test's own path, with the draw that failed on main: kind 6 (Crop), `a == len`
+    // so `s == len`, both channels.
+    let mut h = History::new(doc.clone(), u64::MAX);
+    let mut model = Model(start.clone());
+    let mut clipboard = None;
+    apply(&Op { kind: 6, a: frames as u32, b: 0, mask: 3 }, &mut h, &mut model, &mut clipboard);
+    check(h.current(), &model, "kind 6 at s == len");
+    assert_eq!(model.len(), frames);
+    assert_eq!(h.steps().len(), 1);
+}
+
 /// Test 1 (synthetic part): each edit at the start, middle and end, across block edges, a
 /// 1-frame range and the whole file, crossfades 0, against the model.
 #[test]
@@ -370,6 +423,11 @@ fn each_edit_at_every_kind_of_place_matches_the_model() {
         edit::delete(&doc, 5..5, ChannelMask::ALL, NONE).unwrap(),
         edit::silence(&doc, 5..5, ChannelMask::ALL, NONE).unwrap(),
         edit::crop(&doc, 5..5).unwrap(),
+        edit::crop(&doc, len..len).unwrap(),
+        edit::crop(&doc, 0..0).unwrap(),
+        edit::cut(&doc, 5..5, ChannelMask::ALL, NONE).unwrap().0,
+        edit::cut(&doc, len..len, ChannelMask::only(1), NONE).unwrap().0,
+        edit::delete(&doc, len..len, ChannelMask::ALL, NONE).unwrap(),
         edit::insert_silence(&doc, 5, 0, NONE).unwrap(),
         replace(&doc, 5..5, ChannelMask::ALL, NONE),
         edit::delete(&doc, 5..50, ChannelMask::NONE, NONE).unwrap(),
