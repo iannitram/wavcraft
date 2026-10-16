@@ -166,7 +166,7 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
 
     // The file was read above, so an error from here on is the session folder's, not the file's.
     let root = opts.sessions_root.clone().unwrap_or_else(crate::store::default_sessions_root);
-    let store = Store::create_session(Some(root.as_path()),opts.store.clone())
+    let store = Store::create_session(Some(root.as_path()), opts.store.clone())
         .map_err(|e| OpenError::SessionFolder { folder: root.clone(), reason: e.to_string() })?;
     let mut src = SourceFormat::synthetic(0, 0);
     src.path = path.to_path_buf();

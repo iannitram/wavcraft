@@ -80,7 +80,7 @@ fn open_at(path: &Path, root: &Path) -> Result<DocState, OpenError> {
 /// The error is the session folder's: it names `folder` and says how to choose another, and does
 /// not blame the file.
 fn assert_session_folder_error(result: Result<DocState, OpenError>, folder: &Path) {
-    let err = result.err().expect("the open should fail");
+    let err = result.expect_err("the open should fail");
     let text = err.to_string();
     match &err {
         OpenError::SessionFolder { folder: f, .. } => assert_eq!(f, folder, "{text}"),
@@ -106,7 +106,7 @@ fn a_session_folder_that_cannot_be_made_is_named_not_the_file() {
 
     // The other case: the source can't be read, the session folder is fine.
     let fine = TempDir::new("folder-made-sessions");
-    let err = open_at(&dir.0.join("missing.wav"), &fine.0).err().expect("a missing file fails");
+    let err = open_at(&dir.0.join("missing.wav"), &fine.0).expect_err("a missing file fails");
     assert!(matches!(err, OpenError::Io(_)), "{err:?}");
     assert!(err.to_string().starts_with("cannot read the file"), "{err}");
     // And it opens once the session folder is one that works.
@@ -191,7 +191,11 @@ fn a_block_align_that_disagrees_with_the_format_is_refused() {
     // Stereo 16-bit takes 4 bytes a frame.
     for block_align in [0u16, 2, 3, 8, u16::MAX] {
         let h = Header { block_align, ..Header::good() };
-        assert_refused(open_bytes(&dir, &format!("align-{block_align}.wav"), &wav(h, 4_000), &root.0), "block-align", &format!("block-align {block_align}"));
+        assert_refused(
+            open_bytes(&dir, &format!("align-{block_align}.wav"), &wav(h, 4_000), &root.0),
+            "block-align",
+            &format!("block-align {block_align}"),
+        );
     }
     // 24-bit mono takes 3.
     let h = Header { channels: 1, bits: 24, block_align: 4, data_declared: 3_000, ..Header::good() };
