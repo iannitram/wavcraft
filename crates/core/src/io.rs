@@ -52,6 +52,9 @@ pub enum OpenError {
     /// The disk holding the session folder `folder` filled up while the store was written. The
     /// partial session is gone.
     DiskFull { folder: PathBuf },
+    /// The session folder `folder` (the one session folders are made in) could not be made or
+    /// written to (`reason`, the system's words). Nothing was read past the file's start.
+    SessionFolder { folder: PathBuf, reason: String },
 }
 
 impl std::fmt::Display for OpenError {
@@ -75,6 +78,13 @@ impl std::fmt::Display for OpenError {
                 f,
                 "the disk holding the session folder {} filled up while opening it; nothing was kept. \
                  Free some space there, or choose another session folder ({}).",
+                folder.display(),
+                HOW_TO_CHANGE
+            ),
+            OpenError::SessionFolder { folder, reason } => write!(
+                f,
+                "the session folder {} can't be written to ({reason}), so the file was not opened. \
+                 Choose another session folder ({}).",
                 folder.display(),
                 HOW_TO_CHANGE
             ),
@@ -130,7 +140,10 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
     (&mut file).take(HEAD_BYTES).read_to_end(&mut head)?;
     let ext = path.extension().and_then(|e| e.to_str());
 
-    let store = Store::create_session(opts.sessions_root.as_deref(), opts.store.clone())?;
+    // The file was read above, so an error from here on is the session folder's, not the file's.
+    let root = opts.sessions_root.clone().unwrap_or_else(crate::store::default_sessions_root);
+    let store = Store::create_session(Some(root.as_path()),opts.store.clone())
+        .map_err(|e| OpenError::SessionFolder { folder: root.clone(), reason: e.to_string() })?;
     let mut src = SourceFormat::synthetic(0, 0);
     src.path = path.to_path_buf();
     let free_space = opts.free_space.unwrap_or(crate::space::free_space);
