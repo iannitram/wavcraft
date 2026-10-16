@@ -381,9 +381,8 @@ pub fn paste(doc: &DocState, at: PasteAt, clip: &Clip, channels: ChannelMask, xf
 fn paste_sources(store: &Store, clip: &Clip, n: usize, active: &[usize]) -> Result<Vec<(usize, Arc<Channel>)>, EditError> {
     let k = clip.channels.len();
     let foreign = !store.same_store(&clip.store);
-    let bring = |c: &Arc<Channel>| -> io::Result<Arc<Channel>> {
-        if foreign { Ok(Arc::new(import(store, &clip.store, &[c])?)) } else { Ok(c.clone()) }
-    };
+    let bring =
+        |c: &Arc<Channel>| -> io::Result<Arc<Channel>> { if foreign { Ok(Arc::new(import(store, &clip.store, &[c])?)) } else { Ok(c.clone()) } };
     if k == n {
         let mut out = Vec::with_capacity(active.len());
         for &c in active {
