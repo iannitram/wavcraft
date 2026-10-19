@@ -2690,7 +2690,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-audio-io"
 version = "0.6.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=ef897e566d3997b65ab5db7daf0b27b224490a3f#ef897e566d3997b65ab5db7daf0b27b224490a3f"
+source = "git+https://github.com/iannitram/soundcraft?rev=dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a#dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a"
 dependencies = [
  "log",
  "serde",

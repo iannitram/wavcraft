@@ -17,7 +17,7 @@ wavcraft-core = { path = "crates/core" }
 # This commit is tagged `wavecraft-pin-2026-10-12` on iannitram/soundcraft. The tag keeps the
 # app's old name (WaveCraft, renamed WavCraft 2026-10-15) on purpose: it lives on another repo,
 # and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
-soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "ef897e566d3997b65ab5db7daf0b27b224490a3f" }
+soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
 
 rustfft = "6"
 rayon = "1"
