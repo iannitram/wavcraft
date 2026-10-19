@@ -46,6 +46,9 @@ struct Saving {
     progress: Arc<AtomicU32>,
     /// Close the window once it is saved (Save from the close prompt).
     then_close: bool,
+    /// Which open document it saves ([`WaveApp::doc_id`] when it started): a save that finishes
+    /// after another file was opened must not give that file its path (Codex review CX-W1).
+    doc_id: u64,
 }
 
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
@@ -82,6 +85,8 @@ pub struct WaveApp {
     editor: Option<Editor>,
     /// Where the open file came from (kept while an edit leaves the document empty).
     doc_path: PathBuf,
+    /// Counts the files opened in this window: names the document a save belongs to.
+    doc_id: u64,
     /// The views' copy of the document, being read back after an edit (newest request only).
     rebuilding: Option<Receiver<Result<Document, OpenError>>>,
     /// Requests from the control channel, when `WAVCRAFT_CONTROL_PORT` turned it on.
@@ -146,6 +151,7 @@ impl WaveApp {
             title: String::new(),
             editor: None,
             doc_path: PathBuf::new(),
+            doc_id: 0,
             rebuilding: None,
             saved: None,
             saving: None,
@@ -210,6 +216,7 @@ impl WaveApp {
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
+                self.doc_id += 1;
                 self.rebuilding = None;
                 self.doc = Some(doc);
                 self.generation += 1;
@@ -574,7 +581,7 @@ impl WaveApp {
             ctx.request_repaint();
         });
         self.player.stop();
-        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close });
+        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close, doc_id: self.doc_id });
         Ok(())
     }
 
@@ -585,8 +592,15 @@ impl WaveApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err("the save stopped unexpectedly".to_string()),
         };
-        let Some(Saving { path, state, ty, then_close, .. }) = self.saving.take() else { return };
+        let Some(Saving { path, state, ty, then_close, doc_id, .. }) = self.saving.take() else { return };
         match result {
+            // Another file was opened while this one was being saved: the file on disk is
+            // written, but the open document is not the one saved, so its path, saved mark and
+            // close request stay as they are.
+            Ok(()) if doc_id != self.doc_id => {
+                log::info!(target: "wavcraft", "a save of an earlier file finished after another was opened: {}", path.display());
+                self.notice = Some(format!("Saved {} ({} WAV), the file open before this one", path.display(), ty.describe()));
+            }
             Ok(()) => {
                 self.saved = Some(state);
                 self.doc_path = path.clone();
