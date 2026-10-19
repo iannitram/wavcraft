@@ -14,6 +14,8 @@ egui.workspace = true
 cpal.workspace = true
 rfd.workspace = true
 log.workspace = true
+craft-log.workspace = true
+dirs.workspace = true
 
 [lints]
 workspace = true

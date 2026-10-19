@@ -144,6 +144,68 @@ pub fn default_cache_bytes() -> u64 {
     physical_memory().map_or(MIN_CACHE_BYTES, |m| (m / 16).clamp(MIN_CACHE_BYTES, MAX_CACHE_BYTES))
 }
 
+/// A session folder this sweep may remove: named as [`Store::create_session`] names them (16 hex
+/// digits), holding WavCraft's [`LOCK_FILE`] whose program is no longer running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleSession {
+    pub dir: PathBuf,
+    pub pid: u32,
+    pub bytes: u64,
+}
+
+/// The stale session folders under `root`: a run that ended without closing its store (killed,
+/// crashed, or quit by a signal) leaves its folder, about 1.3 GB per hour of stereo audio, and
+/// nothing else ever removes it. A folder counts as stale only when its name is a session id,
+/// its lock file says `app=wavcraft`, and no running process has that pid with "wavcraft" in its
+/// name. Anything else under `root` (the user may point it at a shared disk) is never touched.
+pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
+    let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let running =
+        |pid: u32| sys.process(sysinfo::Pid::from_u32(pid)).is_some_and(|p| p.name().to_string_lossy().to_ascii_lowercase().contains("wavcraft"));
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let dir = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !(name.len() == 16 && name.bytes().all(|b| b.is_ascii_hexdigit()) && dir.is_dir()) {
+            continue;
+        }
+        let Ok(lock) = std::fs::read_to_string(dir.join(LOCK_FILE)) else { continue };
+        let pid = lock.lines().find_map(|l| l.strip_prefix("pid=")).and_then(|p| p.trim().parse::<u32>().ok());
+        let ours = lock.lines().any(|l| l.starts_with("app=wavcraft"));
+        let Some(pid) = pid.filter(|_| ours) else { continue };
+        if pid == std::process::id() || running(pid) {
+            continue;
+        }
+        let bytes = std::fs::read_dir(&dir).map_or(0, |d| d.flatten().filter_map(|f| f.metadata().ok()).map(|m| m.len()).sum());
+        out.push(StaleSession { dir, pid, bytes });
+    }
+    out
+}
+
+/// Remove the [`stale_sessions`] under `root` (the default session root when `None`), logging
+/// each one once. Returns the bytes freed.
+pub fn sweep_stale_sessions(root: Option<&Path>) -> u64 {
+    let root = root.map_or_else(default_sessions_root, Path::to_path_buf);
+    let mut freed = 0;
+    for s in stale_sessions(&root) {
+        match std::fs::remove_dir_all(&s.dir) {
+            Ok(()) => {
+                freed += s.bytes;
+                log::warn!(
+                    "decision: sessions: removed a session folder left by a run that ended without closing it (pid {} not running): {} MB in {}",
+                    s.pid,
+                    s.bytes / 1_000_000,
+                    s.dir.display()
+                );
+            }
+            Err(e) => log::warn!("decision: sessions: could not remove the stale session folder {}: {e}", s.dir.display()),
+        }
+    }
+    freed
+}
+
 /// Where session folders go by default: `<system cache dir>/wavcraft/sessions`.
 pub fn default_sessions_root() -> PathBuf {
     dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("wavcraft").join("sessions")

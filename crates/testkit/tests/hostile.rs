@@ -145,7 +145,7 @@ fn a_read_only_session_folder_and_an_unreadable_file_are_told_apart() {
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
     let result = open_at(&secret, &root);
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let err = result.err().expect("an unreadable file fails");
+    let err = result.expect_err("an unreadable file fails");
     assert!(matches!(err, OpenError::Io(_)), "{err:?}");
     assert!(err.to_string().starts_with("cannot read the file"), "{err}");
     // Nothing was left in the session folder by either failure.

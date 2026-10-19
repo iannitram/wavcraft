@@ -10,6 +10,7 @@
 
 mod app;
 mod player;
+mod selflog;
 mod spectrum;
 
 use std::ffi::OsString;
@@ -17,6 +18,7 @@ use std::path::PathBuf;
 
 fn main() -> eframe::Result {
     let Args { file, session_dir } = parse_args(std::env::args_os().skip(1));
+    selflog::install();
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("WavCraft").with_inner_size([1280.0, 720.0]).with_min_inner_size([640.0, 360.0]),
         ..Default::default()

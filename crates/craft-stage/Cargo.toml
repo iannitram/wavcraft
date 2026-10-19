@@ -1,0 +1,12 @@
+[package]
+name = "craft-stage"
+description = "Named scopes and stages for long operations (ours, not upstream): free when nothing listens"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
