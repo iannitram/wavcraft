@@ -153,12 +153,23 @@ pub struct StaleSession {
     pub bytes: u64,
 }
 
+/// This machine's name, as session lock files record it (empty when the system won't say).
+pub fn this_host() -> String {
+    sysinfo::System::host_name().unwrap_or_default()
+}
+
 /// The stale session folders under `root`: a run that ended without closing its store (killed,
 /// crashed, or quit by a signal) leaves its folder, about 1.3 GB per hour of stereo audio, and
 /// nothing else ever removes it. A folder counts as stale only when its name is a session id,
-/// its lock file says `app=wavcraft`, and no running process has that pid with "wavcraft" in its
-/// name. Anything else under `root` (the user may point it at a shared disk) is never touched.
+/// its lock file says `app=wavcraft`, **its lock names this machine** (a session folder on a
+/// shared disk may belong to a run on another computer, whose pid means nothing here; Hyperion's
+/// review, 2026-10-19), and no running process here has that pid with "wavcraft" in its name.
+/// Anything else under `root` is never touched.
 pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
+    let host = this_host();
+    if host.is_empty() {
+        return Vec::new();
+    }
     let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
     let mut sys = sysinfo::System::new();
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
@@ -173,7 +184,7 @@ pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
         }
         let Ok(lock) = std::fs::read_to_string(dir.join(LOCK_FILE)) else { continue };
         let pid = lock.lines().find_map(|l| l.strip_prefix("pid=")).and_then(|p| p.trim().parse::<u32>().ok());
-        let ours = lock.lines().any(|l| l.starts_with("app=wavcraft"));
+        let ours = lock.lines().any(|l| l.starts_with("app=wavcraft")) && lock.lines().any(|l| l.strip_prefix("host=") == Some(host.as_str()));
         let Some(pid) = pid.filter(|_| ours) else { continue };
         if pid == std::process::id() || running(pid) {
             continue;
@@ -283,7 +294,7 @@ impl Store {
     pub fn create_with(dir: &Path, opts: StoreOptions) -> io::Result<Store> {
         std::fs::create_dir_all(dir)?;
         let mut lock_file = OpenOptions::new().write(true).create_new(true).open(dir.join(LOCK_FILE))?;
-        writeln!(lock_file, "pid={}\napp=wavcraft {}", std::process::id(), env!("CARGO_PKG_VERSION"))?;
+        writeln!(lock_file, "pid={}\nhost={}\napp=wavcraft {}", std::process::id(), this_host(), env!("CARGO_PKG_VERSION"))?;
         Ok(Store {
             inner: Arc::new(Inner {
                 dir: dir.to_path_buf(),

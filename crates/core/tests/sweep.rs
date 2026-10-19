@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use wavcraft_core::store::{LOCK_FILE, Store, StoreOptions, stale_sessions, sweep_stale_sessions};
+use wavcraft_core::store::{LOCK_FILE, Store, StoreOptions, stale_sessions, sweep_stale_sessions, this_host};
 
 /// A folder in the system's temp directory, removed when dropped.
 struct TempDir(PathBuf);
@@ -41,7 +41,7 @@ fn session(root: &Path, name: &str, lock: Option<&str>) -> PathBuf {
 #[test]
 fn a_folder_left_by_a_dead_run_is_stale_and_is_removed() {
     let t = TempDir::new("dead");
-    let dead = session(&t.0, "0123456789abcdef", Some(&format!("pid={DEAD_PID}\napp=wavcraft 0.1.0\n")));
+    let dead = session(&t.0, "0123456789abcdef", Some(&format!("pid={DEAD_PID}\nhost={}\napp=wavcraft 0.1.0\n", this_host())));
     let found = stale_sessions(&t.0);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!((found[0].dir.clone(), found[0].pid), (dead.clone(), DEAD_PID));
@@ -65,7 +65,7 @@ fn a_live_store_is_never_swept() {
 #[test]
 fn folders_that_are_not_wavcraft_sessions_are_left_alone() {
     let t = TempDir::new("others");
-    let dead_lock = format!("pid={DEAD_PID}\napp=wavcraft 0.1.0\n");
+    let dead_lock = format!("pid={DEAD_PID}\nhost={}\napp=wavcraft 0.1.0\n", this_host());
     let keep = [
         // not a session id
         session(&t.0, "my-recordings", Some(&dead_lock)),
@@ -73,7 +73,11 @@ fn folders_that_are_not_wavcraft_sessions_are_left_alone() {
         // a session id, but no lock file (mid-creation, or not ours)
         session(&t.0, "fedcba9876543210", None),
         // another program's lock file
-        session(&t.0, "00000000000000aa", Some(&format!("pid={DEAD_PID}\napp=soundcraft 0.9\n"))),
+        session(&t.0, "00000000000000aa", Some(&format!("pid={DEAD_PID}\nhost={}\napp=soundcraft 0.9\n", this_host()))),
+        // a dead pid, but on ANOTHER machine (a shared session folder): its pid means nothing here
+        session(&t.0, "00000000000000cc", Some(&format!("pid={DEAD_PID}\nhost=some-other-mac\napp=wavcraft 0.1.0\n"))),
+        // an older lock without a host: whose machine it was can't be told, so it stays
+        session(&t.0, "00000000000000dd", Some(&format!("pid={DEAD_PID}\napp=wavcraft 0.1.0\n"))),
         // a lock file without a pid
         session(&t.0, "00000000000000bb", Some("app=wavcraft 0.1.0\n")),
     ];
@@ -90,4 +94,15 @@ fn folders_that_are_not_wavcraft_sessions_are_left_alone() {
 fn a_missing_root_is_nothing_to_sweep() {
     let t = TempDir::new("missing");
     assert_eq!(sweep_stale_sessions(Some(&t.0.join("not-there"))), 0);
+}
+
+#[test]
+fn a_store_records_this_machine_in_its_lock() {
+    let t = TempDir::new("host");
+    let store = Store::create_session(Some(&t.0), StoreOptions { keep: true, ..StoreOptions::default() }).unwrap();
+    let dir = std::fs::read_dir(&t.0).unwrap().next().unwrap().unwrap().path();
+    let lock = std::fs::read_to_string(dir.join(LOCK_FILE)).unwrap();
+    assert!(!this_host().is_empty(), "this machine has a name");
+    assert!(lock.lines().any(|l| l == format!("host={}", this_host())), "{lock}");
+    drop(store);
 }

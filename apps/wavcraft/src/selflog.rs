@@ -25,9 +25,15 @@ const KEEP: usize = 2;
 /// A log stops growing here (a last line says so).
 const CAP: u64 = 16 << 20;
 
-/// The folder the logs and crash files go in: `logs` in WavCraft's config folder.
+/// The folder the logs and crash files go in: `WAVCRAFT_LOG_DIR` when set (scripted checks put
+/// it in their scratch folder: on Windows the config folder comes from the system, not from
+/// `APPDATA`), else `logs` in WavCraft's config folder, else the temp folder when the system
+/// names no config folder. Made, parents included, by [`open_fresh`].
 pub fn log_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("wavcraft").join("logs"))
+    if let Some(dir) = std::env::var_os("WAVCRAFT_LOG_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    Some(dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("wavcraft").join("logs"))
 }
 
 /// Install the logger and the crash hook. Returns the log file's path; `None` when the folder
@@ -161,6 +167,16 @@ mod tests {
         assert!(on_disk.contains("INFO") && on_disk.contains("opened a file"), "{on_disk:?}");
         drop(logger);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_log_folder_is_made_with_its_missing_parents() {
+        let dir = std::env::temp_dir().join(format!("wavcraft-log-parents-{}", std::process::id())).join("AppData/Roaming/wavcraft/logs");
+        let _ = fs::remove_dir_all(dir.ancestors().nth(3).unwrap_or(&dir));
+        let path = open_fresh(&dir);
+        assert!(path.as_ref().is_ok_and(|p| p.parent() == Some(dir.as_path())), "{path:?}");
+        assert!(dir.is_dir());
+        let _ = fs::remove_dir_all(dir.ancestors().nth(3).unwrap_or(&dir));
     }
 
     #[test]
