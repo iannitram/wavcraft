@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
-use wavcraft_core::actions::{self, ActionId, Editor, Kind, TABLE};
+use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
@@ -287,7 +287,7 @@ impl WaveApp {
             return Err("wait for the save to finish".to_string());
         }
         if actions::action(id).kind == Kind::Window {
-            return self.run_window_action(id);
+            return self.run_window_action(id, ctx);
         }
         let sel = self.selection_range();
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
@@ -317,7 +317,7 @@ impl WaveApp {
 
     /// The actions the window carries out itself: zoom, In/Out points at the playhead, and the
     /// Insert Silence dialog.
-    fn run_window_action(&mut self, id: ActionId) -> Result<bool, String> {
+    fn run_window_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
         let frames = self.doc.as_ref().map_or(0, Document::frames);
         if frames == 0 && id != ActionId::InsertSilence {
             return Err("no file is open".to_string());
@@ -344,6 +344,20 @@ impl WaveApp {
                 self.selection = Selection { anchor: start, head: playhead };
             }
             ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
+            // Repeat Last Command with its dialog: Insert Silence opens its dialog with the last
+            // length; the other repeatable commands have no dialog and simply run again.
+            ActionId::RepeatLastDialog => {
+                let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
+                if !editor.enabled(id, &self.selection_range()) {
+                    return Err(format!("{} is not available now", actions::action(id).menu));
+                }
+                if let Some(Repeat::InsertSilence(frames)) = editor.last {
+                    let secs = frames as f64 / f64::from(editor.history.current().sample_rate().max(1));
+                    self.insert_silence = Some(format!("{secs:.3}"));
+                } else {
+                    return self.run_action(ActionId::RepeatLast, ctx);
+                }
+            }
             _ => return Err(format!("{} is not available now", actions::action(id).menu)),
         }
         Ok(false)
@@ -742,7 +756,7 @@ impl WaveApp {
         let mac = cfg!(target_os = "macos");
         let mut chosen = None;
         for a in TABLE.iter().filter(|a| a.name.starts_with("edit.")) {
-            if matches!(a.id, ActionId::Cut | ActionId::Delete | ActionId::Crop | ActionId::SetIn | ActionId::LeftChannel) {
+            if matches!(a.id, ActionId::Cut | ActionId::Delete | ActionId::Crop | ActionId::ZeroInward | ActionId::SetIn | ActionId::LeftChannel) {
                 ui.separator();
             }
             let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));

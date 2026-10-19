@@ -35,6 +35,14 @@ pub enum ActionId {
     ZoomOut,
     ZoomToSelection,
     ZoomOutFull,
+    ZeroInward,
+    ZeroOutward,
+    ZeroLeftToLeft,
+    ZeroLeftToRight,
+    ZeroRightToLeft,
+    ZeroRightToRight,
+    RepeatLast,
+    RepeatLastDialog,
 }
 
 /// Which part of the program carries an action out.
@@ -67,6 +75,9 @@ const fn cmd_shift(key: &'static str) -> Shortcut {
 const fn shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: false, shift: true, alt: false, key }
 }
+
+/// How far a zero-crossing adjust looks for a sign change (v1 D6: 10 ms).
+pub const ZERO_CROSSING_REACH_MS: u64 = 10;
 
 impl Shortcut {
     /// How a menu shows it: `⌘⇧Z` on a Mac, `Ctrl+Shift+Z` elsewhere.
@@ -119,6 +130,10 @@ const fn window(id: ActionId, name: &'static str, menu: &'static str, keys: &'st
 pub const TABLE: &[Action] = &[
     edit(ActionId::Undo, "edit.undo", "Undo", &[cmd("Z")]),
     edit(ActionId::Redo, "edit.redo", "Redo", &[cmd_shift("Z"), cmd("Y")]),
+    // Repeat the last repeatable command on the current selection: without its dialog (F3,
+    // Shift+R), or with its dialog when it has one (F2, Ctrl+R), as in Audition.
+    edit(ActionId::RepeatLast, "edit.repeatLast", "Repeat Last Command", &[key("F3"), shift("R")]),
+    window(ActionId::RepeatLastDialog, "edit.repeatLastDialog", "Repeat Last Command…", &[key("F2"), cmd("R")]),
     edit(ActionId::Cut, "edit.cut", "Cut", &[cmd("X")]),
     edit(ActionId::Copy, "edit.copy", "Copy", &[cmd("C")]),
     edit(ActionId::Paste, "edit.paste", "Paste", &[cmd("V")]),
@@ -130,6 +145,12 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::SelectAll, "edit.selectAll", "Select All", &[cmd("A")]),
     edit(ActionId::DeselectAll, "edit.deselectAll", "Deselect All", &[cmd_shift("A"), cmd("D")]),
     edit(ActionId::ClearTimeSelection, "edit.clearTimeSelection", "Clear Time Selection", &[key("G")]),
+    edit(ActionId::ZeroInward, "edit.zeroCrossings.inward", "Zero Crossings: Adjust Selection Inward", &[shift("I")]),
+    edit(ActionId::ZeroOutward, "edit.zeroCrossings.outward", "Zero Crossings: Adjust Selection Outward", &[shift("O")]),
+    edit(ActionId::ZeroLeftToLeft, "edit.zeroCrossings.leftToLeft", "Zero Crossings: Left Side to Left", &[shift("H")]),
+    edit(ActionId::ZeroLeftToRight, "edit.zeroCrossings.leftToRight", "Zero Crossings: Left Side to Right", &[shift("J")]),
+    edit(ActionId::ZeroRightToLeft, "edit.zeroCrossings.rightToLeft", "Zero Crossings: Right Side to Left", &[shift("K")]),
+    edit(ActionId::ZeroRightToRight, "edit.zeroCrossings.rightToRight", "Zero Crossings: Right Side to Right", &[shift("L")]),
     window(ActionId::SetIn, "edit.setIn", "Set In Point to Playhead", &[key("I")]),
     window(ActionId::SetOut, "edit.setOut", "Set Out Point to Playhead", &[key("O")]),
     edit(ActionId::LeftChannel, "edit.leftChannel", "Left Channel Only", &[key("ArrowUp")]),
@@ -170,11 +191,79 @@ pub struct Editor {
     pub channels: ChannelMask,
     pub clipboard: Option<Clip>,
     pub crossfades: Crossfades,
+    /// What Repeat Last Command runs again (None until a repeatable command has run).
+    pub last: Option<Repeat>,
+}
+
+/// A command Repeat Last Command can run again, with its settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repeat {
+    /// An action from the table, on the selection at the time of the repeat.
+    Action(ActionId),
+    /// Insert › Silence of this many frames, at the cursor.
+    InsertSilence(u64),
+}
+
+/// Whether Repeat Last Command may run `id` again. Delete is not repeatable (Audition), nor are
+/// Undo/Redo, the clipboard's Cut and Copy, selection moves and the view.
+fn repeatable(id: ActionId) -> bool {
+    matches!(
+        id,
+        ActionId::Silence
+            | ActionId::Paste
+            | ActionId::Crop
+            | ActionId::ZeroInward
+            | ActionId::ZeroOutward
+            | ActionId::ZeroLeftToLeft
+            | ActionId::ZeroLeftToRight
+            | ActionId::ZeroRightToLeft
+            | ActionId::ZeroRightToRight
+    )
+}
+
+/// Which way a selection edge moves to find a zero crossing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Toward {
+    Left,
+    Right,
+}
+
+/// The nearest zero crossing to `frame` on the side `toward`, at most `reach` frames away, or
+/// None. A crossing at `i` means the signal changes sign between frames `i - 1` and `i` (or frame
+/// `i` is exactly 0); `frame` itself counts. The signal is the sum of the `channels` asked for,
+/// so a stereo edge lands where the active channels' mix crosses (Audition's rule for stereo was
+/// not seen; `docs/code-map.md`, Known differences).
+pub fn zero_crossing(doc: &crate::doc::DocState, channels: ChannelMask, frame: u64, toward: Toward, reach: u64) -> std::io::Result<Option<u64>> {
+    let len = doc.len_frames();
+    if len < 2 {
+        return Ok(None);
+    }
+    let frame = frame.min(len);
+    // Frames [lo, hi) cover every pair (i - 1, i) the search can look at.
+    let (lo, hi) = match toward {
+        Toward::Left => (frame.saturating_sub(reach).saturating_sub(1), (frame + 1).min(len)),
+        Toward::Right => (frame.saturating_sub(1), (frame + reach + 1).min(len)),
+    };
+    let mut mix = vec![0.0f64; (hi - lo) as usize];
+    let mut buf = vec![0.0f32; mix.len()];
+    for ch in (0..doc.channel_count()).filter(|&c| channels.contains(c)) {
+        let got = doc.read(ch, lo, &mut buf)?;
+        for (m, v) in mix.iter_mut().zip(&buf[..got]) {
+            *m += f64::from(*v);
+        }
+    }
+    let at = |i: u64| mix[(i - lo) as usize];
+    let crosses = |i: u64| i > lo && i < hi && (at(i) == 0.0 || (at(i - 1) < 0.0) != (at(i) < 0.0));
+    let found = match toward {
+        Toward::Left => (frame.saturating_sub(reach)..=frame).rev().find(|&i| crosses(i)),
+        Toward::Right => (frame..=(frame + reach).min(len - 1)).find(|&i| crosses(i)),
+    };
+    Ok(found)
 }
 
 impl Editor {
     pub fn new(history: History) -> Editor {
-        Editor { history, channels: ChannelMask::ALL, clipboard: None, crossfades: Crossfades::default() }
+        Editor { history, channels: ChannelMask::ALL, clipboard: None, crossfades: Crossfades::default(), last: None }
     }
 
     fn len(&self) -> u64 {
@@ -201,6 +290,17 @@ impl Editor {
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
+            ActionId::ZeroInward
+            | ActionId::ZeroOutward
+            | ActionId::ZeroLeftToLeft
+            | ActionId::ZeroLeftToRight
+            | ActionId::ZeroRightToLeft
+            | ActionId::ZeroRightToRight => has_sel,
+            ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
+                Some(Repeat::Action(last)) => self.enabled(last, selection),
+                Some(Repeat::InsertSilence(_)) => true,
+                None => false,
+            },
         }
     }
 
@@ -212,8 +312,62 @@ impl Editor {
             ActionId::Redo => self.history.redo_label().map_or_else(|| a.menu.to_string(), |l| format!("Redo {l}")),
             ActionId::LeftChannel if self.channels == ChannelMask::only(0) => "Both Channels".to_string(),
             ActionId::RightChannel if self.channels == ChannelMask::only(1) => "Both Channels".to_string(),
+            ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
+                Some(Repeat::Action(last)) => format!("Repeat {}", action(last).menu),
+                // "Repeat Insert Silence" runs it at once; the dialog version keeps the "…".
+                Some(Repeat::InsertSilence(_)) if id == ActionId::RepeatLast => "Repeat Insert Silence".to_string(),
+                Some(Repeat::InsertSilence(_)) => format!("Repeat {}", action(ActionId::InsertSilence).menu),
+                None => a.menu.to_string(),
+            },
             _ => a.menu.to_string(),
         }
+    }
+
+    /// Repeat Last Command: the last repeatable command again, with the same settings, on
+    /// `selection` (Insert Silence: the same length at the cursor).
+    pub fn repeat(&mut self, selection: Range<u64>) -> Result<Outcome, EditError> {
+        match self.last {
+            Some(Repeat::Action(id)) => self.run(id, selection),
+            Some(Repeat::InsertSilence(frames)) => self.insert_silence(selection.start, frames),
+            None => Ok(Outcome { doc_changed: false, selection, message: Some("There is no command to repeat yet".to_string()) }),
+        }
+    }
+
+    /// The zero-crossing adjusts: each moved edge goes to the nearest sign change within
+    /// [`ZERO_CROSSING_REACH_MS`] on its side; an edge with none there stays.
+    fn zero_crossings(&self, id: ActionId, sel: Range<u64>) -> Result<Outcome, EditError> {
+        let doc = self.history.current();
+        let reach = u64::from(doc.sample_rate()) * ZERO_CROSSING_REACH_MS / 1000;
+        let channels = self.channels.within(doc.channel_count());
+        let find = |frame: u64, toward: Toward| -> Result<u64, EditError> {
+            Ok(zero_crossing(doc, channels, frame, toward, reach).map_err(EditError::from)?.unwrap_or(frame))
+        };
+        let (start, end) = match id {
+            ActionId::ZeroInward => (find(sel.start, Toward::Right)?, find(sel.end, Toward::Left)?),
+            ActionId::ZeroOutward => (find(sel.start, Toward::Left)?, find(sel.end, Toward::Right)?),
+            ActionId::ZeroLeftToLeft => (find(sel.start, Toward::Left)?, sel.end),
+            ActionId::ZeroLeftToRight => (find(sel.start, Toward::Right)?, sel.end),
+            ActionId::ZeroRightToLeft => (sel.start, find(sel.end, Toward::Left)?),
+            _ => (sel.start, find(sel.end, Toward::Right)?),
+        };
+        // An inward adjust never turns the selection inside out.
+        let (selection, message) = if start < end {
+            let moved = start != sel.start || end != sel.end;
+            (
+                start..end,
+                Some(
+                    if moved {
+                        "Selection edges moved to zero crossings"
+                    } else {
+                        "The edges already sit on zero crossings, or none is within 10 ms"
+                    }
+                    .to_string(),
+                ),
+            )
+        } else {
+            (sel, Some("No zero crossings inside the selection within 10 ms".to_string()))
+        };
+        Ok(Outcome { doc_changed: false, selection, message })
     }
 
     /// Insert › Silence: `frames` of silence at `at` on every channel (Audition inserts across
@@ -222,6 +376,7 @@ impl Editor {
         let doc = self.history.current().clone();
         let at = at.min(doc.len_frames());
         let edit = edit::insert_silence(&doc, at, frames, self.crossfades)?;
+        self.last = Some(Repeat::InsertSilence(frames));
         let changed = !edit.is_noop();
         let label = edit.label.clone();
         self.history.push_edit(edit);
@@ -235,6 +390,19 @@ impl Editor {
         let unchanged = |selection: Range<u64>| Ok(Outcome { doc_changed: false, selection, message: None });
         if !self.enabled(id, &sel) {
             return Ok(Outcome { doc_changed: false, selection: sel, message: Some(format!("{} is not available now", action(id).menu)) });
+        }
+        if repeatable(id) {
+            self.last = Some(Repeat::Action(id));
+        }
+        match id {
+            ActionId::RepeatLast => return self.repeat(sel),
+            ActionId::ZeroInward
+            | ActionId::ZeroOutward
+            | ActionId::ZeroLeftToLeft
+            | ActionId::ZeroLeftToRight
+            | ActionId::ZeroRightToLeft
+            | ActionId::ZeroRightToRight => return self.zero_crossings(id, sel),
+            _ => {}
         }
         let doc = self.history.current().clone();
         let (xf, channels) = (self.crossfades, self.channels.within(doc.channel_count()));
@@ -287,7 +455,16 @@ impl Editor {
             | ActionId::ZoomIn
             | ActionId::ZoomOut
             | ActionId::ZoomToSelection
-            | ActionId::ZoomOutFull => return unchanged(sel),
+            | ActionId::ZoomOutFull
+            // Repeat and the zero-crossing adjusts returned above.
+            | ActionId::RepeatLastDialog
+            | ActionId::RepeatLast
+            | ActionId::ZeroInward
+            | ActionId::ZeroOutward
+            | ActionId::ZeroLeftToLeft
+            | ActionId::ZeroLeftToRight
+            | ActionId::ZeroRightToLeft
+            | ActionId::ZeroRightToRight => return unchanged(sel),
             ActionId::LeftChannel | ActionId::RightChannel => {
                 let ch = usize::from(id == ActionId::RightChannel);
                 self.channels =

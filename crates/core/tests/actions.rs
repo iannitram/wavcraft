@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use wavcraft_core::actions::{ActionId, Editor, TABLE, action, by_name};
+use wavcraft_core::actions::{ActionId, Editor, Repeat, TABLE, Toward, action, by_name, zero_crossing};
 use wavcraft_core::doc::edit::Crossfades;
 use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
@@ -253,4 +253,141 @@ fn window_actions_are_left_to_the_window() {
     assert_eq!(text(ActionId::ZoomOutFull), ["Ctrl+\\"]);
     assert_eq!(text(ActionId::SetIn), ["I"]);
     assert_eq!(text(ActionId::ZoomIn), ["="]);
+}
+
+/// A 1 kHz sine at 48 kHz (48 frames a cycle), phase-shifted so no sample is exactly 0.
+fn tone(frames: usize, phase: f64) -> Vec<f32> {
+    (0..frames).map(|k| (std::f64::consts::TAU * 1000.0 * k as f64 / f64::from(RATE) + phase).sin() as f32).collect()
+}
+
+/// Whether the signal changes sign between frames `i - 1` and `i`, or frame `i` is 0.
+fn is_crossing(x: &[f32], i: u64) -> bool {
+    let i = i as usize;
+    i > 0 && (x[i] == 0.0 || (x[i - 1] < 0.0) != (x[i] < 0.0))
+}
+
+#[test]
+fn t6_zero_crossing_adjusts_land_on_sign_changes_of_the_1khz_tone() {
+    let t = TempDir::new("zero");
+    let left = tone(48_000, 0.3);
+    let mut e = editor(&t.0, std::slice::from_ref(&left));
+    let sel = 1000..5000;
+    let crossings_between = |a: u64, b: u64| (a.min(b) + 1..a.max(b)).filter(|&i| is_crossing(&left, i)).count();
+    let check = |id, out: std::ops::Range<u64>, moved_start: Option<bool>, moved_end: Option<bool>| {
+        for (edge, was, side) in [(out.start, sel.start, moved_start), (out.end, sel.end, moved_end)] {
+            match side {
+                None => assert_eq!(edge, was, "{id:?}: this edge stays"),
+                Some(right) => {
+                    assert!(is_crossing(&left, edge), "{id:?}: {edge} is a sign change");
+                    assert!(if right { edge >= was } else { edge <= was }, "{id:?}: {was} -> {edge} moves the right way");
+                    assert!(edge.abs_diff(was) <= 480, "{id:?}: within 10 ms");
+                    assert_eq!(crossings_between(was, edge), 0, "{id:?}: the nearest one");
+                }
+            }
+        }
+    };
+    for (id, s, en) in [
+        (ActionId::ZeroInward, Some(true), Some(false)),
+        (ActionId::ZeroOutward, Some(false), Some(true)),
+        (ActionId::ZeroLeftToLeft, Some(false), None),
+        (ActionId::ZeroLeftToRight, Some(true), None),
+        (ActionId::ZeroRightToLeft, None, Some(false)),
+        (ActionId::ZeroRightToRight, None, Some(true)),
+    ] {
+        let out = e.run(id, sel.clone()).unwrap();
+        assert!(!out.doc_changed, "{id:?} only moves the selection");
+        assert_ne!(out.selection, sel, "{id:?} moved something");
+        check(id, out.selection, s, en);
+    }
+    assert_eq!(e.history.steps().len(), 1, "no history step for a selection change");
+    // On a crossing already: nothing moves.
+    let on = (1001..2000).find(|&i| is_crossing(&left, i)).unwrap();
+    let out = e.run(ActionId::ZeroLeftToRight, on..5000).unwrap();
+    assert_eq!(out.selection.start, on);
+}
+
+#[test]
+fn zero_crossing_finds_none_beyond_10_ms_and_never_turns_the_selection_inside_out() {
+    let t = TempDir::new("zero-none");
+    // DC for 2,000 frames, then a step down: the only crossing is at 2000.
+    let x: Vec<f32> = (0..4000).map(|k| if k < 2000 { 0.5 } else { -0.5 }).collect();
+    let mut e = editor(&t.0, &[x]);
+    // 900 frames away (more than 480): the edge stays.
+    assert_eq!(e.run(ActionId::ZeroRightToRight, 100..1100).unwrap().selection, 100..1100);
+    // 300 frames away: it moves there.
+    assert_eq!(e.run(ActionId::ZeroRightToRight, 100..1700).unwrap().selection, 100..2000);
+    // Inward with both edges finding the same crossing would leave nothing: unchanged.
+    let out = e.run(ActionId::ZeroInward, 1900..2100).unwrap();
+    assert_eq!(out.selection, 1900..2100);
+    assert!(out.message.unwrap().contains("No zero crossings"));
+    // It needs a selection.
+    assert!(!e.enabled(ActionId::ZeroInward, &(50..50)));
+}
+
+#[test]
+fn zero_crossing_on_stereo_uses_the_active_channels() {
+    let t = TempDir::new("zero-stereo");
+    // Left crosses at 1000, right at 1200 (both 0.5 -> -0.5).
+    let step = |at: usize| (0..3000).map(move |k| if k < at { 0.5f32 } else { -0.5 }).collect::<Vec<f32>>();
+    let mut e = editor(&t.0, &[step(1000), step(1200)]);
+    let doc = e.history.current().clone();
+    use wavcraft_core::doc::edit::ChannelMask;
+    assert_eq!(zero_crossing(&doc, ChannelMask::only(0), 900, Toward::Right, 480).unwrap(), Some(1000));
+    assert_eq!(zero_crossing(&doc, ChannelMask::only(1), 900, Toward::Right, 480).unwrap(), Some(1200));
+    // Both: the mix is 0 from 1000 to 1199, and 0 counts as a crossing.
+    assert_eq!(zero_crossing(&doc, ChannelMask::ALL, 900, Toward::Right, 480).unwrap(), Some(1000));
+    e.run(ActionId::RightChannel, 0..0).unwrap();
+    assert_eq!(e.run(ActionId::ZeroRightToRight, 0..900).unwrap().selection, 0..1200, "Down: the right channel only");
+    // Ends of the file are safe.
+    assert_eq!(zero_crossing(&doc, ChannelMask::ALL, 0, Toward::Left, 480).unwrap(), None);
+    assert_eq!(zero_crossing(&doc, ChannelMask::ALL, 3000, Toward::Right, 480).unwrap(), None);
+}
+
+#[test]
+fn t7_repeat_last_command_after_insert_silence_inserts_the_same_length_at_the_cursor() {
+    let t = TempDir::new("repeat-insert");
+    let data = stereo(1000);
+    let mut e = editor(&t.0, &data);
+    assert!(!e.enabled(ActionId::RepeatLast, &(0..0)), "nothing to repeat yet");
+    assert_eq!(e.label(ActionId::RepeatLast), "Repeat Last Command");
+    e.insert_silence(100, 250).unwrap();
+    assert_eq!(e.last, Some(Repeat::InsertSilence(250)));
+    assert_eq!(e.label(ActionId::RepeatLast), "Repeat Insert Silence");
+    assert_eq!(e.label(ActionId::RepeatLastDialog), "Repeat Insert Silence…");
+    // The cursor at 800 (in the new length): Shift+R inserts 250 more there.
+    let out = e.run(ActionId::RepeatLast, 800..800).unwrap();
+    assert!(out.doc_changed);
+    assert_eq!(out.selection, 800..1050);
+    let c = now(&e);
+    assert_eq!(c[0].len(), 1500);
+    assert!(c[0][800..1050].iter().chain(&c[1][800..1050]).all(|x| *x == 0.0));
+    assert_eq!(&c[0][1050..], &data[0][550..]);
+    assert_eq!(e.history.steps().len(), 3, "Open + two inserts");
+    assert_eq!(e.label(ActionId::Undo), "Undo Insert Silence");
+}
+
+#[test]
+fn repeat_last_command_runs_silence_again_on_the_new_selection_but_never_delete() {
+    let t = TempDir::new("repeat-silence");
+    let data = stereo(1000);
+    let mut e = editor(&t.0, &data);
+    e.run(ActionId::Silence, 10..20).unwrap();
+    assert_eq!(e.label(ActionId::RepeatLast), "Repeat Silence");
+    e.run(ActionId::RepeatLast, 500..600).unwrap();
+    let c = now(&e);
+    assert!(c[0][500..600].iter().all(|x| *x == 0.0) && c[0][600] == 600.0);
+    // Delete is not repeatable: Repeat still means Silence.
+    e.run(ActionId::Delete, 700..710).unwrap();
+    assert_eq!(e.last, Some(Repeat::Action(ActionId::Silence)));
+    e.run(ActionId::RepeatLast, 0..5).unwrap();
+    assert_eq!(e.history.undo_label(), Some("Silence"));
+    // Repeat follows the repeated command's enabled rule: Silence needs a selection.
+    assert!(!e.enabled(ActionId::RepeatLast, &(3..3)));
+    // Its keys: F3 and Shift+R; with the dialog F2 and Ctrl+R.
+    let text = |id| action(id).keys.iter().map(|k| k.text(false)).collect::<Vec<_>>();
+    assert_eq!(text(ActionId::RepeatLast), ["F3", "Shift+R"]);
+    assert_eq!(text(ActionId::RepeatLastDialog), ["F2", "Ctrl+R"]);
+    assert_eq!(text(ActionId::ZeroInward), ["Shift+I"]);
+    assert_eq!(text(ActionId::ZeroRightToRight), ["Shift+L"]);
+    assert_eq!(by_name("edit.zeroCrossings.outward").map(|a| a.id), Some(ActionId::ZeroOutward));
 }
