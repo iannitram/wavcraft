@@ -115,10 +115,9 @@ impl log::Log for FileLog {
         out.len += line.len() as u64;
         // `Line::text` ends with its own newline.
         let _ = write!(out.file, "{line}");
-        // Warnings and errors reach the disk at once, so a crash right after still has them.
-        if record.level() <= log::Level::Warn {
-            let _ = out.file.flush();
-        }
+        // Every line reaches the disk at once, so the log of a run that hangs or is killed says
+        // what it was doing (the 2026-10-19 by-eye check found it empty while the app ran).
+        let _ = out.file.flush();
     }
 
     fn flush(&self) {
@@ -145,6 +144,23 @@ mod tests {
         assert_eq!((read("wavcraft.log"), read("wavcraft.1.log"), read("wavcraft.2.log")), ("run 4".into(), "run 3".into(), "run 2".into()));
         assert!(!dir.join("wavcraft.3.log").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_info_line_is_on_disk_while_the_program_still_runs() {
+        use log::Log;
+        let path = std::env::temp_dir().join(format!("wavcraft-log-flush-test-{}.log", std::process::id()));
+        let file = File::create(&path);
+        assert!(file.is_ok(), "{file:?}");
+        let Ok(file) = file else { return };
+        let logger =
+            FileLog { filter: Filter::parse(APP.default_filter), out: Mutex::new(Out { file: BufWriter::new(file), len: 0, capped: false }) };
+        logger.log(&log::Record::builder().level(log::Level::Info).target("wavcraft").args(format_args!("opened a file")).build());
+        // No flush, no drop: the logger is still alive, as in a running app.
+        let on_disk = fs::read_to_string(&path).unwrap_or_default();
+        assert!(on_disk.contains("INFO") && on_disk.contains("opened a file"), "{on_disk:?}");
+        drop(logger);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
