@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WavCraft golden task, v2 (2026-10-19): what the app does today, on the delivered program.
+"""WavCraft golden task, v3 (2026-10-19): what the app does today, on the delivered program.
 
     python3 tools/golden.py --exe <WavCraft.app/Contents/MacOS/wavcraft | wavcraft[.exe]> [--keep] [--core <clone>]
 
@@ -14,7 +14,11 @@ v2 (task 07a): through the app's control channel (WAVCRAFT_CONTROL_PORT), on the
 file: Delete 10 s, Undo, Redo, Silence on the left channel only, Cut then Paste, checking the
 length and the History labels after each; then QUIT through the channel, which must remove the
 session folder (a clean close), and the app's own log must hold no ERROR line.
-Effects and save join here as tasks 06 and later land.
+v3 (task 06a): after the edits, SAVE to a new WAV through the channel; the unsaved mark goes
+on with an edit, off with the save, on again with Undo and off with Redo (back at the saved
+step); a plain QUIT then closes. The saved file is checked with ffprobe (24-bit PCM, the right
+length) and reopened in a second run, which must decode it to the edited length.
+Effects join here as later tasks land.
 """
 import argparse, json, os, platform, shutil, signal, socket, subprocess, sys, tempfile, time
 
@@ -80,7 +84,15 @@ def free_port():
         return s.getsockname()[1]
 
 
-def edits(c, checks):
+def ffprobe(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                          "stream=codec_name,sample_rate,channels,bits_per_raw_sample,duration_ts", "-of", "json", path],
+                         capture_output=True, text=True).stdout
+    streams = json.loads(out or "{}").get("streams", [{}])
+    return streams[0] if streams else {}
+
+
+def edits(c, checks, saved_path=None):
     """The v2 edits; each check records what it saw."""
     f0 = int(c.state()["frames"])
     sec = RATE
@@ -120,6 +132,23 @@ def edits(c, checks):
     st = c.state()
     check("Cut then Paste keeps the length", int(st["frames"]) == f0 - 10 * sec and st["undo"] == "Paste" and "selection=0-48000" in a, f"{a}; {st}")
     check("History holds Open plus 4 steps", st["steps"] == "5", st)
+    if saved_path is None:
+        return f0 - 10 * sec
+    check("an edit marks the file unsaved", st.get("unsaved") == "1", st)
+    a = c.ask(f"SAVE {saved_path}")
+    st = c.state()
+    check("Save writes the file and clears the mark", a == "OK" and st.get("unsaved") == "0" and os.path.exists(saved_path), f"{a}; {st}")
+    c.ask("ACTION edit.undo")
+    st = c.state()
+    check("Undo after the save marks it unsaved again", st.get("unsaved") == "1", st)
+    c.ask("ACTION edit.redo")
+    st = c.state()
+    check("Redo back to the saved step clears the mark", st.get("unsaved") == "0", st)
+    info = ffprobe(saved_path)
+    check("the saved WAV is 24-bit PCM, stereo, 48 kHz, the edited length",
+          info.get("codec_name") == "pcm_s24le" and str(info.get("channels")) == "2" and info.get("sample_rate") == str(RATE)
+          and int(info.get("duration_ts", -1)) == f0 - 10 * sec, info)
+    return f0 - 10 * sec
 
 
 def run(exe, keep):
@@ -160,7 +189,7 @@ def run(exe, keep):
         checks.append({"check": "a window is on screen", "ok": None, "detail": "skipped: no winlist on this OS"})
     else:
         checks.append({"check": "a window is on screen", "ok": win.startswith("on-screen-windows=") and not win.startswith("on-screen-windows=0"), "detail": win})
-    quit_clean = False
+    quit_clean, edited_len = False, None
     if alive:
         try:
             for _ in range(40):
@@ -168,7 +197,8 @@ def run(exe, keep):
                     break
                 time.sleep(0.25)
             c = Control(port, open(token).read().strip())
-            edits(c, checks)
+            saved_path = os.path.join(work, "saved.wav")
+            edited_len = edits(c, checks, saved_path)
             quit_clean = c.ask("QUIT") == "OK"
             proc.wait(15)
         except Exception as e:  # a failed step is a failed run, with its reason
@@ -185,6 +215,24 @@ def run(exe, keep):
     text = open(os.path.join(work, "stderr.log"), errors="replace").read()
     bad = [l for l in text.splitlines() if any(w in l.lower() for w in ("panicked", "error", "fatal"))]
     checks.append({"check": "nothing on stderr looks like a panic or an error", "ok": not bad, "detail": bad[:5] or f"{len(text.splitlines())} lines"})
+    # A second run opens what the first one saved.
+    saved_path = os.path.join(work, "saved.wav")
+    if os.path.exists(saved_path):
+        proc2 = subprocess.Popen([exe, saved_path], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            c2 = Control(port, open(token).read().strip())
+            st = c2.state()
+            for _ in range(100):
+                if int(st.get("frames", 0)) > 0 and st.get("busy") == "0":
+                    break
+                time.sleep(0.2)
+                st = c2.state()
+            checks.append({"check": "the saved file reopens at the edited length", "ok": int(st.get("frames", 0)) == edited_len and st.get("unsaved") == "0", "detail": st})
+            c2.ask("QUIT")
+            proc2.wait(15)
+        except Exception as e:
+            checks.append({"check": "the saved file reopens at the edited length", "ok": False, "detail": f"{type(e).__name__}: {e}"})
+            proc2.kill()
     leftover = [d for d in os.listdir(sessions)] if os.path.isdir(sessions) else []
     checks.append({"check": "a clean close removes the session folder", "ok": not leftover, "detail": f"{len(leftover)} left"})
     # WAVCRAFT_LOG_DIR puts the log in the work folder on every OS (on Windows the config

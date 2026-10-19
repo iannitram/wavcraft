@@ -9,10 +9,11 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, TABLE};
 use wavcraft_core::io::OpenOptions;
+use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{Document, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
 use crate::player::Player;
@@ -33,6 +34,18 @@ struct Opening {
     cancel: Arc<AtomicBool>,
     /// How far the streaming has got, in thousandths.
     progress: Arc<AtomicU32>,
+}
+
+/// A save running on a worker thread.
+struct Saving {
+    path: PathBuf,
+    /// The step being saved: it becomes the saved state when the save succeeds.
+    state: Arc<DocState>,
+    ty: SampleType,
+    result: Receiver<Result<(), String>>,
+    progress: Arc<AtomicU32>,
+    /// Close the window once it is saved (Save from the close prompt).
+    then_close: bool,
 }
 
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
@@ -73,6 +86,14 @@ pub struct WaveApp {
     rebuilding: Option<Receiver<Result<Document, OpenError>>>,
     /// Requests from the control channel, when `WAVCRAFT_CONTROL_PORT` turned it on.
     control: Option<Receiver<control::Request>>,
+    /// The step last opened or saved: the file on disk holds it (no unsaved changes while the
+    /// current step is this one; undoing back to it clears the mark, as in Audition).
+    saved: Option<Arc<DocState>>,
+    saving: Option<Saving>,
+    /// The "save changes before closing?" prompt is up.
+    confirm_close: bool,
+    /// Closing was confirmed (or nothing was unsaved): let the next close request through.
+    allow_close: bool,
 }
 
 impl WaveApp {
@@ -118,6 +139,10 @@ impl WaveApp {
             editor: None,
             doc_path: PathBuf::new(),
             rebuilding: None,
+            saved: None,
+            saving: None,
+            confirm_close: false,
+            allow_close: false,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -171,6 +196,7 @@ impl WaveApp {
                 self.player.set_audio(Some(doc.audio.clone()));
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
+                self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
                 self.rebuilding = None;
                 self.doc = Some(doc);
@@ -245,6 +271,9 @@ impl WaveApp {
     /// Run an action from the table on the open file (menu, key or control channel). Returns
     /// whether the document changed.
     fn run_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
         let sel = self.selection_range();
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         match editor.run(id, sel) {
@@ -307,18 +336,142 @@ impl WaveApp {
         }
     }
 
+    /// Whether the current step differs from the one on disk.
+    fn unsaved(&self) -> bool {
+        match (&self.editor, &self.saved) {
+            (Some(e), Some(saved)) => !Arc::ptr_eq(e.history.current(), saved),
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
+    /// File › Save: to the file's own path when it is a WAV (the only format written so far),
+    /// else as Save As. `to` skips the dialog (the control channel).
+    fn save(&mut self, ctx: &egui::Context, save_as: bool, to: Option<PathBuf>, then_close: bool) -> Result<(), String> {
+        if self.saving.is_some() {
+            return Err("a save is already running".to_string());
+        }
+        let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
+        let state = editor.history.current().clone();
+        let own = !self.doc_path.as_os_str().is_empty() && state.source().format == FileFormat::Wav;
+        let path = match to {
+            Some(p) => p,
+            None if own && !save_as => self.doc_path.clone(),
+            None => {
+                let stem = self.doc_path.file_stem().map_or_else(|| "Untitled".to_string(), |s| s.to_string_lossy().into_owned());
+                let mut dialog = rfd::FileDialog::new().add_filter("WAV", &["wav"]).set_file_name(format!("{stem}.wav"));
+                if let Some(dir) = self.doc_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                    dialog = dialog.set_directory(dir);
+                }
+                match dialog.save_file() {
+                    Some(p) => p,
+                    None => return Ok(()),
+                }
+            }
+        };
+        let ty = SampleType::for_source(state.source());
+        let (tx, rx) = channel();
+        let progress = Arc::new(AtomicU32::new(0));
+        let (job_state, job_path, job_progress, ctx) = (state.clone(), path.clone(), progress.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let mut report = |p: f64| {
+                job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+                ctx.request_repaint();
+            };
+            let _ = tx.send(save_wav(&job_state, &job_path, ty, &mut report).map_err(|e| e.to_string()));
+            ctx.request_repaint();
+        });
+        self.player.stop();
+        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close });
+        Ok(())
+    }
+
+    fn finish_saving(&mut self, ctx: &egui::Context) {
+        let Some(saving) = &self.saving else { return };
+        let result = match saving.result.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the save stopped unexpectedly".to_string()),
+        };
+        let Some(Saving { path, state, ty, then_close, .. }) = self.saving.take() else { return };
+        match result {
+            Ok(()) => {
+                self.saved = Some(state);
+                self.doc_path = path.clone();
+                if let Some(doc) = self.doc.as_mut() {
+                    doc.path = path.clone();
+                }
+                self.error = None;
+                self.notice = Some(format!("Saved {} ({} WAV)", path.display(), ty.describe()));
+                if then_close {
+                    self.allow_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            Err(e) => {
+                self.error = Some(format!("Not saved: {e}. {} is unchanged.", path.display()));
+            }
+        }
+    }
+
+    /// The "save changes?" prompt when the window is closed with unsaved changes.
+    fn close_prompt(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.unsaved() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm_close = true;
+        }
+        if !self.confirm_close {
+            return;
+        }
+        let name = self.doc.as_ref().map_or_else(|| "the file".to_string(), Document::name);
+        let mut choice = None;
+        egui::Window::new("Unsaved changes").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+            ctx,
+            |ui| {
+                ui.label(format!("Save changes to {name} before closing?"));
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        choice = Some(0);
+                    }
+                    if ui.button("Don't Save").clicked() {
+                        choice = Some(1);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(2);
+                    }
+                });
+            },
+        );
+        match choice {
+            Some(0) => {
+                self.confirm_close = false;
+                if let Err(e) = self.save(ctx, false, None, true) {
+                    self.error = Some(e);
+                }
+            }
+            Some(1) => {
+                self.confirm_close = false;
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Some(_) => self.confirm_close = false,
+            None => {}
+        }
+    }
+
     /// Answer one control-channel line (see `control.rs`).
     fn control_request(&mut self, line: &str, ctx: &egui::Context) -> String {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
             "STATE" => {
-                let busy = self.opening.is_some() || self.rebuilding.is_some();
+                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
+                let unsaved = u8::from(self.unsaved());
                 match &self.editor {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -330,7 +483,7 @@ impl WaveApp {
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} undo=- redo=-", u8::from(busy)),
+                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -367,7 +520,17 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
+            "SAVE" => {
+                let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
+                match self.save(ctx, to.is_some(), to, false) {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+            // A plain QUIT refuses with unsaved changes; `QUIT discard` closes anyway.
+            "QUIT" if self.unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
             "QUIT" => {
+                self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 "OK".to_string()
             }
@@ -400,6 +563,19 @@ impl WaveApp {
             ui.menu_button("File", |ui| {
                 if ui.button("Open…  Ctrl+O").clicked() {
                     self.pick_file(ui.ctx());
+                }
+                let mac = cfg!(target_os = "macos");
+                let has_doc = self.editor.is_some() && self.saving.is_none();
+                let (save, save_as) = if mac { ("⌘S", "⇧⌘S") } else { ("Ctrl+S", "Ctrl+Shift+S") };
+                if ui.add_enabled(has_doc, egui::Button::new("Save").shortcut_text(save)).clicked()
+                    && let Err(e) = self.save(ui.ctx(), false, None, false)
+                {
+                    self.error = Some(e);
+                }
+                if ui.add_enabled(has_doc, egui::Button::new("Save As…").shortcut_text(save_as)).clicked()
+                    && let Err(e) = self.save(ui.ctx(), true, None, false)
+                {
+                    self.error = Some(e);
                 }
                 ui.separator();
                 let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
@@ -438,6 +614,9 @@ impl WaveApp {
                 ui.spinner();
                 let permille = o.progress.load(Ordering::Relaxed);
                 ui.label(format!("Opening {}… {}%", o.path.display(), permille / 10));
+            } else if let Some(s) = &self.saving {
+                ui.spinner();
+                ui.label(format!("Saving {}… {}%", s.path.display(), s.progress.load(Ordering::Relaxed) / 10));
             } else if self.rebuilding.is_some() {
                 ui.spinner();
                 ui.label("Updating the view…");
@@ -625,6 +804,7 @@ impl eframe::App for WaveApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finish_opening();
         self.finish_rebuild();
+        self.finish_saving(ctx);
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
@@ -633,6 +813,16 @@ impl eframe::App for WaveApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.close_prompt(&ctx);
+        let (save_as, save) = ctx.input_mut(|i| {
+            let save_as = i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::S);
+            (save_as, i.consume_key(egui::Modifiers::COMMAND, Key::S))
+        });
+        if (save || save_as)
+            && let Err(e) = self.save(&ctx, save_as, None, false)
+        {
+            self.error = Some(e);
+        }
         for id in pressed_actions(&ctx) {
             let _ = self.run_action(id, &ctx);
         }
@@ -663,7 +853,8 @@ impl eframe::App for WaveApp {
         if let Some(path) = dropped {
             self.open(path, &ctx);
         }
-        let title = self.doc.as_ref().map_or_else(|| "WavCraft".to_string(), |d| format!("{} — WavCraft", d.name()));
+        let star = if self.unsaved() { "*" } else { "" };
+        let title = self.doc.as_ref().map_or_else(|| "WavCraft".to_string(), |d| format!("{star}{} — WavCraft", d.name()));
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
