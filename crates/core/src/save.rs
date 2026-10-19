@@ -3,14 +3,21 @@
 //! samples are `round(x · 2^(bits−1))`, clamped, with no dither: the exact inverse of how they
 //! are read, so untouched audio saves bit for bit. Above 4 GiB the file is RF64.
 //!
-//! **A save never damages the target:** it writes `<name>.wavcraft-tmp` in the same folder,
-//! syncs it, and renames it over the target only when it is complete. Any failure removes the
-//! temporary file and leaves the target as it was.
+//! **A save never damages the target:** it writes a temporary file in the same folder, syncs it,
+//! and renames it over the target only when it is complete. Any failure removes that temporary
+//! file and leaves the target as it was.
+//!
+//! **The temporary file is the save's own** (Codex review CX-W2/W6, 2026-10-19): a new name each
+//! time, `.<name>.wavcraft-tmp-<16 random hex>`, made with exclusive create (never an existing
+//! file, never through a link), locked and kept open while it is written, and removed only by
+//! the save that made it. One left by a save that was killed (unlocked, untouched for a minute)
+//! is removed by the next save of the same file; one whose save is still running stays.
 
 use std::fmt;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use soundcraft_audio_io::SampleFormat;
 
@@ -81,10 +88,77 @@ impl From<io::Error> for SaveError {
     }
 }
 
-/// The temporary file a save of `target` writes first.
+/// The fixed temporary name saves used before the Codex review (`<name>.wavcraft-tmp`). Saves no
+/// longer write or remove it: a file there may be another program's (CX-W2).
 pub fn temp_path(target: &Path) -> PathBuf {
     let name = target.file_name().map_or_else(|| "untitled".into(), |n| n.to_string_lossy().into_owned());
     target.with_file_name(format!("{name}.wavcraft-tmp"))
+}
+
+/// The start of every temporary file name a save of `target` uses.
+fn temp_prefix(target: &Path) -> String {
+    let name = target.file_name().map_or_else(|| "untitled".into(), |n| n.to_string_lossy().into_owned());
+    format!(".{name}.wavcraft-tmp-")
+}
+
+/// The temporary files of saves of `target` now beside it (running, or left by a kill).
+pub fn temp_files(target: &Path) -> Vec<PathBuf> {
+    let (dir, prefix) = (target.parent().unwrap_or(Path::new(".")), temp_prefix(target));
+    let Ok(entries) = std::fs::read_dir(if dir.as_os_str().is_empty() { Path::new(".") } else { dir }) else { return Vec::new() };
+    entries.flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&prefix)).map(|e| e.path()).collect()
+}
+
+/// A leftover is removed only when nothing has written it for this long, as well as unlocked.
+pub const LEFTOVER_AGE: Duration = Duration::from_secs(60);
+
+/// A save's own temporary file: a fresh name, exclusive create, locked while it is written.
+struct TempFile {
+    path: PathBuf,
+    file: File,
+}
+
+impl TempFile {
+    fn create(target: &Path) -> io::Result<TempFile> {
+        let prefix = temp_prefix(target);
+        for _ in 0..16 {
+            let path = target.with_file_name(format!("{prefix}{}", crate::random::hex(8)?));
+            // create_new: O_CREAT|O_EXCL, which also refuses a link at that name.
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    file.try_lock().map_err(|e| io::Error::other(format!("could not lock the temporary file: {e}")))?;
+                    return Ok(TempFile { path, file });
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(io::Error::new(io::ErrorKind::AlreadyExists, "no free name for the temporary file"))
+    }
+}
+
+/// Remove the temporary files that saves of `target` left when they were killed: unlocked (the
+/// system drops a dead program's locks) and untouched for [`LEFTOVER_AGE`]. Anything uncertain
+/// (a link, locked, recent, unreadable) stays. Returns how many went.
+pub fn remove_leftover_temps(target: &Path) -> usize {
+    let mut removed = 0;
+    for path in temp_files(target) {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        let old = meta.modified().ok().and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age >= LEFTOVER_AGE);
+        if !meta.is_file() || !old {
+            continue;
+        }
+        let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else { continue };
+        if file.try_lock().is_err() {
+            continue; // a save is still writing it
+        }
+        // Holding the lock, so no save can be using it; on Windows the handle must close first.
+        drop(file);
+        if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+            log::warn!(target: "wavcraft_core::save", "decision: removed a temporary file left by a save that was stopped: {}", path.display());
+        }
+    }
+    removed
 }
 
 /// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically.
@@ -105,27 +179,34 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
     if frames == 0 {
         return Err(SaveError::Empty);
     }
-    let tmp = temp_path(target);
-    if let Err(e) = write_wav(doc, &tmp, ty, progress, fail_after) {
-        let _ = std::fs::remove_file(&tmp);
-        log::warn!(target: "wavcraft_core::save", "save to {} failed, the file is unchanged: {e}", target.display());
-        return Err(SaveError::Io(e));
-    }
+    remove_leftover_temps(target);
+    let tmp = TempFile::create(target).map_err(SaveError::Io)?;
+    let TempFile { path: tmp, file } = tmp;
+    // Written through the handle made by the exclusive create, never reopened by name.
+    let file = match write_wav(doc, file, ty, progress, fail_after) {
+        Ok(file) => file,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            log::warn!(target: "wavcraft_core::save", "save to {} failed, the file is unchanged: {e}", target.display());
+            return Err(SaveError::Io(e));
+        }
+    };
     if let Err(e) = std::fs::rename(&tmp, target) {
+        drop(file);
         // Hyperion's review (2026-10-19): a failed save leaves nothing behind. The target is
-        // untouched (the rename did not happen) and the temporary file goes too.
+        // untouched (the rename did not happen) and this save's temporary file goes too.
         let _ = std::fs::remove_file(&tmp);
         log::warn!(target: "wavcraft_core::save", "could not replace {}, the file is unchanged: {e}", target.display());
         return Err(SaveError::Io(io::Error::new(e.kind(), format!("could not replace the file ({e}); it is unchanged"))));
     }
+    drop(file);
     log::info!(target: "wavcraft_core::save", "saved {} frames as {} WAV to {}", frames, ty.describe(), target.display());
     Ok(())
 }
 
-fn write_wav(doc: &DocState, path: &Path, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> io::Result<()> {
+fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> io::Result<File> {
     let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
-    let file = File::create(path)?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames)?;
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
@@ -162,7 +243,8 @@ fn write_wav(doc: &DocState, path: &Path, ty: SampleType, progress: &mut dyn FnM
         out.write_all(&[0])?;
     }
     let file = out.into_inner().map_err(|e| e.into_error())?;
-    file.sync_all()
+    file.sync_all()?;
+    Ok(file)
 }
 
 /// The RIFF (or, above 4 GiB, RF64) header and the `data` chunk's header; returns the data size.
