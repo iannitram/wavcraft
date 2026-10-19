@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use wavcraft_core::store::{LOCK_FILE, Store, StoreOptions, stale_sessions, sweep_stale_sessions, this_host};
+use wavcraft_core::store::{HELD_FILE, LOCK_FILE, Store, StoreOptions, machine_id, stale_sessions, sweep_stale_sessions, this_host};
 
 /// A folder in the system's temp directory, removed when dropped.
 struct TempDir(PathBuf);
@@ -33,15 +33,24 @@ fn session(root: &Path, name: &str, lock: Option<&str>) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     if let Some(lock) = lock {
         std::fs::write(dir.join(LOCK_FILE), lock).unwrap();
+        std::fs::write(dir.join(HELD_FILE), b"").unwrap();
     }
     std::fs::write(dir.join("pack-0001.f32"), vec![0u8; 4096]).unwrap();
+    dir
+}
+
+/// A session folder from before `session.held`.
+fn session_without_held(root: &Path, name: &str, lock: &str) -> PathBuf {
+    let dir = session(root, name, Some(lock));
+    std::fs::remove_file(dir.join(HELD_FILE)).unwrap();
     dir
 }
 
 #[test]
 fn a_folder_left_by_a_dead_run_is_stale_and_is_removed() {
     let t = TempDir::new("dead");
-    let dead = session(&t.0, "0123456789abcdef", Some(&format!("pid={DEAD_PID}\nhost={}\napp=wavcraft 0.1.0\n", this_host())));
+    let dead =
+        session(&t.0, "0123456789abcdef", Some(&format!("pid={DEAD_PID}\nhost={}\nmachine={}\napp=wavcraft 0.1.0\n", this_host(), machine_id())));
     let found = stale_sessions(&t.0);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!((found[0].dir.clone(), found[0].pid), (dead.clone(), DEAD_PID));
@@ -80,6 +89,12 @@ fn folders_that_are_not_wavcraft_sessions_are_left_alone() {
         session(&t.0, "00000000000000dd", Some(&format!("pid={DEAD_PID}\napp=wavcraft 0.1.0\n"))),
         // a lock file without a pid
         session(&t.0, "00000000000000bb", Some("app=wavcraft 0.1.0\n")),
+        // this machine's id, but a session from before session.held (no lock to test): stays
+        session_without_held(
+            &t.0,
+            "00000000000000ee",
+            &format!("pid={DEAD_PID}\nhost={}\nmachine={}\napp=wavcraft 0.1.0\n", this_host(), machine_id()),
+        ),
     ];
     let loose = t.0.join("0123456789abcdee");
     std::fs::write(&loose, b"a file, not a folder").unwrap();
@@ -104,5 +119,37 @@ fn a_store_records_this_machine_in_its_lock() {
     let lock = std::fs::read_to_string(dir.join(LOCK_FILE)).unwrap();
     assert!(!this_host().is_empty(), "this machine has a name");
     assert!(lock.lines().any(|l| l == format!("host={}", this_host())), "{lock}");
+    assert!(machine_id().len() == 32 && lock.lines().any(|l| l == format!("machine={}", machine_id())), "{lock}");
+    // Its session.held is locked while the store lives, and free once it is gone.
+    let held = std::fs::OpenOptions::new().read(true).write(true).open(dir.join(HELD_FILE)).unwrap();
+    assert!(held.try_lock().is_err(), "held by the live store");
     drop(store);
+    assert!(held.try_lock().is_ok(), "released when the store ends");
+}
+
+/// Codex review CX-W3 (2026-10-19): a session whose lock file is held open and locked by a
+/// running program is never swept, whatever its pid looks like (a renamed program, a reused pid).
+#[test]
+fn cx_w3_a_session_whose_lock_is_held_is_never_swept() {
+    let t = TempDir::new("held");
+    let dir =
+        session(&t.0, "1111111111111111", Some(&format!("pid={DEAD_PID}\nhost={}\nmachine={}\napp=wavcraft 0.1.0\n", this_host(), machine_id())));
+    let held = std::fs::OpenOptions::new().read(true).write(true).open(dir.join(HELD_FILE)).unwrap();
+    held.try_lock().unwrap();
+    assert!(stale_sessions(&t.0).is_empty(), "a locked session is live");
+    assert_eq!(sweep_stale_sessions(Some(&t.0)), 0);
+    assert!(dir.exists());
+    drop(held);
+}
+
+/// Codex review CX-W3: two machines can share a hostname (and a disk); a session from another
+/// machine (another machine id) is never swept, even with the same hostname and a dead pid.
+#[test]
+fn cx_w3_another_machine_with_the_same_hostname_is_never_swept() {
+    let t = TempDir::new("twin");
+    let other = "machine=ffffffffffffffffffffffffffffffff";
+    let dir = session(&t.0, "2222222222222222", Some(&format!("pid={DEAD_PID}\nhost={}\n{other}\napp=wavcraft 0.1.0\n", this_host())));
+    assert!(stale_sessions(&t.0).is_empty());
+    assert_eq!(sweep_stale_sessions(Some(&t.0)), 0);
+    assert!(dir.exists());
 }

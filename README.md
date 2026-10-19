@@ -87,7 +87,9 @@ Keys follow Adobe Audition's defaults (`plan/audition-parity.md` in the depot), 
   `wavcraft-store-bench FILE` the store's streamed open and reads, and `wavcraft-edit-bench FILE`
   the edits, undo and history on a long file. Numbers:
   `docs/baseline.md`. Layout of the code: `docs/code-map.md`. The bench's one Windows memory call
-  is the only `unsafe` in the tree (that crate denies `unsafe` instead of forbidding it).
+  is one of the two `unsafe` exceptions in the tree (that crate denies `unsafe` instead of
+  forbidding it). The other, and the last: the app's `win_acl.rs` (Windows only), the Win32
+  calls that make the control channel's token file owner-only (wavcraft#8, 2026-10-19).
 
 **Where the samples live.** Opening streams the file, 64 K frames at a time, into a session
 folder under the system cache directory (`wavcraft/sessions/<id>/`, removed when the file is

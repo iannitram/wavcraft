@@ -17,5 +17,16 @@ log.workspace = true
 craft-log.workspace = true
 dirs.workspace = true
 
-[lints]
-workspace = true
+[target.'cfg(windows)'.dependencies]
+# The token file's owner-only DACL (win_acl.rs). Already in Cargo.lock (0.61.2: wavcraft-testkit,
+# dirs-sys), so no new crate; these features add the Win32 security calls. MIT OR Apache-2.0.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
+
+# The workspace forbids `unsafe`. This crate only denies it, so the Windows ACL calls in
+# win_acl.rs can be allowed there and nowhere else (the second and last exception; README).
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"

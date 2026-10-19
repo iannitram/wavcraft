@@ -13,6 +13,8 @@ mod control;
 mod player;
 mod selflog;
 mod spectrum;
+#[cfg(windows)]
+mod win_acl;
 
 use std::ffi::OsString;
 use std::path::PathBuf;

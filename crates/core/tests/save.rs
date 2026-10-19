@@ -8,7 +8,7 @@ use wavcraft_core::doc::edit::Crossfades;
 use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::io::{OpenOptions, open};
-use wavcraft_core::save::{SampleType, save_wav, save_wav_failing_after, temp_path};
+use wavcraft_core::save::{LEFTOVER_AGE, SampleType, remove_leftover_temps, save_wav, save_wav_failing_after, temp_files, temp_path};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 const RATE: u32 = 48_000;
@@ -133,11 +133,11 @@ fn t5_a_save_that_fails_halfway_leaves_the_target_whole() {
     let err = save_wav_failing_after(&doc, &target, SampleType::Int24, BLOCK_FRAMES as u64);
     assert!(err.is_err());
     assert_eq!(std::fs::read(&target).unwrap(), b"the original bytes", "target untouched");
-    assert!(!temp_path(&target).exists(), "no temp file left behind");
+    assert!(!temp_path(&target).exists() && temp_files(&target).is_empty(), "no temp file left behind");
     // The same save, not interrupted, replaces it.
     save_wav(&doc, &target, SampleType::Int24, &mut |_| {}).unwrap();
     assert_ne!(std::fs::read(&target).unwrap(), b"the original bytes");
-    assert!(!temp_path(&target).exists());
+    assert!(!temp_path(&target).exists() && temp_files(&target).is_empty());
 }
 
 #[test]
@@ -160,6 +160,71 @@ fn a_save_whose_rename_fails_leaves_no_temp_file_and_the_target_whole() {
     std::fs::create_dir_all(&target).unwrap();
     std::fs::write(target.join("keep.txt"), b"still here").unwrap();
     assert!(save_wav(&doc, &target, SampleType::Int16, &mut |_| {}).is_err());
-    assert!(!temp_path(&target).exists(), "no temp file left behind");
+    assert!(!temp_path(&target).exists() && temp_files(&target).is_empty(), "no temp file left behind");
     assert_eq!(std::fs::read(target.join("keep.txt")).unwrap(), b"still here", "target untouched");
+}
+
+/// Codex review CX-W2 (2026-10-19): a link waiting at the temporary file's name must not make
+/// the save write through it (File::create follows links and truncates).
+#[cfg(unix)]
+#[test]
+fn cx_w2_a_link_at_the_temp_name_is_never_followed() {
+    let t = TempDir::new("link");
+    let doc = doc_from(&t.0.join("store"), &exact(16, BLOCK_FRAMES));
+    let target = t.0.join("song.wav");
+    let victim = t.0.join("victim.txt");
+    std::fs::write(&victim, b"someone else's file").unwrap();
+    std::os::unix::fs::symlink(&victim, temp_path(&target)).unwrap();
+    save_wav(&doc, &target, SampleType::Int16, &mut |_| {}).unwrap();
+    assert_eq!(std::fs::read(&victim).unwrap(), b"someone else's file", "the link's target is untouched");
+    assert!(!std::fs::symlink_metadata(&target).unwrap().file_type().is_symlink(), "the saved file is a real file");
+}
+
+/// Codex review CX-W2: a failing save removes only its own temporary file, never one another
+/// save (another window, another run) is writing.
+#[test]
+fn cx_w2_a_failing_save_never_removes_another_saves_temp_file() {
+    let t = TempDir::new("othertemp");
+    let doc = doc_from(&t.0.join("store"), &exact(16, 3 * BLOCK_FRAMES));
+    let target = t.0.join("shared.wav");
+    std::fs::write(temp_path(&target), b"another save's half-written file").unwrap();
+    assert!(save_wav_failing_after(&doc, &target, SampleType::Int24, BLOCK_FRAMES as u64).is_err());
+    assert_eq!(std::fs::read(temp_path(&target)).unwrap(), b"another save's half-written file");
+}
+
+/// A temporary file as a killed save leaves it: named as saves name them, unlocked, last
+/// written `age` ago.
+fn leftover(target: &Path, tag: &str, age: std::time::Duration) -> PathBuf {
+    let name = target.file_name().unwrap().to_string_lossy().into_owned();
+    let p = target.with_file_name(format!(".{name}.wavcraft-tmp-{tag}"));
+    let f = std::fs::File::create(&p).unwrap();
+    f.set_modified(std::time::SystemTime::now() - age).unwrap();
+    p
+}
+
+/// Codex review CX-W6 (2026-10-19): a temporary file left by a save that was killed is removed by
+/// the next save of the same file; one a running save holds (locked), or one written in the last
+/// minute, stays.
+#[test]
+fn cx_w6_the_next_save_removes_only_temp_files_left_by_a_killed_save() {
+    let t = TempDir::new("leftover");
+    let doc = doc_from(&t.0.join("store"), &exact(16, BLOCK_FRAMES));
+    let target = t.0.join("episode.wav");
+    let hour = std::time::Duration::from_secs(3600);
+    let dead = leftover(&target, "00000000000000aa", hour);
+    let young = leftover(&target, "00000000000000bb", std::time::Duration::ZERO);
+    let running = leftover(&target, "00000000000000cc", hour);
+    let held = std::fs::OpenOptions::new().write(true).open(&running).unwrap();
+    held.try_lock().unwrap();
+    // Another file's leftovers are never this save's business.
+    let other = leftover(&t.0.join("other.wav"), "00000000000000dd", hour);
+    save_wav(&doc, &target, SampleType::Int16, &mut |_| {}).unwrap();
+    assert!(!dead.exists(), "left by a killed save: removed");
+    assert!(young.exists(), "written in the last {LEFTOVER_AGE:?}: kept");
+    assert!(running.exists(), "locked by a running save: kept");
+    assert!(other.exists(), "another file's: kept");
+    drop(held);
+    // Once its save has ended (lock gone) and it is old, it goes too.
+    assert_eq!(remove_leftover_temps(&target), 1);
+    assert!(!running.exists());
 }

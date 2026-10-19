@@ -189,6 +189,45 @@ def zero_checks(c, checks, saved_path):
     c.ask("SELECT 0 0")
 
 
+def save_then_open(exe, env, port, token, work, a_path, a_frames):
+    """Codex review CX-W1 (2026-10-19): Save A, open B while A's save is still running, then
+    edit B and Save. B's Save must write B's own file; A's saved copy must stay A."""
+    b_path, a_copy = os.path.join(work, "b-short.wav"), os.path.join(work, "a-copy.wav")
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate={RATE}:duration=2",
+                    "-ac", "2", "-c:a", "pcm_s16le", b_path], check=True)
+    b_frames = 2 * RATE
+    proc = subprocess.Popen([exe, a_path], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        c = Control(port, open(token).read().strip())
+        st = c.state(timeout=120)
+        for _ in range(200):
+            if int(st.get("frames", 0)) == a_frames and st.get("busy") == "0":
+                break
+            time.sleep(0.2)
+            st = c.state()
+        saved = c.ask(f"SAVE {a_copy}")
+        opened = c.ask(f"OPEN {b_path}")
+        st = c.state(timeout=120)
+        for _ in range(200):
+            if int(st.get("frames", 0)) == b_frames and st.get("busy") == "0":
+                break
+            time.sleep(0.2)
+            st = c.state()
+        c.ask("SELECT 0 1000")
+        c.ask("ACTION edit.silence")
+        b_saved = c.ask("SAVE")
+        c.state(timeout=120)
+        c.ask("QUIT discard")
+        proc.wait(15)
+        frames = lambda p: wave.open(p, "rb").getnframes() if os.path.exists(p) else None
+        ok = saved == "OK" and opened == "OK" and b_saved == "OK" and frames(a_copy) == a_frames and frames(b_path) == b_frames
+        return {"check": "a save finishing after another file opened keeps each file's own path", "ok": ok,
+                "detail": f"save A {saved}, open B {opened}, save B {b_saved}; a-copy.wav {frames(a_copy)} frames (A has {a_frames}), b {frames(b_path)} (B has {b_frames})"}
+    except Exception as e:
+        proc.kill()
+        return {"check": "a save finishing after another file opened keeps each file's own path", "ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
 def run(exe, keep):
     work = tempfile.mkdtemp(prefix="wavcraft-golden.")
     home, sessions = os.path.join(work, "home"), os.path.join(work, "sessions")
@@ -288,6 +327,8 @@ def run(exe, keep):
         except Exception as e:
             checks.append({"check": "the saved file reopens at the edited length", "ok": False, "detail": f"{type(e).__name__}: {e}"})
             proc2.kill()
+    if os.path.exists(saved_path) and edited_len:
+        checks.append(save_then_open(exe, env, port, token, work, saved_path, edited_len))
     leftover = [d for d in os.listdir(sessions)] if os.path.isdir(sessions) else []
     checks.append({"check": "a clean close removes the session folder", "ok": not leftover, "detail": f"{len(leftover)} left"})
     # WAVCRAFT_LOG_DIR puts the log in the work folder on every OS (on Windows the config

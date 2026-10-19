@@ -3278,6 +3278,7 @@ dependencies = [
  "log",
  "rfd",
  "wavcraft-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3286,6 +3287,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "dirs",
+ "getrandom 0.4.3",
  "log",
  "proptest",
  "rayon",
