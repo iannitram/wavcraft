@@ -230,7 +230,9 @@ pub enum Toward {
 
 /// The nearest zero crossing to `frame` on the side `toward`, at most `reach` frames away, or
 /// None. A crossing at `i` means the signal changes sign between frames `i - 1` and `i` (or frame
-/// `i` is exactly 0); `frame` itself counts. The signal is the sum of the `channels` asked for,
+/// `i` is exactly 0). `frame` itself never counts: an edge already on a crossing moves to the
+/// next one, so pressing the key again steps on (Adobe: "to the next zero crossing"; Hyperion's
+/// check of #7, 2026-10-19). The signal is the sum of the `channels` asked for,
 /// so a stereo edge lands where the active channels' mix crosses (Audition's rule for stereo was
 /// not seen; `docs/code-map.md`, Known differences).
 pub fn zero_crossing(doc: &crate::doc::DocState, channels: ChannelMask, frame: u64, toward: Toward, reach: u64) -> std::io::Result<Option<u64>> {
@@ -255,8 +257,8 @@ pub fn zero_crossing(doc: &crate::doc::DocState, channels: ChannelMask, frame: u
     let at = |i: u64| mix[(i - lo) as usize];
     let crosses = |i: u64| i > lo && i < hi && (at(i) == 0.0 || (at(i - 1) < 0.0) != (at(i) < 0.0));
     let found = match toward {
-        Toward::Left => (frame.saturating_sub(reach)..=frame).rev().find(|&i| crosses(i)),
-        Toward::Right => (frame..=(frame + reach).min(len - 1)).find(|&i| crosses(i)),
+        Toward::Left => (frame.saturating_sub(reach)..frame).rev().find(|&i| crosses(i)),
+        Toward::Right => (frame + 1..=(frame + reach).min(len - 1)).find(|&i| crosses(i)),
     };
     Ok(found)
 }
@@ -356,12 +358,7 @@ impl Editor {
             (
                 start..end,
                 Some(
-                    if moved {
-                        "Selection edges moved to zero crossings"
-                    } else {
-                        "The edges already sit on zero crossings, or none is within 10 ms"
-                    }
-                    .to_string(),
+                    if moved { "Selection edges moved to zero crossings" } else { "No other zero crossing within 10 ms; the edges stay" }.to_string(),
                 ),
             )
         } else {

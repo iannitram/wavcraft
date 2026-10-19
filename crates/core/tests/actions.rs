@@ -300,10 +300,16 @@ fn t6_zero_crossing_adjusts_land_on_sign_changes_of_the_1khz_tone() {
         check(id, out.selection, s, en);
     }
     assert_eq!(e.history.steps().len(), 1, "no history step for a selection change");
-    // On a crossing already: nothing moves.
+    // On a crossing already: the edge steps to the next one (Hyperion's check of #7: Shift+J and
+    // Shift+L did nothing there), so pressing the key again walks along the crossings.
     let on = (1001..2000).find(|&i| is_crossing(&left, i)).unwrap();
-    let out = e.run(ActionId::ZeroLeftToRight, on..5000).unwrap();
-    assert_eq!(out.selection.start, on);
+    let next = (on + 1..on + 480).find(|&i| is_crossing(&left, i)).unwrap();
+    assert_eq!(e.run(ActionId::ZeroLeftToRight, on..5000).unwrap().selection.start, next);
+    let end_on = (4000..5000).rev().find(|&i| is_crossing(&left, i)).unwrap();
+    let end_next = (end_on + 1..end_on + 480).find(|&i| is_crossing(&left, i)).unwrap();
+    assert_eq!(e.run(ActionId::ZeroRightToRight, 1000..end_on).unwrap().selection.end, end_next);
+    let prev = (end_on - 480..end_on).rev().find(|&i| is_crossing(&left, i)).unwrap();
+    assert_eq!(e.run(ActionId::ZeroRightToLeft, 1000..end_on).unwrap().selection.end, prev);
 }
 
 #[test]

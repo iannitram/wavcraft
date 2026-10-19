@@ -39,7 +39,9 @@ Result, has what was seen):
 - **One-channel Paste over a selection:** the clip overwrites from the selection's start for the
   clip's length, whatever the selection's length. Audition was only seen pasting at a cursor.
 - **Zero crossings on stereo (task 07c):** an edge moves to where the *sum of the active channels*
-  changes sign (or is exactly 0), on its side, within 10 ms; with none there it stays, and an
+  changes sign (or is exactly 0), on its side, within 10 ms, never at the edge itself (an edge
+  already on a crossing steps to the next one, Adobe's "next zero crossing"; not yet checked in
+  Audition by eye); with none there it stays, and an
   inward adjust that would leave nothing changes nothing. Audition's rule for stereo was not seen.
 - **Repeat Last Command (task 07c):** repeats Silence, Paste, Crop, Insert Silence (same length,
   at the cursor) and the six zero-crossing adjusts. Delete is not repeatable (Audition); Undo,
