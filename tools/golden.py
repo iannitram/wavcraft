@@ -88,6 +88,15 @@ def edits(c, checks):
     def check(label, ok, detail):
         checks.append({"check": label, "ok": bool(ok), "detail": detail})
 
+    # The channel must answer while the window is minimised (eframe runs no ui pass then).
+    c.ask("WINDOW minimize")
+    time.sleep(1.5)
+    t0 = time.time()
+    st = c.state(wait=False)
+    hidden_ok = st.get("frames") == str(f0) and time.time() - t0 < 2.0
+    c.ask("WINDOW restore")
+    time.sleep(1.0)
+    check("the control channel answers while the window is minimised", hidden_ok, f"{time.time() - t0:.2f} s; {st}")
     c.ask(f"SELECT {60 * sec} {70 * sec}")
     a = c.ask("ACTION edit.delete")
     st = c.state()

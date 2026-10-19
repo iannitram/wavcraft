@@ -355,6 +355,18 @@ impl WaveApp {
                 },
                 None => format!("ERR no action named {rest:?}"),
             },
+            // Minimise or restore the window (scripted checks of hidden-window behaviour).
+            "WINDOW" => match rest {
+                "minimize" => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    "OK".to_string()
+                }
+                "restore" => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    "OK".to_string()
+                }
+                _ => "ERR WINDOW minimize|restore".to_string(),
+            },
             "QUIT" => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 "OK".to_string()
@@ -606,14 +618,21 @@ impl WaveApp {
 }
 
 impl eframe::App for WaveApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    /// Runs before every frame, and also while the window is hidden, minimised or covered (eframe
+    /// skips `ui` then, but still calls this on `request_repaint`): the workers' results and the
+    /// control channel must not wait for the window to be shown (the 2026-10-19 by-eye check
+    /// found the channel silent behind another window).
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finish_opening();
         self.finish_rebuild();
-        let ctx = ui.ctx().clone();
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            let answer = self.control_request(&req.line, &ctx);
+            let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
         }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         for id in pressed_actions(&ctx) {
             let _ = self.run_action(id, &ctx);
         }

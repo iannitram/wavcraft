@@ -8,6 +8,7 @@
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`
+//! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `QUIT` → `OK`, then the window closes
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
