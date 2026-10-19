@@ -37,7 +37,7 @@ pub fn start_from_env(wake: impl Fn() + Send + Sync + 'static) -> Option<Receive
     let token = match token(Path::new(&token_file)) {
         Ok(t) => t,
         Err(e) => {
-            log::warn!(target: "wavcraft", "control channel: no token file at {}: {e}", Path::new(&token_file).display());
+            log::warn!(target: "wavcraft", "control channel off: the token file {} was refused or could not be made: {e}", Path::new(&token_file).display());
             return None;
         }
     };
@@ -64,7 +64,8 @@ pub fn start_from_env(wake: impl Fn() + Send + Sync + 'static) -> Option<Receive
 /// - a new token is 32 bytes from the operating system's CSPRNG as 64 hex digits; no random
 ///   bytes, no control channel (fail closed);
 /// - it is written with exclusive create (never through a link), owner-only: mode 0600 on Unix,
-///   an owner-only ACL on Windows (`icacls`), and the file is removed if that fails;
+///   an owner-only ACL on Windows (protected, one entry: the SID of this process's user), and the
+///   file is removed if that fails;
 /// - an existing file is used only when it is a plain file (not a link), only its owner can read
 ///   it, and it holds at least 64 hex digits. Anything else is refused.
 fn token(path: &Path) -> std::io::Result<String> {
@@ -100,10 +101,18 @@ fn check_private(_path: &Path, meta: &std::fs::Metadata) -> std::io::Result<()> 
     Ok(())
 }
 
-/// Windows: the ACL is made owner-only again (an existing file may come from elsewhere).
+/// Windows: an existing token file is used only when its DACL is protected (nothing inherited)
+/// and every allow entry is this process's user (by SID). Anything else is refused, as on Unix;
+/// it is never repaired, since others may already have read it (Hyperion's check of wavcraft#8).
 #[cfg(not(unix))]
 fn check_private(path: &Path, _meta: &std::fs::Metadata) -> std::io::Result<()> {
-    owner_only_acl(path)
+    match crate::win_acl::others_can_read(path)? {
+        None => Ok(()),
+        Some(why) => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("others can read the token file ({why}); refused (delete it and a new one is made)"),
+        )),
+    }
 }
 
 #[cfg(unix)]
@@ -113,35 +122,16 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     f.write_all(text.as_bytes())
 }
 
-/// Windows: exclusive create, owner-only ACL before the token goes in; on failure the file goes.
+/// Windows: exclusive create, an owner-only DACL before the token goes in; on failure the file goes.
 #[cfg(not(unix))]
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
-    if let Err(e) = owner_only_acl(path) {
+    if let Err(e) = crate::win_acl::set_owner_only(path) {
         drop(f);
         let _ = std::fs::remove_file(path);
         return Err(e);
     }
     f.write_all(text.as_bytes())
-}
-
-/// Windows: remove inherited entries and grant only the current user (`icacls`, part of
-/// Windows; no new dependency).
-#[cfg(not(unix))]
-fn owner_only_acl(path: &Path) -> std::io::Result<()> {
-    let user = match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
-        (Ok(d), Ok(u)) if !d.is_empty() && !u.is_empty() => format!("{d}\\{u}"),
-        (_, Ok(u)) if !u.is_empty() => u,
-        _ => return Err(std::io::Error::other("no user name for the token file's ACL")),
-    };
-    let out = std::process::Command::new("icacls").arg(path).args(["/inheritance:r", "/grant:r"]).arg(format!("{user}:F")).output()?;
-    if !out.status.success() {
-        return Err(std::io::Error::other(format!(
-            "icacls could not make the token file owner-only: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(())
 }
 
 fn serve(stream: TcpStream, token: &str, tx: &Sender<Request>, wake: &(dyn Fn() + Send + Sync)) {
@@ -220,6 +210,26 @@ mod tests {
         std::os::unix::fs::symlink(dir.join("made-through-link"), &dangling).unwrap();
         assert!(token(&dangling).is_err());
         assert!(!dir.join("made-through-link").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Hyperion's check of wavcraft#8 (2026-10-19): on Windows an existing token file whose ACL
+    /// lets others read it (inherited entries, or the Users group) is refused, not repaired.
+    #[cfg(windows)]
+    #[test]
+    fn cx_w5_windows_a_token_file_others_can_read_is_refused() {
+        let dir = scratch("win-acl");
+        let open = dir.join("open.token");
+        std::fs::write(&open, "a".repeat(64)).unwrap();
+        // Inherited entries from the folder, plus read for Users (S-1-5-32-545).
+        let ok = std::process::Command::new("icacls").arg(&open).args(["/grant", "*S-1-5-32-545:(RX)"]).status().unwrap().success();
+        assert!(ok);
+        assert!(token(&open).is_err(), "readable by Users: refused");
+        assert_eq!(std::fs::read_to_string(&open).unwrap(), "a".repeat(64), "not rewritten");
+        // A token this code made is owner-only and is accepted the next time.
+        let made = dir.join("made.token");
+        let t = token(&made).unwrap();
+        assert_eq!(token(&made).unwrap(), t);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
