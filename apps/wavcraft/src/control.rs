@@ -84,6 +84,9 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     f.write_all(text.as_bytes())
 }
 
+/// Windows: no owner-only mode without a new dependency. The file is written where the caller
+/// put it, so callers keep it inside the user's own profile (AppData or a scratch folder there),
+/// whose folder permissions are already the user's only; the golden task does.
 #[cfg(not(unix))]
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::write(path, text)
@@ -97,6 +100,7 @@ fn serve(stream: TcpStream, token: &str, tx: &Sender<Request>, wake: &(dyn Fn() 
             let _ = writeln!(out, "OK");
         }
         _ => {
+            log::warn!(target: "wavcraft", "control channel: a connection from {} gave no valid token; closed", out.peer_addr().map_or_else(|_| "?".to_string(), |a| a.to_string()));
             let _ = writeln!(out, "ERR the first line must be TOKEN <token>");
             return;
         }

@@ -131,7 +131,8 @@ def run(exe, keep):
                     "-f", "lavfi", "-i", f"sine=frequency=180:sample_rate={RATE}:duration={MINUTES * 60},volume=0.5",
                     "-f", "lavfi", "-i", f"anoisesrc=d={MINUTES * 60}:c=pink:r={RATE}:a=0.05",
                     "-filter_complex", "[0][1]amix=inputs=2,aformat=channel_layouts=stereo", "-c:a", "pcm_s24le", wav], check=True)
-    env = dict(os.environ, HOME=home, WAVCRAFT_SESSION_DIR=sessions, XDG_CONFIG_HOME=os.path.join(home, ".config"),
+    logs = os.path.join(work, "logs")
+    env = dict(os.environ, HOME=home, USERPROFILE=home, WAVCRAFT_SESSION_DIR=sessions, WAVCRAFT_LOG_DIR=logs, XDG_CONFIG_HOME=os.path.join(home, ".config"),
                XDG_CACHE_HOME=os.path.join(home, ".cache"), APPDATA=os.path.join(home, "AppData", "Roaming"),
                LOCALAPPDATA=os.path.join(home, "AppData", "Local"), RUST_BACKTRACE="1")
     port, token = free_port(), os.path.join(work, "control.token")
@@ -186,12 +187,14 @@ def run(exe, keep):
     checks.append({"check": "nothing on stderr looks like a panic or an error", "ok": not bad, "detail": bad[:5] or f"{len(text.splitlines())} lines"})
     leftover = [d for d in os.listdir(sessions)] if os.path.isdir(sessions) else []
     checks.append({"check": "a clean close removes the session folder", "ok": not leftover, "detail": f"{len(leftover)} left"})
-    logs = [os.path.join(d, f) for d, _, fs in os.walk(home) for f in fs if f == "wavcraft.log"]
-    errors = [l.strip()[:200] for p in logs for l in open(p, errors="replace") if " ERROR " in l]
-    checks.append({"check": "the app's own log has no ERROR", "ok": bool(logs) and not errors, "detail": errors[:3] or f"{len(logs)} log file(s)"})
+    # WAVCRAFT_LOG_DIR puts the log in the work folder on every OS (on Windows the config
+    # folder comes from the system, not from APPDATA).
+    log_files = [os.path.join(d, f) for d, _, fs in os.walk(logs) for f in fs if f == "wavcraft.log"]
+    errors = [l.strip()[:200] for p in log_files for l in open(p, errors="replace") if " ERROR " in l]
+    checks.append({"check": "the app's own log has no ERROR", "ok": bool(log_files) and not errors, "detail": errors[:3] or f"{len(log_files)} log file(s)"})
     result = {"app": "WavCraft", "os": platform.system(), "status": "pass" if all(c["ok"] is not False for c in checks) else "fail",
               "seconds": round(time.time() - t0, 1), "checks": checks,
-              "notes": [f"log: {logs[0]}" if logs else "no log file found"]}
+              "notes": [f"log: {log_files[0]}" if log_files else "no log file found"]}
     if keep:
         result["work"] = work
     else:
