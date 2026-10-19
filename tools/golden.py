@@ -23,7 +23,7 @@ click to Open and back, checking the length each time; QUIT discard leaves the s
 saved.
 Effects join here as later tasks land.
 """
-import argparse, json, os, platform, shutil, signal, socket, subprocess, sys, tempfile, time
+import argparse, json, os, platform, shutil, signal, socket, subprocess, sys, tempfile, time, wave
 
 MINUTES, RATE, CHANNELS = 10, 48000, 2
 STORE_BYTES = MINUTES * 60 * RATE * CHANNELS * 4  # f32 samples in the session store
@@ -154,6 +154,41 @@ def edits(c, checks, saved_path=None):
     return f0 - 10 * sec
 
 
+def wav_mix(path, start, count):
+    """The sum of every channel of a 16- or 24-bit PCM WAV, frames start..start+count."""
+    with wave.open(path, "rb") as w:
+        ch, width = w.getnchannels(), w.getsampwidth()
+        w.setpos(start)
+        raw = w.readframes(count)
+    out = []
+    for f in range(len(raw) // (ch * width)):
+        total = 0
+        for c in range(ch):
+            b = raw[(f * ch + c) * width:(f * ch + c + 1) * width]
+            total += int.from_bytes(b, "little", signed=True)
+        out.append(total)
+    return out
+
+
+def zero_checks(c, checks, saved_path):
+    """Edit > Zero Crossings on the reopened file (still exactly the saved one): each moved
+    edge is a sign change of the channels' sum, on the right side, within 10 ms (480 frames)."""
+    reach = RATE // 100
+    a, b = 3 * RATE + 123, 7 * RATE + 321
+    for name, side in [("inward", (+1, -1)), ("outward", (-1, +1))]:
+        c.ask(f"SELECT {a} {b}")
+        ans = c.ask(f"ACTION edit.zeroCrossings.{name}")
+        st = c.state()
+        sel = [int(x) for x in st["selection"].split("-")]
+        ok = ans.endswith("changed=0") and st["steps"] == "1"
+        for edge, was, sign in [(sel[0], a, side[0]), (sel[1], b, side[1])]:
+            near = wav_mix(saved_path, edge - 1, 2)
+            crossing = near[1] == 0 or (near[0] < 0) != (near[1] < 0)
+            ok = ok and crossing and 0 <= (edge - was) * sign <= reach
+        checks.append({"check": f"Zero Crossings {name}: edges on sign changes within 10 ms", "ok": ok, "detail": f"{a}-{b} -> {st['selection']}; {ans}"})
+    c.ask("SELECT 0 0")
+
+
 def run(exe, keep):
     work = tempfile.mkdtemp(prefix="wavcraft-golden.")
     home, sessions = os.path.join(work, "home"), os.path.join(work, "sessions")
@@ -231,6 +266,7 @@ def run(exe, keep):
                 time.sleep(0.2)
                 st = c2.state()
             checks.append({"check": "the saved file reopens at the edited length", "ok": int(st.get("frames", 0)) == edited_len and st.get("unsaved") == "0", "detail": st})
+            zero_checks(c2, checks, saved_path)
             a = c2.ask("INSERT_SILENCE 1")
             st = c2.state()
             checks.append({"check": "Insert Silence 1 s at the cursor", "ok": a == f"OK selection=0-{RATE}" and int(st["frames"]) == edited_len + RATE and st["undo"] == "Insert Silence", "detail": f"{a}; {st}"})
@@ -239,6 +275,13 @@ def run(exe, keep):
             c2.ask("HISTORY 1")
             st1 = c2.state()
             checks.append({"check": "History: to Open and back", "ok": int(st0["frames"]) == edited_len and st0["cursor"] == "0" and int(st1["frames"]) == edited_len + RATE and st1["cursor"] == "1", "detail": f"{st0} / {st1}"})
+            # Repeat Last Command (Shift+R) after Insert Silence: the same second again, at the cursor.
+            c2.ask(f"SELECT {2 * RATE} {2 * RATE}")
+            a = c2.ask("ACTION edit.repeatLast")
+            st = c2.state()
+            checks.append({"check": "Repeat Last Command inserts the same silence at the cursor",
+                           "ok": a == f"OK selection={2 * RATE}-{3 * RATE} changed=1" and int(st["frames"]) == edited_len + 2 * RATE and st["steps"] == "3" and st["undo"] == "Insert Silence",
+                           "detail": f"{a}; {st}"})
             refused = c2.ask("QUIT")
             checks.append({"check": "QUIT refuses unsaved changes; QUIT discard closes", "ok": refused.startswith("ERR unsaved") and c2.ask("QUIT discard") == "OK", "detail": refused})
             proc2.wait(15)
