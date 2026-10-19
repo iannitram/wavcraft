@@ -26,6 +26,24 @@ pub enum ActionId {
     ClearTimeSelection,
     LeftChannel,
     RightChannel,
+    InsertSilence,
+    CursorToStart,
+    CursorToEnd,
+    SetIn,
+    SetOut,
+    ZoomIn,
+    ZoomOut,
+    ZoomToSelection,
+    ZoomOutFull,
+}
+
+/// Which part of the program carries an action out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Changes the document or the selection: [`Editor::run`].
+    Edit,
+    /// Needs the window (the view, the playhead, a dialog): the app runs it.
+    Window,
 }
 
 /// A key with its modifiers. `key` is egui's key name (`"Z"`, `"Delete"`, `"ArrowUp"`).
@@ -46,6 +64,9 @@ const fn cmd(key: &'static str) -> Shortcut {
 const fn cmd_shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: true, shift: true, alt: false, key }
 }
+const fn shift(key: &'static str) -> Shortcut {
+    Shortcut { cmd: false, shift: true, alt: false, key }
+}
 
 impl Shortcut {
     /// How a menu shows it: `⌘⇧Z` on a Mac, `Ctrl+Shift+Z` elsewhere.
@@ -55,6 +76,9 @@ impl Shortcut {
             "ArrowDown" => "↓",
             "Delete" if mac => "⌦",
             "Backspace" if mac => "⌫",
+            "Equals" => "=",
+            "Minus" => "−",
+            "Backslash" => "\\",
             k => k,
         };
         if mac {
@@ -81,23 +105,41 @@ pub struct Action {
     pub menu: &'static str,
     /// Audition's default keys; empty where Audition has none (menu only, as there).
     pub keys: &'static [Shortcut],
+    pub kind: Kind,
+}
+
+const fn edit(id: ActionId, name: &'static str, menu: &'static str, keys: &'static [Shortcut]) -> Action {
+    Action { id, name, menu, keys, kind: Kind::Edit }
+}
+const fn window(id: ActionId, name: &'static str, menu: &'static str, keys: &'static [Shortcut]) -> Action {
+    Action { id, name, menu, keys, kind: Kind::Window }
 }
 
 /// Every action, in Edit-menu order. Keys: Audition 26.5's defaults (task 07, marked † there).
 pub const TABLE: &[Action] = &[
-    Action { id: ActionId::Undo, name: "edit.undo", menu: "Undo", keys: &[cmd("Z")] },
-    Action { id: ActionId::Redo, name: "edit.redo", menu: "Redo", keys: &[cmd_shift("Z"), cmd("Y")] },
-    Action { id: ActionId::Cut, name: "edit.cut", menu: "Cut", keys: &[cmd("X")] },
-    Action { id: ActionId::Copy, name: "edit.copy", menu: "Copy", keys: &[cmd("C")] },
-    Action { id: ActionId::Paste, name: "edit.paste", menu: "Paste", keys: &[cmd("V")] },
-    Action { id: ActionId::Delete, name: "edit.delete", menu: "Delete", keys: &[key("Delete"), key("Backspace")] },
-    Action { id: ActionId::Silence, name: "edit.silence", menu: "Silence", keys: &[] },
-    Action { id: ActionId::Crop, name: "edit.crop", menu: "Crop", keys: &[cmd("T")] },
-    Action { id: ActionId::SelectAll, name: "edit.selectAll", menu: "Select All", keys: &[cmd("A")] },
-    Action { id: ActionId::DeselectAll, name: "edit.deselectAll", menu: "Deselect All", keys: &[cmd_shift("A"), cmd("D")] },
-    Action { id: ActionId::ClearTimeSelection, name: "edit.clearTimeSelection", menu: "Clear Time Selection", keys: &[key("G")] },
-    Action { id: ActionId::LeftChannel, name: "edit.leftChannel", menu: "Left Channel Only", keys: &[key("ArrowUp")] },
-    Action { id: ActionId::RightChannel, name: "edit.rightChannel", menu: "Right Channel Only", keys: &[key("ArrowDown")] },
+    edit(ActionId::Undo, "edit.undo", "Undo", &[cmd("Z")]),
+    edit(ActionId::Redo, "edit.redo", "Redo", &[cmd_shift("Z"), cmd("Y")]),
+    edit(ActionId::Cut, "edit.cut", "Cut", &[cmd("X")]),
+    edit(ActionId::Copy, "edit.copy", "Copy", &[cmd("C")]),
+    edit(ActionId::Paste, "edit.paste", "Paste", &[cmd("V")]),
+    edit(ActionId::Delete, "edit.delete", "Delete", &[key("Delete"), key("Backspace")]),
+    edit(ActionId::Silence, "edit.silence", "Silence", &[]),
+    // Insert › Silence… asks for a length (the window's dialog), then runs `Editor::insert_silence`.
+    window(ActionId::InsertSilence, "edit.insertSilence", "Insert Silence…", &[]),
+    edit(ActionId::Crop, "edit.crop", "Crop", &[cmd("T")]),
+    edit(ActionId::SelectAll, "edit.selectAll", "Select All", &[cmd("A")]),
+    edit(ActionId::DeselectAll, "edit.deselectAll", "Deselect All", &[cmd_shift("A"), cmd("D")]),
+    edit(ActionId::ClearTimeSelection, "edit.clearTimeSelection", "Clear Time Selection", &[key("G")]),
+    window(ActionId::SetIn, "edit.setIn", "Set In Point to Playhead", &[key("I")]),
+    window(ActionId::SetOut, "edit.setOut", "Set Out Point to Playhead", &[key("O")]),
+    edit(ActionId::LeftChannel, "edit.leftChannel", "Left Channel Only", &[key("ArrowUp")]),
+    edit(ActionId::RightChannel, "edit.rightChannel", "Right Channel Only", &[key("ArrowDown")]),
+    edit(ActionId::CursorToStart, "view.cursorToStart", "Playhead to Start", &[key("Home")]),
+    edit(ActionId::CursorToEnd, "view.cursorToEnd", "Playhead to End", &[key("End")]),
+    window(ActionId::ZoomIn, "view.zoomIn", "Zoom In", &[key("Equals")]),
+    window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
+    window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
+    window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
 ];
 
 /// The table row for `id`.
@@ -156,6 +198,9 @@ impl Editor {
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
+            ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
+            ActionId::ZoomToSelection => has_sel,
         }
     }
 
@@ -169,6 +214,18 @@ impl Editor {
             ActionId::RightChannel if self.channels == ChannelMask::only(1) => "Both Channels".to_string(),
             _ => a.menu.to_string(),
         }
+    }
+
+    /// Insert › Silence: `frames` of silence at `at` on every channel (Audition inserts across
+    /// all channels); the inserted range ends up selected.
+    pub fn insert_silence(&mut self, at: u64, frames: u64) -> Result<Outcome, EditError> {
+        let doc = self.history.current().clone();
+        let at = at.min(doc.len_frames());
+        let edit = edit::insert_silence(&doc, at, frames, self.crossfades)?;
+        let changed = !edit.is_noop();
+        let label = edit.label.clone();
+        self.history.push_edit(edit);
+        Ok(Outcome { doc_changed: changed, selection: at..at + frames, message: changed.then_some(label) })
     }
 
     /// Run `id` on `selection`. A disabled action does nothing and says why.
@@ -222,6 +279,15 @@ impl Editor {
             }
             ActionId::SelectAll => return unchanged(0..len),
             ActionId::DeselectAll | ActionId::ClearTimeSelection => return unchanged(sel.start..sel.start),
+            ActionId::CursorToStart => return unchanged(0..0),
+            ActionId::CursorToEnd => return unchanged(len..len),
+            ActionId::InsertSilence
+            | ActionId::SetIn
+            | ActionId::SetOut
+            | ActionId::ZoomIn
+            | ActionId::ZoomOut
+            | ActionId::ZoomToSelection
+            | ActionId::ZoomOutFull => return unchanged(sel),
             ActionId::LeftChannel | ActionId::RightChannel => {
                 let ch = usize::from(id == ActionId::RightChannel);
                 self.channels =

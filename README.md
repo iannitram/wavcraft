@@ -11,7 +11,7 @@ audiobooks, files of one to three hours.
 No code from Audacity (GPL) or any other GPL-family project is read or used. See [Rules](#rules).
 
 **Status: Phase 1, viewer; Phase 2 under way.** It opens a file, draws it, zooms, scrolls and
-plays. It does not edit or save yet in the app. Underneath, the editor's storage is in place (task 03):
+plays, and edits and saves WAV in the app (tasks 06a, 07a, 07b). Underneath, the editor's storage is in place (task 03):
 an opened file is streamed into an on-disk store and held as a piece table; and the core has the
 edits and the undo history (task 04: delete, cut, copy, paste, silence, insert silence, crop, and
 the streamed `replace_range` effects will use, with Audition's edit crossfades), not yet wired to
@@ -53,11 +53,25 @@ refuses with the size needed and the space free if not.
 | File › Open, Ctrl+O, or drop a file on the window (dropping does not work under Wayland yet) | open a file (WAV, AIFF, FLAC, MP3, OGG, M4A, CAF) |
 | Mouse wheel | zoom in and out around the pointer |
 | Shift + wheel, or sideways scroll | move through time |
-| `\` | zoom out to the whole file |
+| = / − | zoom in / out around the middle of the view |
+| Ctrl+\ (⌘\ on a Mac) | zoom out to the whole file |
+| Shift+S | zoom to the selection |
 | Click | place the cursor |
 | Drag | select a range |
 | Space | play from the cursor (or play the selection); again to stop |
-| Home | cursor back to the start |
+| Home / End | cursor to the start / end |
+| I / O | selection start / end at the playhead (the cursor when stopped) |
+| Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y | undo, redo (the Edit menu names the step) |
+| Ctrl+X, Ctrl+C, Ctrl+V | cut, copy, paste (with nothing selected, cut and copy take the whole file) |
+| Delete or Backspace | delete the selection (one active channel: silence it there, keeping the length) |
+| Ctrl+T | crop to the selection |
+| Ctrl+A / Ctrl+Shift+A or Ctrl+D / G | select all / deselect / clear the time selection |
+| ↑ / ↓ | edit the left / right channel only (again: both) |
+| Edit › Silence, Edit › Insert Silence… | silence the selection / insert silence at the cursor (no keys, as in Audition) |
+| Ctrl+S, Ctrl+Shift+S | save (WAV), save as |
+| Window › History panel | click a step to go to it; Clear History… |
+
+Keys follow Adobe Audition's defaults (`plan/audition-parity.md` in the depot), with Ctrl as ⌘ on a Mac.
 
 ## How it is built
 

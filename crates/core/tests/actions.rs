@@ -218,3 +218,39 @@ fn select_all_and_clear_time_selection() {
     assert_eq!(e.run(ActionId::ClearTimeSelection, 10..50).unwrap().selection, 10..10);
     assert_eq!(e.run(ActionId::DeselectAll, 10..50).unwrap().selection, 10..10);
 }
+
+#[test]
+fn home_and_end_move_the_cursor_and_insert_silence_selects_what_it_inserted() {
+    let t = TempDir::new("nav");
+    let data = stereo(1000);
+    let mut e = editor(&t.0, &data);
+    assert_eq!(e.run(ActionId::CursorToEnd, 10..20).unwrap().selection, 1000..1000);
+    assert_eq!(e.run(ActionId::CursorToStart, 10..20).unwrap().selection, 0..0);
+    let out = e.insert_silence(400, 250).unwrap();
+    assert!(out.doc_changed);
+    assert_eq!(out.selection, 400..650);
+    assert_eq!(out.message.as_deref(), Some("Insert Silence"));
+    let c = now(&e);
+    assert_eq!(c[0].len(), 1250);
+    assert!(c[0][400..650].iter().chain(&c[1][400..650]).all(|x| *x == 0.0));
+    assert_eq!(&c[0][650..], &data[0][400..]);
+    assert_eq!(e.label(ActionId::Undo), "Undo Insert Silence");
+}
+
+#[test]
+fn window_actions_are_left_to_the_window() {
+    let t = TempDir::new("window");
+    let mut e = editor(&t.0, &stereo(100));
+    for id in [ActionId::ZoomIn, ActionId::ZoomOut, ActionId::SetIn, ActionId::SetOut, ActionId::InsertSilence, ActionId::ZoomOutFull] {
+        assert_eq!(action(id).kind, wavcraft_core::actions::Kind::Window, "{id:?}");
+        let out = e.run(id, 5..9).unwrap();
+        assert!(!out.doc_changed && out.selection == (5..9), "{id:?}: the editor leaves it alone");
+    }
+    assert_eq!(e.history.steps().len(), 1);
+    // Audition's keys for them.
+    let text = |id| action(id).keys.iter().map(|k| k.text(false)).collect::<Vec<_>>();
+    assert_eq!(text(ActionId::ZoomToSelection), ["Shift+S"]);
+    assert_eq!(text(ActionId::ZoomOutFull), ["Ctrl+\\"]);
+    assert_eq!(text(ActionId::SetIn), ["I"]);
+    assert_eq!(text(ActionId::ZoomIn), ["="]);
+}
