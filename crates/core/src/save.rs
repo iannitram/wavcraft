@@ -112,10 +112,11 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
         return Err(SaveError::Io(e));
     }
     if let Err(e) = std::fs::rename(&tmp, target) {
-        // The new file is complete: keep it (on Windows the target may be open in another
-        // program) and say where it is.
-        log::warn!(target: "wavcraft_core::save", "could not replace {}: {e}; the saved audio is in {}", target.display(), tmp.display());
-        return Err(SaveError::Io(io::Error::new(e.kind(), format!("could not replace the file ({e}); the saved audio is in {}", tmp.display()))));
+        // Hyperion's review (2026-10-19): a failed save leaves nothing behind. The target is
+        // untouched (the rename did not happen) and the temporary file goes too.
+        let _ = std::fs::remove_file(&tmp);
+        log::warn!(target: "wavcraft_core::save", "could not replace {}, the file is unchanged: {e}", target.display());
+        return Err(SaveError::Io(io::Error::new(e.kind(), format!("could not replace the file ({e}); it is unchanged"))));
     }
     log::info!(target: "wavcraft_core::save", "saved {} frames as {} WAV to {}", frames, ty.describe(), target.display());
     Ok(())

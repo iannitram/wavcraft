@@ -150,3 +150,16 @@ fn progress_runs_to_one() {
     assert!(seen.windows(2).all(|w| w[1] > w[0]));
     assert_eq!(seen.last().copied(), Some(1.0));
 }
+
+#[test]
+fn a_save_whose_rename_fails_leaves_no_temp_file_and_the_target_whole() {
+    let t = TempDir::new("renamefail");
+    let doc = doc_from(&t.0.join("store"), &exact(16, BLOCK_FRAMES));
+    // The target is a folder holding a file: the rename over it fails on every system.
+    let target = t.0.join("busy.wav");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("keep.txt"), b"still here").unwrap();
+    assert!(save_wav(&doc, &target, SampleType::Int16, &mut |_| {}).is_err());
+    assert!(!temp_path(&target).exists(), "no temp file left behind");
+    assert_eq!(std::fs::read(target.join("keep.txt")).unwrap(), b"still here", "target untouched");
+}
