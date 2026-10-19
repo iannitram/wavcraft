@@ -49,6 +49,12 @@ impl Document {
     /// [`open_with`](Self::open_with) with the session folder and store set by `opts`.
     pub fn open_in(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), cancel: &AtomicBool) -> Result<Document, OpenError> {
         let state = crate::io::open(path, opts, progress, cancel)?;
+        Document::from_state(path.to_path_buf(), state)
+    }
+
+    /// The document for `state` (after an edit, or an undo), read back whole for the views and
+    /// the player (see the module notes): the same adapter `open` uses, until task 05.
+    pub fn from_state(path: PathBuf, state: DocState) -> Result<Document, OpenError> {
         let audio = state.to_audio_buffer().map_err(|e| OpenError::Io(e.to_string()))?;
         let src = state.source();
         let info = AudioInfo {
@@ -59,7 +65,7 @@ impl Document {
             frames: state.len_frames(),
             bwf: src.bwf.clone(),
         };
-        let mut doc = Document::build(path.to_path_buf(), info, audio)?;
+        let mut doc = Document::build(path, info, audio)?;
         doc.state = Some(state);
         Ok(doc)
     }

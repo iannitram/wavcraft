@@ -1,17 +1,20 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
+use wavcraft_core::actions::{self, ActionId, Editor, TABLE};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{Document, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::{Document, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
+use crate::control;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 
@@ -62,6 +65,14 @@ pub struct WaveApp {
     fit_on_next_frame: bool,
     /// The window title last sent. Sending one asks for a repaint, so it is only sent on change.
     title: String,
+    /// The open file's editing state: its history, the active channels, the clipboard.
+    editor: Option<Editor>,
+    /// Where the open file came from (kept while an edit leaves the document empty).
+    doc_path: PathBuf,
+    /// The views' copy of the document, being read back after an edit (newest request only).
+    rebuilding: Option<Receiver<Result<Document, OpenError>>>,
+    /// Requests from the control channel, when `WAVCRAFT_CONTROL_PORT` turned it on.
+    control: Option<Receiver<control::Request>>,
 }
 
 impl WaveApp {
@@ -104,6 +115,13 @@ impl WaveApp {
             settings_path,
             fit_on_next_frame: false,
             title: String::new(),
+            editor: None,
+            doc_path: PathBuf::new(),
+            rebuilding: None,
+            control: {
+                let ctx = cc.egui_ctx.clone();
+                control::start_from_env(move || ctx.request_repaint())
+            },
         };
         if let Some(path) = file {
             app.open(path, &cc.egui_ctx);
@@ -151,6 +169,10 @@ impl WaveApp {
         match result {
             Ok(doc) => {
                 self.player.set_audio(Some(doc.audio.clone()));
+                let cap = History::default_cap(&self.sessions.path);
+                self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
+                self.doc_path = doc.path.clone();
+                self.rebuilding = None;
                 self.doc = Some(doc);
                 self.generation += 1;
                 self.selection = Selection::default();
@@ -215,6 +237,152 @@ impl WaveApp {
         }
     }
 
+    /// The selection as a frame range (`start == end` is just the cursor).
+    fn selection_range(&self) -> Range<u64> {
+        self.selection.start() as u64..self.selection.end() as u64
+    }
+
+    /// Run an action from the table on the open file (menu, key or control channel). Returns
+    /// whether the document changed.
+    fn run_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
+        let sel = self.selection_range();
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        match editor.run(id, sel) {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.error = None;
+                self.notice = out.message;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                let why = format!("{}: {e}", actions::action(id).menu);
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// Read the current step back for the views and the player on a worker thread (task 05
+    /// replaces this with views that read the document directly).
+    fn rebuild(&mut self, ctx: &egui::Context) {
+        let Some(editor) = &self.editor else { return };
+        let (tx, rx) = channel();
+        let (state, path, ctx) = (editor.history.current().as_ref().clone(), self.doc_path.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Document::from_state(path, state));
+            ctx.request_repaint();
+        });
+        self.player.stop();
+        self.rebuilding = Some(rx);
+    }
+
+    fn finish_rebuild(&mut self) {
+        let Some(rx) = &self.rebuilding else { return };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err(OpenError::Io("the worker stopped unexpectedly".to_string())),
+        };
+        self.rebuilding = None;
+        match result {
+            Ok(doc) => {
+                self.player.set_audio(Some(doc.audio.clone()));
+                self.doc = Some(doc);
+                self.generation += 1;
+                self.spectrum = None;
+            }
+            Err(OpenError::Empty) => {
+                self.player.set_audio(None);
+                self.doc = None;
+                self.notice = Some("The file is empty now (Edit › Undo brings the audio back)".to_string());
+            }
+            Err(e) => {
+                log::warn!(target: "wavcraft", "could not show the edited document: {e}");
+                self.error = Some(format!("Could not show the edited document: {e}"));
+            }
+        }
+    }
+
+    /// Answer one control-channel line (see `control.rs`).
+    fn control_request(&mut self, line: &str, ctx: &egui::Context) -> String {
+        let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
+        let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
+        match cmd {
+            "STATE" => {
+                let busy = self.opening.is_some() || self.rebuilding.is_some();
+                match &self.editor {
+                    Some(e) => {
+                        let doc = e.history.current();
+                        format!(
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} undo={} redo={}",
+                            doc.len_frames(),
+                            doc.channel_count(),
+                            doc.sample_rate(),
+                            sel(self),
+                            e.history.steps().len(),
+                            e.history.cursor(),
+                            u8::from(busy),
+                            e.history.undo_label().unwrap_or("-"),
+                            e.history.redo_label().unwrap_or("-")
+                        )
+                    }
+                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} undo=- redo=-", u8::from(busy)),
+                }
+            }
+            "OPEN" if !rest.is_empty() => {
+                self.open(PathBuf::from(rest), ctx);
+                "OK".to_string()
+            }
+            "SELECT" => {
+                let mut it = rest.split_whitespace().map(str::parse::<usize>);
+                match (it.next(), it.next()) {
+                    (Some(Ok(a)), Some(Ok(b))) => {
+                        let len = self.editor.as_ref().map_or(0, |e| e.history.current().len_frames() as usize);
+                        self.selection = Selection { anchor: a.min(len), head: b.min(len) };
+                        format!("OK selection={}", sel(self))
+                    }
+                    _ => "ERR SELECT <start> <end>, in frames".to_string(),
+                }
+            }
+            "ACTION" => match actions::by_name(rest) {
+                Some(a) => match self.run_action(a.id, ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+                None => format!("ERR no action named {rest:?}"),
+            },
+            "QUIT" => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                "OK".to_string()
+            }
+            _ => format!("ERR unknown request {cmd:?}"),
+        }
+    }
+
+    /// The Edit menu, built from the action table: labels that name the step, Audition's keys.
+    fn edit_menu(&mut self, ui: &mut egui::Ui) {
+        let sel = self.selection_range();
+        let mac = cfg!(target_os = "macos");
+        let mut chosen = None;
+        for a in TABLE {
+            if matches!(a.id, ActionId::Cut | ActionId::Delete | ActionId::SelectAll | ActionId::LeftChannel) {
+                ui.separator();
+            }
+            let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
+            let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
+            if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
+                chosen = Some(a.id);
+            }
+        }
+        if let Some(id) = chosen {
+            let _ = self.run_action(id, ui.ctx());
+        }
+    }
+
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -234,6 +402,7 @@ impl WaveApp {
                     ui.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
+            ui.menu_button("Edit", |ui| self.edit_menu(ui));
             ui.menu_button("View", |ui| {
                 ui.checkbox(&mut self.show_waveform, "Waveform");
                 ui.checkbox(&mut self.show_spectrum, "Spectral frequency display");
@@ -257,6 +426,9 @@ impl WaveApp {
                 ui.spinner();
                 let permille = o.progress.load(Ordering::Relaxed);
                 ui.label(format!("Opening {}… {}%", o.path.display(), permille / 10));
+            } else if self.rebuilding.is_some() {
+                ui.spinner();
+                ui.label("Updating the view…");
             } else if let Some(e) = &self.error {
                 ui.colored_label(CURSOR, e);
             } else if let Some(n) = &self.notice {
@@ -436,7 +608,15 @@ impl WaveApp {
 impl eframe::App for WaveApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.finish_opening();
+        self.finish_rebuild();
         let ctx = ui.ctx().clone();
+        while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            let answer = self.control_request(&req.line, &ctx);
+            let _ = req.reply.send(answer);
+        }
+        for id in pressed_actions(&ctx) {
+            let _ = self.run_action(id, &ctx);
+        }
         let (space, open, home, fit, dropped) = ctx.input(|i| {
             (
                 // Not `key_pressed`: that also counts auto-repeat, so a long press would toggle again.
@@ -474,6 +654,31 @@ impl eframe::App for WaveApp {
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
     }
+}
+
+/// The actions whose keys were pressed this frame. Keys with more modifiers are taken first, so
+/// Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
+fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
+    let mut keys: Vec<(ActionId, actions::Shortcut)> = TABLE.iter().flat_map(|a| a.keys.iter().map(move |k| (a.id, *k))).collect();
+    keys.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
+    ctx.input_mut(|i| {
+        keys.iter()
+            .filter_map(|(id, k)| {
+                let key = Key::from_name(k.key)?;
+                let mut mods = egui::Modifiers::NONE;
+                if k.cmd {
+                    mods |= egui::Modifiers::COMMAND;
+                }
+                if k.shift {
+                    mods |= egui::Modifiers::SHIFT;
+                }
+                if k.alt {
+                    mods |= egui::Modifiers::ALT;
+                }
+                i.consume_key(mods, key).then_some(*id)
+            })
+            .collect()
+    })
 }
 
 /// The vertical slice of `area` for channel `ch` of `channels`.
