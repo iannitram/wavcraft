@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WavCraft golden task, v3 (2026-10-19): what the app does today, on the delivered program.
+"""WavCraft golden task, v4 (2026-10-19): what the app does today, on the delivered program.
 
     python3 tools/golden.py --exe <WavCraft.app/Contents/MacOS/wavcraft | wavcraft[.exe]> [--keep] [--core <clone>]
 
@@ -18,6 +18,9 @@ v3 (task 06a): after the edits, SAVE to a new WAV through the channel; the unsav
 on with an edit, off with the save, on again with Undo and off with Redo (back at the saved
 step); a plain QUIT then closes. The saved file is checked with ffprobe (24-bit PCM, the right
 length) and reopened in a second run, which must decode it to the edited length.
+v4 (task 07b): in the second run, Insert Silence 1 s at the cursor, then the History panel's
+click to Open and back, checking the length each time; QUIT discard leaves the saved file as
+saved.
 Effects join here as later tasks land.
 """
 import argparse, json, os, platform, shutil, signal, socket, subprocess, sys, tempfile, time
@@ -228,7 +231,16 @@ def run(exe, keep):
                 time.sleep(0.2)
                 st = c2.state()
             checks.append({"check": "the saved file reopens at the edited length", "ok": int(st.get("frames", 0)) == edited_len and st.get("unsaved") == "0", "detail": st})
-            c2.ask("QUIT")
+            a = c2.ask("INSERT_SILENCE 1")
+            st = c2.state()
+            checks.append({"check": "Insert Silence 1 s at the cursor", "ok": a == f"OK selection=0-{RATE}" and int(st["frames"]) == edited_len + RATE and st["undo"] == "Insert Silence", "detail": f"{a}; {st}"})
+            c2.ask("HISTORY 0")
+            st0 = c2.state()
+            c2.ask("HISTORY 1")
+            st1 = c2.state()
+            checks.append({"check": "History: to Open and back", "ok": int(st0["frames"]) == edited_len and st0["cursor"] == "0" and int(st1["frames"]) == edited_len + RATE and st1["cursor"] == "1", "detail": f"{st0} / {st1}"})
+            refused = c2.ask("QUIT")
+            checks.append({"check": "QUIT refuses unsaved changes; QUIT discard closes", "ok": refused.startswith("ERR unsaved") and c2.ask("QUIT discard") == "OK", "detail": refused})
             proc2.wait(15)
         except Exception as e:
             checks.append({"check": "the saved file reopens at the edited length", "ok": False, "detail": f"{type(e).__name__}: {e}"})

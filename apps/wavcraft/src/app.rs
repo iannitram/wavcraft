@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
-use wavcraft_core::actions::{self, ActionId, Editor, TABLE};
+use wavcraft_core::actions::{self, ActionId, Editor, Kind, TABLE};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
@@ -94,6 +94,14 @@ pub struct WaveApp {
     confirm_close: bool,
     /// Closing was confirmed (or nothing was unsaved): let the next close request through.
     allow_close: bool,
+    /// The editor's width last frame, for zoom keys (which have no pointer to zoom around).
+    editor_width: f32,
+    /// Window › History.
+    show_history: bool,
+    /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
+    insert_silence: Option<String>,
+    /// Clear History asks first: it can't be undone.
+    confirm_clear_history: bool,
 }
 
 impl WaveApp {
@@ -143,6 +151,10 @@ impl WaveApp {
             saving: None,
             confirm_close: false,
             allow_close: false,
+            editor_width: 800.0,
+            show_history: true,
+            insert_silence: None,
+            confirm_clear_history: false,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -274,11 +286,19 @@ impl WaveApp {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
+        if actions::action(id).kind == Kind::Window {
+            return self.run_window_action(id);
+        }
         let sel = self.selection_range();
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         match editor.run(id, sel) {
             Ok(out) => {
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd) {
+                    self.player.stop();
+                    let frames = self.doc.as_ref().map_or(0, Document::frames);
+                    self.view.reveal(self.selection.start() as f64, self.editor_width, frames);
+                }
                 self.error = None;
                 self.notice = out.message;
                 if out.doc_changed {
@@ -292,6 +312,164 @@ impl WaveApp {
                 self.error = Some(why.clone());
                 Err(why)
             }
+        }
+    }
+
+    /// The actions the window carries out itself: zoom, In/Out points at the playhead, and the
+    /// Insert Silence dialog.
+    fn run_window_action(&mut self, id: ActionId) -> Result<bool, String> {
+        let frames = self.doc.as_ref().map_or(0, Document::frames);
+        if frames == 0 && id != ActionId::InsertSilence {
+            return Err("no file is open".to_string());
+        }
+        let width = self.editor_width.max(1.0);
+        // Where play is, or the cursor when stopped.
+        let playhead = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
+        match id {
+            ActionId::ZoomIn => self.view.zoom_at(2.0, width * 0.5, width, frames),
+            ActionId::ZoomOut => self.view.zoom_at(0.5, width * 0.5, width, frames),
+            ActionId::ZoomOutFull => self.fit_on_next_frame = true,
+            ActionId::ZoomToSelection if !self.selection.is_empty() => {
+                let (a, b) = (self.selection.start() as f64, self.selection.end() as f64);
+                self.view.frames_per_px = ((b - a) / f64::from(width)).max(1.0 / 64.0);
+                self.view.start = a;
+                self.view.clamp(width, frames);
+            }
+            ActionId::SetIn => {
+                let end = self.selection.end().max(playhead);
+                self.selection = Selection { anchor: playhead, head: end };
+            }
+            ActionId::SetOut => {
+                let start = self.selection.start().min(playhead);
+                self.selection = Selection { anchor: start, head: playhead };
+            }
+            ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
+            _ => return Err(format!("{} is not available now", actions::action(id).menu)),
+        }
+        Ok(false)
+    }
+
+    /// Insert › Silence…: a length in seconds, inserted at the cursor on every channel.
+    fn insert_silence_dialog(&mut self, ctx: &egui::Context) {
+        let Some(text) = self.insert_silence.as_mut() else { return };
+        let mut choice = None;
+        egui::Window::new("Insert Silence").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Duration (seconds):");
+                let r = ui.text_edit_singleline(text);
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    choice = Some(true);
+                }
+                r.request_focus();
+            });
+            ui.horizontal(|ui| {
+                if ui.button("OK").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        match choice {
+            Some(true) => {
+                let secs = self.insert_silence.take().and_then(|t| t.trim().parse::<f64>().ok()).filter(|s| s.is_finite() && *s > 0.0);
+                let Some(secs) = secs else {
+                    self.error = Some("Insert Silence: type a length in seconds, above 0".to_string());
+                    return;
+                };
+                self.run_insert_silence(secs, ctx);
+            }
+            Some(false) => self.insert_silence = None,
+            None => {}
+        }
+    }
+
+    fn run_insert_silence(&mut self, secs: f64, ctx: &egui::Context) -> Option<String> {
+        let at = self.selection.start() as u64;
+        let editor = self.editor.as_mut()?;
+        let frames = (secs * f64::from(editor.history.current().sample_rate())).round() as u64;
+        match editor.insert_silence(at, frames) {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.notice = out.message;
+                self.error = None;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                None
+            }
+            Err(e) => {
+                let why = format!("Insert Silence: {e}");
+                self.error = Some(why.clone());
+                Some(why)
+            }
+        }
+    }
+
+    /// Window › History: every step, the current one highlighted; click one to go to it.
+    fn history_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("History");
+        let Some(editor) = self.editor.as_ref() else {
+            ui.label("No file open.");
+            return;
+        };
+        let (cursor, dropped) = (editor.history.cursor(), editor.history.dropped_total());
+        let labels: Vec<String> = editor.history.steps().iter().map(|s| s.label().to_string()).collect();
+        let (held, dir) = (editor.history.held_bytes(), editor.history.current().store().dir().to_path_buf());
+        if dropped > 0 {
+            ui.label(format!("Oldest {dropped} steps removed to stay under {:.1} GB", editor.history.cap_disk_bytes() as f64 / 1e9));
+        }
+        let mut go = None;
+        egui::ScrollArea::vertical().max_height(ui.available_height() - 60.0).show(ui, |ui| {
+            for (i, label) in labels.iter().enumerate() {
+                if ui.selectable_label(i == cursor, label).clicked() && i != cursor {
+                    go = Some(i);
+                }
+            }
+        });
+        ui.separator();
+        let free = wavcraft_core::space::free_space(&dir).map_or_else(|| "unknown".to_string(), |b| format!("{:.1} GB", b as f64 / 1e9));
+        ui.label(format!("Session: {:.1} MB · free {free}", held as f64 / 1e6));
+        if ui.add_enabled(labels.len() > 1, egui::Button::new("Clear History…")).clicked() {
+            self.confirm_clear_history = true;
+        }
+        if let Some(i) = go
+            && self.saving.is_none()
+            && let Some(editor) = self.editor.as_mut()
+            && editor.history.go_to(i).is_some()
+        {
+            let len = editor.history.current().len_frames() as usize;
+            self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
+            self.rebuild(ui.ctx());
+        }
+    }
+
+    fn clear_history_prompt(&mut self, ctx: &egui::Context) {
+        if !self.confirm_clear_history {
+            return;
+        }
+        let mut choice = None;
+        egui::Window::new("Clear History").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+            ui.label("Remove every step but the current one? This can't be undone.");
+            ui.horizontal(|ui| {
+                if ui.button("Clear").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        match choice {
+            Some(true) => {
+                if let Some(e) = self.editor.as_mut() {
+                    e.history.clear();
+                }
+                self.confirm_clear_history = false;
+            }
+            Some(false) => self.confirm_clear_history = false,
+            None => {}
         }
     }
 
@@ -520,6 +698,26 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
+            "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
+                Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
+                    None => format!("OK selection={}", sel(self)),
+                    Some(e) => format!("ERR {e}"),
+                },
+                _ => "ERR INSERT_SILENCE <seconds>, above 0".to_string(),
+            },
+            // The History panel's click: go to step <index> (0 is Open).
+            "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.as_mut()) {
+                (Ok(i), Some(e)) if self.saving.is_none() => match e.history.go_to(i) {
+                    Some(_) => {
+                        let len = e.history.current().len_frames() as usize;
+                        self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
+                        self.rebuild(ctx);
+                        "OK".to_string()
+                    }
+                    None => format!("ERR no step {i}"),
+                },
+                _ => "ERR HISTORY <step>, with a file open".to_string(),
+            },
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -543,11 +741,12 @@ impl WaveApp {
         let sel = self.selection_range();
         let mac = cfg!(target_os = "macos");
         let mut chosen = None;
-        for a in TABLE {
-            if matches!(a.id, ActionId::Cut | ActionId::Delete | ActionId::SelectAll | ActionId::LeftChannel) {
+        for a in TABLE.iter().filter(|a| a.name.starts_with("edit.")) {
+            if matches!(a.id, ActionId::Cut | ActionId::Delete | ActionId::Crop | ActionId::SetIn | ActionId::LeftChannel) {
                 ui.separator();
             }
             let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
+            let enabled = enabled && self.saving.is_none();
             let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
             if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
                 chosen = Some(a.id);
@@ -597,9 +796,21 @@ impl WaveApp {
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
                     self.spectrum = None;
                 }
-                if ui.button("Zoom out full  \\").clicked() {
-                    self.fit_on_next_frame = true;
+                ui.separator();
+                let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
+                let mut chosen = None;
+                for a in TABLE.iter().filter(|a| a.name.starts_with("view.")) {
+                    let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
+                    let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
+                    if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
+                        chosen = Some(a.id);
+                    }
                 }
+                if let Some(id) = chosen {
+                    let _ = self.run_action(id, ui.ctx());
+                }
+                ui.separator();
+                ui.checkbox(&mut self.show_history, "History panel");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -668,6 +879,7 @@ impl WaveApp {
         let Some(doc) = &self.doc else { return };
         let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
         let width = rect.width().max(1.0);
+        self.editor_width = width;
         if self.fit_on_next_frame {
             self.view = Viewport::fit(frames, width);
             self.fit_on_next_frame = false;
@@ -826,13 +1038,12 @@ impl eframe::App for WaveApp {
         for id in pressed_actions(&ctx) {
             let _ = self.run_action(id, &ctx);
         }
-        let (space, open, home, fit, dropped) = ctx.input(|i| {
+        // Home and Zoom Out Full come from the action table now (Audition's Home and Cmd+\).
+        let (space, open, dropped) = ctx.input(|i| {
             (
                 // Not `key_pressed`: that also counts auto-repeat, so a long press would toggle again.
                 i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Space, pressed: true, repeat: false, .. })),
                 i.modifiers.command && i.key_pressed(Key::O),
-                i.key_pressed(Key::Home),
-                i.key_pressed(Key::Backslash),
                 i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()),
             )
         });
@@ -841,14 +1052,6 @@ impl eframe::App for WaveApp {
         }
         if open {
             self.pick_file(&ctx);
-        }
-        if home {
-            self.player.stop();
-            self.selection = Selection::default();
-            self.view.start = 0.0;
-        }
-        if fit {
-            self.fit_on_next_frame = true;
         }
         if let Some(path) = dropped {
             self.open(path, &ctx);
@@ -862,6 +1065,11 @@ impl eframe::App for WaveApp {
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
+        if self.show_history {
+            egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
+        }
+        self.insert_silence_dialog(&ctx);
+        self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
     }
 }
