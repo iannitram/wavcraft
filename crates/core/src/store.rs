@@ -32,8 +32,15 @@ pub const DEFAULT_PACK_BYTES: u64 = 1 << 30;
 /// The smallest and largest default cache budgets.
 pub const MIN_CACHE_BYTES: u64 = 256 << 20;
 pub const MAX_CACHE_BYTES: u64 = 1 << 30;
-/// The lock file inside a session folder that is in use.
+/// The lock file inside a session folder that is in use: who made it (`pid=`, `host=`,
+/// `machine=`, `app=`), plain text anyone can read.
 pub const LOCK_FILE: &str = "session.lock";
+
+/// The file a running store keeps open with an operating-system lock for its whole life (Codex
+/// review CX-W3, 2026-10-19). The system drops the lock when the program ends, however it ends,
+/// so a session whose `session.held` can be locked has no program left. Kept apart from
+/// [`LOCK_FILE`] because on Windows a locked file cannot be read by others.
+pub const HELD_FILE: &str = "session.held";
 
 const BYTES_PER_SAMPLE: u64 = 4;
 
@@ -158,23 +165,49 @@ pub fn this_host() -> String {
     sysinfo::System::host_name().unwrap_or_default()
 }
 
+/// This machine's id for session locks: 32 random hex digits made once and kept in the local
+/// (not roaming) data folder, `wavcraft/machine-id`. Two machines can share a hostname, never
+/// this (Codex review CX-W3). Empty when it can't be read or made: then nothing is swept.
+pub fn machine_id() -> String {
+    static ID: LazyLock<String> = LazyLock::new(|| {
+        let Some(dir) = dirs::data_local_dir().map(|d| d.join("wavcraft")) else { return String::new() };
+        let path = dir.join("machine-id");
+        let valid = |s: &str| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit());
+        if let Ok(s) = std::fs::read_to_string(&path)
+            && valid(s.trim())
+        {
+            return s.trim().to_string();
+        }
+        let Ok(id) = crate::random::hex(16) else { return String::new() };
+        let made = std::fs::create_dir_all(&dir).and_then(|()| {
+            let mut f = OpenOptions::new().write(true).create_new(true).open(&path)?;
+            f.write_all(id.as_bytes())
+        });
+        match made {
+            Ok(()) => id,
+            // Another run made it first: use theirs.
+            Err(_) => std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string()).filter(|s| valid(s)).unwrap_or_default(),
+        }
+    });
+    ID.clone()
+}
+
 /// The stale session folders under `root`: a run that ended without closing its store (killed,
 /// crashed, or quit by a signal) leaves its folder, about 1.3 GB per hour of stereo audio, and
-/// nothing else ever removes it. A folder counts as stale only when its name is a session id,
-/// its lock file says `app=wavcraft`, **its lock names this machine** (a session folder on a
-/// shared disk may belong to a run on another computer, whose pid means nothing here; Hyperion's
-/// review, 2026-10-19), and no running process here has that pid with "wavcraft" in its name.
-/// Anything else under `root` is never touched.
+/// nothing else ever removes it. A folder counts as stale only when all of these hold, and
+/// anything uncertain stays (Codex review CX-W3, 2026-10-19):
+/// - its name is a session id (16 hex digits) and it is a folder;
+/// - its [`LOCK_FILE`] says `app=wavcraft` and `machine=` **this machine's id** ([`machine_id`]):
+///   a folder on a shared disk may be another computer's, even one with the same hostname;
+/// - its [`HELD_FILE`] exists and this sweep can take its operating-system lock: no running
+///   program holds it, whatever its pid or its program's name. A session from before
+///   `session.held` (no machine id either) is never swept.
 pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
-    let host = this_host();
-    if host.is_empty() {
+    let machine = machine_id();
+    if machine.is_empty() {
         return Vec::new();
     }
     let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
-    let mut sys = sysinfo::System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-    let running =
-        |pid: u32| sys.process(sysinfo::Pid::from_u32(pid)).is_some_and(|p| p.name().to_string_lossy().to_ascii_lowercase().contains("wavcraft"));
     let mut out = Vec::new();
     for e in entries.flatten() {
         let dir = e.path();
@@ -183,12 +216,16 @@ pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
             continue;
         }
         let Ok(lock) = std::fs::read_to_string(dir.join(LOCK_FILE)) else { continue };
-        let pid = lock.lines().find_map(|l| l.strip_prefix("pid=")).and_then(|p| p.trim().parse::<u32>().ok());
-        let ours = lock.lines().any(|l| l.starts_with("app=wavcraft")) && lock.lines().any(|l| l.strip_prefix("host=") == Some(host.as_str()));
-        let Some(pid) = pid.filter(|_| ours) else { continue };
-        if pid == std::process::id() || running(pid) {
+        let ours = lock.lines().any(|l| l.starts_with("app=wavcraft")) && lock.lines().any(|l| l.strip_prefix("machine=") == Some(machine.as_str()));
+        if !ours {
             continue;
         }
+        let pid = lock.lines().find_map(|l| l.strip_prefix("pid=")).and_then(|p| p.trim().parse::<u32>().ok()).unwrap_or(0);
+        let Ok(held) = OpenOptions::new().read(true).write(true).open(dir.join(HELD_FILE)) else { continue };
+        if held.try_lock().is_err() {
+            continue; // a running program holds it
+        }
+        drop(held);
         let bytes = std::fs::read_dir(&dir).map_or(0, |d| d.flatten().filter_map(|f| f.metadata().ok()).map(|m| m.len()).sum());
         out.push(StaleSession { dir, pid, bytes });
     }
@@ -205,7 +242,7 @@ pub fn sweep_stale_sessions(root: Option<&Path>) -> u64 {
             Ok(()) => {
                 freed += s.bytes;
                 log::warn!(
-                    "decision: sessions: removed a session folder left by a run that ended without closing it (pid {} not running): {} MB in {}",
+                    "decision: sessions: removed a session folder left by a run that ended without closing it (pid {}, its lock released): {} MB in {}",
                     s.pid,
                     s.bytes / 1_000_000,
                     s.dir.display()
@@ -251,6 +288,8 @@ type Samples = Arc<Vec<f32>>;
 
 struct Inner {
     dir: PathBuf,
+    /// [`HELD_FILE`], locked while the store lives.
+    held: Mutex<Option<File>>,
     keep: AtomicBool,
     pack_bytes: u64,
     next_id: AtomicU64,
@@ -294,10 +333,21 @@ impl Store {
     pub fn create_with(dir: &Path, opts: StoreOptions) -> io::Result<Store> {
         std::fs::create_dir_all(dir)?;
         let mut lock_file = OpenOptions::new().write(true).create_new(true).open(dir.join(LOCK_FILE))?;
-        writeln!(lock_file, "pid={}\nhost={}\napp=wavcraft {}", std::process::id(), this_host(), env!("CARGO_PKG_VERSION"))?;
+        writeln!(
+            lock_file,
+            "pid={}\nhost={}\nmachine={}\napp=wavcraft {}",
+            std::process::id(),
+            this_host(),
+            machine_id(),
+            env!("CARGO_PKG_VERSION")
+        )?;
+        // Held for the store's whole life; the system releases it when the program ends.
+        let held = OpenOptions::new().read(true).write(true).create_new(true).open(dir.join(HELD_FILE))?;
+        held.try_lock().map_err(|e| io::Error::other(format!("could not lock the session: {e}")))?;
         Ok(Store {
             inner: Arc::new(Inner {
                 dir: dir.to_path_buf(),
+                held: Mutex::new(Some(held)),
                 keep: AtomicBool::new(opts.keep),
                 pack_bytes: opts.pack_bytes.max(BLOCK_FRAMES as u64 * BYTES_PER_SAMPLE),
                 next_id: AtomicU64::new(1),
@@ -570,6 +620,9 @@ impl Drop for Inner {
         }
         if let Ok(p) = self.packs.get_mut() {
             p.clear();
+        }
+        if let Ok(h) = self.held.get_mut() {
+            *h = None;
         }
         if !self.keep.load(Ordering::Relaxed)
             && let Err(e) = std::fs::remove_dir_all(&self.dir)
