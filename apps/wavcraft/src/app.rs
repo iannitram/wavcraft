@@ -72,6 +72,19 @@ impl WaveApp {
         let settings = settings_path.as_deref().map(Settings::load).unwrap_or_default();
         let env = std::env::var_os(settings::ENV_SESSION_DIR);
         let sessions = settings::resolve_session_folder(session_dir, env, &settings, default_sessions_root(), settings::check_folder);
+        // Folders left by runs that ended without closing their store (a crash, a kill, a
+        // signal) are removed in the background; this run's own store is never touched.
+        let roots: Vec<PathBuf> = [sessions.path.clone(), default_sessions_root()].into_iter().fold(Vec::new(), |mut v, p| {
+            if !v.contains(&p) {
+                v.push(p);
+            }
+            v
+        });
+        let _ = std::thread::Builder::new().name("session sweep".into()).spawn(move || {
+            for root in roots {
+                wavcraft_core::store::sweep_stale_sessions(Some(&root));
+            }
+        });
         let mut app = WaveApp {
             doc: None,
             generation: 0,

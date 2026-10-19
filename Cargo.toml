@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/testkit", "apps/wavcraft"]
+members = ["crates/core", "crates/testkit", "crates/craft-log", "crates/craft-stage", "apps/wavcraft"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,8 @@ publish = false
 
 [workspace.dependencies]
 wavcraft-core = { path = "crates/core" }
+# Self-logging (SELF-LOGGING.md), the same crates the Craft forks carry, copied from PhotoCraft `ours`.
+craft-log = { path = "crates/craft-log" }
 
 # SoundCraft's engine crates, pinned to one commit of our fork (upstream v0.5.0 plus our merged
 # fixes: long-file handling, parallel WAV/AIFF decode). Bump deliberately; see README.

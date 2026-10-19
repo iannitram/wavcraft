@@ -359,17 +359,17 @@ fn deinterleave(data: &[u8], kind: PcmKind, planes: &mut [Vec<f32>]) {
         // The common cases, written out for speed. Both are exact: a 16- or 24-bit integer
         // divided by a power of two fits an f32, so they equal the general path bit for bit.
         (PcmKind::Int { bytes: 2, big_endian: false, unsigned: false }, [mono]) => {
-            mono.extend(data.chunks_exact(2).map(|s| f32::from(i16::from_le_bytes([s[0], s[1]])) / 32_768.0));
+            mono.extend(data.as_chunks::<2>().0.iter().map(|s| f32::from(i16::from_le_bytes(*s)) / 32_768.0));
         }
         (PcmKind::Int { bytes: 2, big_endian: false, unsigned: false }, [l, r]) => {
-            for f in data.chunks_exact(4) {
+            for f in data.as_chunks::<4>().0 {
                 l.push(f32::from(i16::from_le_bytes([f[0], f[1]])) / 32_768.0);
                 r.push(f32::from(i16::from_le_bytes([f[2], f[3]])) / 32_768.0);
             }
         }
         (PcmKind::Int { bytes: 3, big_endian: false, unsigned: false }, planes) => {
             for f in data.chunks_exact(block) {
-                for (p, s) in planes.iter_mut().zip(f.chunks_exact(3)) {
+                for (p, s) in planes.iter_mut().zip(f.as_chunks::<3>().0) {
                     let v = i32::from_le_bytes([0, s[0], s[1], s[2]]) >> 8;
                     p.push(v as f32 / 8_388_608.0);
                 }
