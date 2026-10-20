@@ -52,6 +52,10 @@ pub const PASTE: &str = "Paste";
 pub const SILENCE: &str = "Silence";
 pub const INSERT_SILENCE: &str = "Insert Silence";
 pub const CROP: &str = "Crop";
+/// Cut, Paste and Crop with only some channels active (Audition's labels).
+pub const CUT_AUDIO: &str = "Cut Audio";
+pub const PASTE_AUDIO: &str = "Paste Audio";
+pub const CROP_AUDIO: &str = "Crop Audio";
 
 /// Which channels an edit acts on: bit `n` is channel `n` (up to 64 channels).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -314,7 +318,7 @@ pub fn copy(doc: &DocState, range: Range<u64>, channels: ChannelMask) -> Result<
 pub fn cut(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Crossfades) -> Result<(Edit, Clip), EditError> {
     let clip = copy(doc, range.clone(), channels)?;
     let mut edit = delete(doc, range, channels, xf)?;
-    edit.label = CUT.to_string();
+    edit.label = if channels.covers_all(doc.channel_count()) { CUT } else { CUT_AUDIO }.to_string();
     Ok((edit, clip))
 }
 
@@ -364,7 +368,7 @@ pub fn paste(doc: &DocState, at: PasteAt, clip: &Clip, channels: ChannelMask, xf
             let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(&src, 0, written, edge), Seg::new(ch, end, len - end, edge)];
             out[c] = Arc::new(build(store, &segs)?);
         }
-        return finish(doc, out, PASTE, Change::SameLength { range: range.start..end, channels: mask });
+        return finish(doc, out, PASTE_AUDIO, Change::SameLength { range: range.start..end, channels: mask });
     }
     let mut out = Vec::with_capacity(n);
     for (c, src) in paste_sources(store, clip, n, &mask.active(n))? {
@@ -489,7 +493,7 @@ pub fn crop(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Crossf
             out.push(ch.clone());
         }
     }
-    finish(doc, out, CROP, Change::SameLength { range: 0..len, channels: mask })
+    finish(doc, out, CROP_AUDIO, Change::SameLength { range: 0..len, channels: mask })
 }
 
 /// The general path effects use: new audio for `range` of `channels`, made chunk by chunk.

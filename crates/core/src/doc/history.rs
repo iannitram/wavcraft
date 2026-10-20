@@ -302,6 +302,26 @@ impl History {
         self.cursor = 0;
     }
 
+    /// Delete step `index` and every step after it (the History panel's delete). Each step is a
+    /// finished snapshot of the whole document, with no record of how to redo its edit on another
+    /// state, so a later step can't be kept without the step it builds on. Open (0) can't be
+    /// deleted. If the cursor was on a removed step it moves to the one before `index`. Returns
+    /// how many steps went, or `None` for step 0 or a step that doesn't exist.
+    pub fn delete_step(&mut self, index: usize) -> Option<usize> {
+        if index == 0 || index >= self.steps.len() {
+            return None;
+        }
+        let gone = self.steps.len() - index;
+        for step in self.steps.split_off(index) {
+            self.remove_counts(&step.state);
+        }
+        if self.cursor >= index {
+            self.cursor = index - 1;
+        }
+        self.current_bytes = self.current().disk_bytes_referenced();
+        Some(gone)
+    }
+
     /// Whether a job that writes `bytes` may start: it must leave at least [`FREE_RESERVE`] free
     /// on the session folder's disk. Allowed when the free space is unknown.
     pub fn can_afford(&self, bytes: u64) -> Result<(), NoSpace> {
