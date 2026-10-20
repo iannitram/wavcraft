@@ -38,6 +38,13 @@ pub enum ActionId {
     ZoomAmpIn,
     ZoomAmpOut,
     ZoomAmpReset,
+    ZoomInAtIn,
+    ZoomInAtOut,
+    ZoomPreset1,
+    ZoomPreset2,
+    ZoomPreset3,
+    ZoomPreset4,
+    ZoomPreset5,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -170,7 +177,23 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomAmpIn, "view.zoom.ampIn", "Zoom In Vertically", &[alt("Equals")]),
     window(ActionId::ZoomAmpOut, "view.zoom.ampOut", "Zoom Out Vertically", &[alt("Minus")]),
     window(ActionId::ZoomAmpReset, "view.zoom.ampReset", "Reset Vertical Zoom", &[]),
+    window(ActionId::ZoomInAtIn, "view.zoom.in_at_in", "Zoom In at In Point", &[]),
+    window(ActionId::ZoomInAtOut, "view.zoom.in_at_out", "Zoom In at Out Point", &[]),
+    window(ActionId::ZoomPreset1, "view.zoom.preset.1", "Zoom to Time: Slot 1", &[]),
+    window(ActionId::ZoomPreset2, "view.zoom.preset.2", "Zoom to Time: Slot 2", &[]),
+    window(ActionId::ZoomPreset3, "view.zoom.preset.3", "Zoom to Time: Slot 3", &[]),
+    window(ActionId::ZoomPreset4, "view.zoom.preset.4", "Zoom to Time: Slot 4", &[]),
+    window(ActionId::ZoomPreset5, "view.zoom.preset.5", "Zoom to Time: Slot 5", &[]),
 ];
+
+/// The Zoom to Time actions, slot 1 first.
+pub const ZOOM_PRESET_ACTIONS: [ActionId; 5] =
+    [ActionId::ZoomPreset1, ActionId::ZoomPreset2, ActionId::ZoomPreset3, ActionId::ZoomPreset4, ActionId::ZoomPreset5];
+
+/// The 0-based Zoom to Time slot an action recalls, if it is one of them.
+pub fn zoom_preset_slot(id: ActionId) -> Option<usize> {
+    ZOOM_PRESET_ACTIONS.iter().position(|a| *a == id)
+}
 
 /// The table row for `id`.
 pub fn action(id: ActionId) -> &'static Action {
@@ -312,7 +335,14 @@ impl Editor {
             | ActionId::ZoomOutFull
             | ActionId::ZoomAmpIn
             | ActionId::ZoomAmpOut
-            | ActionId::ZoomAmpReset => self.len() > 0,
+            | ActionId::ZoomAmpReset
+            | ActionId::ZoomInAtIn
+            | ActionId::ZoomInAtOut
+            | ActionId::ZoomPreset1
+            | ActionId::ZoomPreset2
+            | ActionId::ZoomPreset3
+            | ActionId::ZoomPreset4
+            | ActionId::ZoomPreset5 => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
@@ -483,6 +513,13 @@ impl Editor {
             | ActionId::ZoomAmpIn
             | ActionId::ZoomAmpOut
             | ActionId::ZoomAmpReset
+            | ActionId::ZoomInAtIn
+            | ActionId::ZoomInAtOut
+            | ActionId::ZoomPreset1
+            | ActionId::ZoomPreset2
+            | ActionId::ZoomPreset3
+            | ActionId::ZoomPreset4
+            | ActionId::ZoomPreset5
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast

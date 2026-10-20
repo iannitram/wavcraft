@@ -22,14 +22,31 @@ pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the 
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_AMP_SCALE: &str = "amp_scale";
+const KEY_ZOOM_FACTOR: &str = "zoom_factor";
+const KEY_ZOOM_PRESETS: &str = "zoom_presets";
 
 /// What the settings file holds.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
     /// How the amplitude ruler labels its scale.
     pub amp_scale: crate::view::AmpScale,
+    /// How much one zoom step changes the view (above 1; see [`crate::view::ZOOM_FACTOR_RANGE`]).
+    pub zoom_factor: f64,
+    /// The Zoom to Time slots.
+    pub zoom_presets: crate::view::ZoomPresets,
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings {
+            session_folder: None,
+            amp_scale: crate::view::AmpScale::default(),
+            zoom_factor: crate::view::DEFAULT_ZOOM_FACTOR,
+            zoom_presets: crate::view::ZoomPresets::default(),
+        }
+    }
 }
 
 impl Settings {
@@ -66,6 +83,10 @@ impl Settings {
                 s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
             } else if key.trim() == KEY_AMP_SCALE {
                 s.amp_scale = crate::view::AmpScale::parse(value).unwrap_or_default();
+            } else if key.trim() == KEY_ZOOM_FACTOR {
+                s.zoom_factor = value.parse().ok().and_then(crate::view::clean_zoom_factor).unwrap_or(crate::view::DEFAULT_ZOOM_FACTOR);
+            } else if key.trim() == KEY_ZOOM_PRESETS {
+                s.zoom_presets = crate::view::ZoomPresets::parse(value);
             }
         }
         s
@@ -79,6 +100,10 @@ impl Settings {
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
         out.push_str("# amp_scale: the amplitude ruler's scale: db, percent, samples or normalized.\n");
         out.push_str(&format!("{KEY_AMP_SCALE} = {}\n", self.amp_scale.name()));
+        out.push_str("# zoom_factor: how much one zoom step changes the view (1.1 to 8).\n");
+        out.push_str(&format!("{KEY_ZOOM_FACTOR} = {}\n", self.zoom_factor));
+        out.push_str("# zoom_presets: the five Zoom to Time slots, in seconds.\n");
+        out.push_str(&format!("{KEY_ZOOM_PRESETS} = {}\n", self.zoom_presets.to_text()));
         out
     }
 

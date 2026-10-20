@@ -101,3 +101,17 @@ fn check_folder_makes_a_missing_folder_and_leaves_no_probe_behind() {
     assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
     assert!(check_folder(Path::new("")).is_err());
 }
+
+#[test]
+fn f69_zoom_factor_and_presets_are_saved_and_bad_values_fall_back() {
+    let dir = TempDir::new("zoom");
+    let file = dir.0.join("settings.txt");
+    let mut s = Settings { zoom_factor: 1.5, ..Settings::default() };
+    s.zoom_presets.set(3, 42.0);
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file), s);
+    assert_eq!(Settings::default().zoom_factor, 2.0);
+    assert_eq!(Settings::parse("zoom_factor = banana\n").zoom_factor, 2.0);
+    assert_eq!(Settings::parse("zoom_factor = 99\n").zoom_factor, 8.0);
+    assert_eq!(Settings::parse("zoom_presets = 3,4\n").zoom_presets.0[..2], [3.0, 4.0]);
+}

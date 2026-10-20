@@ -404,3 +404,19 @@ fn f19_zoom_actions_answer_to_their_panel_names_and_amplitude_zoom_has_alt_keys(
     assert_eq!((amp_out.keys[0].alt, amp_out.keys[0].key), (true, "Minus"));
     assert_eq!(by_name("view.zoom.ampReset").map(|a| a.id), Some(ActionId::ZoomAmpReset));
 }
+
+#[test]
+fn f69_zoom_to_time_and_zoom_at_point_actions_are_named_and_need_a_file() {
+    for n in 1..=5 {
+        let a = by_name(&format!("view.zoom.preset.{n}")).unwrap();
+        assert_eq!(wavcraft_core::actions::zoom_preset_slot(a.id), Some(n - 1));
+    }
+    assert_eq!(by_name("view.zoom.in_at_in").map(|a| a.id), Some(ActionId::ZoomInAtIn));
+    assert_eq!(by_name("view.zoom.in_at_out").map(|a| a.id), Some(ActionId::ZoomInAtOut));
+    assert_eq!(wavcraft_core::actions::zoom_preset_slot(ActionId::ZoomIn), None);
+    let t = TempDir::new("f69-enabled");
+    let e = editor(&t.0, &stereo(100));
+    for id in [ActionId::ZoomInAtIn, ActionId::ZoomInAtOut, ActionId::ZoomPreset3] {
+        assert!(e.enabled(id, &(0..0)), "{id:?}");
+    }
+}

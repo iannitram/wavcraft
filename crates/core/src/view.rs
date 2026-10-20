@@ -120,6 +120,89 @@ impl Viewport {
     }
 }
 
+/// How many Zoom to Time slots there are.
+pub const ZOOM_SLOTS: usize = 5;
+/// One zoom step's factor until the preference says otherwise.
+pub const DEFAULT_ZOOM_FACTOR: f64 = 2.0;
+/// The smallest and largest zoom factor the preference accepts.
+pub const ZOOM_FACTOR_RANGE: (f64, f64) = (1.1, 8.0);
+/// The shortest time a Zoom to Time slot can hold, in seconds.
+const MIN_PRESET_SECS: f64 = 0.001;
+
+/// A zoom factor as the preference may hold it: `None` for a number that is not usable,
+/// otherwise the number held to [`ZOOM_FACTOR_RANGE`].
+pub fn clean_zoom_factor(factor: f64) -> Option<f64> {
+    factor.is_finite().then(|| factor.clamp(ZOOM_FACTOR_RANGE.0, ZOOM_FACTOR_RANGE.1))
+}
+
+/// The five Zoom to Time slots: each holds how many seconds the view should span.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZoomPresets(pub [f64; ZOOM_SLOTS]);
+
+impl Default for ZoomPresets {
+    fn default() -> ZoomPresets {
+        ZoomPresets([0.1, 1.0, 5.0, 30.0, 120.0])
+    }
+}
+
+impl ZoomPresets {
+    /// Put `secs` in slot `slot` (0-based). Returns false, changing nothing, for a bad slot or time.
+    pub fn set(&mut self, slot: usize, secs: f64) -> bool {
+        if slot >= ZOOM_SLOTS || !secs.is_finite() || secs < MIN_PRESET_SECS {
+            return false;
+        }
+        self.0[slot] = secs;
+        true
+    }
+
+    /// The settings text: the five times in seconds, comma separated.
+    pub fn to_text(&self) -> String {
+        self.0.iter().map(|s| format!("{s}")).collect::<Vec<_>>().join(",")
+    }
+
+    /// Read [`to_text`](Self::to_text) back; a slot that is missing or unusable keeps its default.
+    pub fn parse(text: &str) -> ZoomPresets {
+        let mut out = ZoomPresets::default();
+        for (slot, part) in text.split(',').take(ZOOM_SLOTS).enumerate() {
+            if let Ok(secs) = part.trim().parse::<f64>() {
+                out.set(slot, secs);
+            }
+        }
+        out
+    }
+}
+
+impl Viewport {
+    /// Zoom by `factor` (above 1 zooms in) keeping `frame` where it is on screen. A frame that
+    /// is off screen is first brought to the middle.
+    pub fn zoom_around_frame(&mut self, factor: f64, frame: f64, width_px: f32, total_frames: usize) {
+        if !frame.is_finite() || !factor.is_finite() || factor <= 0.0 {
+            return;
+        }
+        let width = width_px.max(1.0);
+        let mut x = self.x_of(frame);
+        if !(0.0..=width).contains(&x) {
+            self.start = frame - self.frames_per_px * f64::from(width) * 0.5;
+            x = width * 0.5;
+        }
+        self.zoom_at(factor, x, width, total_frames);
+    }
+
+    /// How many frames the whole window shows.
+    pub fn span_frames(&self, width_px: f32) -> f64 {
+        self.frames_per_px * f64::from(width_px.max(1.0))
+    }
+
+    /// Show `span_frames` frames across the window, around the frame now in the middle.
+    pub fn zoom_to_span(&mut self, span_frames: f64, width_px: f32, total_frames: usize) {
+        if !span_frames.is_finite() || span_frames <= 0.0 {
+            return;
+        }
+        let middle = self.start + self.span_frames(width_px) * 0.5;
+        self.set_range(middle - span_frames * 0.5, middle + span_frames * 0.5, width_px, total_frames);
+    }
+}
+
 /// What a press on the zoom navigator grabbed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavPart {
@@ -596,5 +679,71 @@ mod tests {
         assert_eq!(format_time(HOUR + 48_000 * 125 + 48, 48_000), "1:02:05.001");
         assert_eq!(format_time(44_099, 44_100), "0:00.999");
         assert_eq!(format_time(5, 0), "0:00.000");
+    }
+
+    #[test]
+    fn f69_zoom_around_a_frame_keeps_it_on_screen_and_off_screen_frames_come_to_the_middle() {
+        let mut v = Viewport::fit(HOUR, 1200.0);
+        v.set_range(1_000_000.0, 1_000_000.0 + 120_000.0, 1200.0, HOUR);
+        let frame = v.frame_at(200.0);
+        v.zoom_around_frame(2.0, frame, 1200.0, HOUR);
+        assert!((v.x_of(frame) - 200.0).abs() < 0.01, "{}", v.x_of(frame));
+        assert!((v.span_frames(1200.0) - 60_000.0).abs() < 1.0);
+        // A frame far off screen is centred, then zoomed around.
+        v.zoom_around_frame(2.0, 5_000_000.0, 1200.0, HOUR);
+        assert!((v.x_of(5_000_000.0) - 600.0).abs() < 0.01);
+        assert!((v.span_frames(1200.0) - 30_000.0).abs() < 1.0);
+        // A factor of 1.5 changes the span by exactly that.
+        let before = v.span_frames(1200.0);
+        v.zoom_around_frame(1.5, 5_000_000.0, 1200.0, HOUR);
+        assert!((before / v.span_frames(1200.0) - 1.5).abs() < 1e-9);
+        // Bad numbers change nothing.
+        let kept = v;
+        v.zoom_around_frame(2.0, f64::NAN, 1200.0, HOUR);
+        v.zoom_around_frame(f64::NAN, 100.0, 1200.0, HOUR);
+        assert_eq!(v, kept);
+        // Zooming right in near the start keeps the frame where it was and the view inside the file.
+        let mut edge = Viewport::fit(HOUR, 1200.0);
+        edge.zoom_around_frame(1e6, 10.0, 1200.0, HOUR);
+        let x = Viewport::fit(HOUR, 1200.0).x_of(10.0);
+        assert!((edge.x_of(10.0) - x).abs() < 0.01 && edge.start >= 0.0);
+    }
+
+    #[test]
+    fn f69_zoom_to_span_keeps_the_middle_and_stays_inside_the_file() {
+        let mut v = Viewport::fit(HOUR, 1200.0);
+        v.set_range(2_000_000.0, 2_240_000.0, 1200.0, HOUR);
+        v.zoom_to_span(48_000.0, 1200.0, HOUR);
+        assert!((v.start - (2_120_000.0 - 24_000.0)).abs() < 1.0);
+        assert!((v.span_frames(1200.0) - 48_000.0).abs() < 1.0);
+        // Longer than the file: the whole file. Zero or NaN: nothing.
+        v.zoom_to_span(1e12, 1200.0, HOUR);
+        assert_eq!(v, Viewport::fit(HOUR, 1200.0));
+        let kept = v;
+        v.zoom_to_span(0.0, 1200.0, HOUR);
+        v.zoom_to_span(f64::NAN, 1200.0, HOUR);
+        assert_eq!(v, kept);
+        // Next to the start the span is kept and the view slides right.
+        v.zoom_to_span(96_000.0, 1200.0, HOUR);
+        v.start = 0.0;
+        v.zoom_to_span(48_000.0, 1200.0, HOUR);
+        assert!(v.start >= 0.0 && (v.span_frames(1200.0) - 48_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn f69_presets_hold_five_times_round_trip_and_refuse_bad_ones() {
+        let mut p = ZoomPresets::default();
+        assert!(p.set(2, 7.5));
+        assert!(!p.set(5, 1.0) && !p.set(0, f64::NAN) && !p.set(0, 0.0) && !p.set(0, -3.0));
+        assert_eq!(p.0[2], 7.5);
+        assert_eq!(ZoomPresets::parse(&p.to_text()), p);
+        // Missing, junk and too-short values keep the default for that slot.
+        let d = ZoomPresets::default();
+        assert_eq!(ZoomPresets::parse("2, x, 0"), ZoomPresets([2.0, d.0[1], d.0[2], d.0[3], d.0[4]]));
+        assert_eq!(ZoomPresets::parse(""), d);
+        assert_eq!(clean_zoom_factor(100.0), Some(8.0));
+        assert_eq!(clean_zoom_factor(1.0), Some(1.1));
+        assert_eq!(clean_zoom_factor(f64::NAN), None);
+        assert_eq!(clean_zoom_factor(1.5), Some(1.5));
     }
 }
