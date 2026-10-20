@@ -8,6 +8,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
+use wavcraft_core::convert::{self, ConvertSettings, PresetFile};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::panels::{self, PanelSet};
 use wavcraft_core::save::{SampleType, save_wav};
@@ -15,9 +16,12 @@ use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::snap::ruler_step;
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{ChannelMask, DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::{
+    ChannelMask, DocState, Document, Edit, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, Viewport, format_time,
+};
 
 use crate::control;
+use crate::convert_ui::{self, ConvertDialog};
 use crate::player::Player;
 use crate::recovery::{self, Choice, Recovery};
 use crate::spectrum::{Job, Renderer};
@@ -51,6 +55,16 @@ struct Saving {
     then_close: bool,
     /// Which open document it saves ([`WaveApp::doc_id`] when it started): a save that finishes
     /// after another file was opened must not give that file its path (Codex review CX-W1).
+    doc_id: u64,
+}
+
+/// A conversion running on a worker thread (Convert Sample Type).
+struct Converting {
+    /// The step it converts: the result is dropped if the document has moved on.
+    from: Arc<DocState>,
+    result: Receiver<Result<Edit, String>>,
+    progress: Arc<AtomicU32>,
+    cancel: Arc<AtomicBool>,
     doc_id: u64,
 }
 
@@ -119,6 +133,13 @@ pub struct WaveApp {
     history_refocus: Option<usize>,
     /// Auto Save: the journal writer, and the offer to recover a crashed run's work.
     recovery: Recovery,
+    /// Edit › Convert Sample Type…: the dialog while it is up, and the conversion once started.
+    convert_dialog: Option<ConvertDialog>,
+    converting: Option<Converting>,
+    /// Edit › Interpret Sample Rate…: the rate being typed while the dialog is up.
+    interpret: Option<String>,
+    /// Named conversion settings (built in, and the user's from `convert-presets.txt`).
+    presets: PresetFile,
 }
 
 impl WaveApp {
@@ -170,6 +191,10 @@ impl WaveApp {
             history_focus: false,
             history_refocus: None,
             recovery,
+            convert_dialog: None,
+            converting: None,
+            interpret: None,
+            presets: PresetFile::load(PresetFile::default_path()),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -360,6 +385,9 @@ impl WaveApp {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
+        if self.converting.is_some() {
+            return Err("wait for the conversion to finish".to_string());
+        }
         if actions::action(id).kind == Kind::Window {
             return self.run_window_action(id, ctx);
         }
@@ -451,6 +479,13 @@ impl WaveApp {
                 self.selection = Selection { anchor: start, head: playhead };
             }
             ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
+            ActionId::ConvertSampleType if self.editor.is_some() => {
+                let doc = self.editor.as_ref().map(|e| e.history.current().clone());
+                self.convert_dialog = doc.map(|d| ConvertDialog::new(d.sample_rate(), d.channel_count()));
+            }
+            ActionId::InterpretSampleRate if self.editor.is_some() => {
+                self.interpret = self.editor.as_ref().map(|e| e.history.current().sample_rate().to_string());
+            }
             // Repeat Last Command with its dialog: Insert Silence opens its dialog with the last
             // length; the other repeatable commands have no dialog and simply run again.
             ActionId::RepeatLastDialog => {
@@ -528,6 +563,128 @@ impl WaveApp {
         }
     }
 
+    /// Convert Sample Type on a worker thread (the dialog's OK, or the control channel). The
+    /// result becomes one History step when it finishes.
+    fn start_convert(&mut self, settings: &ConvertSettings, ctx: &egui::Context) -> Result<(), String> {
+        if self.converting.is_some() || self.saving.is_some() || self.opening.is_some() || self.rebuilding.is_some() {
+            return Err("wait for the current job to finish".to_string());
+        }
+        let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
+        let from = editor.history.current().clone();
+        editor.history.can_afford(convert::estimate_bytes(&from, settings)).map_err(|e| format!("Convert Sample Type: {e}"))?;
+        let (tx, rx) = channel();
+        let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
+        let (job_from, job_settings, job_cancel, job_progress, ctx) = (from.clone(), settings.clone(), cancel.clone(), progress.clone(), ctx.clone());
+        log::info!(target: "wavcraft", "convert sample type: {}", settings.to_text());
+        std::thread::spawn(move || {
+            let mut last = 0;
+            let mut report = |p: f64| {
+                let permille = (p.clamp(0.0, 1.0) * 1000.0) as u32;
+                job_progress.store(permille, Ordering::Relaxed);
+                if permille >= last + 10 {
+                    last = permille;
+                    ctx.request_repaint();
+                }
+            };
+            let _ = tx.send(convert::convert(&job_from, &job_settings, &job_cancel, &mut report).map_err(|e| e.to_string()));
+            ctx.request_repaint();
+        });
+        self.player.stop();
+        self.converting = Some(Converting { from, result: rx, progress, cancel, doc_id: self.doc_id });
+        Ok(())
+    }
+
+    fn finish_converting(&mut self, ctx: &egui::Context) {
+        let Some(job) = &self.converting else { return };
+        let result = match job.result.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the conversion stopped unexpectedly".to_string()),
+        };
+        let Some(Converting { from, doc_id, .. }) = self.converting.take() else { return };
+        let edit = match result {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!(target: "wavcraft", "convert sample type failed: {e}");
+                self.error = Some(format!("Convert Sample Type: {e}"));
+                return;
+            }
+        };
+        let Some(editor) = self.editor.as_mut().filter(|e| doc_id == self.doc_id && Arc::ptr_eq(e.history.current(), &from)) else {
+            log::info!(target: "wavcraft", "a conversion finished after the document changed; dropped");
+            return;
+        };
+        if edit.is_noop() {
+            self.notice = Some("Convert Sample Type: nothing to change".to_string());
+            return;
+        }
+        let (old_rate, new_rate, new_len) = (from.sample_rate(), edit.state.sample_rate(), edit.state.len_frames() as usize);
+        self.notice = Some(format!(
+            "Converted to {} Hz, {} channel(s), {} (a save writes {})",
+            new_rate,
+            edit.state.channel_count(),
+            format_time(new_len, new_rate),
+            SampleType::for_source(edit.state.source()).describe()
+        ));
+        editor.history.push_edit(edit);
+        // The selection keeps its place in time.
+        let scale = |f: usize| ((f as u128 * u128::from(new_rate) / u128::from(old_rate.max(1))) as usize).min(new_len);
+        self.selection = Selection { anchor: scale(self.selection.anchor), head: scale(self.selection.head) };
+        self.fit_on_next_frame = true;
+        self.error = None;
+        self.rebuild(ctx);
+    }
+
+    /// Interpret Sample Rate: relabel the rate, one History step, no sample touched.
+    fn run_interpret(&mut self, rate: u32, ctx: &egui::Context) -> Result<(), String> {
+        if self.converting.is_some() || self.saving.is_some() {
+            return Err("wait for the current job to finish".to_string());
+        }
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let edit = convert::interpret_rate(editor.history.current(), rate).map_err(|e| format!("Interpret Sample Rate: {e}"))?;
+        if edit.is_noop() {
+            return Ok(());
+        }
+        editor.history.push_edit(edit);
+        self.notice = Some(format!("Interpreting the file as {rate} Hz"));
+        self.error = None;
+        self.fit_on_next_frame = true;
+        self.rebuild(ctx);
+        Ok(())
+    }
+
+    /// The two conversion dialogs, when up.
+    fn convert_dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(d) = self.convert_dialog.as_mut() {
+            match d.show(ctx, &mut self.presets) {
+                convert_ui::Outcome::Open => {}
+                convert_ui::Outcome::Cancel => self.convert_dialog = None,
+                convert_ui::Outcome::Apply(s) => {
+                    self.convert_dialog = None;
+                    if let Err(e) = self.start_convert(&s, ctx) {
+                        self.error = Some(e);
+                    }
+                }
+            }
+        }
+        if let Some(text) = self.interpret.as_mut() {
+            let current = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
+            if let Some(answer) = convert_ui::interpret_dialog(ctx, text, current) {
+                self.interpret = None;
+                if let Some(text) = answer {
+                    match text.trim().parse::<u32>() {
+                        Ok(rate) => {
+                            if let Err(e) = self.run_interpret(rate, ctx) {
+                                self.error = Some(e);
+                            }
+                        }
+                        Err(_) => self.error = Some("Interpret Sample Rate: type a whole number of Hz".to_string()),
+                    }
+                }
+            }
+        }
+    }
+
     /// Window › History: every step, the current one highlighted; click one to go to it.
     fn history_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("History");
@@ -580,7 +737,7 @@ impl WaveApp {
                 self.confirm_clear_history = true;
             }
         });
-        if self.saving.is_none() {
+        if self.saving.is_none() && self.converting.is_none() {
             if let Some(i) = delete {
                 self.history_delete(i, ui.ctx());
             } else if let Some(i) = go {
@@ -708,6 +865,9 @@ impl WaveApp {
     fn save(&mut self, ctx: &egui::Context, save_as: bool, to: Option<PathBuf>, then_close: bool) -> Result<(), String> {
         if self.saving.is_some() {
             return Err("a save is already running".to_string());
+        }
+        if self.converting.is_some() {
+            return Err("wait for the conversion to finish".to_string());
         }
         let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
         let state = editor.history.current().clone();
@@ -891,7 +1051,7 @@ impl WaveApp {
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
             "STATE" => {
-                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
+                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() || self.converting.is_some();
                 let unsaved = u8::from(self.unsaved());
                 match &self.editor {
                     Some(e) => {
@@ -1040,9 +1200,51 @@ impl WaveApp {
                 }
                 Err(()) => format!("ERR {cmd} [index]"),
             },
+            // Convert Sample Type with `key=value` settings (`rate=44100 channels=1 bits=16`), or
+            // `preset=<name>`; it runs in the background: poll STATE until busy=0.
+            "CONVERT" => {
+                let parsed = match rest.strip_prefix("preset=") {
+                    Some(name) => self.presets.find(name).map(|p| p.settings).ok_or_else(|| format!("no preset named {:?}", name.trim())),
+                    None => ConvertSettings::parse(rest),
+                };
+                match parsed.and_then(|s| self.start_convert(&s, ctx)) {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+            // Interpret Sample Rate: relabel the rate, no resampling.
+            "INTERPRET" => match rest.trim().parse::<u32>() {
+                Ok(rate) => match self.run_interpret(rate, ctx) {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                },
+                Err(_) => "ERR INTERPRET <hz>".to_string(),
+            },
+            // PRESET list | PRESET save <name> | <settings> | PRESET delete <name>
+            "PRESET" => {
+                let (verb, arg) = rest.split_once(' ').unwrap_or((rest, ""));
+                match verb {
+                    "list" => format!(
+                        "OK {}",
+                        self.presets.all().iter().map(|p| format!("{} | {}", p.name, p.settings.to_text())).collect::<Vec<_>>().join(" ; ")
+                    ),
+                    "save" => match arg.split_once('|') {
+                        Some((name, settings)) => match ConvertSettings::parse(settings).and_then(|s| self.presets.save(name, s)) {
+                            Ok(()) => "OK".to_string(),
+                            Err(e) => format!("ERR {e}"),
+                        },
+                        None => "ERR PRESET save <name> | <settings>".to_string(),
+                    },
+                    "delete" => match self.presets.delete(arg) {
+                        Ok(()) => "OK".to_string(),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    _ => "ERR PRESET list | save <name> | <settings> | delete <name>".to_string(),
+                }
+            }
             // The History panel's click: go to step <index> (0 is Open).
             "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
-                (Ok(i), true) if self.saving.is_none() => {
+                (Ok(i), true) if self.saving.is_none() && self.converting.is_none() => {
                     if self.history_go(i, ctx) {
                         "OK".to_string()
                     } else {
@@ -1053,7 +1255,7 @@ impl WaveApp {
             },
             // The panel's Delete State: step <index> and every later step go (0 can't).
             "HISTORY_DELETE" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
-                (Ok(i), true) if self.saving.is_none() => match self.history_delete(i, ctx) {
+                (Ok(i), true) if self.saving.is_none() && self.converting.is_none() => match self.history_delete(i, ctx) {
                     Some(n) => format!("OK removed={n}"),
                     None => format!("ERR no step {i} to delete (Open can't be)"),
                 },
@@ -1061,14 +1263,14 @@ impl WaveApp {
             },
             // Clear History without the panel's confirmation: the current state is all that stays.
             "HISTORY_CLEAR" => match self.editor.as_mut() {
-                Some(e) if self.saving.is_none() => {
+                Some(e) if self.saving.is_none() && self.converting.is_none() => {
                     e.history.clear();
                     "OK".to_string()
                 }
                 _ => "ERR HISTORY_CLEAR, with a file open".to_string(),
             },
             // The panel's Up / Down keys.
-            "HISTORY_KEY" if self.editor.is_some() && self.saving.is_none() => match rest.trim() {
+            "HISTORY_KEY" if self.editor.is_some() && self.saving.is_none() && self.converting.is_none() => match rest.trim() {
                 k @ ("up" | "down") => match self.history_arrow(k == "down", ctx) {
                     Some(i) => format!("OK cursor={i}"),
                     None => "OK cursor=unchanged".to_string(),
@@ -1112,7 +1314,7 @@ impl WaveApp {
                 ui.separator();
             }
             let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
-            let enabled = enabled && self.saving.is_none();
+            let enabled = enabled && self.saving.is_none() && self.converting.is_none();
             let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
             if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
                 chosen = Some(a.id);
@@ -1224,6 +1426,12 @@ impl WaveApp {
             } else if let Some(s) = &self.saving {
                 ui.spinner();
                 ui.label(format!("Saving {}… {}%", s.path.display(), s.progress.load(Ordering::Relaxed) / 10));
+            } else if let Some(c) = &self.converting {
+                ui.spinner();
+                ui.label(format!("Converting sample type… {}%", c.progress.load(Ordering::Relaxed) / 10));
+                if ui.button("Cancel").clicked() {
+                    c.cancel.store(true, Ordering::Relaxed);
+                }
             } else if self.rebuilding.is_some() {
                 ui.spinner();
                 ui.label("Updating the view…");
@@ -1492,6 +1700,7 @@ impl eframe::App for WaveApp {
         self.recovery.poll();
         let unsaved = self.unsaved();
         self.recovery.track(self.editor.as_ref(), unsaved, ctx);
+        self.finish_converting(ctx);
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
@@ -1512,7 +1721,7 @@ impl eframe::App for WaveApp {
         }
         // Up and Down belong to the History panel while one of its rows has focus (before the
         // action table gets them: there they pick the left or right channel).
-        if self.history_focus && self.saving.is_none() {
+        if self.history_focus && self.saving.is_none() && self.converting.is_none() {
             let (up, down) =
                 ctx.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, Key::ArrowDown)));
             if let Some(to) = (up || down).then(|| self.history_arrow(down, &ctx)).flatten() {
@@ -1554,6 +1763,7 @@ impl eframe::App for WaveApp {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
         self.insert_silence_dialog(&ctx);
+        self.convert_dialogs(&ctx);
         self.clear_history_prompt(&ctx);
         match self.recovery.show(&ctx) {
             Some(Choice::Recover(i)) => {

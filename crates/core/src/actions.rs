@@ -71,6 +71,8 @@ pub enum ActionId {
     MarkerAdd,
     MarkerNext,
     MarkerPrev,
+    ConvertSampleType,
+    InterpretSampleRate,
 }
 
 /// Which part of the program carries an action out.
@@ -187,6 +189,9 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::ZeroLeftToRight, "edit.zeroCrossings.leftToRight", "Zero Crossings: Left Side to Right", &[shift("J")]),
     edit(ActionId::ZeroRightToLeft, "edit.zeroCrossings.rightToLeft", "Zero Crossings: Right Side to Left", &[shift("K")]),
     edit(ActionId::ZeroRightToRight, "edit.zeroCrossings.rightToRight", "Zero Crossings: Right Side to Right", &[shift("L")]),
+    // Both open a dialog (the window's), then `convert::convert` / `convert::interpret_rate`.
+    window(ActionId::ConvertSampleType, "edit.convertSampleType", "Convert Sample Type…", &[shift("T")]),
+    window(ActionId::InterpretSampleRate, "edit.interpretSampleRate", "Interpret Sample Rate…", &[]),
     window(ActionId::SetIn, "edit.setIn", "Set In Point to Playhead", &[key("I")]),
     window(ActionId::SetOut, "edit.setOut", "Set Out Point to Playhead", &[key("O")]),
     edit(ActionId::LeftChannel, "edit.leftChannel", "Left Channel Only", &[key("ArrowUp")]),
@@ -442,6 +447,7 @@ impl Editor {
             ActionId::MarkerAdd => self.len() > 0,
             ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
             ActionId::MarkerPrev => self.history.current().markers().prev_before(selection.start).is_some(),
+            ActionId::ConvertSampleType | ActionId::InterpretSampleRate => self.len() > 0,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -719,6 +725,8 @@ impl Editor {
             | ActionId::ZoomOutFull
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
+            | ActionId::ConvertSampleType
+            | ActionId::InterpretSampleRate
             | ActionId::RepeatLast
             | ActionId::SnapToggle
             | ActionId::SnapZeroToggle

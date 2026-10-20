@@ -10,6 +10,7 @@
 
 mod app;
 mod control;
+mod convert_ui;
 mod oscb;
 mod player;
 mod recovery;
