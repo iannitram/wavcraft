@@ -34,8 +34,101 @@ const KEY_EDGE: &str = "crossfade_edge_ms";
 const KEY_OUTPUT: &str = "output_device";
 const KEY_INPUT: &str = "input_device";
 
+const KEY_SRC_QUALITY: &str = "src_quality";
+const KEY_SAVE_MARKERS: &str = "save_markers";
+const KEY_SAVE_METADATA: &str = "save_metadata";
+const KEY_MARKER_PATTERN: &str = "marker_name_pattern";
+const KEY_AUTOSCROLL: &str = "autoscroll";
+const KEY_JKL_STEPS: &str = "jkl_speed_steps";
+const KEY_PREROLL: &str = "preroll_s";
+const KEY_POSTROLL: &str = "postroll_s";
+const KEY_RECORD_OFFSET: &str = "record_offset_ms";
+
 /// Every preference key, in the order the file lists them.
-pub const KEYS: [&str; 5] = [KEY_SESSION_FOLDER, KEY_CUT_JOIN, KEY_EDGE, KEY_OUTPUT, KEY_INPUT];
+pub const KEYS: [&str; 14] = [
+    KEY_SESSION_FOLDER,
+    KEY_CUT_JOIN,
+    KEY_EDGE,
+    KEY_OUTPUT,
+    KEY_INPUT,
+    KEY_SRC_QUALITY,
+    KEY_SAVE_MARKERS,
+    KEY_SAVE_METADATA,
+    KEY_MARKER_PATTERN,
+    KEY_AUTOSCROLL,
+    KEY_JKL_STEPS,
+    KEY_PREROLL,
+    KEY_POSTROLL,
+    KEY_RECORD_OFFSET,
+];
+
+/// The default marker name pattern (`{n}` is the marker's number).
+pub const DEFAULT_MARKER_PATTERN: &str = "Marker {n}";
+/// The longest marker name pattern accepted, in characters.
+pub const MAX_MARKER_PATTERN_CHARS: usize = 64;
+/// Playback speeds the J/K/L keys step through, by default.
+pub const DEFAULT_JKL_STEPS: [f32; 4] = [0.5, 1.0, 2.0, 4.0];
+/// The most speeds, and the slowest and fastest speed, the JKL list accepts.
+pub const MAX_JKL_STEPS: usize = 8;
+pub const MIN_JKL_SPEED: f32 = 0.05;
+pub const MAX_JKL_SPEED: f32 = 16.0;
+/// Pre-roll and post-roll defaults and ceiling, in seconds.
+pub const DEFAULT_ROLL_S: f32 = 2.0;
+pub const MAX_ROLL_S: f32 = 60.0;
+/// The record offset (latency compensation) is within plus or minus this many ms.
+pub const MAX_RECORD_OFFSET_MS: i32 = 1000;
+
+/// Sample rate conversion quality (the default for conversions that don't ask for one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrcQuality {
+    Low,
+    Medium,
+    High,
+    Best,
+}
+
+impl SrcQuality {
+    pub const ALL: [SrcQuality; 4] = [SrcQuality::Low, SrcQuality::Medium, SrcQuality::High, SrcQuality::Best];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SrcQuality::Low => "low",
+            SrcQuality::Medium => "medium",
+            SrcQuality::High => "high",
+            SrcQuality::Best => "best",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<SrcQuality> {
+        SrcQuality::ALL.into_iter().find(|q| q.name() == s)
+    }
+}
+
+/// How the view follows the playhead while playing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoScroll {
+    /// Jump a page when the playhead reaches the edge.
+    Pagewise,
+    /// Keep the playhead in the middle.
+    Centred,
+    Off,
+}
+
+impl AutoScroll {
+    pub const ALL: [AutoScroll; 3] = [AutoScroll::Pagewise, AutoScroll::Centred, AutoScroll::Off];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            AutoScroll::Pagewise => "pagewise",
+            AutoScroll::Centred => "centred",
+            AutoScroll::Off => "off",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<AutoScroll> {
+        AutoScroll::ALL.into_iter().find(|a| a.name() == s)
+    }
+}
 
 /// What a device preference shows (and accepts) for "no device chosen: use the system's".
 pub const SYSTEM_DEFAULT: &str = "System default";
@@ -103,7 +196,7 @@ impl Default for MarkerColumns {
 }
 
 /// What the settings file holds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
@@ -132,6 +225,23 @@ pub struct Settings {
     pub workspace: String,
     /// The Markers panel's columns.
     pub marker_columns: MarkerColumns,
+    /// Default sample rate conversion quality.
+    pub src_quality: SrcQuality,
+    /// Write the markers into a saved file by default.
+    pub save_markers: bool,
+    /// Write the metadata into a saved file by default.
+    pub save_metadata: bool,
+    /// The name a new marker gets (`{n}`: its number).
+    pub marker_name_pattern: String,
+    /// How the view follows the playhead.
+    pub autoscroll: AutoScroll,
+    /// The speeds J/K/L step through, ascending, as a multiple of normal speed.
+    pub jkl_steps: Vec<f32>,
+    /// Pre-roll and post-roll in seconds.
+    pub preroll_s: f32,
+    pub postroll_s: f32,
+    /// Record offset in ms (positive: later). Stored only; recording applies it when it exists.
+    pub record_offset_ms: i32,
 }
 
 impl Default for Settings {
@@ -150,6 +260,15 @@ impl Default for Settings {
             zone_sizes: String::new(),
             workspace: String::new(),
             marker_columns: MarkerColumns::default(),
+            src_quality: SrcQuality::High,
+            save_markers: true,
+            save_metadata: true,
+            marker_name_pattern: DEFAULT_MARKER_PATTERN.to_string(),
+            autoscroll: AutoScroll::Pagewise,
+            jkl_steps: DEFAULT_JKL_STEPS.to_vec(),
+            preroll_s: DEFAULT_ROLL_S,
+            postroll_s: DEFAULT_ROLL_S,
+            record_offset_ms: 0,
         }
     }
 }
@@ -211,6 +330,27 @@ impl Settings {
         (Duration::from_millis(u64::from(self.cut_join_ms)), Duration::from_millis(u64::from(self.edge_ms)))
     }
 
+    /// The JKL playback speeds, ascending (1 to 8 of them).
+    pub fn jkl_speed_steps(&self) -> &[f32] {
+        &self.jkl_steps
+    }
+
+    /// Pre-roll: play this long before the cursor when previewing an edit point.
+    pub fn preroll(&self) -> Duration {
+        Duration::from_secs_f32(self.preroll_s)
+    }
+
+    /// Post-roll: play this long after the selection's end when previewing.
+    pub fn postroll(&self) -> Duration {
+        Duration::from_secs_f32(self.postroll_s)
+    }
+
+    /// The name for marker number `n` from the pattern (`{n}` replaced; a pattern without it
+    /// gets the number appended).
+    pub fn marker_name(&self, n: u32) -> String {
+        marker_name(&self.marker_name_pattern, n)
+    }
+
     /// The value of preference `key` as text (a device none is chosen for reads
     /// [`SYSTEM_DEFAULT`], an unset session folder reads empty).
     pub fn get(&self, key: &str) -> Result<String, String> {
@@ -220,6 +360,15 @@ impl Settings {
             KEY_EDGE => self.edge_ms.to_string(),
             KEY_OUTPUT => self.output_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
             KEY_INPUT => self.input_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
+            KEY_SRC_QUALITY => self.src_quality.name().to_string(),
+            KEY_SAVE_MARKERS => self.save_markers.to_string(),
+            KEY_SAVE_METADATA => self.save_metadata.to_string(),
+            KEY_MARKER_PATTERN => self.marker_name_pattern.clone(),
+            KEY_AUTOSCROLL => self.autoscroll.name().to_string(),
+            KEY_JKL_STEPS => self.jkl_steps.iter().map(f32::to_string).collect::<Vec<_>>().join(","),
+            KEY_PREROLL => self.preroll_s.to_string(),
+            KEY_POSTROLL => self.postroll_s.to_string(),
+            KEY_RECORD_OFFSET => self.record_offset_ms.to_string(),
             _ => return Err(unknown_key(key)),
         })
     }
@@ -238,6 +387,30 @@ impl Settings {
             KEY_EDGE => self.edge_ms = ms(value)?,
             KEY_OUTPUT => self.output_device = device(value),
             KEY_INPUT => self.input_device = device(value),
+            KEY_SRC_QUALITY => {
+                self.src_quality = SrcQuality::from_name(value).ok_or_else(|| format!("{key} is one of low, medium, high, best"))?;
+            }
+            KEY_SAVE_MARKERS => self.save_markers = parse_bool(key, value)?,
+            KEY_SAVE_METADATA => self.save_metadata = parse_bool(key, value)?,
+            KEY_MARKER_PATTERN => {
+                let n = value.chars().count();
+                if n == 0 || n > MAX_MARKER_PATTERN_CHARS || value.chars().any(char::is_control) {
+                    return Err(format!("{key} is 1 to {MAX_MARKER_PATTERN_CHARS} characters on one line, e.g. {DEFAULT_MARKER_PATTERN}"));
+                }
+                self.marker_name_pattern = value.to_string();
+            }
+            KEY_AUTOSCROLL => {
+                self.autoscroll = AutoScroll::from_name(value).ok_or_else(|| format!("{key} is one of pagewise, centred, off"))?;
+            }
+            KEY_JKL_STEPS => self.jkl_steps = parse_steps(key, value)?,
+            KEY_PREROLL => self.preroll_s = parse_roll(key, value)?,
+            KEY_POSTROLL => self.postroll_s = parse_roll(key, value)?,
+            KEY_RECORD_OFFSET => {
+                self.record_offset_ms = match value.parse::<i32>() {
+                    Ok(n) if n.abs() <= MAX_RECORD_OFFSET_MS => n,
+                    _ => return Err(format!("{key} is a whole number of milliseconds, -{MAX_RECORD_OFFSET_MS} to {MAX_RECORD_OFFSET_MS}")),
+                }
+            }
             _ => return Err(unknown_key(key)),
         }
         Ok(())
@@ -267,6 +440,19 @@ impl Settings {
         out.push_str(&format!("# workspace: the workspace in use (Window › Workspace; empty: Default).\n{KEY_WORKSPACE} = {}\n", self.workspace));
         out.push_str("# marker_columns: the Markers panel's columns (start, end, duration, type, description).\n");
         out.push_str(&format!("{KEY_MARKER_COLUMNS} = {}\n", self.marker_columns.to_list()));
+        out.push_str("# Data page: src_quality (low, medium, high, best) is the default sample rate conversion quality.\n");
+        out.push_str(&format!("{KEY_SRC_QUALITY} = {}\n", self.get(KEY_SRC_QUALITY).unwrap_or_default()));
+        out.push_str(
+            "# Markers and Metadata page: write them into a saved file by default (true/false); the name a new marker gets ({n}: its number).\n",
+        );
+        for k in [KEY_SAVE_MARKERS, KEY_SAVE_METADATA, KEY_MARKER_PATTERN] {
+            out.push_str(&format!("{k} = {}\n", self.get(k).unwrap_or_default()));
+        }
+        out.push_str("# Playback and Recording page: autoscroll (pagewise, centred, off); jkl_speed_steps (ascending, comma separated);\n");
+        out.push_str("# preroll_s/postroll_s in seconds; record_offset_ms (-1000 to 1000).\n");
+        for k in [KEY_AUTOSCROLL, KEY_JKL_STEPS, KEY_PREROLL, KEY_POSTROLL, KEY_RECORD_OFFSET] {
+            out.push_str(&format!("{k} = {}\n", self.get(k).unwrap_or_default()));
+        }
         out
     }
 
@@ -279,6 +465,36 @@ impl Settings {
         std::fs::write(&tmp, self.to_text())?;
         std::fs::rename(&tmp, path)
     }
+}
+
+fn parse_bool(key: &str, v: &str) -> Result<bool, String> {
+    match v {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("{key} is true or false")),
+    }
+}
+
+fn parse_roll(key: &str, v: &str) -> Result<f32, String> {
+    match v.parse::<f32>() {
+        Ok(n) if n.is_finite() && (0.0..=MAX_ROLL_S).contains(&n) => Ok(n),
+        _ => Err(format!("{key} is a number of seconds, 0 to {MAX_ROLL_S}")),
+    }
+}
+
+fn parse_steps(key: &str, v: &str) -> Result<Vec<f32>, String> {
+    let why = || format!("{key} is 1 to {MAX_JKL_STEPS} speeds, {MIN_JKL_SPEED} to {MAX_JKL_SPEED}, slowest first, comma separated");
+    let steps: Vec<f32> = v.split(',').map(|p| p.trim().parse::<f32>().map_err(|_| why())).collect::<Result<_, _>>()?;
+    let ok = !steps.is_empty()
+        && steps.len() <= MAX_JKL_STEPS
+        && steps.iter().all(|s| s.is_finite() && (MIN_JKL_SPEED..=MAX_JKL_SPEED).contains(s))
+        && steps.windows(2).all(|w| w[0] < w[1]);
+    if ok { Ok(steps) } else { Err(why()) }
+}
+
+/// Marker name `n` from `pattern`: `{n}` becomes the number; a pattern without it gets " n" appended.
+pub fn marker_name(pattern: &str, n: u32) -> String {
+    if pattern.contains("{n}") { pattern.replace("{n}", &n.to_string()) } else { format!("{pattern} {n}") }
 }
 
 fn unknown_key(key: &str) -> String {

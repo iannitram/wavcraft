@@ -64,16 +64,20 @@ const NAV_HEIGHT: f32 = 34.0;
 enum PrefPage {
     General,
     Data,
+    MarkersMetadata,
+    PlaybackRecording,
     AudioHardware,
 }
 
 impl PrefPage {
-    const ALL: [PrefPage; 3] = [PrefPage::General, PrefPage::Data, PrefPage::AudioHardware];
+    const ALL: [PrefPage; 5] = [PrefPage::General, PrefPage::Data, PrefPage::MarkersMetadata, PrefPage::PlaybackRecording, PrefPage::AudioHardware];
 
     fn title(self) -> &'static str {
         match self {
             PrefPage::General => "General",
             PrefPage::Data => "Data",
+            PrefPage::MarkersMetadata => "Markers and Metadata",
+            PrefPage::PlaybackRecording => "Playback and Recording",
             PrefPage::AudioHardware => "Audio Hardware",
         }
     }
@@ -656,6 +660,95 @@ impl WaveApp {
                                     }
                                 });
                             }
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Sample rate conversion quality");
+                                egui::ComboBox::from_id_salt("src_quality").selected_text(self.settings.src_quality.name()).show_ui(ui, |ui| {
+                                    for q in settings::SrcQuality::ALL {
+                                        if ui.selectable_label(self.settings.src_quality == q, q.name()).clicked() {
+                                            action = Some(PrefAction::Set("src_quality", q.name().to_string()));
+                                        }
+                                    }
+                                });
+                            });
+                            ui.label("Stored only for now: nothing on this branch converts sample rates yet.");
+                            ui.add_space(8.0);
+                            ui.label("Float headroom: files are held as 32-bit float, so a level over 0 dBFS inside the editor is kept, not clipped; it is only limited when written to a fixed-point file.");
+                        }
+                        PrefPage::MarkersMetadata => {
+                            ui.label("Saved files: what goes in by default (the save options dialog can override it).");
+                            ui.label("Stored only for now: the save options that read these are not on this branch.");
+                            for (label, key, on) in [
+                                ("Include markers when saving", "save_markers", self.settings.save_markers),
+                                ("Include metadata when saving", "save_metadata", self.settings.save_metadata),
+                            ] {
+                                let mut v = on;
+                                if ui.checkbox(&mut v, label).changed() {
+                                    action = Some(PrefAction::Set(key, v.to_string()));
+                                }
+                            }
+                            ui.add_space(6.0);
+                            ui.label("Marker name pattern ({n} is the marker's number):");
+                            let id = ui.id().with("marker_pattern");
+                            let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| self.settings.marker_name_pattern.clone());
+                            let r = ui.text_edit_singleline(&mut text);
+                            if r.lost_focus() {
+                                action = Some(PrefAction::Set("marker_name_pattern", text.clone()));
+                                ui.data_mut(|d| d.remove::<String>(id));
+                            } else {
+                                ui.data_mut(|d| d.insert_temp(id, text));
+                            }
+                            ui.label(format!("Next marker: {}", self.settings.marker_name(1)));
+                            if self.settings.marker_name_pattern != settings::DEFAULT_MARKER_PATTERN && ui.small_button("Default").clicked() {
+                                action = Some(PrefAction::Set("marker_name_pattern", settings::DEFAULT_MARKER_PATTERN.to_string()));
+                                ui.data_mut(|d| d.remove::<String>(id));
+                            }
+                        }
+                        PrefPage::PlaybackRecording => {
+                            ui.label("Stored only for now: the transport, shuttle and recording features that read these are not on this branch.");
+                            ui.horizontal(|ui| {
+                                ui.label("Auto-scroll while playing");
+                                egui::ComboBox::from_id_salt("autoscroll").selected_text(self.settings.autoscroll.name()).show_ui(ui, |ui| {
+                                    for a in settings::AutoScroll::ALL {
+                                        if ui.selectable_label(self.settings.autoscroll == a, a.name()).clicked() {
+                                            action = Some(PrefAction::Set("autoscroll", a.name().to_string()));
+                                        }
+                                    }
+                                });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("J/K/L speed steps");
+                                let id = ui.id().with("jkl_steps");
+                                let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| self.settings.get("jkl_speed_steps").unwrap_or_default());
+                                let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(160.0));
+                                if r.lost_focus() {
+                                    action = Some(PrefAction::Set("jkl_speed_steps", text.clone()));
+                                    ui.data_mut(|d| d.remove::<String>(id));
+                                } else {
+                                    ui.data_mut(|d| d.insert_temp(id, text));
+                                }
+                                ui.label("(slowest first, e.g. 0.5,1,2,4)");
+                            });
+                            for (label, key, value) in [
+                                ("Pre-roll (s)", "preroll_s", self.settings.preroll().as_secs_f32()),
+                                ("Post-roll (s)", "postroll_s", self.settings.postroll().as_secs_f32()),
+                            ] {
+                                let mut v = value;
+                                ui.horizontal(|ui| {
+                                    if ui.add(egui::DragValue::new(&mut v).range(0.0..=settings::MAX_ROLL_S).speed(0.1).suffix(" s")).changed() {
+                                        action = Some(PrefAction::Set(key, v.to_string()));
+                                    }
+                                    ui.label(label);
+                                });
+                            }
+                            let mut off = self.settings.record_offset_ms;
+                            ui.horizontal(|ui| {
+                                let max = settings::MAX_RECORD_OFFSET_MS;
+                                if ui.add(egui::DragValue::new(&mut off).range(-max..=max).suffix(" ms")).changed() {
+                                    action = Some(PrefAction::Set("record_offset_ms", off.to_string()));
+                                }
+                                ui.label("Record offset (placeholder until recording lands)");
+                            });
                         }
                         PrefPage::AudioHardware => {
                             for (label, key, list, now) in [
