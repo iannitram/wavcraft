@@ -62,6 +62,49 @@ pub fn bits_of(d: BitDepthSetting) -> u32 {
     }
 }
 
+/// The formats an audio track can have here: the model has many more, these three are offered.
+pub const TRACK_FORMATS: [ChannelFormat; 3] = [ChannelFormat::Mono, ChannelFormat::Stereo, ChannelFormat::Surround51];
+
+/// A track format from its name: `mono`, `stereo`, `5.1` (any case; also `1`, `2`, `6` channels).
+pub fn parse_track_format(s: &str) -> Result<ChannelFormat, MtError> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "mono" | "1" => Ok(ChannelFormat::Mono),
+        "stereo" | "2" => Ok(ChannelFormat::Stereo),
+        "5.1" | "6" | "surround51" => Ok(ChannelFormat::Surround51),
+        other => err(format!("a track format is mono, stereo or 5.1, not {other:?}")),
+    }
+}
+
+/// How a clip's audio is fitted to a track of `track` channels, or why it cannot be.
+///
+/// The documented rule: the same count goes in as it is; one channel into two is duplicated
+/// (left and right alike); two channels into one are averaged (the mean, so the sum cannot clip
+/// beyond the inputs' own peak). Anything else, including every mapping to or from 5.1 other than
+/// 6 into 6, is refused: there is no honest default for it. The audio is converted once, on
+/// import; the clip's source then holds the track's channel count.
+pub fn fit_channels(audio: ModelBuffer, track: ChannelFormat) -> Result<ModelBuffer, MtError> {
+    let (have, want) = (audio.num_channels(), track.channels());
+    if have == want {
+        return Ok(audio);
+    }
+    match (have, want) {
+        (1, 2) => {
+            let mut channels = audio.channels;
+            let copy = channels[0].clone();
+            channels.push(copy);
+            Ok(ModelBuffer { sample_rate: audio.sample_rate, channels })
+        }
+        (2, 1) => {
+            let mono: Vec<f32> = audio.channels[0].iter().zip(&audio.channels[1]).map(|(l, r)| (l + r) * 0.5).collect();
+            Ok(ModelBuffer { sample_rate: audio.sample_rate, channels: vec![mono] })
+        }
+        _ => err(format!(
+            "a {have}-channel clip does not fit a {} track ({want} channels); only mono into stereo (duplicated) and stereo into mono (averaged) are converted",
+            track.label()
+        )),
+    }
+}
+
 /// A multitrack session being edited.
 pub struct Multitrack {
     pub session: Session,
@@ -109,8 +152,17 @@ impl Multitrack {
         let format = match channels {
             1 => ChannelFormat::Mono,
             2 => ChannelFormat::Stereo,
-            n => return err(format!("an audio track here has 1 or 2 channels, not {n}")),
+            6 => ChannelFormat::Surround51,
+            n => return err(format!("an audio track here has 1, 2 or 6 channels (mono, stereo, 5.1), not {n}")),
         };
+        self.add_track_format(name, format)
+    }
+
+    /// Add an audio track of a chosen format (mono, stereo or 5.1; f115, C098).
+    pub fn add_track_format(&mut self, name: Option<&str>, format: ChannelFormat) -> Result<TrackId, MtError> {
+        if !TRACK_FORMATS.contains(&format) {
+            return err(format!("an audio track here is mono, stereo or 5.1, not {}", format.label()));
+        }
         let name = match name {
             Some(n) => {
                 let n = clean_name(n)?;
@@ -150,6 +202,25 @@ impl Multitrack {
                 self.session.pool.remove(s);
             }
         }
+        Ok(())
+    }
+
+    /// Change a track's format. Refused while the track has clips (their audio has the old count).
+    pub fn set_track_format(&mut self, id: TrackId, format: ChannelFormat) -> Result<(), MtError> {
+        if !TRACK_FORMATS.contains(&format) {
+            return err(format!("an audio track here is mono, stereo or 5.1, not {}", format.label()));
+        }
+        let Some(t) = self.session.track_mut(id) else { return err("no such track") };
+        let clips: usize = t.playlists.iter().map(|p| p.clips.len()).sum();
+        if clips > 0 {
+            return err(format!(
+                "track {:?} has {clips} clip(s); remove them before changing its format from {} to {}",
+                t.name,
+                t.format.label(),
+                format.label()
+            ));
+        }
+        t.format = format;
         Ok(())
     }
 
@@ -195,9 +266,7 @@ impl Multitrack {
         audio: ModelBuffer,
         at_seconds: f64,
     ) -> Result<soundcraft_model::ClipId, MtError> {
-        if self.session.track(track).is_none() {
-            return err("no such track");
-        }
+        let Some(format) = self.session.track(track).map(|t| t.format) else { return err("no such track") };
         if !at_seconds.is_finite() || at_seconds < 0.0 {
             return err("a clip's position is a number of seconds, 0 or more");
         }
@@ -219,6 +288,7 @@ impl Multitrack {
                 "the audio is too long to hold in memory as a clip ({samples} samples; the limit is {MAX_IMPORT_SAMPLES}); long files wait for the disk-backed sources (issue #302)"
             ));
         }
+        let audio = fit_channels(audio, format)?;
         let at = self.session.sample_rate.samples(at_seconds);
         let source = SourceId(self.session.alloc());
         let (channels, rate) = (u16::try_from(audio.num_channels()).unwrap_or(u16::MAX), audio.sample_rate);
@@ -296,7 +366,7 @@ impl Multitrack {
                     .iter()
                     .map(|c| json!({"name": c.name, "start": rate.seconds(c.start), "length": rate.seconds(c.length), "channels": c.source().and_then(|s| self.session.source(s)).map_or(0, |s| s.channels)}))
                     .collect();
-                json!({"name": t.name, "channels": t.channels(), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "clips": clips})
+                json!({"name": t.name, "format": t.format.label(), "channels": t.channels(), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "clips": clips})
             })
             .collect();
         json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "tracks": tracks})
@@ -354,7 +424,7 @@ mod tests {
         assert_eq!(m.find_track("2"), Ok(b));
         assert!(m.find_track("nope").is_err());
         assert!(m.add_track(Some("VOICE"), 1).is_err(), "names are unique");
-        assert!(m.add_track(None, 6).is_err());
+        assert!(m.add_track(None, 3).is_err());
         m.rename_track(a, "Music").unwrap_or_else(|e| panic!("{e}"));
         assert!(m.rename_track(a, "voice").is_err());
         assert!(m.rename_track(a, " ").is_err());
@@ -451,6 +521,70 @@ mod tests {
         assert_eq!((v["rate"].as_u64(), v["bits"].as_u64(), v["tracks"].as_array().map(Vec::len)), (Some(48_000), Some(24), Some(2)));
         assert_eq!(v["tracks"][0]["clips"][0]["start"].as_f64(), Some(2.0));
         assert_eq!(v["end"].as_f64(), Some(3.0));
+    }
+
+    #[test]
+    fn a_track_is_made_in_mono_stereo_or_5_1() {
+        let mut m = Multitrack::new("F", 48_000, BitDepthSetting::Int24).unwrap_or_else(|e| panic!("{e}"));
+        let ids: Vec<TrackId> = ["mono", "Stereo", "5.1"]
+            .iter()
+            .map(|f| m.add_track_format(None, parse_track_format(f).unwrap_or_else(|e| panic!("{e}"))).unwrap_or_else(|e| panic!("{e}")))
+            .collect();
+        let got: Vec<(ChannelFormat, usize)> = ids.iter().filter_map(|i| m.session.track(*i)).map(|t| (t.format, t.channels())).collect();
+        assert_eq!(got, vec![(ChannelFormat::Mono, 1), (ChannelFormat::Stereo, 2), (ChannelFormat::Surround51, 6)]);
+        assert!(parse_track_format("7.1").is_err());
+        assert!(m.add_track_format(None, ChannelFormat::Surround71).is_err());
+        let v: serde_json::Value = serde_json::from_str(&m.state_json()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(v["tracks"][2]["format"], "5.1");
+        assert_eq!(v["tracks"][0]["format"], "Mono");
+    }
+
+    #[test]
+    fn a_clip_of_the_same_channel_count_goes_on_as_it_is() {
+        let mut m = Multitrack::new("F", 48_000, BitDepthSetting::Int24).unwrap_or_else(|e| panic!("{e}"));
+        let t = m.add_track_format(Some("Sur"), ChannelFormat::Surround51).unwrap_or_else(|e| panic!("{e}"));
+        m.add_clip_buffer(t, "s", "s.wav", tone(48_000, 0.1, 6), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.session.sources[0].channels, 6);
+    }
+
+    #[test]
+    fn mono_into_stereo_is_duplicated_and_stereo_into_mono_averaged() {
+        let mono = ModelBuffer { sample_rate: 48_000, channels: vec![vec![0.5, -0.25]] };
+        let st = fit_channels(mono, ChannelFormat::Stereo).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(st.channels, vec![vec![0.5, -0.25], vec![0.5, -0.25]]);
+        let back = fit_channels(ModelBuffer { sample_rate: 48_000, channels: vec![vec![1.0, 0.5], vec![0.0, 0.5]] }, ChannelFormat::Mono)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back.channels, vec![vec![0.5, 0.5]]);
+        let (mut m, a, b) = two_tracks();
+        m.add_clip_buffer(a, "m", "m", tone(48_000, 0.1, 1), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        m.add_clip_buffer(b, "s", "s", tone(48_000, 0.1, 2), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.session.sources.iter().map(|s| s.channels).collect::<Vec<_>>(), vec![2, 1]);
+    }
+
+    #[test]
+    fn a_clip_that_does_not_fit_the_track_is_refused_with_a_message() {
+        let mut m = Multitrack::new("F", 48_000, BitDepthSetting::Int24).unwrap_or_else(|e| panic!("{e}"));
+        let sur = m.add_track_format(Some("Sur"), ChannelFormat::Surround51).unwrap_or_else(|e| panic!("{e}"));
+        let mono = m.add_track_format(Some("Mon"), ChannelFormat::Mono).unwrap_or_else(|e| panic!("{e}"));
+        let e1 = m.add_clip_buffer(sur, "x", "x", tone(48_000, 0.1, 2), 0.0).unwrap_or_default_err();
+        assert!(e1.contains("2-channel") && e1.contains("5.1"), "{e1}");
+        let e2 = m.add_clip_buffer(mono, "x", "x", tone(48_000, 0.1, 6), 0.0).unwrap_or_default_err();
+        assert!(e2.contains("6-channel") && e2.contains("Mono"), "{e2}");
+        assert!(m.add_clip_buffer(sur, "x", "x", tone(48_000, 0.1, 1), 0.0).is_err());
+        assert_eq!((m.clip_count(), m.session.sources.len(), m.session.pool.len()), (0, 0, 0), "refusals leave nothing behind");
+    }
+
+    #[test]
+    fn a_format_changes_only_on_a_track_without_clips() {
+        let (mut m, a, _) = two_tracks();
+        m.set_track_format(a, ChannelFormat::Mono).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.session.track(a).map(|t| t.format), Some(ChannelFormat::Mono));
+        m.add_clip_buffer(a, "c", "c", tone(48_000, 0.1, 1), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        let e = m.set_track_format(a, ChannelFormat::Surround51).unwrap_or_default_err();
+        assert!(e.contains("1 clip"), "{e}");
+        assert_eq!(m.session.track(a).map(|t| t.format), Some(ChannelFormat::Mono));
+        assert!(m.set_track_format(a, ChannelFormat::Quad).is_err());
+        assert!(m.set_track_format(TrackId(999), ChannelFormat::Mono).is_err());
     }
 
     trait ErrText {
