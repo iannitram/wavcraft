@@ -20,6 +20,8 @@ use soundcraft_model_audio::AudioBuffer as ModelBuffer;
 
 use crate::Document;
 
+pub mod automation;
+
 pub use soundcraft_model;
 
 /// The most samples (frames times channels) one imported clip may hold in RAM: 128 MiB of `f32`.
@@ -296,7 +298,7 @@ impl Multitrack {
                     .iter()
                     .map(|c| json!({"name": c.name, "start": rate.seconds(c.start), "length": rate.seconds(c.length), "channels": c.source().and_then(|s| self.session.source(s)).map_or(0, |s| s.channels)}))
                     .collect();
-                json!({"name": t.name, "channels": t.channels(), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "clips": clips})
+                json!({"name": t.name, "channels": t.channels(), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "clips": clips, "automation": t.automation.iter().map(|l| json!({"param": l.param.label(), "points": l.points.len()})).collect::<Vec<_>>()})
             })
             .collect();
         json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "tracks": tracks})

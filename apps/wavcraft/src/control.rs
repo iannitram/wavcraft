@@ -16,6 +16,7 @@
 //! - `SESSION new <name> [rate=48000] [depth=24]`, `SESSION state`, `TRACK add|remove|rename|mute|solo|volume …`,
 //!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`
 //!   (multitrack basics, f103; see `multitrack_ui.rs`; `SESSION state` answers `OK view=… <json>`)
+//! - `AUTO add|move|delete|thin <track> <param> …`, `AUTO show <track> <param>|off`, `AUTO state` (automation lanes, f109)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
