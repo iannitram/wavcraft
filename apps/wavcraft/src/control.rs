@@ -12,6 +12,9 @@
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
+//! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
+//! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)
+//! - `HISTORY_KEY up|down` → `OK cursor=<i>` (the panel's arrow keys)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!

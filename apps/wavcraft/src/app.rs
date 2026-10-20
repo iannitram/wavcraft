@@ -107,6 +107,10 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// A History row had keyboard focus last frame: Up and Down move through the states then.
+    history_focus: bool,
+    /// The History row to give keyboard focus next frame (after an arrow key moved the cursor).
+    history_refocus: Option<usize>,
 }
 
 impl WaveApp {
@@ -161,6 +165,8 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            history_focus: false,
+            history_refocus: None,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -442,28 +448,87 @@ impl WaveApp {
             ui.label(format!("Oldest {dropped} steps removed to stay under {:.1} GB", editor.history.cap_disk_bytes() as f64 / 1e9));
         }
         let mut go = None;
+        let mut delete = None;
+        let mut focus = false;
+        let refocus = self.history_refocus.take();
         egui::ScrollArea::vertical().max_height(ui.available_height() - 60.0).show(ui, |ui| {
             for (i, label) in labels.iter().enumerate() {
-                if ui.selectable_label(i == cursor, label).clicked() && i != cursor {
+                let r = ui.selectable_label(i == cursor, label);
+                if refocus == Some(i) {
+                    r.request_focus();
+                    r.scroll_to_me(None);
+                }
+                focus |= r.has_focus();
+                if r.clicked() && i != cursor {
                     go = Some(i);
                 }
+                r.context_menu(|ui| {
+                    if ui.add_enabled(i > 0, egui::Button::new("Delete State")).on_hover_text("Removes this state and every later one").clicked() {
+                        delete = Some(i);
+                        ui.close();
+                    }
+                });
             }
         });
+        self.history_focus = focus || refocus.is_some();
         ui.separator();
         let free = wavcraft_core::space::free_space(&dir).map_or_else(|| "unknown".to_string(), |b| format!("{:.1} GB", b as f64 / 1e9));
         ui.label(format!("Session: {:.1} MB · free {free}", held as f64 / 1e6));
-        if ui.add_enabled(labels.len() > 1, egui::Button::new("Clear History…")).clicked() {
-            self.confirm_clear_history = true;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(cursor > 0, egui::Button::new("Delete State"))
+                .on_hover_text("Removes the highlighted state and every later one")
+                .clicked()
+            {
+                delete = Some(cursor);
+            }
+            if ui.add_enabled(labels.len() > 1, egui::Button::new("Clear History…")).clicked() {
+                self.confirm_clear_history = true;
+            }
+        });
+        if self.saving.is_none() {
+            if let Some(i) = delete {
+                self.history_delete(i, ui.ctx());
+            } else if let Some(i) = go {
+                self.history_go(i, ui.ctx());
+            }
         }
-        if let Some(i) = go
-            && self.saving.is_none()
-            && let Some(editor) = self.editor.as_mut()
-            && editor.history.go_to(i).is_some()
-        {
-            let len = editor.history.current().len_frames() as usize;
-            self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
-            self.rebuild(ui.ctx());
+    }
+
+    /// Go to History step `i` (a click, an arrow key or the control channel). False if there is none.
+    fn history_go(&mut self, i: usize, ctx: &egui::Context) -> bool {
+        let Some(editor) = self.editor.as_mut() else { return false };
+        if editor.history.go_to(i).is_none() {
+            return false;
         }
+        self.history_changed(ctx);
+        true
+    }
+
+    /// Delete History step `i` and the steps after it. The steps removed, or `None`.
+    fn history_delete(&mut self, i: usize, ctx: &egui::Context) -> Option<usize> {
+        let editor = self.editor.as_mut()?;
+        let before = editor.history.current().clone();
+        let gone = editor.history.delete_step(i)?;
+        if !Arc::ptr_eq(&before, editor.history.current()) {
+            self.history_changed(ctx);
+        }
+        Some(gone)
+    }
+
+    /// The current step changed: keep the selection inside it and redraw.
+    fn history_changed(&mut self, ctx: &egui::Context) {
+        let Some(editor) = self.editor.as_ref() else { return };
+        let len = editor.history.current().len_frames() as usize;
+        self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
+        self.rebuild(ctx);
+    }
+
+    /// Up or Down with the History panel focused: move one state. The cursor's new index.
+    fn history_arrow(&mut self, down: bool, ctx: &egui::Context) -> Option<usize> {
+        let cursor = self.editor.as_ref()?.history.cursor();
+        let to = history_arrow_target(cursor, self.editor.as_ref()?.history.steps().len(), down)?;
+        self.history_go(to, ctx).then_some(to)
     }
 
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
@@ -734,17 +799,39 @@ impl WaveApp {
                 _ => "ERR INSERT_SILENCE <seconds>, above 0".to_string(),
             },
             // The History panel's click: go to step <index> (0 is Open).
-            "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.as_mut()) {
-                (Ok(i), Some(e)) if self.saving.is_none() => match e.history.go_to(i) {
-                    Some(_) => {
-                        let len = e.history.current().len_frames() as usize;
-                        self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
-                        self.rebuild(ctx);
+            "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
+                (Ok(i), true) if self.saving.is_none() => {
+                    if self.history_go(i, ctx) {
                         "OK".to_string()
+                    } else {
+                        format!("ERR no step {i}")
                     }
-                    None => format!("ERR no step {i}"),
-                },
+                }
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
+            },
+            // The panel's Delete State: step <index> and every later step go (0 can't).
+            "HISTORY_DELETE" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
+                (Ok(i), true) if self.saving.is_none() => match self.history_delete(i, ctx) {
+                    Some(n) => format!("OK removed={n}"),
+                    None => format!("ERR no step {i} to delete (Open can't be)"),
+                },
+                _ => "ERR HISTORY_DELETE <step>, with a file open".to_string(),
+            },
+            // Clear History without the panel's confirmation: the current state is all that stays.
+            "HISTORY_CLEAR" => match self.editor.as_mut() {
+                Some(e) if self.saving.is_none() => {
+                    e.history.clear();
+                    "OK".to_string()
+                }
+                _ => "ERR HISTORY_CLEAR, with a file open".to_string(),
+            },
+            // The panel's Up / Down keys.
+            "HISTORY_KEY" if self.editor.is_some() && self.saving.is_none() => match rest.trim() {
+                k @ ("up" | "down") => match self.history_arrow(k == "down", ctx) {
+                    Some(i) => format!("OK cursor={i}"),
+                    None => "OK cursor=unchanged".to_string(),
+                },
+                _ => "ERR HISTORY_KEY up|down".to_string(),
             },
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
@@ -1063,6 +1150,15 @@ impl eframe::App for WaveApp {
         {
             self.error = Some(e);
         }
+        // Up and Down belong to the History panel while one of its rows has focus (before the
+        // action table gets them: there they pick the left or right channel).
+        if self.history_focus && self.saving.is_none() {
+            let (up, down) =
+                ctx.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, Key::ArrowDown)));
+            if let Some(to) = (up || down).then(|| self.history_arrow(down, &ctx)).flatten() {
+                self.history_refocus = Some(to);
+            }
+        }
         for id in pressed_actions(&ctx) {
             let _ = self.run_action(id, &ctx);
         }
@@ -1100,6 +1196,11 @@ impl eframe::App for WaveApp {
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
     }
+}
+
+/// The History step an Up or Down key moves to from `cursor` among `len` steps (none at an end).
+fn history_arrow_target(cursor: usize, len: usize, down: bool) -> Option<usize> {
+    if down { (cursor + 1 < len).then_some(cursor + 1) } else { cursor.checked_sub(1) }
 }
 
 /// The actions whose keys were pressed this frame. Keys with more modifiers are taken first, so
@@ -1189,6 +1290,16 @@ fn palette() -> Vec<Color32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn history_arrows_stop_at_the_ends() {
+        use super::history_arrow_target as t;
+        assert_eq!(t(0, 3, false), None);
+        assert_eq!(t(0, 3, true), Some(1));
+        assert_eq!(t(2, 3, true), None);
+        assert_eq!(t(2, 3, false), Some(1));
+        assert_eq!(t(0, 1, true), None);
+    }
+
     use super::*;
 
     #[test]
