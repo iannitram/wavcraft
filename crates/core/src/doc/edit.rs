@@ -560,6 +560,47 @@ where
     finish(doc, out, label, Change::SameLength { range, channels: mask })
 }
 
+/// Generated audio (f21): `frames` of new samples inserted at `range.start`, replacing `range`
+/// when it is not empty. Every channel gets a signal; `producer(channel, out)` fills the next
+/// `out.len()` frames of that channel's signal (called in order for each channel, in chunks of at
+/// most [`BLOCK_FRAMES`], so a long tone is never held in RAM). One undoable edit named `label`.
+/// `cancel` stops it between chunks ([`EditError::Cancelled`], nothing changed).
+pub fn generate<F>(doc: &DocState, range: Range<u64>, frames: u64, label: &str, cancel: &AtomicBool, mut producer: F) -> Result<Edit, EditError>
+where
+    F: FnMut(usize, &mut [f32]) -> io::Result<()>,
+{
+    check_range(doc, &range)?;
+    let n = doc.channel_count();
+    if frames == 0 || n == 0 {
+        return Ok(Edit::noop(doc, label));
+    }
+    let store = doc.store();
+    let mut buf = vec![0.0f32; BLOCK_FRAMES];
+    let mut made: Vec<Channel> = vec![Channel::new(); n];
+    let mut done = 0u64;
+    while done < frames {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EditError::Cancelled);
+        }
+        let m = (frames - done).min(BLOCK_FRAMES as u64) as usize;
+        for (c, ch) in made.iter_mut().enumerate() {
+            producer(c, &mut buf[..m])?;
+            if let Some(p) = Piece::whole(store.append(&buf[..m])?) {
+                ch.push(p);
+            }
+        }
+        done += m as u64;
+    }
+    let len = doc.len_frames();
+    let mut out: Vec<Arc<Channel>> = Vec::with_capacity(n);
+    for (c, new) in made.iter().enumerate() {
+        let ch = doc.channel(c).ok_or_else(|| io::Error::other("channel missing"))?;
+        let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(new, 0, frames, 0), Seg::new(ch, range.end, len - range.end, 0)];
+        out.push(Arc::new(build(store, &segs)?));
+    }
+    finish(doc, out, label, Change::LengthFrom { frame: range.start })
+}
+
 // ---------------------------------------------------------------------------------------------
 // Building channels
 
