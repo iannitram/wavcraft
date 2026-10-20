@@ -121,7 +121,7 @@ fn invert(m: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let mut a: Vec<Vec<f64>> =
         m.iter().enumerate().map(|(i, r)| r.iter().copied().chain((0..n).map(|j| if i == j { 1.0 } else { 0.0 })).collect()).collect();
     for c in 0..n {
-        let p = (c..n).max_by(|x, y| a[*x][c].abs().total_cmp(&a[*y][c].abs())).unwrap();
+        let p = (c..n).max_by(|x, y| a[*x][c].abs().total_cmp(&a[*y][c].abs())).unwrap_or(c);
         a.swap(c, p);
         let d = a[c][c];
         for v in a[c].iter_mut() {

@@ -74,7 +74,7 @@ fn gain_db(params: &[f64], hz: f64, name: &str) -> f64 {
     let tmp = TempDir::new(name);
     let frames = RATE as usize;
     let input = sine(hz, frames);
-    let out = read(&run(&doc(&tmp.0, &[input.clone()]), params), 0);
+    let out = read(&run(&doc(&tmp.0, std::slice::from_ref(&input)), params), 0);
     let (a, b) = (RATE as usize / 4, frames);
     20.0 * (rms(&out[a..b]) / rms(&input[a..b])).log10()
 }
@@ -86,8 +86,8 @@ fn all_zero_is_bit_identical() {
     let d = doc(&tmp.0, &data);
     for bands in 0..3 {
         let out = run(&d, &settings(bands, &[], 0.0));
-        for c in 0..2 {
-            assert_eq!(read(&out, c), data[c], "bands choice {bands}, channel {c}");
+        for (c, want) in data.iter().enumerate() {
+            assert_eq!(&read(&out, c), want, "bands choice {bands}, channel {c}");
         }
     }
 }
@@ -135,7 +135,7 @@ fn chunked_equals_one_pass() {
     let frames = BLOCK_FRAMES * 2 + 777;
     let (s1, s2) = (sine(700.0, frames), sine(90.0, frames));
     let input: Vec<f32> = s1.iter().zip(&s2).map(|(a, b)| a + b).collect();
-    let d = doc(&tmp.0, &[input.clone()]);
+    let d = doc(&tmp.0, std::slice::from_ref(&input));
     let p = settings(1, &[(5, 9.0), (8, -7.0), (14, 12.0), (3, 5.0)], 1.5);
     let chunked = read(&run(&d, &p), 0);
 
@@ -190,7 +190,7 @@ fn a_selection_not_at_the_start_filters_from_its_own_first_frame() {
     let tmp = TempDir::new("offset");
     let frames = BLOCK_FRAMES + 20_000;
     let input = sine(900.0, frames);
-    let d = doc(&tmp.0, &[input.clone()]);
+    let d = doc(&tmp.0, std::slice::from_ref(&input));
     let p = settings(0, &[(6, 12.0), (7, -9.0)], 0.0);
     let range = 5_000u64..(frames as u64 - 3_000);
     let cancel = AtomicBool::new(false);
