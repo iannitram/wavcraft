@@ -19,6 +19,7 @@ pub mod actions;
 pub mod doc;
 pub mod document;
 pub mod io;
+pub mod markers;
 pub mod random;
 pub mod save;
 pub mod settings;
@@ -30,6 +31,7 @@ pub mod view;
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;
 pub use doc::{Channel, DocState, Piece, SourceFormat};
+pub use markers::{Marker, Markers};
 
 pub use document::{Document, OpenError};
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
