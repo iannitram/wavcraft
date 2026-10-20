@@ -16,7 +16,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
-use crate::player::Player;
+use crate::player::{Devices, Player};
 use crate::spectrum::{Job, Renderer};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
@@ -25,6 +25,37 @@ const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
 const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
 const RULER_HEIGHT: f32 = 22.0;
+
+/// The Preferences dialog's pages (a page for each group of settings that exists today).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefPage {
+    General,
+    Data,
+    AudioHardware,
+}
+
+impl PrefPage {
+    const ALL: [PrefPage; 3] = [PrefPage::General, PrefPage::Data, PrefPage::AudioHardware];
+
+    fn title(self) -> &'static str {
+        match self {
+            PrefPage::General => "General",
+            PrefPage::Data => "Data",
+            PrefPage::AudioHardware => "Audio Hardware",
+        }
+    }
+}
+
+/// What a click in the Preferences dialog asks for (carried out after the dialog is drawn).
+enum PrefAction {
+    Set(&'static str, String),
+    ChooseSessionFolder,
+    RefreshDevices,
+    ResetAll,
+}
+
+/// Frames at the start in which a held Shift means "reset the preferences".
+const SHIFT_RESET_FRAMES: u32 = 30;
 
 /// A file being opened on a worker thread.
 struct Opening {
@@ -107,13 +138,24 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Edit › Preferences…: the page showing while the dialog is up.
+    prefs: Option<PrefPage>,
+    /// The devices the Audio Hardware page lists (read when the dialog opens or on Refresh).
+    devices: Devices,
+    /// The device list being read (the system can be slow to answer).
+    devices_rx: Option<Receiver<Devices>>,
+    /// Frames still to look at for a held Shift (Shift at launch resets the preferences).
+    shift_frames: u32,
 }
 
 impl WaveApp {
     /// `session_dir`: the `--session-dir` flag, which wins over the environment variable and the
     /// settings file for this run.
-    pub fn new(cc: &eframe::CreationContext<'_>, file: Option<PathBuf>, session_dir: Option<PathBuf>) -> WaveApp {
+    /// `reset_preferences`: the `--reset-preferences` flag, which moves the settings file aside
+    /// before it is read.
+    pub fn new(cc: &eframe::CreationContext<'_>, file: Option<PathBuf>, session_dir: Option<PathBuf>, reset_preferences: bool) -> WaveApp {
         let settings_path = Settings::default_path();
+        let reset_note = if reset_preferences { settings_path.as_deref().map(move_settings_aside) } else { None };
         let settings = settings_path.as_deref().map(Settings::load).unwrap_or_default();
         let env = std::env::var_os(settings::ENV_SESSION_DIR);
         let sessions = settings::resolve_session_folder(session_dir, env, &settings, default_sessions_root(), settings::check_folder);
@@ -135,7 +177,7 @@ impl WaveApp {
             generation: 0,
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
             selection: Selection::default(),
-            player: Player::new(),
+            player: Player::new(settings.output_device.clone()),
             params: SpectrogramParams::default(),
             show_waveform: true,
             show_spectrum: true,
@@ -143,7 +185,7 @@ impl WaveApp {
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
             error: sessions.warning.clone(),
-            notice: None,
+            notice: reset_note,
             sessions,
             settings,
             settings_path,
@@ -161,6 +203,10 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            prefs: None,
+            devices: Devices::default(),
+            devices_rx: None,
+            shift_frames: SHIFT_RESET_FRAMES,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -170,6 +216,191 @@ impl WaveApp {
             app.open(path, &cc.egui_ctx);
         }
         app
+    }
+
+    /// Give the open file's editor the crossfade lengths from the preferences.
+    fn apply_crossfades(&mut self) {
+        let (cut_join, edge) = self.settings.crossfades();
+        if let Some(e) = self.editor.as_mut() {
+            e.crossfades = wavcraft_core::doc::edit::Crossfades { cut_join, edge };
+        }
+    }
+
+    /// Write the settings file (the message says why not, in words).
+    fn save_settings(&self) -> Result<(), String> {
+        match &self.settings_path {
+            Some(file) => self.settings.save(file).map_err(|e| format!("could not save the settings to {}: {e}", file.display())),
+            None => Err("this system has no settings folder, so the setting lasts until WavCraft closes".to_string()),
+        }
+    }
+
+    /// Set preference `key` (the dialog's and `PREF set`'s one way in): check the value, carry
+    /// it out (reopen the output, change the crossfades, use the folder) and save the file.
+    fn pref_set(&mut self, key: &str, value: &str) -> Result<(), String> {
+        let mut next = self.settings.clone();
+        next.set(key, value)?;
+        if key == "session_folder" {
+            let path = next.session_folder.clone();
+            if let Some(p) = &path {
+                settings::check_folder(p).map_err(|why| format!("the session folder {} can't be used: {why}", p.display()))?;
+            }
+            self.set_session_folder(path);
+            return Ok(());
+        }
+        self.settings = next;
+        match key {
+            "crossfade_cut_join_ms" | "crossfade_edge_ms" => self.apply_crossfades(),
+            "output_device" => self.player.set_output(self.settings.output_device.clone()),
+            _ => {}
+        }
+        self.save_settings()
+    }
+
+    /// Put every preference back to its default: the settings file is moved aside, not deleted.
+    fn reset_preferences(&mut self) {
+        let note = self.settings_path.as_deref().map(move_settings_aside);
+        self.settings = Settings::default();
+        if self.sessions.source == FolderSource::SettingsFile {
+            self.sessions = SessionFolder { path: default_sessions_root(), source: FolderSource::Default, warning: None };
+        }
+        self.apply_crossfades();
+        self.player.set_output(None);
+        self.error = None;
+        self.notice = Some(note.unwrap_or_else(|| "Preferences reset to their defaults.".to_string()));
+    }
+
+    /// Edit › Preferences…
+    fn open_preferences(&mut self) {
+        self.devices_rx = Some(crate::player::list_devices_in_background());
+        self.prefs.get_or_insert(PrefPage::General);
+    }
+
+    /// The Preferences dialog: a page list on the left, the page on the right.
+    fn preferences_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut page) = self.prefs else { return };
+        if let Some(rx) = &self.devices_rx {
+            match rx.try_recv() {
+                Ok(d) => {
+                    self.devices = d;
+                    self.devices_rx = None;
+                }
+                Err(TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+                Err(TryRecvError::Disconnected) => self.devices_rx = None,
+            }
+        }
+        let mut open = true;
+        let mut action: Option<PrefAction> = None;
+        egui::Window::new("Preferences").open(&mut open).collapsible(false).default_width(560.0).show(ctx, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(130.0);
+                    for p in PrefPage::ALL {
+                        ui.selectable_value(&mut page, p, p.title());
+                    }
+                });
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.heading(page.title());
+                    ui.add_space(6.0);
+                    match page {
+                        PrefPage::General => {
+                            ui.label("Session folder: where an opened file is kept while you work on it.");
+                            ui.monospace(self.sessions.path.display().to_string());
+                            ui.label(format!("({})", self.sessions.source.describe()));
+                            ui.horizontal(|ui| {
+                                if ui.button("Choose…").clicked() {
+                                    action = Some(PrefAction::ChooseSessionFolder);
+                                }
+                                if ui.button("Use the default").clicked() {
+                                    action = Some(PrefAction::Set("session_folder", String::new()));
+                                }
+                            });
+                            ui.add_space(12.0);
+                            if ui.button("Reset all preferences").on_hover_text("The settings file is kept aside, not deleted").clicked() {
+                                action = Some(PrefAction::ResetAll);
+                            }
+                        }
+                        PrefPage::Data => {
+                            ui.label("Edit crossfades smooth the joins an edit makes (0 turns one off).");
+                            for (label, key, value, default) in [
+                                ("Delete / Cut join (ms)", "crossfade_cut_join_ms", self.settings.cut_join_ms, settings::DEFAULT_CUT_JOIN_MS),
+                                ("Every other edit boundary (ms)", "crossfade_edge_ms", self.settings.edge_ms, settings::DEFAULT_EDGE_MS),
+                            ] {
+                                ui.horizontal(|ui| {
+                                    let mut v = value;
+                                    if ui.add(egui::DragValue::new(&mut v).range(0..=settings::MAX_CROSSFADE_MS).suffix(" ms")).changed() {
+                                        action = Some(PrefAction::Set(key, v.to_string()));
+                                    }
+                                    ui.label(label);
+                                    if value != default && ui.small_button("Default").clicked() {
+                                        action = Some(PrefAction::Set(key, default.to_string()));
+                                    }
+                                });
+                            }
+                        }
+                        PrefPage::AudioHardware => {
+                            for (label, key, list, now) in [
+                                ("Output", "output_device", &self.devices.output, &self.settings.output_device),
+                                ("Input (for recording)", "input_device", &self.devices.input, &self.settings.input_device),
+                            ] {
+                                let shown = now.clone().unwrap_or_else(|| settings::SYSTEM_DEFAULT.to_string());
+                                let gone = now.as_ref().is_some_and(|n| !list.contains(n));
+                                ui.horizontal(|ui| {
+                                    ui.label(label);
+                                    egui::ComboBox::from_id_salt(key)
+                                        .width(300.0)
+                                        .selected_text(if gone { format!("{shown} (not connected)") } else { shown.clone() })
+                                        .show_ui(ui, |ui| {
+                                            if ui.selectable_label(now.is_none(), settings::SYSTEM_DEFAULT).clicked() {
+                                                action = Some(PrefAction::Set(key, String::new()));
+                                            }
+                                            for name in list.iter() {
+                                                if ui.selectable_label(now.as_ref() == Some(name), name).clicked() {
+                                                    action = Some(PrefAction::Set(key, name.clone()));
+                                                }
+                                            }
+                                        });
+                                });
+                            }
+                            ui.horizontal(|ui| {
+                                if ui.button("Refresh the device lists").clicked() {
+                                    action = Some(PrefAction::RefreshDevices);
+                                }
+                                if self.devices_rx.is_some() {
+                                    ui.spinner();
+                                    ui.label("Looking for devices…");
+                                }
+                            });
+                            ui.add_space(6.0);
+                            match &self.player.error {
+                                Some(e) => ui.colored_label(CURSOR, format!("No sound: {e}")),
+                                None => ui.label(format!("Playing on: {}", self.player.device)),
+                            };
+                        }
+                    }
+                });
+            });
+        });
+        self.prefs = open.then_some(page);
+        let result = match action {
+            Some(PrefAction::Set(key, value)) => self.pref_set(key, &value),
+            Some(PrefAction::ChooseSessionFolder) => rfd::FileDialog::new()
+                .set_directory(&self.sessions.path)
+                .pick_folder()
+                .map_or(Ok(()), |p| self.pref_set("session_folder", &p.to_string_lossy())),
+            Some(PrefAction::RefreshDevices) => {
+                self.devices_rx = Some(crate::player::list_devices_in_background());
+                Ok(())
+            }
+            Some(PrefAction::ResetAll) => {
+                self.reset_preferences();
+                Ok(())
+            }
+            None => Ok(()),
+        };
+        if let Err(e) = result {
+            self.error = Some(e);
+        }
     }
 
     /// Stream `path` into a session store on a worker thread; the window stays responsive for
@@ -214,6 +445,7 @@ impl WaveApp {
                 self.player.set_audio(Some(doc.audio.clone()));
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
+                self.apply_crossfades();
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
                 self.doc_id += 1;
@@ -746,6 +978,21 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
+            // `PREF get <key>` / `PREF set <key> <value>` (keys: see `settings::KEYS`).
+            "PREF" => {
+                let (verb, args) = rest.split_once(' ').unwrap_or((rest, ""));
+                let (key, value) = args.trim().split_once(' ').unwrap_or((args.trim(), ""));
+                match verb {
+                    "get" => self.settings.get(key).map_or_else(|e| format!("ERR {e}"), |v| format!("OK {v}")),
+                    "set" => self.pref_set(key, value).map_or_else(|e| format!("ERR {e}"), |()| "OK".to_string()),
+                    _ => "ERR PREF get <key> | PREF set <key> <value>".to_string(),
+                }
+            }
+            // The devices the system offers, and the one the player is on.
+            "DEVICES" => {
+                let d = crate::player::list_devices();
+                format!("OK output={} input={} playing_on={}", d.output.join("|"), d.input.join("|"), self.player.device)
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -782,6 +1029,10 @@ impl WaveApp {
         }
         if let Some(id) = chosen {
             let _ = self.run_action(id, ui.ctx());
+        }
+        ui.separator();
+        if ui.add(egui::Button::new("Preferences…").shortcut_text(if mac { "⌘," } else { "Ctrl+," })).clicked() {
+            self.open_preferences();
         }
     }
 
@@ -1066,6 +1317,17 @@ impl eframe::App for WaveApp {
         for id in pressed_actions(&ctx) {
             let _ = self.run_action(id, &ctx);
         }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Comma)) {
+            self.open_preferences();
+        }
+        // Shift held as the window comes up: reset the preferences (once).
+        if self.shift_frames > 0 {
+            self.shift_frames -= 1;
+            if ctx.input(|i| i.modifiers.shift) {
+                self.shift_frames = 0;
+                self.reset_preferences();
+            }
+        }
         // Home and Zoom Out Full come from the action table now (Audition's Home and Cmd+\).
         let (space, open, dropped) = ctx.input(|i| {
             (
@@ -1097,8 +1359,25 @@ impl eframe::App for WaveApp {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
         self.insert_silence_dialog(&ctx);
+        self.preferences_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
+    }
+}
+
+/// Move the settings file aside (`--reset-preferences`, Shift at launch, the dialog's button) and
+/// say what happened.
+fn move_settings_aside(path: &std::path::Path) -> String {
+    match settings::reset_aside(path) {
+        Ok(Some(aside)) => {
+            log::info!(target: "wavcraft", "preferences reset: {} moved to {}", path.display(), aside.display());
+            format!("Preferences reset to their defaults (the old settings were kept as {})", aside.display())
+        }
+        Ok(None) => "Preferences reset to their defaults".to_string(),
+        Err(e) => {
+            log::warn!(target: "wavcraft", "could not move the settings file aside: {e}");
+            format!("Could not move the old settings file aside ({e}); using the defaults, which replace it at the next change")
+        }
     }
 }
 
