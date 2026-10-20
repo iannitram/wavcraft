@@ -16,6 +16,7 @@ use wavcraft_core::io::OpenOptions;
 use wavcraft_core::keyboard::Mods;
 use wavcraft_core::match_loudness::Target;
 use wavcraft_core::meta;
+use wavcraft_core::monitors::{self, Monitor};
 use wavcraft_core::panels::{self, DockSide, Layout, PanelSet};
 use wavcraft_core::probe::{self, FileInfo};
 use wavcraft_core::recent::{self, Recent};
@@ -303,6 +304,10 @@ pub struct WaveApp {
     /// How the last floating window was made: "os" (own operating-system window) or "embedded"
     /// (an egui window inside the main one); reported by `PANELS`.
     float_kind: Option<&'static str>,
+    /// The monitors, when they are faked (`MONITORS simulate`, `WAVCRAFT_MONITORS`); `None` means
+    /// the real ones, which this build cannot list (egui reports only the size of the one
+    /// monitor), so floating windows are then neither tagged nor moved.
+    monitors: Option<Vec<Monitor>>,
     /// Saved workspaces (layout snapshots) and the one in use.
     workspaces: Workspaces,
     /// The name being typed in Window › Workspace › Save as New Workspace.
@@ -508,6 +513,13 @@ impl WaveApp {
             zone_rects: Vec::new(),
             layout_dirty: false,
             float_kind: None,
+            monitors: std::env::var("WAVCRAFT_MONITORS").ok().and_then(|t| match monitors::parse(&t) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    log::warn!(target: "wavcraft", "WAVCRAFT_MONITORS ignored: {e}");
+                    None
+                }
+            }),
             workspaces: Workspaces::new(settings_path.as_deref().and_then(|p| p.parent()).map(|d| d.join("workspaces")), &settings.workspace),
             workspace_name: String::new(),
             spectrum: None,
@@ -593,6 +605,9 @@ impl WaveApp {
                 control::start_from_env(move || ctx.request_repaint())
             },
         };
+        if app.reconcile_floats() {
+            app.save_panels();
+        }
         if let Some(path) = file {
             app.open(path, &cc.egui_ctx);
         }
@@ -2095,6 +2110,9 @@ impl WaveApp {
 
     /// Keep which panels are shown and where they are docked in the settings file.
     fn save_panels(&mut self) {
+        if let Some(m) = &self.monitors {
+            self.layout.tag_monitors(m);
+        }
         self.settings.hidden_panels = self.panels.hidden_ids();
         (self.settings.panel_layout, self.settings.zone_sizes) = self.layout.encode();
         self.settings.workspace = self.workspaces.current().to_string();
@@ -2106,6 +2124,28 @@ impl WaveApp {
         }
     }
 
+    /// Move floating windows whose monitor is gone onto the primary one and keep every window
+    /// inside its monitor (only when the monitors are known: see `monitors`). True when any moved.
+    fn reconcile_floats(&mut self) -> bool {
+        let Some(m) = &self.monitors else { return false };
+        let n = self.layout.reconcile_monitors(m);
+        if n > 0 {
+            log::info!(target: "wavcraft", "{n} floating window(s) moved onto a monitor that is there");
+        }
+        n > 0
+    }
+
+    /// The answer to `MONITORS` and `MONITORS simulate|real`.
+    fn monitors_report(&self) -> String {
+        match &self.monitors {
+            None => "OK monitors=real".to_string(),
+            Some(m) => {
+                let list: Vec<String> = m.iter().map(|m| format!("{}@{},{},{},{}", m.name, m.pos[0], m.pos[1], m.size[0], m.size[1])).collect();
+                format!("OK monitors=simulated:{}", list.join("|"))
+            }
+        }
+    }
+
     /// The layout as a workspace would keep it.
     fn snapshot(&self) -> Snapshot {
         Snapshot::capture(&self.panels, &self.layout)
@@ -2114,6 +2154,7 @@ impl WaveApp {
     /// Put a workspace's panels and layout on screen and keep them in the settings file.
     fn apply_snapshot(&mut self, snap: &Snapshot) {
         (self.panels, self.layout) = snap.restore();
+        self.reconcile_floats();
         self.save_panels();
     }
 
@@ -2351,6 +2392,7 @@ impl WaveApp {
             if dock {
                 dock_back.push(f.id.clone());
             } else if let Some((pos, size)) = rect
+                && self.monitors.is_none()
                 && self.layout.set_float_rect(&f.id, pos, size)
             {
                 self.layout_dirty = true;
@@ -4567,6 +4609,25 @@ impl WaveApp {
             }
             // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
             "PANELS" => self.panels_report(),
+            // `MONITORS` | `MONITORS simulate <name>:<x>,<y>,<w>,<h>[;…]` (the first is the primary;
+            // floating windows on a monitor that is not listed move onto the primary) | `MONITORS real`.
+            "MONITORS" => match rest.split_once(char::is_whitespace).map_or((rest, ""), |(v, a)| (v, a.trim())) {
+                ("", _) => self.monitors_report(),
+                ("simulate", list) => match monitors::parse(list) {
+                    Ok(m) => {
+                        self.monitors = Some(m);
+                        self.reconcile_floats();
+                        self.save_panels();
+                        self.monitors_report()
+                    }
+                    Err(e) => format!("ERR {e}"),
+                },
+                ("real", _) => {
+                    self.monitors = None;
+                    self.monitors_report()
+                }
+                _ => "ERR MONITORS | MONITORS simulate <name>:<x>,<y>,<w>,<h>[;…] | MONITORS real".to_string(),
+            },
             // `WORKSPACES` lists them; `WORKSPACE save|switch|reset|delete <name>`.
             "WORKSPACES" => self.workspaces_report(),
             "WORKSPACE" => match self.workspace_command(rest) {

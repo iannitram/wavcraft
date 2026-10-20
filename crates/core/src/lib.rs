@@ -41,6 +41,7 @@ pub mod markers;
 pub mod match_loudness;
 pub mod meta;
 pub mod meta_view;
+pub mod monitors;
 pub mod noise;
 pub mod panels;
 pub mod presets;
