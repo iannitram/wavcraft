@@ -88,6 +88,16 @@ pub enum ActionId {
     MarkerDelete,
     MarkerToRange,
     MarkerToPoint,
+    /// Transport (task f23): all run in the window.
+    Play,
+    Pause,
+    Stop,
+    ToggleLoop,
+    ToggleSkipSelection,
+    ToggleReturnOnStop,
+    ToggleAutoScroll,
+    FollowPage,
+    FollowCenter,
 }
 
 /// Which part of the program carries an action out.
@@ -250,6 +260,16 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomAmpIn, "view.zoom.ampIn", "Zoom In Vertically", &[alt("Equals")]),
     window(ActionId::ZoomAmpOut, "view.zoom.ampOut", "Zoom Out Vertically", &[alt("Minus")]),
     window(ActionId::ZoomAmpReset, "view.zoom.ampReset", "Reset Vertical Zoom", &[]),
+    // Transport. Space (Play / Stop, and resume after Pause) is handled by the window itself.
+    window(ActionId::Play, "transport.play", "Play", &[]),
+    window(ActionId::Pause, "transport.pause", "Pause", &[]),
+    window(ActionId::Stop, "transport.stop", "Stop", &[]),
+    window(ActionId::ToggleLoop, "transport.loop", "Loop Playback", &[]),
+    window(ActionId::ToggleSkipSelection, "transport.skipSelection", "Skip Selection", &[]),
+    window(ActionId::ToggleReturnOnStop, "transport.returnOnStop", "Return to Start Position on Stop", &[shift("X")]),
+    window(ActionId::ToggleAutoScroll, "transport.autoScroll", "Auto-Scroll", &[]),
+    window(ActionId::FollowPage, "transport.followPage", "Auto-Scroll Pagewise", &[]),
+    window(ActionId::FollowCenter, "transport.followCenter", "Auto-Scroll Centered", &[]),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -503,6 +523,15 @@ impl Editor {
             | ActionId::ZoomAmpOut
             | ActionId::ZoomAmpReset => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
+            ActionId::Play
+            | ActionId::Pause
+            | ActionId::Stop
+            | ActionId::ToggleLoop
+            | ActionId::ToggleSkipSelection
+            | ActionId::ToggleReturnOnStop
+            | ActionId::ToggleAutoScroll
+            | ActionId::FollowPage
+            | ActionId::FollowCenter => true,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -896,6 +925,15 @@ impl Editor {
             | ActionId::ZoomAmpIn
             | ActionId::ZoomAmpOut
             | ActionId::ZoomAmpReset
+            | ActionId::Play
+            | ActionId::Pause
+            | ActionId::Stop
+            | ActionId::ToggleLoop
+            | ActionId::ToggleSkipSelection
+            | ActionId::ToggleReturnOnStop
+            | ActionId::ToggleAutoScroll
+            | ActionId::FollowPage
+            | ActionId::FollowCenter
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::ConvertSampleType

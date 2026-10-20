@@ -16,6 +16,7 @@ use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::snap::ruler_step;
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
+use wavcraft_core::transport::{self, Follow, Mode, Transport};
 use wavcraft_core::view::nav_hit;
 use wavcraft_core::{
     AmpScale, AmpZoom, ChannelMask, DocState, Document, Edit, FileFormat, GRAB_PX, History, NavPart, OpenError, Selection, SpectrogramParams,
@@ -166,6 +167,8 @@ pub struct WaveApp {
     /// The tool the pointer uses in the editor (Time Selection is the only one built).
     tool: Tool,
     player: Player,
+    /// Play mode and options (loop, skip selection, return on stop, auto-scroll).
+    transport: Transport,
     params: SpectrogramParams,
     /// Which registered panels are shown (Window menu; kept in the settings file).
     panels: PanelSet,
@@ -298,6 +301,7 @@ impl WaveApp {
             tool: Tool::default(),
             player: Player::new(),
             player: Player::new(settings.output_device.clone()),
+            transport: Transport::default(),
             params: SpectrogramParams::default(),
             panels: PanelSet::from_hidden(&settings.hidden_panels),
             layout: Layout::decode(&settings.panel_layout, &settings.zone_sizes),
@@ -601,6 +605,7 @@ impl WaveApp {
                 self.docs.add(old);
                 self.player.set_audio(Some(doc.audio.clone()));
                 self.meters.new_file();
+                self.set_audio(Some(doc.audio.clone()));
                 let cap = History::default_cap(&self.sessions.path);
                 // Snapping stays as the owner left it from file to file.
                 let snap = self.editor.as_ref().map(|e| e.snap);
@@ -1158,17 +1163,89 @@ impl WaveApp {
         Some(take)
     }
 
+    /// Space and the menu's Play button: stop while playing, resume while paused, else play.
     fn toggle_play(&mut self) {
         if self.rec.is_active() {
             return;
         }
+        match self.transport.mode {
+            Mode::Playing => self.stop_play(),
+            Mode::Paused => self.resume_play(),
+            Mode::Stopped => self.start_play(),
+        }
+    }
+
+    /// Hand the player the audio of the open file (or none); playback ends.
+    fn set_audio(&mut self, audio: Option<Arc<wavcraft_core::AudioBuffer>>) {
+        self.transport.mode = Mode::Stopped;
+        self.player.set_audio(audio);
+    }
+
+    /// Stop at once with the cursor left where it is (the file or the cursor changed under it).
+    fn halt_play(&mut self) {
+        self.player.stop();
+        self.transport.mode = Mode::Stopped;
+    }
+
+    /// Play from the cursor, or the selection, as the Loop and Skip Selection options say.
+    fn start_play(&mut self) {
         let Some(doc) = &self.doc else { return };
-        if self.player.is_playing() {
-            self.player.stop();
-        } else if self.selection.is_empty() {
-            self.player.play(self.selection.start(), doc.frames());
+        let width = self.editor_width.max(1.0);
+        let req = transport::Request {
+            selection: self.selection.start()..self.selection.end(),
+            cursor: self.selection.start(),
+            frames: doc.frames(),
+            view: self.view.start..self.view.end(width),
+            rate: doc.sample_rate(),
+            looping: self.transport.looping,
+            skip_selection: self.transport.skip_selection,
+        };
+        let Some((plan, from)) = transport::plan_for(&req) else {
+            self.notice = Some("Nothing to play from here".to_string());
+            return;
+        };
+        if self.player.start(&plan, from) {
+            self.transport.mode = Mode::Playing;
+            self.transport.play_start = self.selection.start();
+        }
+    }
+
+    fn pause_play(&mut self) {
+        match self.transport.mode {
+            Mode::Playing => {
+                self.player.pause();
+                self.transport.mode = Mode::Paused;
+            }
+            Mode::Paused => self.resume_play(),
+            Mode::Stopped => {}
+        }
+    }
+
+    fn resume_play(&mut self) {
+        if self.player.resume() {
+            self.transport.mode = Mode::Playing;
         } else {
-            self.player.play(self.selection.start(), self.selection.end());
+            self.stop_play();
+        }
+    }
+
+    /// Stop. With nothing selected the cursor returns to where play started, or stays where
+    /// playback stopped when Return to Start Position is off.
+    fn stop_play(&mut self) {
+        let was = self.transport.mode;
+        let at = self.player.position();
+        self.halt_play();
+        if was != Mode::Stopped && self.selection.is_empty() {
+            let frames = self.doc.as_ref().map_or(0, Document::frames);
+            self.selection = Selection::at(self.transport.cursor_after_stop(at).min(frames));
+        }
+    }
+
+    /// Advance the silent clock and notice when playback has run out by itself.
+    fn poll_transport(&mut self) {
+        self.player.tick();
+        if self.transport.mode == Mode::Playing && !self.player.is_playing() {
+            self.stop_play();
         }
     }
 
@@ -1226,7 +1303,7 @@ impl WaveApp {
                 }
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
                 if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::MarkerNext | ActionId::MarkerPrev) {
-                    self.player.stop();
+                    self.halt_play();
                     let frames = self.doc.as_ref().map_or(0, Document::frames);
                     self.view.reveal(self.selection.start() as f64, self.editor_width, frames);
                 }
@@ -1289,6 +1366,7 @@ impl WaveApp {
         let width = self.editor_width.max(1.0);
         // Where play is, or the cursor when stopped.
         let playhead = if self.player.is_playing() && !self.previewing { self.player.position() } else { self.selection.start() };
+        let playhead = if self.transport.mode != Mode::Stopped { self.player.position() } else { self.selection.start() };
         match id {
             ActionId::ZoomIn => self.view.zoom_at(2.0, width * 0.5, width, frames),
             ActionId::ZoomOut => self.view.zoom_at(0.5, width * 0.5, width, frames),
@@ -1309,6 +1387,28 @@ impl WaveApp {
             ActionId::SetOut => {
                 let start = self.selection.start().min(playhead);
                 self.selection = Selection { anchor: start, head: playhead };
+            }
+            ActionId::Play => match self.transport.mode {
+                Mode::Stopped => self.start_play(),
+                Mode::Paused => self.resume_play(),
+                Mode::Playing => {}
+            },
+            ActionId::Pause => self.pause_play(),
+            ActionId::Stop => self.stop_play(),
+            ActionId::ToggleLoop => {
+                self.transport.looping = !self.transport.looping;
+                self.player.set_looping(self.transport.looping);
+            }
+            ActionId::ToggleSkipSelection => self.transport.skip_selection = !self.transport.skip_selection,
+            ActionId::ToggleReturnOnStop => self.transport.return_on_stop = !self.transport.return_on_stop,
+            ActionId::ToggleAutoScroll => self.transport.auto_scroll = !self.transport.auto_scroll,
+            ActionId::FollowPage => {
+                self.transport.follow = Follow::Page;
+                self.transport.auto_scroll = true;
+            }
+            ActionId::FollowCenter => {
+                self.transport.follow = Follow::Center;
+                self.transport.auto_scroll = true;
             }
             ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
             ActionId::ConvertSampleType if self.editor.is_some() => {
@@ -1915,7 +2015,7 @@ impl WaveApp {
             let _ = tx.send(Document::from_state(path, state));
             ctx.request_repaint();
         });
-        self.player.stop();
+        self.halt_play();
         self.rebuilding = Some(rx);
     }
 
@@ -1929,13 +2029,13 @@ impl WaveApp {
         self.rebuilding = None;
         match result {
             Ok(doc) => {
-                self.player.set_audio(Some(doc.audio.clone()));
+                self.set_audio(Some(doc.audio.clone()));
                 self.doc = Some(doc);
                 self.generation += 1;
                 self.spectrum = None;
             }
             Err(OpenError::Empty) => {
-                self.player.set_audio(None);
+                self.set_audio(None);
                 self.doc = None;
                 self.notice = Some("The file is empty now (Edit › Undo brings the audio back)".to_string());
             }
@@ -1995,7 +2095,7 @@ impl WaveApp {
             let _ = tx.send(save_wav(&job_state, &job_path, ty, &mut report).map_err(|e| e.to_string()));
             ctx.request_repaint();
         });
-        self.player.stop();
+        self.halt_play();
         self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close, doc_id: self.doc_id });
         Ok(())
     }
@@ -2187,12 +2287,29 @@ impl WaveApp {
                     || self.rebuilding.is_some()
                     || self.saving.is_some()
                     || self.converting.is_some();
+                self.poll_transport();
+                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
                 let unsaved = u8::from(self.unsaved());
+                let t = &self.transport;
+                let playhead = if t.mode == Mode::Stopped { self.selection.start() } else { self.player.position() };
+                let tstate = format!(
+                    "play={} pos={playhead} loop={} skip={} return={} follow={} autoscroll={} wraps={} output={} view={}-{}",
+                    t.mode.name(),
+                    u8::from(t.looping),
+                    u8::from(t.skip_selection),
+                    u8::from(t.return_on_stop),
+                    t.follow.name(),
+                    u8::from(t.auto_scroll),
+                    self.player.wraps(),
+                    if self.player.has_output() { "device" } else { "none" },
+                    self.view.start.max(0.0) as u64,
+                    self.view.end(self.editor_width.max(1.0)).max(0.0) as u64
+                );
                 match &self.editor {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} snap={} snapzero={} enabled={} clipboard={} clip_frames={} time_display={} selection_text={} tool={} right_click={} view={} vzoom={:.2} ampscale={}{} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {tstate} snap={} snapzero={} enabled={} clipboard={} clip_frames={} time_display={} selection_text={} tool={} right_click={} view={} vzoom={:.2} ampscale={}{} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -2218,7 +2335,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 snap=1 snapzero=0 enabled= clipboard=1 clip_frames=0 time_display={} selection_text=- tool={} right_click={} view=0-0 vzoom=1.00 ampscale={}{} undo=- redo=-",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {tstate} snap=1 snapzero=0 enabled= clipboard=1 clip_frames=0 time_display={} selection_text=- tool={} right_click={} view=0-0 vzoom=1.00 ampscale={}{} undo=- redo=-",
                         u8::from(busy),
                         self.time_format.name(),
                         self.tool.name(),
@@ -2859,7 +2976,7 @@ impl WaveApp {
                 ui.checkbox(&mut self.meters.show_levels, "Levels");
                 ui.checkbox(&mut self.meters.show_stats, "Amplitude/Loudness Statistics");
             });
-            let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
+            let label = if self.transport.mode == Mode::Playing { "■ Stop" } else { "▶ Play" };
             if ui.add_enabled(!self.rec.is_active(), egui::Button::new(label)).on_hover_text("Space").clicked() {
                 self.toggle_play();
             }
@@ -3113,6 +3230,10 @@ impl WaveApp {
             if pinch != 1.0 {
                 self.view.zoom_at(f64::from(pinch), x, width, frames);
             }
+            if (shift || scroll.x != 0.0) && self.transport.mode != Mode::Stopped && (scroll.x != 0.0 || scroll.y != 0.0) {
+                // Moving the view by hand during playback turns auto-scroll off.
+                self.transport.auto_scroll = false;
+            }
             if shift {
                 self.view.scroll_by(-(scroll.x + scroll.y), width, frames);
             } else {
@@ -3124,9 +3245,9 @@ impl WaveApp {
                 }
             }
         }
-        // Keep the playhead on screen while playing (not while the pointer is busy in the editor).
-        if self.player.is_playing() && !response.is_pointer_button_down_on() {
-            self.view.reveal(self.player.position() as f64, width, frames);
+        // Auto-scroll: the view follows the playhead (not while the pointer is busy in the editor).
+        if self.transport.mode == Mode::Playing && self.transport.auto_scroll && !response.is_pointer_button_down_on() {
+            transport::follow_view(self.transport.follow, &mut self.view, self.player.position() as f64, width, frames);
         }
         self.view.clamp(width, frames);
 
@@ -3345,6 +3466,22 @@ impl WaveApp {
         line(self.selection.start(), CURSOR);
         if self.player.is_playing() && !self.previewing {
             line(self.player.position(), PLAYHEAD);
+        }
+        if self.transport.mode != Mode::Stopped {
+            // The playhead: a heavier white line from a marker on the ruler, with its time.
+            let at = self.player.position();
+            let x = rect.left() + self.view.x_of(at as f64);
+            if x >= rect.left() && x <= rect.right() {
+                painter.line_segment([pos2(x, ruler.top()), pos2(x, rect.bottom())], Stroke::new(2.0, PLAYHEAD));
+                let top = ruler.top();
+                painter.add(egui::Shape::convex_polygon(vec![pos2(x - 6.0, top), pos2(x + 6.0, top), pos2(x, top + 10.0)], PLAYHEAD, Stroke::NONE));
+                let galley = painter.layout_no_wrap(format_time(at, rate), egui::FontId::monospace(11.0), PLAYHEAD);
+                let label_at = pos2((x + 9.0).min(rect.right() - galley.size().x - 4.0), top + 1.0);
+                painter.rect_filled(Rect::from_min_size(label_at, galley.size()).expand(2.0), 2.0, BACKGROUND);
+                painter.galley(label_at, galley, PLAYHEAD);
+            }
+        }
+        if self.transport.mode == Mode::Playing {
             ui.ctx().request_repaint();
         }
         if let Some(ch) = toggle {
@@ -3352,6 +3489,68 @@ impl WaveApp {
         }
         if let Some(scale) = chosen_scale {
             self.set_amp_scale(scale);
+        }
+    }
+
+    /// The Transport panel: Play, Pause, Stop, Loop, go to start / end, the marker buttons (off
+    /// until markers exist), the options and the current time.
+    fn transport_panel(&mut self, ui: &mut egui::Ui) {
+        let mut chosen: Option<ActionId> = None;
+        let rate = self.doc.as_ref().map_or(0, Document::sample_rate);
+        let enabled = self.doc.is_some() && self.saving.is_none();
+        let t = self.transport;
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(enabled, |ui| {
+                let mut button = |ui: &mut egui::Ui, label: &str, tip: &str, id: ActionId, on: bool| {
+                    if ui.add(egui::Button::new(label).selected(on)).on_hover_text(tip).clicked() {
+                        chosen = Some(id);
+                    }
+                };
+                button(ui, "|◀ Start", "Go to start (Home)", ActionId::CursorToStart, false);
+                ui.add_enabled(false, egui::Button::new("◀ Marker")).on_disabled_hover_text("Previous marker (no markers yet)");
+                button(ui, "▶ Play", "Play (Space)", ActionId::Play, t.mode == Mode::Playing);
+                button(ui, "❚❚ Pause", "Pause; again to resume", ActionId::Pause, t.mode == Mode::Paused);
+                button(ui, "■ Stop", "Stop", ActionId::Stop, false);
+                ui.add_enabled(false, egui::Button::new("Marker ▶")).on_disabled_hover_text("Next marker (no markers yet)");
+                button(ui, "End ▶|", "Go to end (End)", ActionId::CursorToEnd, false);
+                ui.separator();
+                button(ui, "Loop", "Repeat the selection, or the view with nothing selected", ActionId::ToggleLoop, t.looping);
+                button(
+                    ui,
+                    "Skip Selection",
+                    "Play around the selection, skipping it, to hear a cut",
+                    ActionId::ToggleSkipSelection,
+                    t.skip_selection,
+                );
+                button(
+                    ui,
+                    "Return on Stop",
+                    "Stop puts the cursor back where play started (Shift+X)",
+                    ActionId::ToggleReturnOnStop,
+                    t.return_on_stop,
+                );
+                button(
+                    ui,
+                    "Auto-Scroll",
+                    "The view follows the playhead; moving it by hand turns this off",
+                    ActionId::ToggleAutoScroll,
+                    t.auto_scroll,
+                );
+                button(
+                    ui,
+                    if t.follow == Follow::Page { "Pagewise" } else { "Centered" },
+                    "How auto-scroll follows: click to switch",
+                    if t.follow == Follow::Page { ActionId::FollowCenter } else { ActionId::FollowPage },
+                    false,
+                );
+            });
+            let frame = if t.mode == Mode::Stopped { self.selection.start() } else { self.player.position() };
+            ui.separator();
+            ui.monospace(format_time(frame, rate.max(1)));
+            ui.label(t.mode.name());
+        });
+        if let Some(id) = chosen {
+            let _ = self.run_action(id, ui.ctx());
         }
     }
 }
@@ -3378,6 +3577,7 @@ impl eframe::App for WaveApp {
             log::warn!(target: "wavcraft", "recording: {why}");
             self.finish_recording(true, ctx);
         }
+        self.poll_transport();
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
@@ -3517,6 +3717,7 @@ impl eframe::App for WaveApp {
             });
             self.meters.stats_window(&ctx, target);
         }
+        egui::Panel::bottom("transport").show(ui, |ui| self.transport_panel(ui));
         if self.panels.is_shown("history") {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
