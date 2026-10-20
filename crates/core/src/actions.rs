@@ -43,6 +43,12 @@ pub enum ActionId {
     ZeroRightToRight,
     RepeatLast,
     RepeatLastDialog,
+    /// Window > Meter Input Signal (f56): the Levels panel shows the input device while idle.
+    MeterInputToggle,
+    /// Arm the input monitor meter (on, never off): input peak and clip, nothing recorded.
+    MeterInputArm,
+    /// Window > Mic Check...
+    MicCheck,
 }
 
 /// Which part of the program carries an action out.
@@ -161,6 +167,9 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
+    window(ActionId::MeterInputToggle, "meter.input.toggle", "Meter Input Signal", &[]),
+    window(ActionId::MeterInputArm, "meter.input.arm", "Test Input Levels (Monitor)", &[]),
+    window(ActionId::MicCheck, "meter.input.micCheck", "Mic Check...", &[]),
 ];
 
 /// The table row for `id`.
@@ -288,6 +297,7 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::MeterInputToggle | ActionId::MeterInputArm | ActionId::MicCheck => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -458,6 +468,9 @@ impl Editor {
             | ActionId::ZoomOutFull
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
+            | ActionId::MeterInputToggle
+            | ActionId::MeterInputArm
+            | ActionId::MicCheck
             | ActionId::RepeatLast
             | ActionId::ZeroInward
             | ActionId::ZeroOutward

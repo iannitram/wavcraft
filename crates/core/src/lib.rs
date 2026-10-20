@@ -18,6 +18,7 @@
 pub mod actions;
 pub mod doc;
 pub mod document;
+pub mod input_meter;
 pub mod io;
 pub mod levels;
 pub mod loudness;

@@ -34,6 +34,8 @@ struct Running {
 /// Window state for the meters and the statistics window.
 pub struct MetersUi {
     pub levels: Levels,
+    /// The bars show the input device (f56), not playback.
+    pub input_view: bool,
     last: Option<Instant>,
     /// Window › Levels.
     pub show_levels: bool,
@@ -46,7 +48,7 @@ pub struct MetersUi {
 
 impl MetersUi {
     pub fn new() -> MetersUi {
-        MetersUi { levels: Levels::new(), last: None, show_levels: true, show_stats: false, running: None, done: None }
+        MetersUi { levels: Levels::new(), input_view: false, last: None, show_levels: true, show_stats: false, running: None, done: None }
     }
 
     /// Feed the bars the peaks taken from the player since the previous call.

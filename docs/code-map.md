@@ -26,6 +26,8 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | | `player.rs` | `Player`: cpal output stream, play/stop, playhead position |
 | | `spectrum.rs` | `Renderer`: the spectrogram worker thread and its overview cache |
 
+f56 (input meter): `crates/core/src/input_meter.rs` (`InputTap`: lock-free per-callback peaks, run totals; `InputStats` verdict too-quiet/ok/clipping; `FakeInput` for `WAVCRAFT_FAKE_INPUT`); `apps/wavcraft/src/input.rs` (`InputMonitor`: input stream or fake thread, open only while the meter is on or a mic check listens); app: Window > Meter Input Signal / Mic Check..., actions `meter.input.*`, control `MICCHECK`.
+
 Workspace: `Cargo.toml` at the root; `unsafe_code = "forbid"` for every crate that inherits the
 workspace lints. Tests: 21 in the core, 9 in the app (before task 02).
 

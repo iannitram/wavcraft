@@ -10,6 +10,7 @@
 
 mod app;
 mod control;
+mod input;
 mod meters_ui;
 mod player;
 mod selflog;
