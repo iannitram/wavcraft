@@ -129,7 +129,7 @@ fn gap_and_burst(x: &[f32]) -> (f64, f64) {
 fn full_amount_cuts_the_tail_and_keeps_the_bursts() {
     let tmp = TempDir::new("tail");
     let wet = reverberate(&dry(1), 2);
-    let d = doc(&tmp.0, &[wet.clone()]);
+    let d = doc(&tmp.0, std::slice::from_ref(&wet));
     let out = read_all(&run(&d, 0..FRAMES as u64, 100.0), 0);
     let ((gw, bw), (go, bo)) = (gap_and_burst(&wet), gap_and_burst(&out));
     let (gap_drop, burst_drop) = (db(gw / go), db(bw / bo));
@@ -142,7 +142,7 @@ fn full_amount_cuts_the_tail_and_keeps_the_bursts() {
 fn amount_zero_is_a_pass_through() {
     let tmp = TempDir::new("zero");
     let wet = reverberate(&dry(3), 4);
-    let d = doc(&tmp.0, &[wet.clone()]);
+    let d = doc(&tmp.0, std::slice::from_ref(&wet));
     let out = read_all(&run(&d, 7_000..150_000, 0.0), 0);
     let err: f64 = out.iter().zip(&wet).map(|(a, b)| f64::from(a - b).powi(2)).sum();
     assert!((err / out.len() as f64).sqrt() < 1e-4);
@@ -181,7 +181,7 @@ fn mono_and_stereo_both_work_and_stereo_channels_match_their_mono() {
     let tmp = TempDir::new("stereo");
     let l = reverberate(&dry(7), 8);
     let r = reverberate(&dry(9), 10);
-    let mono_l = read_all(&run(&doc(&tmp.0.join("a"), &[l.clone()]), 0..FRAMES as u64, 100.0), 0);
+    let mono_l = read_all(&run(&doc(&tmp.0.join("a"), std::slice::from_ref(&l)), 0..FRAMES as u64, 100.0), 0);
     let stereo = run(&doc(&tmp.0.join("b"), &[l, r.clone()]), 0..FRAMES as u64, 100.0);
     let mono_r = read_all(&run(&doc(&tmp.0.join("c"), &[r]), 0..FRAMES as u64, 100.0), 0);
     let diff = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
@@ -193,7 +193,7 @@ fn mono_and_stereo_both_work_and_stereo_channels_match_their_mono() {
 fn it_is_one_undo_step_named_for_the_effect() {
     let tmp = TempDir::new("undo");
     let wet = reverberate(&dry(11), 12);
-    let d = doc(&tmp.0, &[wet.clone()]);
+    let d = doc(&tmp.0, std::slice::from_ref(&wet));
     let mut e = Editor::new(History::new(d, u64::MAX));
     e.crossfades = Crossfades::NONE;
     let i = match by_name("effect.dereverb").expect("registered").id {

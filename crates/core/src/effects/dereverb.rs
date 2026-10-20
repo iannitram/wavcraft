@@ -32,6 +32,9 @@ const EARLY_MS: f64 = 50.0;
 /// Most frames over which gains are smoothed in time (at 100 % smoothing).
 const MAX_SMOOTH_FRAMES: f64 = 6.0;
 
+/// The tail estimate is scaled up a little: an estimate that is too low leaves reverb in.
+const OVER_SUBTRACT: f32 = 2.0;
+
 const FFT_SIZES: &[&str] = &["1024", "2048", "4096"];
 
 impl Effect for DeReverb {
@@ -131,7 +134,7 @@ impl DeReverbRun {
                 (v(lo) + v(i) + v(hi)) / 3.0
             };
             for (i, g) in gain.iter_mut().enumerate() {
-                let late = self.decay * blur(&|j| (a[j] + b[j] + c[j]) / 3.0, i);
+                let late = OVER_SUBTRACT * self.decay * blur(&|j| (a[j] + b[j] + c[j]) / 3.0, i);
                 let total = blur(&|j| cur[j], i);
                 let ratio = (late / (total + 1e-20)).min(1.0);
                 *g = (1.0 - self.amount * ratio).max(self.floor_pow).sqrt();
