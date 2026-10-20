@@ -3,7 +3,7 @@
 //! Settings live in a small text file, `settings.txt` in the system's config folder under
 //! `wavcraft` (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on a
 //! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. Today it
-//! holds `session_folder` and `hidden_panels`.
+//! holds `session_folder`, `hidden_panels`, `panel_layout` and `zone_sizes`.
 //!
 //! The **session folder** is where opening a file writes its session store (one subfolder per
 //! open file). The first of these that is set wins: the `--session-dir` command-line flag, the
@@ -22,6 +22,8 @@ pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the 
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
+const KEY_PANEL_LAYOUT: &str = "panel_layout";
+const KEY_ZONE_SIZES: &str = "zone_sizes";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -30,6 +32,10 @@ pub struct Settings {
     pub session_folder: Option<PathBuf>,
     /// Ids of the panels the person hid (`crate::panels`); a panel not listed is shown.
     pub hidden_panels: Vec<String>,
+    /// Where the panels are docked, as `crate::panels::Layout::encode` writes it (empty: default).
+    pub panel_layout: String,
+    /// The dock zones' sizes, as `Layout::encode` writes them (empty: default).
+    pub zone_sizes: String,
 }
 
 impl Settings {
@@ -65,6 +71,8 @@ impl Settings {
             match key.trim() {
                 KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
+                KEY_PANEL_LAYOUT => s.panel_layout = value.to_string(),
+                KEY_ZONE_SIZES => s.zone_sizes = value.to_string(),
                 _ => {}
             }
         }
@@ -79,6 +87,8 @@ impl Settings {
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
         out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\n");
         out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}\n", self.hidden_panels.join(",")));
+        out.push_str("# panel_layout: dock zones and tab order, `zone:id,id;zone:id` (a * marks the front tab); zone_sizes: points.\n");
+        out.push_str(&format!("{KEY_PANEL_LAYOUT} = {}\n{KEY_ZONE_SIZES} = {}\n", self.panel_layout, self.zone_sizes));
         out
     }
 

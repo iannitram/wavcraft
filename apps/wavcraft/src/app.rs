@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
-use wavcraft_core::panels::{self, PanelSet};
+use wavcraft_core::panels::{self, DockSide, Layout, PanelSet};
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
@@ -25,6 +25,7 @@ const WAVE: Color32 = Color32::from_rgb(64, 200, 140);
 const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
 const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
+const ACCENT: Color32 = Color32::from_rgb(90, 140, 230);
 const RULER_HEIGHT: f32 = 22.0;
 
 /// A file being opened on a worker thread.
@@ -68,6 +69,16 @@ pub struct WaveApp {
     params: SpectrogramParams,
     /// Which registered panels are shown (Window menu; kept in the settings file).
     panels: PanelSet,
+    /// Where the panels are docked (kept in the settings file).
+    layout: Layout,
+    /// The panel under the pointer last frame, for the maximise and close keys.
+    hover: Option<&'static str>,
+    hover_next: Option<&'static str>,
+    /// Where the docked tabs and zones were drawn this frame, for dropping a dragged tab.
+    tab_rects: Vec<(String, Rect)>,
+    zone_rects: Vec<(DockSide, Rect)>,
+    /// The layout changed while the pointer was down (a zone being resized): save it on release.
+    layout_dirty: bool,
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
@@ -137,6 +148,12 @@ impl WaveApp {
             player: Player::new(),
             params: SpectrogramParams::default(),
             panels: PanelSet::from_hidden(&settings.hidden_panels),
+            layout: Layout::decode(&settings.panel_layout, &settings.zone_sizes),
+            hover: None,
+            hover_next: None,
+            tab_rects: Vec::new(),
+            zone_rects: Vec::new(),
+            layout_dirty: false,
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
@@ -273,11 +290,177 @@ impl WaveApp {
         if !self.panels.set(id, shown) {
             return;
         }
+        self.save_panels();
+    }
+
+    /// Keep which panels are shown and where they are docked in the settings file.
+    fn save_panels(&mut self) {
         self.settings.hidden_panels = self.panels.hidden_ids();
+        (self.settings.panel_layout, self.settings.zone_sizes) = self.layout.encode();
+        self.layout_dirty = false;
         if let Some(file) = &self.settings_path
             && let Err(e) = self.settings.save(file)
         {
-            log::warn!(target: "wavcraft", "could not save the panel choice to {}: {e}", file.display());
+            log::warn!(target: "wavcraft", "could not save the panel layout to {}: {e}", file.display());
+        }
+    }
+
+    /// Close a panel (hide it in the registry; the Window menu brings it back).
+    fn close_panel(&mut self, id: &str) {
+        self.layout.apply_command(&mut self.panels, &format!("close {id}")).ok();
+        self.save_panels();
+    }
+
+    /// The answer to `PANELS` and `PANEL …`: which panels are shown, then the zones.
+    fn panels_report(&self) -> String {
+        format!("OK {} {}", self.panels.report(), self.layout.report(&self.panels))
+    }
+
+    /// The body of a docked panel.
+    fn panel_body(&mut self, id: &str, ui: &mut egui::Ui) {
+        match id {
+            "history" => self.history_panel(ui),
+            "selection" => self.selection_panel(ui),
+            _ => {}
+        }
+    }
+
+    /// Window › Selection: the cursor or selection in the file's time, in words.
+    fn selection_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(doc) = &self.doc else {
+            ui.label("No file open.");
+            return;
+        };
+        let rate = doc.sample_rate();
+        egui::Grid::new("selection-grid").num_columns(2).show(ui, |ui| {
+            if self.selection.is_empty() {
+                ui.label("Cursor");
+                ui.label(format_time(self.selection.start(), rate));
+                ui.end_row();
+            } else {
+                let (a, b) = (self.selection.start(), self.selection.end());
+                for (name, frames) in [("Start", a), ("End", b), ("Length", b - a)] {
+                    ui.label(name);
+                    ui.label(format_time(frames, rate));
+                    ui.end_row();
+                }
+            }
+            ui.label("File");
+            ui.label(format_time(doc.frames(), rate));
+            ui.end_row();
+        });
+    }
+
+    /// One docked zone: a tab strip (drag a tab to move it, wheel to change tab, right-click for
+    /// the menu) over the front tab's body. Nothing is drawn for a zone with no shown panel.
+    fn dock_zone(&mut self, ui: &mut egui::Ui, zone: DockSide) {
+        let tabs: Vec<&'static str> = self.layout.visible(zone, &self.panels).into_iter().filter_map(|id| panels::by_id(id).map(|p| p.id)).collect();
+        let Some(front) = self.layout.active_in(zone, &self.panels).and_then(panels::by_id).map(|p| p.id) else { return };
+        let size = self.layout.size(zone).unwrap_or(220.0);
+        let panel = match zone {
+            DockSide::Left => egui::Panel::left("zone-left"),
+            DockSide::Bottom => egui::Panel::bottom("zone-bottom"),
+            _ => egui::Panel::right("zone-right"),
+        };
+        let shown = panel.default_size(size).size_range(panels::ZONE_SIZE_RANGE.0..=panels::ZONE_SIZE_RANGE.1).show(ui, |ui| {
+            let mut wheel = 0.0f32;
+            let strip = egui::ScrollArea::horizontal().id_salt(("tabs", zone.name())).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for id in &tabs {
+                        let title = panels::by_id(id).map_or(*id, |p| p.title);
+                        let label = ui.selectable_label(*id == front, title);
+                        let r = ui.interact(label.rect, label.id.with("tab"), Sense::click_and_drag());
+                        self.tab_rects.push((id.to_string(), label.rect));
+                        if r.clicked() {
+                            self.layout.activate(id);
+                            self.layout_dirty = true;
+                        }
+                        if r.drag_started() {
+                            egui::DragAndDrop::set_payload(ui.ctx(), id.to_string());
+                        }
+                        r.context_menu(|ui| self.panel_menu(ui, id));
+                    }
+                });
+            });
+            if ui.rect_contains_pointer(strip.inner_rect) {
+                wheel =
+                    ui.input(|i| i.events.iter().map(|e| if let egui::Event::MouseWheel { delta, .. } = e { delta.x + delta.y } else { 0.0 }).sum());
+            }
+            if wheel != 0.0 {
+                self.layout.cycle(zone, &self.panels, if wheel < 0.0 { 1 } else { -1 });
+                self.layout_dirty = true;
+            }
+            ui.separator();
+            self.panel_body(front, ui);
+        });
+        let rect = shown.response.rect;
+        self.zone_rects.push((zone, rect));
+        if shown.response.contains_pointer() {
+            self.hover_next = Some(front);
+        }
+        let now = if zone == DockSide::Bottom { rect.height() } else { rect.width() };
+        if self.layout.set_size(zone, now) {
+            self.layout_dirty = true;
+        }
+    }
+
+    /// The right-click menu of a docked panel's tab.
+    fn panel_menu(&mut self, ui: &mut egui::Ui, id: &str) {
+        let here = self.layout.zone_of(id);
+        for zone in panels::ZONES {
+            if Some(zone) != here && ui.button(format!("Move to {}", zone.name())).clicked() {
+                self.layout.move_to(id, zone, None).ok();
+                self.save_panels();
+                ui.close();
+            }
+        }
+        if ui.button("Maximize (`)").clicked() {
+            self.layout.toggle_maximize(id);
+            ui.close();
+        }
+        if ui.button("Close (Ctrl+W)").clicked() {
+            self.close_panel(id);
+            ui.close();
+        }
+    }
+
+    /// While a tab is dragged: where it would land (a tab, a zone, or an edge of the window),
+    /// shown as a highlight; letting go moves it there.
+    fn dock_drag(&mut self, ctx: &egui::Context) {
+        let Some(payload) = egui::DragAndDrop::payload::<String>(ctx) else { return };
+        let id: String = (*payload).clone();
+        let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else { return };
+        let window = ctx.content_rect();
+        let edge = |zone: DockSide| match zone {
+            DockSide::Left => Rect::from_min_max(window.min, pos2(window.left() + window.width() * 0.2, window.bottom())),
+            DockSide::Right => Rect::from_min_max(pos2(window.right() - window.width() * 0.2, window.top()), window.max),
+            _ => Rect::from_min_max(pos2(window.left(), window.bottom() - window.height() * 0.25), window.max),
+        };
+        let mut target: Option<(DockSide, Option<usize>, Rect)> = None;
+        if let Some((tab, rect)) = self.tab_rects.iter().find(|(_, r)| r.contains(pos))
+            && let Some((zone, index)) = self.layout.position(tab)
+        {
+            target = Some((zone, Some(index), *rect));
+        } else if let Some((zone, rect)) = self.zone_rects.iter().find(|(_, r)| r.contains(pos)) {
+            target = Some((*zone, None, *rect));
+        } else if let Some(zone) = [DockSide::Left, DockSide::Right, DockSide::Bottom].into_iter().find(|z| edge(*z).contains(pos)) {
+            target = Some((zone, None, edge(zone)));
+        }
+        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+        if let Some((_, _, rect)) = target {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dock-drop")));
+            painter.rect_filled(rect, 2.0, ACCENT.gamma_multiply(0.35));
+            painter.rect_stroke(rect, 2.0, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+        }
+        if ctx.input(|i| i.pointer.any_released()) {
+            egui::DragAndDrop::clear_payload(ctx);
+            if let Some((zone, index, _)) = target
+                && self.layout.move_to(&id, zone, index).is_ok()
+            {
+                self.save_panels();
+            }
+        } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            egui::DragAndDrop::clear_payload(ctx);
         }
     }
 
@@ -440,7 +623,6 @@ impl WaveApp {
 
     /// Window › History: every step, the current one highlighted; click one to go to it.
     fn history_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("History");
         let Some(editor) = self.editor.as_ref() else {
             ui.label("No file open.");
             return;
@@ -734,7 +916,16 @@ impl WaveApp {
                 }
             }
             // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
-            "PANELS" => format!("OK {}", self.panels.report()),
+            "PANELS" => self.panels_report(),
+            // `PANEL move <id> <left|right|bottom>`, `PANEL maximize <id>` (again to restore),
+            // `PANEL close <id>`, `PANEL activate <id>`.
+            "PANEL" => match self.layout.apply_command(&mut self.panels, rest) {
+                Ok(()) => {
+                    self.save_panels();
+                    self.panels_report()
+                }
+                Err(e) => format!("ERR {e}"),
+            },
             "ACTION" => match actions::by_name(rest) {
                 Some(a) => match self.run_action(a.id, ctx) {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
@@ -853,6 +1044,12 @@ impl WaveApp {
                         self.set_panel(p.id, shown);
                     }
                 }
+                ui.separator();
+                if ui.button("Reset Panel Layout").clicked() {
+                    self.layout = Layout::default();
+                    self.save_panels();
+                    ui.close();
+                }
             });
             ui.menu_button("View", |ui| {
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
@@ -932,6 +1129,16 @@ impl WaveApp {
         });
     }
 
+    /// Whether an editor display (waveform, spectral) is drawn: shown, and not hidden by another
+    /// panel being maximised.
+    fn editor_shows(&self, id: &str) -> bool {
+        match self.layout.maximized(&self.panels) {
+            Some(m) if !panels::is_movable(m) => m == id,
+            Some(_) => false,
+            None => self.panels.is_shown(id),
+        }
+    }
+
     fn editor(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
@@ -993,7 +1200,7 @@ impl WaveApp {
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate);
 
-        let (wave_area, spectrum_area) = match (self.panels.is_shown("waveform"), self.panels.is_shown("spectral")) {
+        let (wave_area, spectrum_area) = match (self.editor_shows("waveform"), self.editor_shows("spectral")) {
             (true, true) => {
                 let split = body.top() + body.height() * 0.5;
                 (Some(Rect::from_min_max(body.min, pos2(body.right(), split))), Some(Rect::from_min_max(pos2(body.left(), split), body.max)))
@@ -1002,6 +1209,14 @@ impl WaveApp {
             (false, true) => (None, Some(body)),
             (false, false) => (None, None),
         };
+
+        if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+            if wave_area.is_some_and(|a| a.contains(pos)) {
+                self.hover_next = Some("waveform");
+            } else if spectrum_area.is_some_and(|a| a.contains(pos)) {
+                self.hover_next = Some("spectral");
+            }
+        }
 
         if let Some(area) = wave_area {
             let cols = area.width().round().max(1.0) as usize;
@@ -1095,6 +1310,20 @@ impl eframe::App for WaveApp {
         {
             self.error = Some(e);
         }
+        // ` maximises the panel under the pointer (and restores); Ctrl+W closes it.
+        let typing = ctx.egui_wants_keyboard_input();
+        let (grave, close) =
+            ctx.input_mut(|i| (!typing && i.consume_key(egui::Modifiers::NONE, Key::Backtick), i.consume_key(egui::Modifiers::COMMAND, Key::W)));
+        if grave {
+            if self.layout.maximized(&self.panels).is_some() {
+                self.layout.restore();
+            } else if let Some(id) = self.hover {
+                self.layout.toggle_maximize(id);
+            }
+        }
+        if close && let Some(id) = self.hover {
+            self.close_panel(id);
+        }
         for id in pressed_actions(&ctx) {
             let _ = self.run_action(id, &ctx);
         }
@@ -1125,12 +1354,40 @@ impl eframe::App for WaveApp {
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
-        if self.panels.is_shown("history") {
-            egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
+        self.tab_rects.clear();
+        self.zone_rects.clear();
+        self.hover_next = None;
+        let maximized = self.layout.maximized(&self.panels).filter(|id| panels::is_movable(id)).map(String::from);
+        if let Some(id) = maximized {
+            // One docked panel fills the window; the tab strips are not drawn.
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong(panels::by_id(&id).map_or("", |p| p.title));
+                    if ui.small_button("Restore (`)").clicked() {
+                        self.layout.restore();
+                    }
+                });
+                ui.separator();
+                self.panel_body(&id, ui);
+                if ui.rect_contains_pointer(ui.max_rect()) {
+                    self.hover_next = panels::by_id(&id).map(|p| p.id);
+                }
+            });
+        } else {
+            if self.layout.maximized(&self.panels).is_none() {
+                self.dock_zone(ui, DockSide::Left);
+                self.dock_zone(ui, DockSide::Right);
+                self.dock_zone(ui, DockSide::Bottom);
+            }
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
         }
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
+        self.dock_drag(&ctx);
+        self.hover = self.hover_next;
+        if self.layout_dirty && !ctx.input(|i| i.pointer.any_down()) {
+            self.save_panels();
+        }
     }
 }
 
