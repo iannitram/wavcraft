@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use egui::vec2;
+use wavcraft_core::DocState;
+use wavcraft_core::doc::rec_edit::{RecMode, RecPlan, RecTarget};
 use wavcraft_core::record::{self, FakeInput, FakeSpec, RecFormat, Recorder, Ring, Take};
 use wavcraft_core::space::{format_bytes, free_space};
 
@@ -36,6 +38,22 @@ struct Active {
     warn_at: Instant,
 }
 
+/// A limit on a take's length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Max {
+    Secs(u64),
+    Frames(u64),
+}
+
+impl std::fmt::Display for Max {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Max::Secs(s) => write!(f, "{s} s"),
+            Max::Frames(n) => write!(f, "{n} frames"),
+        }
+    }
+}
+
 /// A take waiting for its start time (C028).
 struct Armed {
     at: Instant,
@@ -50,9 +68,38 @@ pub struct StartOpts {
     pub max_secs: Option<u64>,
     /// Wait this many seconds before starting.
     pub delay_secs: Option<u64>,
+    /// `mode=insert|replace|punch`: record into the open document instead of into a new file
+    /// (C026, C027).
+    pub mode: Option<RecMode>,
+    /// `channel=L|R|both`: which channels of the document get the take (C030).
+    pub target: Option<RecTarget>,
+    /// `preroll=<ms>`: how long a punch-in plays before the selection (default 2000).
+    pub preroll_ms: Option<u64>,
 }
 
-/// Split `max=<s>`, `in=<s>` and `at=<unix s>` off a `RECORD start` argument line; the rest is
+/// How long a punch-in plays before the selection, unless `preroll=` says otherwise.
+pub const DEFAULT_PREROLL_MS: u64 = 2000;
+
+/// A recording that goes into the open document (C026, C027, C030) instead of a new file.
+pub struct IntoDoc {
+    pub plan: RecPlan,
+    /// The document state the recording started from; the take is only brought in if the
+    /// document is still exactly this when it ends.
+    pub base: Arc<DocState>,
+    pub doc_id: u64,
+    punch: Option<Punch>,
+}
+
+/// A punch-in waiting for the playhead to reach the selection.
+struct Punch {
+    /// Where playback began (frames), for the clock used when nothing is playing.
+    from: u64,
+    began: Instant,
+    rate: u32,
+    open: bool,
+}
+
+/// Split `max=<s>`, `in=<s>`, `at=<unix s>`, `mode=`, `channel=` and `preroll=<ms>` off a `RECORD start` argument line; the rest is
 /// the format's arguments. `now_unix` turns `at=` into a delay.
 pub fn parse_start_args(args: &str, now_unix: u64) -> Result<(RecFormat, StartOpts), String> {
     let (mut opts, mut rest) = (StartOpts::default(), Vec::new());
@@ -61,9 +108,18 @@ pub fn parse_start_args(args: &str, now_unix: u64) -> Result<(RecFormat, StartOp
         match w.split_once('=') {
             Some(("max", v)) => opts.max_secs = Some(num(v)?).filter(|m| *m > 0).ok_or("max=0: a take needs at least a second")?.into(),
             Some(("in", v)) => opts.delay_secs = Some(num(v)?),
+            Some(("mode", v)) => opts.mode = Some(RecMode::parse(v).ok_or_else(|| format!("{w:?}: expected mode=insert, replace or punch"))?),
+            Some(("channel", v)) => opts.target = Some(RecTarget::parse(v).ok_or_else(|| format!("{w:?}: expected channel=L, R or both"))?),
+            Some(("preroll", v)) => opts.preroll_ms = Some(num(v)?),
             Some(("at", v)) => opts.delay_secs = Some(num(v)?.saturating_sub(now_unix)),
             _ => rest.push(w),
         }
+    }
+    if opts.mode.is_none() && (opts.target.is_some() || opts.preroll_ms.is_some()) {
+        return Err("channel= and preroll= go with mode=insert, replace or punch".to_string());
+    }
+    if opts.mode.is_some() && (opts.delay_secs.is_some() || opts.max_secs.is_some()) {
+        return Err("mode= cannot be combined with in=, at= or max=".to_string());
     }
     Ok((RecFormat::parse_args(&rest.join(" "))?, opts))
 }
@@ -78,6 +134,11 @@ pub struct Recording {
     last_fmt: Option<RecFormat>,
     /// File › New Recording…: the format being chosen while the dialog is up.
     pub dialog: Option<RecFormat>,
+    /// The dialog's "Record to": `None` is a new file.
+    pub dialog_mode: Option<RecMode>,
+    pub dialog_target: RecTarget,
+    /// Set while a take is being recorded into the open document.
+    into: Option<IntoDoc>,
 }
 
 /// The folder takes go in: `WAVCRAFT_RECORD_DIR`, else `WavCraft Recordings` in the system's
@@ -106,6 +167,42 @@ impl Recording {
     /// The last format used, else the default (48 kHz, mono, 24-bit).
     pub fn last_format(&self) -> RecFormat {
         self.last_fmt.unwrap_or_default()
+    }
+
+    /// Remember that the take now starting goes into the document (`plan`, checked by the caller).
+    /// For a punch-in, `from` is where playback begins.
+    pub fn set_into(&mut self, plan: RecPlan, base: Arc<DocState>, doc_id: u64, punch_from: Option<u64>, rate: u32) {
+        let punch = punch_from.map(|from| Punch { from, began: Instant::now(), rate, open: false });
+        self.into = Some(IntoDoc { plan, base, doc_id, punch });
+    }
+
+    pub fn going_into_doc(&self) -> Option<&IntoDoc> {
+        self.into.as_ref()
+    }
+
+    /// The plan of the take that just stopped (or was never started), if it was going into the
+    /// document.
+    pub fn take_into(&mut self) -> Option<IntoDoc> {
+        self.into.take()
+    }
+
+    /// A punch-in lets the input through once the playhead (`playing_at` when something plays,
+    /// else a clock from where playback began) reaches the selection. Call it every frame.
+    pub fn punch_tick(&mut self, playing_at: Option<usize>) {
+        let (Some(a), Some(into)) = (self.active.as_ref(), self.into.as_mut()) else { return };
+        let Some(p) = into.punch.as_mut().filter(|p| !p.open) else { return };
+        let clock = p.from as f64 + p.began.elapsed().as_secs_f64() * f64::from(p.rate);
+        let at = playing_at.map_or(clock, |x| x as f64);
+        if at >= into.plan.selection.start as f64 {
+            p.open = true;
+            a.ring.set_paused(false);
+            log::info!(target: "wavcraft", "punch-in: recording from the selection's start (playhead at frame {at:.0})");
+        }
+    }
+
+    /// True while a punch-in is still playing its preroll.
+    pub fn punch_waiting(&self) -> bool {
+        self.into.as_ref().and_then(|i| i.punch.as_ref()).is_some_and(|p| !p.open)
     }
 
     pub fn is_armed(&self) -> bool {
@@ -141,6 +238,9 @@ impl Recording {
 
     /// Pause (true) or resume (false) the take. Returns false when not recording or no change.
     pub fn set_paused(&mut self, pause: bool) -> bool {
+        if self.punch_waiting() {
+            return false;
+        }
         let Some(a) = self.active.as_mut() else { return false };
         if a.ring.is_paused() == pause {
             return false;
@@ -167,6 +267,13 @@ impl Recording {
 
     /// Start a take in the recordings folder. Returns the new file's path.
     pub fn start(&mut self, want: RecFormat, max_secs: Option<u64>) -> Result<PathBuf, String> {
+        self.start_with(want, max_secs.map(Max::Secs), false)
+    }
+
+    /// [`start`](Self::start) with a limit in seconds or frames, and optionally with the input
+    /// held back (discarded, not counted as dropped) until [`punch_tick`](Self::punch_tick) lets
+    /// it through.
+    pub fn start_with(&mut self, want: RecFormat, max: Option<Max>, held: bool) -> Result<PathBuf, String> {
         if self.active.is_some() {
             return Err("already recording".to_string());
         }
@@ -179,6 +286,7 @@ impl Recording {
             Some(spec) => {
                 let ring_frames = spec.ring_ms.map_or(want.rate as usize * 2, |ms| (want.rate as usize * ms as usize / 1000).max(1));
                 let ring = Ring::new(ring_frames, want.channels);
+                ring.set_paused(held);
                 let recorder =
                     Recorder::start_stalled(make(want)?, ring.clone(), Duration::from_millis(u64::from(spec.stall_ms))).map_err(|e| e.to_string())?;
                 let fake = FakeInput::spawn(spec, want, ring.clone()).map_err(|e| e.to_string())?;
@@ -186,6 +294,7 @@ impl Recording {
             }
             None => {
                 let opened = crate::input::open(want)?;
+                opened.ring.set_paused(held);
                 let recorder = Recorder::start(make(opened.fmt)?, opened.ring.clone()).map_err(|e| e.to_string())?;
                 cpal::traits::StreamTrait::play(&opened.stream).map_err(|e| format!("cannot start the input: {e}"))?;
                 (recorder, Source::Device(opened.stream), opened.ring, opened.device)
@@ -194,7 +303,7 @@ impl Recording {
         let path = recorder.path().to_path_buf();
         let fmt = recorder.format();
         self.last_fmt = Some(fmt);
-        log::info!(target: "wavcraft", "recording {} from {device}: {fmt:?}{}", path.display(), max_secs.map_or(String::new(), |m| format!(", stops after {m} s")));
+        log::info!(target: "wavcraft", "recording {} from {device}: {fmt:?}{}", path.display(), max.map_or(String::new(), |m| format!(", stops after {m}")));
         self.active = Some(Active {
             recorder,
             source,
@@ -205,7 +314,10 @@ impl Recording {
             free_at: Instant::now() - Duration::from_secs(10),
             peak: 0.0,
             clipped: false,
-            max_frames: max_secs.map(|m| m * u64::from(fmt.rate)),
+            max_frames: max.map(|m| match m {
+                Max::Secs(s) => s * u64::from(fmt.rate),
+                Max::Frames(f) => f,
+            }),
             resumes: Vec::new(),
             logged_dropped: 0,
             warn_at: Instant::now() - Duration::from_secs(10),
@@ -272,7 +384,7 @@ impl Recording {
     pub fn state_fields(&self) -> String {
         match &self.active {
             None => format!(
-                " recording=0 rec_frames=0 rec_bytes=0 rec_dropped=0 rec_left_s=-1 rec_paused=0 rec_resumes=0 rec_max_s=-1 rec_armed={}{}",
+                " recording=0 rec_frames=0 rec_bytes=0 rec_dropped=0 rec_left_s=-1 rec_paused=0 rec_resumes=0 rec_max_s=-1 rec_armed={} rec_mode=none rec_target=- rec_gate=-1{}",
                 self.armed_in(),
                 self.timed_fields()
             ),
@@ -280,7 +392,7 @@ impl Recording {
                 let s = a.recorder.status();
                 let left = Self::left_secs(a).map_or(-1, |l| l.min(i64::MAX as u64) as i64);
                 format!(
-                    " recording=1 rec_frames={} rec_bytes={} rec_dropped={} rec_left_s={left} rec_paused={} rec_resumes={} rec_resume_at={} rec_max_s={} rec_armed=-1 rec_rate={} rec_ch={} rec_bits={}{}",
+                    " recording=1 rec_frames={} rec_bytes={} rec_dropped={} rec_left_s={left} rec_paused={} rec_resumes={} rec_resume_at={} rec_max_s={} rec_armed=-1 rec_rate={} rec_ch={} rec_bits={} rec_mode={} rec_target={} rec_gate={}{}",
                     s.frames,
                     s.file_bytes,
                     s.dropped_frames,
@@ -291,6 +403,9 @@ impl Recording {
                     a.recorder.format().rate,
                     a.recorder.format().channels,
                     a.recorder.format().bits,
+                    self.into.as_ref().map_or("none", |i| i.plan.mode.name()),
+                    self.into.as_ref().map_or("-", |i| i.plan.target.name()),
+                    self.into.as_ref().and_then(|i| i.punch.as_ref()).map_or(-1, |p| i64::from(p.open)),
                     self.timed_fields()
                 )
             }
@@ -310,7 +425,14 @@ impl Recording {
         let db = if a.peak > 0.0 { format!("{:.1} dB", 20.0 * a.peak.log10()) } else { "-inf dB".to_string() };
         let lost_ms = s.dropped_frames * 1000 / u64::from(fmt.rate.max(1));
         let warn = if s.dropped_frames > 0 { format!("⚠ DROPPED {} frames ({lost_ms} ms) · ", s.dropped_frames) } else { String::new() };
-        let state = if a.ring.is_paused() { "❚❚ PAUSED" } else { "● REC" };
+        let state = match self.into.as_ref() {
+            Some(i) if self.punch_waiting() => {
+                format!("PUNCH-IN: playing the preroll, records from the selection's start ({})", i.plan.target.name())
+            }
+            Some(i) => format!("{} {}", if i.plan.mode == RecMode::Punch { "● PUNCH-IN" } else { "● REC into the file" }, i.plan.target.name()),
+            None if a.ring.is_paused() => "❚❚ PAUSED".to_string(),
+            None => "● REC".to_string(),
+        };
         let limit = a.max_frames.map_or(String::new(), |m| format!(" of {}", clock(m / u64::from(fmt.rate.max(1)))));
         let mut text = format!(
             "{warn}{state} {}{limit} · {} · {left} left on disk · peak {db}{} · {} Hz {} ch {}-bit · {}",
@@ -329,8 +451,12 @@ impl Recording {
     }
 
     /// The new-recording dialog. Returns the format when Start is clicked.
-    pub fn dialog(&mut self, ctx: &egui::Context) -> Option<RecFormat> {
+    pub fn dialog(&mut self, ctx: &egui::Context, doc_open: bool) -> Option<RecFormat> {
         let fmt = self.dialog.as_mut()?;
+        let (mode, target) = (&mut self.dialog_mode, &mut self.dialog_target);
+        if !doc_open {
+            *mode = None;
+        }
         let mut choice = None;
         egui::Window::new("New Recording").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
             egui::Grid::new("rec-format").num_columns(2).show(ui, |ui| {
@@ -356,7 +482,40 @@ impl Recording {
                         ui.selectable_value(&mut fmt.bits, 32, "32-bit float");
                     });
                 ui.end_row();
+                if doc_open {
+                    ui.label("Record to:");
+                    let name = |m: Option<RecMode>| match m {
+                        None => "A new file",
+                        Some(RecMode::Insert) => "Insert at the cursor",
+                        Some(RecMode::Replace) => "Replace the selection (or from the cursor)",
+                        Some(RecMode::Punch) => "Punch in over the selection",
+                    };
+                    egui::ComboBox::from_id_salt("rec-into").selected_text(name(*mode)).show_ui(ui, |ui| {
+                        for m in [None, Some(RecMode::Insert), Some(RecMode::Replace), Some(RecMode::Punch)] {
+                            ui.selectable_value(mode, m, name(m));
+                        }
+                    });
+                    ui.end_row();
+                    if mode.is_some() {
+                        ui.label("Channels:");
+                        egui::ComboBox::from_id_salt("rec-target")
+                            .selected_text(match target {
+                                RecTarget::Both => "Both",
+                                RecTarget::Left => "Left only",
+                                RecTarget::Right => "Right only",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(target, RecTarget::Both, "Both");
+                                ui.selectable_value(target, RecTarget::Left, "Left only");
+                                ui.selectable_value(target, RecTarget::Right, "Right only");
+                            });
+                        ui.end_row();
+                    }
+                }
             });
+            if mode.is_some() {
+                ui.label("The sample rate and channels follow the file; the take is saved first, then brought in as one undo step.");
+            }
             ui.label(match record_dir() {
                 Ok(d) => format!("The take is saved in {}", d.display()),
                 Err(e) => e,
@@ -384,6 +543,7 @@ impl Recording {
 #[cfg(test)]
 mod tests {
     use super::{StartOpts, clock, parse_start_args};
+    use wavcraft_core::doc::rec_edit::{RecMode, RecTarget};
     use wavcraft_core::record::RecFormat;
 
     #[test]
@@ -405,13 +565,26 @@ mod tests {
         let (f, o) = parse_start_args("", 1000).unwrap();
         assert_eq!((f, o), (RecFormat::default(), StartOpts::default()));
         let (f, o) = parse_start_args("ch=2 max=2 bits=16", 1000).unwrap();
-        assert_eq!((f.channels, f.bits, o), (2, 16, StartOpts { max_secs: Some(2), delay_secs: None }));
+        assert_eq!((f.channels, f.bits, o), (2, 16, StartOpts { max_secs: Some(2), ..StartOpts::default() }));
         assert_eq!(parse_start_args("in=5", 1000).unwrap().1.delay_secs, Some(5));
         assert_eq!(parse_start_args("at=1030", 1000).unwrap().1.delay_secs, Some(30));
         assert_eq!(parse_start_args("at=900", 1000).unwrap().1.delay_secs, Some(0), "a start time already past means now");
         assert!(parse_start_args("max=0", 0).is_err());
         assert!(parse_start_args("max=x", 0).is_err());
         assert!(parse_start_args("rate=5", 0).is_err());
+    }
+
+    #[test]
+    fn start_arguments_take_the_record_into_file_options() {
+        let o = parse_start_args("mode=insert channel=L", 0).unwrap().1;
+        assert_eq!((o.mode, o.target), (Some(RecMode::Insert), Some(RecTarget::Left)));
+        let o = parse_start_args("mode=punch preroll=500 channel=both bits=16", 0).unwrap();
+        assert_eq!((o.1.mode, o.1.target, o.1.preroll_ms, o.0.bits), (Some(RecMode::Punch), Some(RecTarget::Both), Some(500), 16));
+        assert!(parse_start_args("mode=splice", 0).is_err());
+        assert!(parse_start_args("mode=insert channel=C", 0).is_err());
+        assert!(parse_start_args("channel=L", 0).is_err(), "a channel without a mode means nothing");
+        assert!(parse_start_args("mode=insert max=2", 0).is_err());
+        assert!(parse_start_args("mode=replace in=3", 0).is_err());
     }
 
     #[test]
