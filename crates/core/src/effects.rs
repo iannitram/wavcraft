@@ -193,7 +193,5 @@ pub fn apply(
 ) -> Result<Edit, EditError> {
     validate(effect, params).map_err(|why| EditError::Io(io::Error::new(io::ErrorKind::InvalidInput, why)))?;
     let range = if range.start < range.end { range } else { 0..doc.len_frames() };
-    edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, input, output| {
-        effect.process(params, range.start + at, input, output)
-    })
+    edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, input, output| effect.process(params, at, input, output))
 }
