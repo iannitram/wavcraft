@@ -3,11 +3,10 @@
 //! Settings live in a small text file, `settings.txt` in the system's config folder under
 //! `wavcraft` (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on a
 //! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. Today it
-//! holds `session_folder` and `hidden_panels`.
 //! holds the session folder and the preferences of the Preferences dialog (see [`KEYS`]); a file
 //! from an older build, with fewer keys, loads with the defaults for the rest, and an older build
 //! reading a newer file ignores the keys it doesn't know.
-//! holds `session_folder`, `hidden_panels`, `panel_layout` and `zone_sizes`.
+//! The panel layout, the zone sizes and the workspace in use (`workspace`) are kept too.
 //!
 //! The **session folder** is where opening a file writes its session store (one subfolder per
 //! open file). The first of these that is set wins: the `--session-dir` command-line flag, the
@@ -48,6 +47,7 @@ pub const DEFAULT_EDGE_MS: u32 = 5;
 pub const MAX_CROSSFADE_MS: u32 = 1000;
 const KEY_PANEL_LAYOUT: &str = "panel_layout";
 const KEY_ZONE_SIZES: &str = "zone_sizes";
+const KEY_WORKSPACE: &str = "workspace";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +75,8 @@ pub struct Settings {
     pub panel_layout: String,
     /// The dock zones' sizes, as `Layout::encode` writes them (empty: default).
     pub zone_sizes: String,
+    /// The workspace in use (`crate::workspaces`; empty: Default).
+    pub workspace: String,
 }
 
 impl Default for Settings {
@@ -91,6 +93,7 @@ impl Default for Settings {
             input_device: None,
             panel_layout: String::new(),
             zone_sizes: String::new(),
+            workspace: String::new(),
         }
     }
 }
@@ -132,6 +135,7 @@ impl Settings {
                 KEY_RIGHT_CLICK => s.right_click_menu = value.eq_ignore_ascii_case("menu"),
                 KEY_PANEL_LAYOUT => s.panel_layout = value.to_string(),
                 KEY_ZONE_SIZES => s.zone_sizes = value.to_string(),
+                KEY_WORKSPACE => s.workspace = value.to_string(),
                 _ => {}
             }
             if key.trim() == KEY_SESSION_FOLDER {
@@ -203,6 +207,7 @@ impl Settings {
         out.push_str(&format!("{KEY_INPUT} = {}\n", self.input_device.as_deref().unwrap_or_default()));
         out.push_str("# panel_layout: dock zones and tab order, `zone:id,id;zone:id` (a * marks the front tab); zone_sizes: points.\n");
         out.push_str(&format!("{KEY_PANEL_LAYOUT} = {}\n{KEY_ZONE_SIZES} = {}\n", self.panel_layout, self.zone_sizes));
+        out.push_str(&format!("# workspace: the workspace in use (Window › Workspace; empty: Default).\n{KEY_WORKSPACE} = {}\n", self.workspace));
         out
     }
 

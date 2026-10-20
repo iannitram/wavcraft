@@ -38,6 +38,8 @@
 //! - `INSERT_FILE <path>` → `OK` (Edit › Insert › Audio from File at the cursor, or over the selection; poll `STATE` until `busy=0`; a refused file shows in the app's log, not here)
 //! - `STATS [<start> <end>]` (frames; the selection or the whole file without them) → `OK range=<a>-<b> ...` then, per channel, `ch<i> peak=.. peak_db=.. peak_frame=.. min=.. max=.. dc_pct=.. rms_*_db=.. dyn_db=.. clip_runs=.. clip_samples=.. bits=..`.
 //!   Runs the scan at once and keeps it for `ACTION stats.goto_peak|stats.next_clip|stats.prev_clip` (the cursor moves; `ERR` when there is nowhere to go)
+//! - `WORKSPACES` → `OK current=<name> modified=<0|1> workspaces=<a>|<b>…` (spaces in names shown as `_`; `Default` is built in; `modified` is 1 when the layout differs from the saved state of the workspace in use)
+//! - `WORKSPACE save <name>` (keeps the layout under the name and makes it the one in use) | `switch <name>` | `reset [name]` (back to the saved layout) | `delete <name>` (not Default, not the one in use) → the same line as `WORKSPACES`; the one in use is kept in the settings file
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
 //! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)
