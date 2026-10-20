@@ -25,6 +25,7 @@ mod rack_panel;
 mod recording;
 mod recovery;
 mod selflog;
+mod shortcut_editor;
 mod spectrum;
 mod statspanel;
 #[cfg(windows)]

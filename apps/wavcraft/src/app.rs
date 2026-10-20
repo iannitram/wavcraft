@@ -41,6 +41,7 @@ use crate::mixpaste;
 use crate::player::{Devices, Player};
 use crate::rack_panel::{RackPanel, Request};
 use crate::recovery::{self, Choice, Recovery};
+use crate::shortcut_editor::{Change, ShortcutDialog};
 use crate::spectrum::{Job, Renderer};
 use crate::statspanel::{Nav, StatsPanel};
 use wavcraft_core::doc::rec_edit::{self, RecMode, RecPlan, RecTarget};
@@ -382,6 +383,10 @@ pub struct WaveApp {
     markers_ui: MarkersUi,
     /// A take being brought into the document.
     integrating: Option<Integrating>,
+    /// Where the key file is (`None`: the system has no config folder).
+    shortcuts_path: Option<PathBuf>,
+    /// Edit › Keyboard Shortcuts…, while it is open.
+    shortcut_dialog: Option<ShortcutDialog>,
 }
 
 impl WaveApp {
@@ -402,7 +407,11 @@ impl WaveApp {
             let ctx = cc.egui_ctx.clone();
             Recovery::new(roots, move || ctx.request_repaint())
         };
-        let keymap = Keymap::new();
+        let shortcuts_path = wavcraft_core::shortcuts::default_path();
+        let (keymap, shortcuts_warning) = shortcuts_path.as_deref().map(wavcraft_core::shortcuts::load).unwrap_or_default();
+        if let Some(w) = shortcuts_warning {
+            log::warn!(target: "wavcraft", "{w}");
+        }
         if let Err(e) = keymap.check() {
             log::error!(target: "wavcraft", "keyboard shortcuts conflict: {e}");
         }
@@ -492,6 +501,8 @@ impl WaveApp {
             meta_for: None,
             markers_ui: MarkersUi::new(),
             integrating: None,
+            shortcuts_path,
+            shortcut_dialog: None,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -3778,6 +3789,7 @@ impl WaveApp {
                 },
                 Err(e) => format!("ERR {e}"),
             },
+            "SHORTCUTS" | "SHORTCUT" => self.shortcut_request(cmd, rest),
             // Minimise or restore the window (scripted checks of hidden-window behaviour).
             "WINDOW" => match rest {
                 "minimize" => {
@@ -4364,6 +4376,68 @@ impl WaveApp {
         ui.separator();
         if ui.add(egui::Button::new("Preferences…").shortcut_text(if mac { "⌘," } else { "Ctrl+," })).clicked() {
             self.open_preferences();
+        }
+        if ui.button("Keyboard Shortcuts…").clicked() {
+            self.shortcut_dialog = Some(ShortcutDialog::default());
+        }
+    }
+
+    /// Apply a shortcut change and save the key file. `Err` says what went wrong (a conflict, or
+    /// the file not saved: the change still holds until the app closes).
+    fn change_shortcuts(&mut self, change: Change) -> Result<String, String> {
+        let outcome = match change {
+            Change::Assign { command, chord, reassign: false } => self
+                .keymap
+                .assign(command, chord)
+                .map(|()| format!("{} is {}", command.name(), chord.to_ascii()))
+                .map_err(|c| format!("conflict: {} is already {}", c.chord.to_ascii(), c.holder.name()))?,
+            Change::Assign { command, chord, reassign: true } => match self.keymap.assign_reassign(command, chord) {
+                Some(old) => format!("{} is {} (taken from {})", command.name(), chord.to_ascii(), old.name()),
+                None => format!("{} is {}", command.name(), chord.to_ascii()),
+            },
+            Change::Clear(command) => {
+                self.keymap.clear(command);
+                format!("{} has no chord", command.name())
+            }
+            Change::Reset => {
+                self.keymap.reset();
+                "default shortcuts restored".to_string()
+            }
+        };
+        if let Err(e) = self.keymap.check() {
+            log::error!(target: "wavcraft", "keyboard shortcuts conflict: {e}");
+        }
+        if let Some(path) = &self.shortcuts_path
+            && let Err(e) = wavcraft_core::shortcuts::save(path, &self.keymap)
+        {
+            return Err(format!("changed, but the key file {} could not be saved: {e}", path.display()));
+        }
+        Ok(outcome)
+    }
+
+    /// `SHORTCUTS` and `SHORTCUT set|clear|reset` on the control channel (see `control.rs`).
+    fn shortcut_request(&mut self, verb: &str, rest: &str) -> String {
+        if verb == "SHORTCUTS" {
+            let mut out = String::from("OK");
+            for command in Command::all() {
+                let chords: Vec<String> = self.keymap.chords(command).map(|c| c.to_ascii()).collect();
+                out.push_str(&format!(" {}={}", command.name(), if chords.is_empty() { "-".to_string() } else { chords.join("|") }));
+            }
+            return out;
+        }
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let find = |name: &str| Command::from_name(name).ok_or_else(|| format!("no command named {name:?}"));
+        let change = match words.as_slice() {
+            ["reset"] => Ok(Change::Reset),
+            ["clear", name] => find(name).map(Change::Clear),
+            ["set", name, chord] | ["set", name, chord, "reassign"] => {
+                find(name).and_then(|command| Shortcut::parse(chord).map(|chord| Change::Assign { command, chord, reassign: words.len() == 4 }))
+            }
+            _ => Err("SHORTCUT set <command> <chord> [reassign] | clear <command> | reset".to_string()),
+        };
+        match change.and_then(|c| self.change_shortcuts(c)) {
+            Ok(m) => format!("OK {m}"),
+            Err(e) => format!("ERR {e}"),
         }
     }
 
@@ -5278,7 +5352,12 @@ impl eframe::App for WaveApp {
         if close && let Some(id) = self.hover {
             self.close_panel(id);
         }
-        for command in pressed_commands(&ctx, &self.keymap) {
+        // While the shortcuts dialog waits for a chord, or its search box has the keyboard, keys
+        // are not commands.
+        let keys_for_dialog =
+            self.shortcut_dialog.as_ref().is_some_and(|d| d.capturing()) || (self.shortcut_dialog.is_some() && ctx.egui_wants_keyboard_input());
+        let pressed = if keys_for_dialog { Vec::new() } else { pressed_commands(&ctx, &self.keymap) };
+        for command in pressed {
             if let Err(e) = self.run_command(command, &ctx) {
                 // A key that can't act now (no file open, a save running) is not an error to show,
                 // except a failed save, which the old key handler reported.
@@ -5438,6 +5517,17 @@ impl eframe::App for WaveApp {
         self.preferences_dialog(&ctx);
         self.new_audio_dialog(&ctx);
         self.rack_ui(&ctx);
+        if let Some(mut dialog) = self.shortcut_dialog.take() {
+            let (open, change) = dialog.show(&ctx, &self.keymap, cfg!(target_os = "macos"));
+            if let Some(change) = change
+                && let Err(e) = self.change_shortcuts(change)
+            {
+                self.error = Some(e);
+            }
+            if open {
+                self.shortcut_dialog = Some(dialog);
+            }
+        }
         self.clear_history_prompt(&ctx);
         match self.recovery.show(&ctx) {
             Some(Choice::Recover(i)) => {

@@ -9,12 +9,17 @@
 //!   commands that are not in it (Open, Save, Save As, Play/Stop).
 //! - [`Keymap`] is the table in use. [`Keymap::new`] holds the defaults and checks them for two
 //!   commands sharing a chord ([`conflicts`], and the tests). It is the seam for the user's
-//!   override file (roadmap A291, the editor): [`Keymap::with_overrides`] already takes a list
-//!   of `(chord, command)` replacements; reading them from a file is the later row.
+//!   override file (roadmap A291, the editor): [`Keymap::with_overrides`] takes a list of
+//!   `(chord, command)` replacements. The editor's operations ([`Keymap::assign`],
+//!   [`Keymap::assign_reassign`], [`Keymap::clear`], [`Keymap::reset`]) change a keymap, and
+//!   [`Keymap::overrides`] reads off how it differs from the defaults: [`Overrides`] is that
+//!   difference, written to and read from `shortcuts.txt` in the config folder ([`load`], [`save`]).
 //! - The control channel's `KEY <chord>` runs [`Keymap::resolve`] on a chord typed as text
 //!   (`Ctrl+Shift+Z`, `Cmd+Z`, `Space`, `F3`), parsed by [`Shortcut::parse`].
 
 use std::fmt;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use crate::actions::{self, ActionId};
 
@@ -207,6 +212,26 @@ impl Shortcut {
     }
 }
 
+impl Shortcut {
+    /// A chord from a key name (egui's `Key::name`) and its modifiers; `None` for a key the
+    /// table has no name for.
+    pub fn from_parts(cmd: bool, shift: bool, alt: bool, key_name: &str) -> Option<Shortcut> {
+        KEY_NAMES.iter().copied().find(|n| *n == key_name).map(|key| Shortcut { cmd, shift, alt, key })
+    }
+
+    /// The plain-ASCII spelling the key file and the control channel use (`Ctrl+Shift+ArrowUp`):
+    /// the key's own name, never a symbol, so [`Shortcut::parse`] always reads it back.
+    pub fn to_ascii(&self) -> String {
+        let mut s = String::new();
+        for (on, name) in [(self.cmd, "Ctrl+"), (self.alt, "Alt+"), (self.shift, "Shift+")] {
+            if on {
+                s.push_str(name);
+            }
+        }
+        s + self.key
+    }
+}
+
 impl fmt::Display for Shortcut {
     /// The Windows/Linux spelling, which [`Shortcut::parse`] reads back.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -242,8 +267,33 @@ impl Command {
     }
 }
 
+impl Command {
+    /// Every command that can have a chord: the window commands, then the action table.
+    pub fn all() -> Vec<Command> {
+        let mut v = vec![Command::Open, Command::Save, Command::SaveAs, Command::PlayStop];
+        v.extend(actions::TABLE.iter().map(|a| Command::Action(a.id)));
+        v
+    }
+
+    /// The command with this control-channel name.
+    pub fn from_name(name: &str) -> Option<Command> {
+        Command::all().into_iter().find(|c| c.name() == name)
+    }
+
+    /// What a list of commands shows for it: the menu text.
+    pub fn label(self) -> &'static str {
+        match self {
+            Command::Action(id) => actions::action(id).menu,
+            Command::Open => "Open…",
+            Command::Save => "Save",
+            Command::SaveAs => "Save As…",
+            Command::PlayStop => "Play/Stop",
+        }
+    }
+}
+
 /// One row of the default table.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Binding {
     pub command: Command,
     pub chord: Shortcut,
@@ -404,6 +454,187 @@ impl Keymap {
     pub fn menu_text(&self, command: Command, mac: bool) -> String {
         self.chords(command).next().map(|c| c.text(mac)).unwrap_or_default()
     }
+}
+
+/// A chord that another command already has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Conflict {
+    pub chord: Shortcut,
+    pub holder: Command,
+}
+
+impl Keymap {
+    /// Give `command` exactly the one chord `chord` (its other chords go). Refused, changing
+    /// nothing, when another command has the chord: the editor then asks, and calls
+    /// [`Keymap::assign_reassign`] if the user agrees.
+    pub fn assign(&mut self, command: Command, chord: Shortcut) -> Result<(), Conflict> {
+        if let Some(holder) = self.resolve(chord).filter(|h| *h != command) {
+            return Err(Conflict { chord, holder });
+        }
+        self.bindings.retain(|b| b.command != command);
+        self.bindings.push(Binding { command, chord });
+        Ok(())
+    }
+
+    /// Like [`Keymap::assign`], but takes the chord from the command that has it (which keeps
+    /// its other chords, if any). Returns that command.
+    pub fn assign_reassign(&mut self, command: Command, chord: Shortcut) -> Option<Command> {
+        let holder = self.resolve(chord).filter(|h| *h != command);
+        self.bindings.retain(|b| b.command != command && b.chord != chord);
+        self.bindings.push(Binding { command, chord });
+        holder
+    }
+
+    /// Take every chord off `command`.
+    pub fn clear(&mut self, command: Command) {
+        self.bindings.retain(|b| b.command != command);
+    }
+
+    /// Back to the defaults.
+    pub fn reset(&mut self) {
+        *self = Keymap::new();
+    }
+
+    /// Whether every command has exactly its default chords.
+    pub fn is_default(&self) -> bool {
+        self.overrides().entries.is_empty()
+    }
+
+    /// How this keymap differs from the defaults: each command whose chords are not its default
+    /// ones, with the chords it has (none if cleared).
+    pub fn overrides(&self) -> Overrides {
+        let mut entries = Vec::new();
+        for command in Command::all() {
+            let now: Vec<Shortcut> = self.chords(command).collect();
+            let default: Vec<Shortcut> = BINDINGS.iter().filter(|b| b.command == command).map(|b| b.chord).collect();
+            if now != default {
+                entries.push((command, now));
+            }
+        }
+        Overrides { entries }
+    }
+
+    /// The defaults with `overrides` applied, through [`Keymap::with_overrides`]. Fails when
+    /// the result has a chord on two commands.
+    pub fn from_overrides(overrides: &Overrides) -> Result<Keymap, String> {
+        let pairs: Vec<(Shortcut, Command)> = overrides.entries.iter().flat_map(|(command, chords)| chords.iter().map(|c| (*c, *command))).collect();
+        let mut map = Keymap::with_overrides(&pairs)?;
+        for (command, chords) in &overrides.entries {
+            if chords.is_empty() {
+                map.clear(*command);
+            }
+        }
+        Ok(map)
+    }
+}
+
+impl PartialEq for Keymap {
+    /// Same chords on every command (the order of rows does not matter).
+    fn eq(&self, other: &Keymap) -> bool {
+        Command::all().into_iter().all(|c| self.chords(c).eq(other.chords(c)))
+    }
+}
+
+/// The user's key file: what differs from the default table. Text, one `command = chord` per
+/// line (`#` starts a comment); a command with two chords has two lines, and `command = none`
+/// means it has no chord.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Overrides {
+    pub entries: Vec<(Command, Vec<Shortcut>)>,
+}
+
+impl Overrides {
+    /// The file's text.
+    pub fn to_text(&self) -> String {
+        let mut s = String::from(
+            "# WavCraft keyboard shortcuts: only the keys that differ from the defaults.\n# One `command = chord` per line; `command = none` removes a command's keys.\n",
+        );
+        for (command, chords) in &self.entries {
+            if chords.is_empty() {
+                s.push_str(&format!("{} = none\n", command.name()));
+            }
+            for chord in chords {
+                s.push_str(&format!("{} = {}\n", command.name(), chord.to_ascii()));
+            }
+        }
+        s
+    }
+
+    /// Read the file's text. Any line that is not understood fails the whole file: a half-read
+    /// key file would leave keys the user did not choose.
+    pub fn parse(text: &str) -> Result<Overrides, String> {
+        let mut entries: Vec<(Command, Vec<Shortcut>)> = Vec::new();
+        let mut none_seen: Vec<Command> = Vec::new();
+        for (n, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let at = |why: String| format!("line {}: {why}", n + 1);
+            let (name, value) = line.split_once('=').ok_or_else(|| at(format!("{line:?} is not `command = chord`")))?;
+            let command = Command::from_name(name.trim()).ok_or_else(|| at(format!("no command named {:?}", name.trim())))?;
+            let index = match entries.iter().position(|(c, _)| *c == command) {
+                Some(i) => i,
+                None => {
+                    entries.push((command, Vec::new()));
+                    entries.len() - 1
+                }
+            };
+            if value.trim().eq_ignore_ascii_case("none") {
+                if !entries[index].1.is_empty() || none_seen.contains(&command) {
+                    return Err(at(format!("{} is given both `none` and a chord", command.name())));
+                }
+                none_seen.push(command);
+            } else {
+                if none_seen.contains(&command) {
+                    return Err(at(format!("{} is given both `none` and a chord", command.name())));
+                }
+                entries[index].1.push(Shortcut::parse(value).map_err(at)?);
+            }
+        }
+        Ok(Overrides { entries })
+    }
+}
+
+/// The key file: `shortcuts.txt` next to the settings file, in the config folder.
+pub fn default_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("wavcraft").join("shortcuts.txt"))
+}
+
+/// The keymap the key file at `path` makes. A missing file is the defaults. A file that can't
+/// be read or understood is ignored (the defaults) and the second value says why, to be logged:
+/// a broken key file never stops the app starting.
+pub fn load(path: &Path) -> (Keymap, Option<String>) {
+    let text = match std::fs::read(path) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(_) => return (Keymap::new(), Some(format!("the shortcut file {} is not text: ignored, using the default keys", path.display()))),
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return (Keymap::new(), None),
+        Err(e) => return (Keymap::new(), Some(format!("could not read the shortcut file {}: {e}: ignored, using the default keys", path.display()))),
+    };
+    match Overrides::parse(&text).and_then(|o| Keymap::from_overrides(&o)) {
+        Ok(map) => (map, None),
+        Err(why) => (Keymap::new(), Some(format!("the shortcut file {} is ignored, using the default keys ({why})", path.display()))),
+    }
+}
+
+/// Write `map`'s differences from the defaults to `path` (through a temporary file, then a
+/// rename). With none, the file is removed.
+pub fn save(path: &Path, map: &Keymap) -> io::Result<()> {
+    let overrides = map.overrides();
+    if overrides.entries.is_empty() {
+        return match std::fs::remove_file(path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("txt.tmp");
+    std::fs::write(&tmp, overrides.to_text())?;
+    std::fs::rename(&tmp, path)
 }
 
 impl Default for Keymap {
