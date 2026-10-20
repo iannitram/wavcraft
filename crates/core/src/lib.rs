@@ -20,6 +20,7 @@ pub mod doc;
 pub mod document;
 mod flac_enc;
 pub mod io;
+pub mod presets;
 pub mod random;
 pub mod save;
 pub mod settings;

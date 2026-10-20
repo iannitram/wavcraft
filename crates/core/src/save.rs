@@ -42,6 +42,27 @@ impl SampleType {
         }
     }
 
+    /// The short name used in presets and the control channel: `16`, `24`, `32`, `float`.
+    pub fn key(self) -> &'static str {
+        match self {
+            SampleType::Int16 => "16",
+            SampleType::Int24 => "24",
+            SampleType::Int32 => "32",
+            SampleType::Float32 => "float",
+        }
+    }
+
+    /// The inverse of [`SampleType::key`] (`f32` and `32f` also mean float).
+    pub fn parse(s: &str) -> Option<SampleType> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "16" => Some(SampleType::Int16),
+            "24" => Some(SampleType::Int24),
+            "32" => Some(SampleType::Int32),
+            "float" | "f32" | "32f" => Some(SampleType::Float32),
+            _ => None,
+        }
+    }
+
     /// "16-bit", "32-bit float"…
     pub fn describe(self) -> &'static str {
         match self {
@@ -195,6 +216,21 @@ impl SaveFormat {
         }
     }
 
+    /// The short name used in presets and the control channel (`wav`, `aiff`, `flac`).
+    pub fn key(self) -> &'static str {
+        self.extension()
+    }
+
+    /// The inverse of [`SaveFormat::key`] (`aif` also means AIFF).
+    pub fn parse(s: &str) -> Option<SaveFormat> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "wav" => Some(SaveFormat::Wav),
+            "aiff" | "aif" => Some(SaveFormat::Aiff),
+            "flac" => Some(SaveFormat::Flac),
+            _ => None,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             SaveFormat::Wav => "WAV",
@@ -225,15 +261,59 @@ impl SaveFormat {
     }
 }
 
+/// How an AIFF file is written (f87). Only AIFF files use it. 32-bit float is always AIFF-C
+/// `fl32` (big-endian) whatever the kind: `sowt` names little-endian *integer* samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AiffKind {
+    /// Classic AIFF: big-endian PCM, no compression field.
+    #[default]
+    Aiff,
+    /// AIFF-C with `NONE` (uncompressed, big-endian).
+    Aifc,
+    /// AIFF-C with `sowt`: the same PCM, little-endian.
+    AifcSowt,
+}
+
+impl AiffKind {
+    pub const ALL: [AiffKind; 3] = [AiffKind::Aiff, AiffKind::Aifc, AiffKind::AifcSowt];
+
+    /// `aiff`, `aifc`, `sowt`.
+    pub fn key(self) -> &'static str {
+        match self {
+            AiffKind::Aiff => "aiff",
+            AiffKind::Aifc => "aifc",
+            AiffKind::AifcSowt => "sowt",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<AiffKind> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "aiff" => Some(AiffKind::Aiff),
+            "aifc" | "none" => Some(AiffKind::Aifc),
+            "sowt" => Some(AiffKind::AifcSowt),
+            _ => None,
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            AiffKind::Aiff => "AIFF, big-endian",
+            AiffKind::Aifc => "AIFF-C, big-endian",
+            AiffKind::AifcSowt => "AIFF-C, little-endian (sowt)",
+        }
+    }
+}
+
 /// Test hooks: stop with an I/O error after some frames, and the RIFF size above which a WAV
 /// becomes RF64 (4 GiB; tests lower it).
 #[derive(Clone, Copy)]
 struct Hooks {
     fail_after: Option<u64>,
     rf64_over: u64,
+    aiff: AiffKind,
 }
 
-const NO_HOOKS: Hooks = Hooks { fail_after: None, rf64_over: u32::MAX as u64 };
+const NO_HOOKS: Hooks = Hooks { fail_after: None, rf64_over: u32::MAX as u64, aiff: AiffKind::Aiff };
 
 /// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically.
 /// `progress` gets 0 to 1 as the samples go out.
@@ -245,6 +325,18 @@ pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dy
 /// any kind removes this save's temporary file and leaves `target` as it was.
 pub fn save(doc: &DocState, target: &Path, format: SaveFormat, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
     save_inner(doc, target, format, ty, progress, NO_HOOKS)
+}
+
+/// [`save`] with the AIFF kind chosen (ignored for WAV and FLAC).
+pub fn save_aiff_kind(
+    doc: &DocState,
+    target: &Path,
+    format: SaveFormat,
+    ty: SampleType,
+    aiff: AiffKind,
+    progress: &mut dyn FnMut(f64),
+) -> Result<(), SaveError> {
+    save_inner(doc, target, format, ty, progress, Hooks { aiff, ..NO_HOOKS })
 }
 
 /// [`save_wav`] that fails with an I/O error once `fail_after` frames are out (tests: a save
@@ -319,7 +411,7 @@ fn write_stream(doc: &DocState, file: File, format: SaveFormat, ty: SampleType, 
         }
         SaveFormat::Aiff => {
             let ch16 = i16::try_from(channels).map_err(|_| invalid("too many channels for AIFF"))?;
-            write_aiff_header(&mut out, ch16, doc.sample_rate(), ty, frames)?
+            write_aiff_header(&mut out, ch16, doc.sample_rate(), ty, frames, hooks.aiff)?
         }
         SaveFormat::Flac => {
             let bps = if ty == SampleType::Int16 { 16 } else { 24 };
@@ -347,7 +439,7 @@ fn write_stream(doc: &DocState, file: File, format: SaveFormat, ty: SampleType, 
             }
         } else {
             bytes.clear();
-            let big = format == SaveFormat::Aiff;
+            let big = format == SaveFormat::Aiff && !(hooks.aiff == AiffKind::AifcSowt && ty != SampleType::Float32);
             for i in 0..n {
                 for buf in &bufs {
                     push_sample(&mut bytes, buf[i], ty, big);
@@ -382,14 +474,23 @@ fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool) {
     }
 }
 
-/// The AIFF (or, for 32-bit float, AIFF-C `fl32`) header up to the first sample; returns the
-/// data size. AIFF sizes are 32 bits: a longer file is refused (use WAV, which goes to RF64).
-fn write_aiff_header(out: &mut impl Write, channels: i16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
+/// The AIFF header up to the first sample; returns the data size. AIFF-C (a `FVER` chunk and a
+/// compression type in `COMM`) is written for 32-bit float (`fl32`) and when `kind` asks for it
+/// (`NONE`, or `sowt` for little-endian integers). Sizes are 32 bits: a longer file is refused
+/// (use WAV, which goes to RF64).
+fn write_aiff_header(out: &mut impl Write, channels: i16, sample_rate: u32, ty: SampleType, frames: u64, kind: AiffKind) -> io::Result<u64> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(channels as u64).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("AIFF too long"))?;
-    let aifc = ty == SampleType::Float32;
-    let name: &[u8] = b"32-bit floating point"; // 21 bytes + length byte: even
-    let comm_len: u32 = if aifc { 18 + 4 + 1 + name.len() as u32 } else { 18 };
+    let (comp, name): (Option<&[u8; 4]>, &[u8]) = match (ty, kind) {
+        (SampleType::Float32, _) => (Some(b"fl32"), b"32-bit floating point"),
+        (_, AiffKind::Aiff) => (None, b""),
+        (_, AiffKind::Aifc) => (Some(b"NONE"), b"not compressed"),
+        (_, AiffKind::AifcSowt) => (Some(b"sowt"), b""),
+    };
+    let aifc = comp.is_some();
+    let written = 1 + name.len() as u32; // count byte + text, padded to an even length
+    let pstring = written + (written & 1);
+    let comm_len: u32 = if aifc { 18 + 4 + pstring } else { 18 };
     let ssnd_len = 8 + data_len;
     let form_len = 4 + if aifc { 12 } else { 0 } + (8 + u64::from(comm_len)) + 8 + ssnd_len + (data_len & 1);
     let form_len = u32::try_from(form_len).map_err(|_| invalid("too long for AIFF (4 GiB limit): save as WAV or FLAC"))?;
@@ -408,10 +509,13 @@ fn write_aiff_header(out: &mut impl Write, channels: i16, sample_rate: u32, ty: 
     out.write_all(&frames32.to_be_bytes())?;
     out.write_all(&(bytes as i16 * 8).to_be_bytes())?;
     out.write_all(&extended(sample_rate))?;
-    if aifc {
-        out.write_all(b"fl32")?;
+    if let Some(comp) = comp {
+        out.write_all(comp)?;
         out.write_all(&[name.len() as u8])?;
         out.write_all(name)?;
+        if written & 1 == 1 {
+            out.write_all(&[0])?;
+        }
     }
     out.write_all(b"SSND")?;
     out.write_all(&(u32::try_from(ssnd_len).map_err(|_| invalid("too long for AIFF"))?).to_be_bytes())?;
@@ -475,6 +579,81 @@ fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: Sampl
     out.write_all(b"data")?;
     out.write_all(&u32::try_from(data_len).unwrap_or(u32::MAX).to_le_bytes())?;
     Ok(data_len)
+}
+
+/// A file size worked out before saving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SizeEstimate {
+    pub bytes: u64,
+    /// True for PCM (WAV, AIFF): the size is the file's size, from the header writer itself.
+    /// False for FLAC, which depends on the audio.
+    pub exact: bool,
+}
+
+/// Counts what is written to it.
+struct Counter(u64);
+
+impl Write for Counter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 += buf.len() as u64;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The size of a WAV or AIFF save: exact, since it counts the real header and adds the data.
+fn pcm_size(frames: u64, channels: usize, rate: u32, format: SaveFormat, ty: SampleType, kind: AiffKind) -> io::Result<u64> {
+    let mut c = Counter(0);
+    let data = match format {
+        SaveFormat::Wav => {
+            write_header(&mut c, u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?, rate, ty, frames, NO_HOOKS.rf64_over)?
+        }
+        SaveFormat::Aiff => {
+            write_aiff_header(&mut c, i16::try_from(channels).map_err(|_| invalid("too many channels for AIFF"))?, rate, ty, frames, kind)?
+        }
+        SaveFormat::Flac => return Err(invalid("not PCM")),
+    };
+    Ok(c.0 + data + (data & 1))
+}
+
+/// How big saving `doc` as `format` with `ty` samples would be: exact for WAV and AIFF, an
+/// estimate for FLAC (a few evenly spread blocks are really encoded and the rest is scaled from
+/// them). Errors are what the save would refuse (too long for AIFF, a type FLAC can't hold).
+pub fn estimate_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) -> io::Result<SizeEstimate> {
+    let (frames, channels, rate) = (doc.len_frames(), doc.channel_count(), doc.sample_rate());
+    if !format.accepts(ty) {
+        return Err(invalid(&format!("{} cannot hold {} samples", format.name(), ty.describe())));
+    }
+    if format != SaveFormat::Flac {
+        return Ok(SizeEstimate { bytes: pcm_size(frames, channels, rate, format, ty, kind)?, exact: true });
+    }
+    let bits = if ty == SampleType::Int16 { 16 } else { 24 };
+    let mut head = Counter(0);
+    let mut enc = crate::flac_enc::Encoder::new(&mut head, channels, rate, bits, frames)?;
+    if frames == 0 {
+        return Ok(SizeEstimate { bytes: head.0, exact: false });
+    }
+    let n = frames.min(crate::flac_enc::BLOCK_SIZE as u64);
+    let spots = 16u64.min(frames / n).max(1);
+    let (mut sampled_frames, mut sampled_bytes) = (0u64, 0u64);
+    let mut body = Counter(0);
+    let mut buf = vec![0f32; n as usize];
+    for i in 0..spots {
+        let at = if spots == 1 { 0 } else { (frames - n) * i / (spots - 1) };
+        let mut block = Vec::with_capacity(channels);
+        for ch in 0..channels {
+            let got = doc.read(ch, at, &mut buf)?;
+            block.push(buf[..got].iter().map(|&x| i64::from(quantize(x, bits))).collect::<Vec<i64>>());
+        }
+        let before = body.0;
+        enc.write_block(&mut body, &block)?;
+        sampled_bytes += body.0 - before;
+        sampled_frames += n;
+    }
+    let per_frame = sampled_bytes as f64 / sampled_frames as f64;
+    Ok(SizeEstimate { bytes: head.0 + (per_frame * frames as f64).round() as u64, exact: false })
 }
 
 /// `x` (full scale ±1) as a `bits`-bit integer, rounded and clamped; NaN is 0.

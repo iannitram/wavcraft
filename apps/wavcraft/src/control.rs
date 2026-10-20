@@ -12,8 +12,14 @@
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
-//! - `SAVE [path] [bits=16|24|32] [float=0|1]` → `OK` (Save, or Save As to `path`, the format from
-//!   its extension: .wav, .aiff/.aif, .flac; `bits`/`float=1` choose the sample type; poll `STATE` until `busy=0`)
+//! - `SAVE [path] [bits=16|24|32] [float=0|1] [aiff=aiff|aifc|sowt]` → `OK` (Save, or Save As to `path`, the format from
+//!   its extension: .wav, .aiff/.aif, .flac; `bits`/`float=1` choose the sample type; `aiff=` the AIFF kind
+//!   for this save (`sowt`: AIFF-C little-endian); poll `STATE` until `busy=0`)
+//! - `SAVEOPTS estimate <wav|aiff|flac> <16|24|32|float> [aiff=<kind>]` → `OK bytes=<n> exact=<0|1>` (the file size a save
+//!   would make; exact for WAV/AIFF, an estimate for FLAC); `SAVEOPTS set …` chooses the export options (the Save As
+//!   dialog's choice) and `SAVEOPTS show` prints them
+//! - `EXPORTPRESET save|load|delete <name>` → `OK format=… type=… aiff=…` (`save` keeps the chosen options under the
+//!   name in the config folder, `load` makes a preset the chosen options); `EXPORTPRESET list`
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
