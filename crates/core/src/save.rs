@@ -588,12 +588,15 @@ fn write_wav(
 fn write_stream(doc: &DocState, file: File, format: SaveFormat, ty: SampleType, progress: &mut dyn FnMut(f64), hooks: Hooks) -> io::Result<File> {
     let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let mut out = BufWriter::with_capacity(1 << 20, file);
+    // Markers go after the audio: an AIFF `MARK` chunk (A184); FLAC carries none.
+    let marker_chunks = if format == SaveFormat::Aiff { doc.markers().to_aiff_mark() } else { Vec::new() };
+    let extra = marker_chunks.len() as u64;
     let mut flac = None;
     let data_len = match format {
         SaveFormat::Wav => return Err(invalid("a WAV is written by write_wav")),
         SaveFormat::Aiff => {
             let ch16 = i16::try_from(channels).map_err(|_| invalid("too many channels for AIFF"))?;
-            write_aiff_header(&mut out, ch16, doc.sample_rate(), ty, frames)?
+            write_aiff_header(&mut out, ch16, doc.sample_rate(), ty, frames, extra)?
         }
         SaveFormat::Flac => {
             let bps = if ty == SampleType::Int16 { 16 } else { 24 };
@@ -605,6 +608,7 @@ fn write_stream(doc: &DocState, file: File, format: SaveFormat, ty: SampleType, 
     if data_len & 1 == 1 {
         out.write_all(&[0])?;
     }
+    out.write_all(&marker_chunks)?;
     let file = out.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
     Ok(file)
@@ -681,14 +685,14 @@ fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool, dither: &
 
 /// The AIFF (or, for 32-bit float, AIFF-C `fl32`) header up to the first sample; returns the
 /// data size. AIFF sizes are 32 bits: a longer file is refused (use WAV, which goes to RF64).
-fn write_aiff_header(out: &mut impl Write, channels: i16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
+fn write_aiff_header(out: &mut impl Write, channels: i16, sample_rate: u32, ty: SampleType, frames: u64, extra: u64) -> io::Result<u64> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(channels as u64).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("AIFF too long"))?;
     let aifc = ty == SampleType::Float32;
     let name: &[u8] = b"32-bit floating point"; // 21 bytes + length byte: even
     let comm_len: u32 = if aifc { 18 + 4 + 1 + name.len() as u32 } else { 18 };
     let ssnd_len = 8 + data_len;
-    let form_len = 4 + if aifc { 12 } else { 0 } + (8 + u64::from(comm_len)) + 8 + ssnd_len + (data_len & 1);
+    let form_len = 4 + if aifc { 12 } else { 0 } + (8 + u64::from(comm_len)) + 8 + ssnd_len + (data_len & 1) + extra;
     let form_len = u32::try_from(form_len).map_err(|_| invalid("too long for AIFF (4 GiB limit): save as WAV or FLAC"))?;
     let frames32 = u32::try_from(frames).map_err(|_| invalid("too long for AIFF"))?;
     out.write_all(b"FORM")?;
