@@ -25,6 +25,7 @@ pub mod save;
 pub mod settings;
 pub mod space;
 pub mod spectrogram;
+pub mod stft;
 pub mod store;
 pub mod view;
 
