@@ -1,5 +1,6 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
+use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
+use wavcraft_core::doc::append::{self, AppendReport, NewReport};
 use wavcraft_core::doc::edit as doc_edit;
 use wavcraft_core::doc::newdoc::{self, NewDocOptions};
 use wavcraft_core::io::OpenOptions;
@@ -44,6 +46,29 @@ struct Making {
     what: &'static str,
     result: Receiver<Result<DocState, String>>,
     progress: Arc<AtomicU32>,
+}
+
+/// Where Open Append puts the files.
+enum AppendTo {
+    /// The end of the document that was current, if it still is at the step it was at.
+    Current { doc_id: u64, base: Arc<DocState> },
+    /// A new document.
+    New,
+}
+
+/// Files being added to a document, or made into a new one, on a worker thread (f57).
+struct Appending {
+    to: AppendTo,
+    paths: usize,
+    result: Receiver<Appended>,
+    progress: Arc<AtomicU32>,
+    cancel: Arc<AtomicBool>,
+}
+
+/// What the Open Append worker found.
+enum Appended {
+    Current(AppendReport),
+    New(NewReport),
 }
 
 /// File > New > Audio File…: the values in the dialog while it is up.
@@ -141,6 +166,12 @@ pub struct WaveApp {
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
+    /// Files still to open one after the other (Open with several files chosen, `OPEN_MANY`).
+    open_queue: VecDeque<PathBuf>,
+    /// The files of the queue that could not be opened, reported when the queue is empty.
+    open_failures: Vec<String>,
+    /// Open Append, while it runs.
+    appending: Option<Appending>,
     error: Option<String>,
     /// A message that is not an error (the session folder was changed).
     notice: Option<String>,
@@ -226,6 +257,9 @@ impl WaveApp {
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
+            open_queue: VecDeque::new(),
+            open_failures: Vec::new(),
+            appending: None,
             error: sessions.warning.clone(),
             notice: None,
             sessions,
@@ -323,9 +357,143 @@ impl WaveApp {
                 self.spectrum = None;
                 self.fit_on_next_frame = true;
             }
-            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+            Err(e) => self.open_failures.push(format!("{}: {e}", path.display())),
         }
         self.opening = None;
+    }
+
+    /// Open the files chosen together one at a time (one decoder and one store being written at
+    /// once, for the 8 GB budget). A failure on one is kept and does not stop the others; they
+    /// are all reported when the last is done.
+    fn open_many(&mut self, paths: Vec<PathBuf>) {
+        self.open_queue.extend(paths);
+    }
+
+    /// Start the next queued file when none is opening; report the failures when none is left.
+    fn pump_open_queue(&mut self, ctx: &egui::Context) {
+        if self.opening.is_some() {
+            return;
+        }
+        if let Some(path) = self.open_queue.pop_front() {
+            self.open(path, ctx);
+        } else if !self.open_failures.is_empty() {
+            let failed = std::mem::take(&mut self.open_failures);
+            log::warn!(target: "wavcraft", "could not open: {}", failed.join("; "));
+            self.error =
+                Some(if failed.len() == 1 { failed.join("") } else { format!("{} files could not be opened: {}", failed.len(), failed.join("; ")) });
+            self.notice = None;
+        }
+    }
+
+    /// File › Open Append: add `paths` to the end of the current document (`to_new` false) as one
+    /// undo step, or make a new document of them back to back, on a worker thread.
+    fn start_append(&mut self, to_new: bool, paths: Vec<PathBuf>, ctx: &egui::Context) -> Result<(), String> {
+        if paths.is_empty() {
+            return Err("Open Append: no file was chosen".to_string());
+        }
+        if self.appending.is_some() || self.making.is_some() || self.opening.is_some() || !self.open_queue.is_empty() {
+            return Err("wait for the file being opened or added to finish".to_string());
+        }
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let to = if to_new {
+            AppendTo::New
+        } else {
+            let Some(editor) = self.editor.as_ref() else { return Err("Open Append › To Current: no file is open".to_string()) };
+            AppendTo::Current { doc_id: self.doc_id, base: editor.history.current().clone() }
+        };
+        let (tx, rx) = channel();
+        let (progress, cancel) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicBool::new(false)));
+        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), ..OpenOptions::default() };
+        let (job_progress, job_cancel, ctx, n) = (progress.clone(), cancel.clone(), ctx.clone(), paths.len());
+        let base = match &to {
+            AppendTo::Current { base, .. } => Some(base.clone()),
+            AppendTo::New => None,
+        };
+        std::thread::spawn(move || {
+            let mut report = |p: f64| job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+            let out = match base {
+                Some(base) => Appended::Current(append::append_files(&base, &paths, opts.free_space, &mut report, &job_cancel)),
+                None => Appended::New(append::new_from_files(&opts, &paths, &mut report, &job_cancel)),
+            };
+            let _ = tx.send(out);
+            ctx.request_repaint();
+        });
+        self.appending = Some(Appending { to, paths: n, result: rx, progress, cancel });
+        self.error = None;
+        self.notice = None;
+        Ok(())
+    }
+
+    fn finish_appending(&mut self, ctx: &egui::Context) {
+        let Some(a) = &self.appending else { return };
+        let result = match a.result.try_recv() {
+            Ok(r) => Some(r),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => None,
+        };
+        let Some(Appending { to, paths, .. }) = self.appending.take() else { return };
+        let Some(result) = result else {
+            self.error = Some("Open Append: the worker stopped unexpectedly".to_string());
+            return;
+        };
+        let refused = |list: &[(PathBuf, String)]| list.iter().map(|(p, why)| format!("{}: {why}", path_name(p))).collect::<Vec<_>>().join("; ");
+        let mut problems = String::new();
+        let mut done = None;
+        match (to, result) {
+            (AppendTo::Current { doc_id, base }, Appended::Current(r)) => {
+                if !r.refused.is_empty() {
+                    problems = format!("not added: {}", refused(&r.refused));
+                }
+                if r.cancelled {
+                    problems = "Open Append was cancelled".to_string();
+                } else if let Some(edit) = r.edit {
+                    let found = (0..self.docs.len(self.editor.is_some())).find(|&i| self.doc_id_at(i).is_some_and(|(id, _)| id == doc_id));
+                    let moved = match found {
+                        None => Err("the document was closed meanwhile".to_string()),
+                        Some(i) => self.switch_doc(i),
+                    };
+                    let still = self.editor.as_ref().is_some_and(|e| Arc::ptr_eq(e.history.current(), &base));
+                    match moved {
+                        Err(why) => problems = format!("{problems} Nothing was added: {why}.").trim().to_string(),
+                        Ok(()) if !still => {
+                            problems =
+                                format!("{problems} Nothing was added: the document changed while the files were being added.").trim().to_string();
+                        }
+                        Ok(()) => {
+                            let frames: u64 = r.added.iter().map(|(_, f)| f).sum();
+                            if let Some(e) = self.editor.as_mut() {
+                                e.history.push_edit(edit);
+                            }
+                            done = Some(format!("Appended {} file(s), {frames} frames", r.added.len()));
+                            self.rebuild(ctx);
+                        }
+                    }
+                }
+            }
+            (AppendTo::New, Appended::New(r)) => {
+                if !r.refused.is_empty() {
+                    problems = format!("not added: {}", refused(&r.refused));
+                }
+                if r.cancelled {
+                    problems = "Open Append was cancelled".to_string();
+                } else if let Some(state) = r.state {
+                    let frames = state.len_frames();
+                    self.add_document(state, ctx);
+                    done = Some(format!("New file from {} of {paths} file(s), {frames} frames", r.added.len()));
+                } else if problems.is_empty() {
+                    problems = "nothing could be added".to_string();
+                }
+            }
+            _ => problems = "the worker answered the wrong question".to_string(),
+        }
+        if !problems.is_empty() {
+            let why = format!("Open Append: {problems}");
+            log::warn!(target: "wavcraft", "{why}");
+            self.error = Some(why);
+        }
+        self.notice = done;
     }
 
     /// Park the current document's fields (the window's are left empty).
@@ -734,11 +902,23 @@ impl WaveApp {
         }
     }
 
-    fn pick_file(&mut self, ctx: &egui::Context) {
-        let picked =
-            rfd::FileDialog::new().add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "caf"]).pick_file();
-        if let Some(path) = picked {
-            self.open(path, ctx);
+    fn audio_dialog() -> rfd::FileDialog {
+        rfd::FileDialog::new().add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "caf"])
+    }
+
+    /// File › Open: one or several files; several open one after the other, each as its own document.
+    fn pick_file(&mut self, _ctx: &egui::Context) {
+        if let Some(paths) = Self::audio_dialog().pick_files() {
+            self.open_many(paths);
+        }
+    }
+
+    /// File › Open Append › To Current… / To New…
+    fn pick_append(&mut self, to_new: bool, ctx: &egui::Context) {
+        if let Some(paths) = Self::audio_dialog().pick_files()
+            && let Err(e) = self.start_append(to_new, paths, ctx)
+        {
+            self.error = Some(e);
         }
     }
 
@@ -1210,8 +1390,13 @@ impl WaveApp {
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
             "STATE" => {
-                let busy =
-                    self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() || self.making.is_some() || self.save_all.is_some();
+                let busy = self.opening.is_some()
+                    || !self.open_queue.is_empty()
+                    || self.appending.is_some()
+                    || self.rebuilding.is_some()
+                    || self.saving.is_some()
+                    || self.making.is_some()
+                    || self.save_all.is_some();
                 let unsaved = u8::from(self.unsaved());
                 match &self.editor {
                     Some(e) => {
@@ -1236,6 +1421,28 @@ impl WaveApp {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
             }
+            // Several files, each its own document, opened one at a time: `OPEN_MANY <p1> <p2> ...`
+            // (separated by tabs when a path has a space in it).
+            "OPEN_MANY" if !rest.trim().is_empty() => {
+                let paths = split_paths(rest);
+                let n = paths.len();
+                self.open_many(paths);
+                format!("OK queued={n}")
+            }
+            // `APPEND current|new <p1> [...]`: add files to the end of the current document as one
+            // undo step, or make a new document of them back to back.
+            "APPEND" => {
+                let (to, files) = rest.trim_start().split_once(char::is_whitespace).unwrap_or((rest.trim(), ""));
+                match to {
+                    "current" | "new" => match self.start_append(to == "new", split_paths(files), ctx) {
+                        Ok(()) => "OK".to_string(),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    _ => "ERR APPEND current|new <path> [<path> ...]".to_string(),
+                }
+            }
+            // What the last Open Append / OPEN_MANY reported (empty when nothing went wrong).
+            "LASTERROR" => format!("OK {}", self.error.as_deref().unwrap_or("-")),
             "SELECT" => {
                 let mut it = rest.split_whitespace().map(str::parse::<usize>);
                 match (it.next(), it.next()) {
@@ -1377,6 +1584,17 @@ impl WaveApp {
                 if ui.button("Open…  Ctrl+O").clicked() {
                     self.pick_file(ui.ctx());
                 }
+                ui.menu_button("Open Append", |ui| {
+                    let free = self.appending.is_none() && self.making.is_none() && self.saving.is_none();
+                    if ui.add_enabled(self.editor.is_some() && free, egui::Button::new("To Current…")).clicked() {
+                        ui.close();
+                        self.pick_append(false, ui.ctx());
+                    }
+                    if ui.add_enabled(free, egui::Button::new("To New…")).clicked() {
+                        ui.close();
+                        self.pick_append(true, ui.ctx());
+                    }
+                });
                 ui.menu_button("New", |ui| {
                     if ui.button("Audio File…").clicked() {
                         self.new_audio = Some(NewAudio::default());
@@ -1464,6 +1682,12 @@ impl WaveApp {
             } else if let Some(s) = &self.saving {
                 ui.spinner();
                 ui.label(format!("Saving {}… {}%", s.path.display(), s.progress.load(Ordering::Relaxed) / 10));
+            } else if let Some(a) = &self.appending {
+                ui.spinner();
+                ui.label(format!("Open Append: {} file(s)… {}%", a.paths, a.progress.load(Ordering::Relaxed) / 10));
+                if ui.button("Cancel").clicked() {
+                    a.cancel.store(true, Ordering::Relaxed);
+                }
             } else if let Some(m) = &self.making {
                 ui.spinner();
                 ui.label(format!("{}… {}%", m.what, m.progress.load(Ordering::Relaxed) / 10));
@@ -1656,6 +1880,8 @@ impl eframe::App for WaveApp {
     /// found the channel silent behind another window).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finish_opening();
+        self.pump_open_queue(ctx);
+        self.finish_appending(ctx);
         self.finish_rebuild();
         self.finish_saving(ctx);
         self.finish_making(ctx);
@@ -1729,6 +1955,12 @@ impl eframe::App for WaveApp {
 
 /// The actions whose keys were pressed this frame. Keys with more modifiers are taken first, so
 /// Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
+/// The paths of a control line: tab-separated when there is a tab, else by spaces.
+fn split_paths(s: &str) -> Vec<PathBuf> {
+    let parts: Vec<&str> = if s.contains('\t') { s.split('\t').collect() } else { s.split_whitespace().collect() };
+    parts.into_iter().map(str::trim).filter(|p| !p.is_empty()).map(PathBuf::from).collect()
+}
+
 fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
     let mut keys: Vec<(ActionId, actions::Shortcut)> = TABLE.iter().flat_map(|a| a.keys.iter().map(move |k| (a.id, *k))).collect();
     keys.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));

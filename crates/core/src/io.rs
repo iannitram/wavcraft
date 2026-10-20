@@ -55,6 +55,8 @@ pub enum OpenError {
     /// The session folder `folder` (the one session folders are made in) could not be made or
     /// written to (`reason`, the system's words). Nothing was read past the file's start.
     SessionFolder { folder: PathBuf, reason: String },
+    /// An append (f57): the file's sample rate is not the one the document has. Nothing was written.
+    RateMismatch { file: u32, expected: u32 },
 }
 
 impl std::fmt::Display for OpenError {
@@ -88,6 +90,9 @@ impl std::fmt::Display for OpenError {
                 folder.display(),
                 HOW_TO_CHANGE
             ),
+            OpenError::RateMismatch { file, expected } => {
+                write!(f, "its sample rate is {file} Hz and the document's is {expected} Hz; convert one of them first")
+            }
         }
     }
 }
@@ -162,24 +167,58 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
     let file_len = file.metadata()?.len();
     let mut head = Vec::new();
     (&mut file).take(HEAD_BYTES).read_to_end(&mut head)?;
-    let ext = path.extension().and_then(|e| e.to_str());
 
     // The file was read above, so an error from here on is the session folder's, not the file's.
     let root = opts.sessions_root.clone().unwrap_or_else(crate::store::default_sessions_root);
     let store = Store::create_session(Some(root.as_path()), opts.store.clone())
         .map_err(|e| OpenError::SessionFolder { folder: root.clone(), reason: e.to_string() })?;
+    stream_file(path, file, file_len, head, &store, opts.free_space, None, progress, cancel)
+}
+
+/// Open `path` into an existing store (f57, Open Append): its blocks are written to `store`, next
+/// to the document's own, and the returned state holds only the file's audio. The file's sample
+/// rate must be `expect_rate` ([`OpenError::RateMismatch`], before any sample is written). On an
+/// error the store is left as it was, apart from blocks no step refers to.
+pub fn open_into(
+    path: &Path,
+    store: &Store,
+    expect_rate: u32,
+    free_space: Option<FreeSpaceFn>,
+    progress: &mut dyn FnMut(f64),
+    cancel: &AtomicBool,
+) -> Result<DocState, OpenError> {
+    let mut file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let mut head = Vec::new();
+    (&mut file).take(HEAD_BYTES).read_to_end(&mut head)?;
+    stream_file(path, file, file_len, head, store, free_space, Some(expect_rate), progress, cancel)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_file(
+    path: &Path,
+    mut file: File,
+    file_len: u64,
+    head: Vec<u8>,
+    store: &Store,
+    free_space: Option<FreeSpaceFn>,
+    expect_rate: Option<u32>,
+    progress: &mut dyn FnMut(f64),
+    cancel: &AtomicBool,
+) -> Result<DocState, OpenError> {
+    let ext = path.extension().and_then(|e| e.to_str());
     let mut src = SourceFormat::synthetic(0, 0);
     src.path = path.to_path_buf();
-    let free_space = opts.free_space.unwrap_or(crate::space::free_space);
-    let mut job = Job { file: &mut file, file_len, progress, cancel, free_space };
+    let free_space = free_space.unwrap_or(crate::space::free_space);
+    let mut job = Job { file: &mut file, file_len, progress, cancel, free_space, expect_rate };
     let built = if is_wav(&head) {
-        open_wav(&mut job, &store, &mut src)
+        open_wav(&mut job, store, &mut src)
     } else if is_aiff(&head) {
-        open_aiff(&mut job, &store, &mut src)
+        open_aiff(&mut job, store, &mut src)
     } else {
         let detected = soundcraft_audio_io::detect_format(&head, ext);
         drop(head);
-        open_symphonia(path, ext, detected, None, &mut job, &store, &mut src)
+        open_symphonia(path, ext, detected, None, &mut job, store, &mut src)
     }?;
     if cancel.load(Ordering::Relaxed) {
         return Err(OpenError::Cancelled);
@@ -188,13 +227,13 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
         return Err(OpenError::Empty);
     }
     // The last writes may still sit in the store's buffer: a full disk shows up here too.
-    store.flush().map_err(|e| write_error(&store, e))?;
+    store.flush().map_err(|e| write_error(store, e))?;
     (job.progress)(1.0);
     for w in &src.warnings {
         log::warn!("{}: {w}", path.display());
     }
     let rate = src.sample_rate;
-    DocState::new(store, built.channels, rate, src).map_err(|e| malformed(e.to_string()))
+    DocState::new(store.clone(), built.channels, rate, src).map_err(|e| malformed(e.to_string()))
 }
 
 struct Job<'a> {
@@ -203,9 +242,19 @@ struct Job<'a> {
     progress: &'a mut dyn FnMut(f64),
     cancel: &'a AtomicBool,
     free_space: FreeSpaceFn,
+    /// Open Append: the only sample rate the file may have.
+    expect_rate: Option<u32>,
 }
 
 impl Job<'_> {
+    /// Refuse a file whose rate is not the one an append needs.
+    fn check_expected_rate(&self, rate: u32) -> Result<(), OpenError> {
+        match self.expect_rate {
+            Some(expected) if expected != rate => Err(OpenError::RateMismatch { file: rate, expected }),
+            _ => Ok(()),
+        }
+    }
+
     fn check(&mut self, at: u64) -> Result<(), OpenError> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(OpenError::Cancelled);
@@ -555,6 +604,7 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
         return Err(malformed("WAV declares zero channels"));
     }
     check_rate(fmt.sample_rate, "WAV")?;
+    job.check_expected_rate(fmt.sample_rate)?;
     src.sample_rate = fmt.sample_rate;
     src.channels = fmt.channels;
     let channels = usize::from(fmt.channels);
@@ -684,6 +734,7 @@ fn open_aiff(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result
     if !(1.0..=MAX_SAMPLE_RATE).contains(&rate) {
         return Err(malformed(format!("AIFF sample rate {rate} out of range")));
     }
+    job.check_expected_rate(rate.round() as u32)?;
     src.sample_rate = rate.round() as u32;
     src.channels = channels as u16;
     let int_kind = |big_endian: bool| -> Result<(PcmKind, SampleFormat), OpenError> {
@@ -860,6 +911,7 @@ fn decode_symphonia(
     let params = track.codec_params.clone();
     src.sample_rate = params.sample_rate.filter(|&r| r > 0).ok_or_else(|| malformed("unknown sample rate"))?;
     check_rate(src.sample_rate, "the file")?;
+    job.check_expected_rate(src.sample_rate)?;
     src.channels = u16::try_from(params.channels.map(|c| c.count()).unwrap_or(0)).map_err(|_| unsupported("too many channels"))?;
     src.format = format_from_codec(params.codec, detected);
     src.sample_format = sample_format_of(&params);

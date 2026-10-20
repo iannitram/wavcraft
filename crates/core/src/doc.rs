@@ -19,6 +19,7 @@ use soundcraft_audio_io::{AudioBuffer, BwfInfo, FileFormat, SampleFormat};
 
 use crate::store::{BLOCK_FRAMES, BlockHandle, BlockId, Store};
 
+pub mod append;
 pub mod edit;
 pub mod history;
 pub mod newdoc;
