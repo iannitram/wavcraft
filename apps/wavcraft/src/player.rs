@@ -1,4 +1,5 @@
-//! Playback of the open file through the default output device.
+//! Playback of the open file through the chosen output device (the system default unless the
+//! preferences name one).
 //!
 //! The audio callback never blocks or allocates: it `try_lock`s the shared buffer and plays
 //! silence if the UI holds it. The file's rate is converted to the device's with linear
@@ -32,11 +33,14 @@ pub struct Player {
     pub error: Option<String>,
     /// The output device's name, for the status bar.
     pub device: String,
+    /// The device the preferences asked for (`None`: the system default).
+    wanted: Option<String>,
 }
 
 impl Player {
-    /// Open the default output device. Without one the player still works, silently.
-    pub fn new() -> Player {
+    /// Open the output device named `wanted` (the system default for `None`, or when that name is
+    /// not there). Without a device the player still works, silently.
+    pub fn new(wanted: Option<String>) -> Player {
         let shared = Arc::new(Shared {
             audio: Mutex::new(None),
             pos: AtomicU64::new(0f64.to_bits()),
@@ -45,16 +49,24 @@ impl Player {
             failed: AtomicBool::new(false),
             levels: LevelTap::default(),
         });
-        let mut player = Player { shared, stream: None, error: None, device: String::new() };
+        let mut player = Player { shared, stream: None, error: None, device: String::new(), wanted };
         player.reopen();
         player
     }
 
-    /// (Re)open the default output device, replacing any stream there was.
+    /// Play through the device named `wanted` from now on (`None`: the system default): stops
+    /// playback and reopens the output.
+    pub fn set_output(&mut self, wanted: Option<String>) {
+        self.stop();
+        self.wanted = wanted;
+        self.reopen();
+    }
+
+    /// (Re)open the wanted output device, replacing any stream there was.
     fn reopen(&mut self) {
         self.stream = None;
         self.shared.failed.store(false, Ordering::Relaxed);
-        match open_stream(&self.shared) {
+        match open_stream(&self.shared, self.wanted.as_deref()) {
             Ok((stream, device)) => {
                 self.stream = Some(stream);
                 self.device = device;
@@ -117,8 +129,67 @@ impl Player {
     }
 }
 
-fn open_stream(shared: &Arc<Shared>) -> Result<(cpal::Stream, String), String> {
-    let device = cpal::default_host().default_output_device().ok_or("no audio output device")?;
+/// The names of the output and input devices the system offers, for the Audio Hardware page.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Devices {
+    pub output: Vec<String>,
+    pub input: Vec<String>,
+}
+
+/// List the devices on a worker thread (the system can block for seconds while it asks each
+/// device whether it does output; one stuck device must not freeze the window). The answer comes
+/// through the receiver: the output and input devices, or, if that takes too long, every device
+/// the system names under both headings.
+pub fn list_devices_in_background() -> std::sync::mpsc::Receiver<Devices> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new().name("audio devices".into()).spawn(move || {
+        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        let _ = std::thread::Builder::new().name("audio device probe".into()).spawn(move || {
+            let host = cpal::default_host();
+            let names = |devices: Vec<cpal::Device>| -> Vec<String> { devices.iter().filter_map(|d| d.name().ok()).collect() };
+            let _ = probe_tx.send(Devices {
+                output: names(host.output_devices().map(Iterator::collect).unwrap_or_default()),
+                input: names(host.input_devices().map(Iterator::collect).unwrap_or_default()),
+            });
+        });
+        let devices = probe_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or_else(|_| {
+            log::warn!("the audio system is slow to list output and input devices; listing every device under both");
+            let all: Vec<String> = cpal::default_host().devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+            Devices { output: all.clone(), input: all }
+        });
+        let _ = tx.send(devices);
+    });
+    rx
+}
+
+/// [`list_devices_in_background`], waited for (the control channel's `DEVICES`).
+pub fn list_devices() -> Devices {
+    list_devices_in_background().recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_default()
+}
+
+/// Which of `available` to open for the wanted name: its position, or `None` (take the system
+/// default) when nothing was asked for or the name isn't there (the device was unplugged).
+fn pick(wanted: Option<&str>, available: &[String]) -> Option<usize> {
+    let wanted = wanted?;
+    available.iter().position(|n| n == wanted)
+}
+
+fn open_stream(shared: &Arc<Shared>, wanted: Option<&str>) -> Result<(cpal::Stream, String), String> {
+    let host = cpal::default_host();
+    let chosen = wanted.and_then(|w| {
+        // Not `output_devices()`: that asks every device about output, which can block.
+        let devices: Vec<cpal::Device> = host.devices().ok()?.collect();
+        let names: Vec<String> = devices.iter().map(|d| d.name().unwrap_or_default()).collect();
+        let found = pick(Some(w), &names).and_then(|i| devices.into_iter().nth(i));
+        if found.is_none() {
+            log::warn!("audio output {w:?} is not available; using the system default");
+        }
+        found
+    });
+    let device = match chosen {
+        Some(d) => d,
+        None => host.default_output_device().ok_or("no audio output device")?,
+    };
     let name = device.name().unwrap_or_else(|_| "output".to_string());
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let config: cpal::StreamConfig = supported.clone().into();
@@ -231,6 +302,14 @@ mod tests {
         shared.pos.store(from.to_bits(), Ordering::Relaxed);
         shared.end.store(to.to_bits(), Ordering::Relaxed);
         shared.playing.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_wanted_device_is_found_by_name_or_the_default_is_used() {
+        let names: Vec<String> = ["Built-in", "USB Interface", "HDMI"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(pick(Some("USB Interface"), &names), Some(1));
+        assert_eq!(pick(Some("Gone"), &names), None, "an unplugged device falls back to the default");
+        assert_eq!(pick(None, &names), None);
     }
 
     #[test]
