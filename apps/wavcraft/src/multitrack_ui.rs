@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use wavcraft_core::Document;
-use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, TrackId};
-use wavcraft_core::multitrack::{MtError, Multitrack, bit_depth_from_bits, bits_of};
+use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, ClipId, TrackId};
+use wavcraft_core::multitrack::{AudioType, MtError, Multitrack, bit_depth_from_bits, bits_of};
 
 const HEADER_W: f32 = 230.0;
 const ROW_H: f32 = 64.0;
@@ -30,6 +30,8 @@ pub struct MtView {
     pub show: bool,
     dialog: Option<NewDialog>,
     selected: Option<TrackId>,
+    /// The clips selected for assigning an audio type (f123).
+    sel_clips: Vec<ClipId>,
     rename: Option<(TrackId, String)>,
     pub message: Option<String>,
     px_per_sec: f32,
@@ -44,6 +46,7 @@ impl Default for MtView {
             show: false,
             dialog: None,
             selected: None,
+            sel_clips: Vec::new(),
             rename: None,
             message: None,
             px_per_sec: 60.0,
@@ -62,6 +65,7 @@ impl MtView {
     fn create(&mut self, name: &str, rate: u32, depth: BitDepthSetting) -> Result<(), MtError> {
         self.mt = Some(Multitrack::new(name, rate, depth)?);
         self.selected = None;
+        self.sel_clips.clear();
         self.rename = None;
         self.show = true;
         Ok(())
@@ -162,6 +166,38 @@ impl MtView {
             ui.label("Zoom");
             ui.add(egui::Slider::new(&mut self.px_per_sec, 5.0..=400.0).logarithmic(true).show_value(false));
         });
+        // Audio types (f123): assign to the selected clips, filter the view, and the properties line.
+        ui.horizontal(|ui| {
+            ui.label("Audio type");
+            let sel = self.sel_clips.clone();
+            let kinds = sel.iter().map(|c| mt.clip_type(*c)).collect::<Vec<_>>();
+            let current = match kinds.first() {
+                Some(k) if kinds.iter().all(|x| x == k) => k.map_or("None", AudioType::label),
+                Some(_) => "Mixed",
+                None => "-",
+            };
+            ui.add_enabled_ui(!sel.is_empty(), |ui| {
+                egui::ComboBox::from_id_salt("clip-type").selected_text(current).show_ui(ui, |ui| {
+                    for t in AudioType::ALL {
+                        if ui.selectable_label(false, t.label()).clicked() {
+                            note(&mut failure, mt.set_clip_type(&sel, Some(t)));
+                        }
+                    }
+                    if ui.selectable_label(false, "None").clicked() {
+                        note(&mut failure, mt.set_clip_type(&sel, None));
+                    }
+                });
+            });
+            ui.weak(format!("{} clip(s) selected (click a clip; Shift/Ctrl adds)", sel.len()));
+            ui.separator();
+            ui.label("Show");
+            egui::ComboBox::from_id_salt("type-filter").selected_text(mt.type_filter.map_or("All clips", AudioType::label)).show_ui(ui, |ui| {
+                ui.selectable_value(&mut mt.type_filter, None, "All clips");
+                for t in AudioType::ALL {
+                    ui.selectable_value(&mut mt.type_filter, Some(t), t.label());
+                }
+            });
+        });
         if let Some(m) = &self.message {
             ui.colored_label(Color32::from_rgb(235, 80, 70), m);
         }
@@ -240,14 +276,49 @@ impl MtView {
                 }
                 let rate = f64::from(mt.rate());
                 let p = ui.painter_at(lane);
-                for c in &clips {
+                let mut clicked_clip: Option<ClipId> = None;
+                for c in clips.iter().filter(|c| mt.clip_visible(c.id)) {
                     let x0 = lane.left() + (c.start as f64 / rate) as f32 * self.px_per_sec;
                     let w = ((c.length as f64 / rate) as f32 * self.px_per_sec).max(2.0);
                     let cr = Rect::from_min_size(pos2(x0, lane.top() + 4.0), vec2(w, ROW_H - 8.0));
                     let fill = if mute { colour.gamma_multiply(0.25) } else { colour.gamma_multiply(0.6) };
                     p.rect_filled(cr, 3.0, fill);
                     p.rect_stroke(cr, 3.0, Stroke::new(1.0, colour), StrokeKind::Inside);
-                    p.text(cr.left_top() + vec2(4.0, 3.0), egui::Align2::LEFT_TOP, &c.name, egui::FontId::proportional(12.0), Color32::WHITE);
+                    let picked = self.sel_clips.contains(&c.id);
+                    if picked {
+                        p.rect_stroke(cr, 3.0, Stroke::new(2.0, Color32::WHITE), StrokeKind::Inside);
+                    }
+                    let mut label_at = cr.left_top() + vec2(4.0, 3.0);
+                    if let Some(t) = mt.clip_type(c.id) {
+                        let [tr, tg, tb] = t.colour();
+                        let tag = Rect::from_min_size(cr.left_top(), vec2(cr.width(), 14.0));
+                        p.rect_filled(tag, 3.0, Color32::from_rgb(tr, tg, tb));
+                        p.text(
+                            tag.left_center() + vec2(4.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            t.label(),
+                            egui::FontId::proportional(10.0),
+                            Color32::BLACK,
+                        );
+                        label_at.y += 14.0;
+                    }
+                    p.text(label_at, egui::Align2::LEFT_TOP, &c.name, egui::FontId::proportional(12.0), Color32::WHITE);
+                    let resp = ui.interact(cr.intersect(lane), ui.id().with(("clip", c.id.0)), Sense::click());
+                    if resp.clicked() {
+                        clicked_clip = Some(c.id);
+                    }
+                    resp.on_hover_text(format!("{} · type: {}", c.name, mt.clip_type(c.id).map_or("none", AudioType::label)));
+                }
+                if let Some(cid) = clicked_clip {
+                    if ui.input(|i| i.modifiers.shift || i.modifiers.command) {
+                        if let Some(pos) = self.sel_clips.iter().position(|x| *x == cid) {
+                            self.sel_clips.remove(pos);
+                        } else {
+                            self.sel_clips.push(cid);
+                        }
+                    } else {
+                        self.sel_clips = vec![cid];
+                    }
                 }
             }
             if mt.track_count() == 0 {
@@ -286,6 +357,31 @@ impl MtView {
                 Ok(format!("OK view={v}"))
             }
             ("VIEW", _) => usage("VIEW waveform|multitrack"),
+            ("CLIPTYPE", _) => {
+                let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+                const U: &str = "CLIPTYPE <track> <i[,j...]|all> dialogue|music|sfx|ambience|none | CLIPTYPE filter dialogue|music|sfx|ambience|all";
+                if word(0) == "filter" && w.len() == 2 {
+                    mt.type_filter = if word(1).eq_ignore_ascii_case("all") { None } else { AudioType::parse(word(1))? };
+                    return Ok(format!("OK filter={}", mt.type_filter.map_or("all", AudioType::key)));
+                }
+                if w.len() != 3 {
+                    return usage(U);
+                }
+                let track = mt.find_track(word(0))?;
+                let t = AudioType::parse(word(2))?;
+                let n = mt.session.track(track).map_or(0, |tr| tr.clips().len());
+                let positions: Vec<usize> = if word(1) == "all" {
+                    (1..=n).collect()
+                } else {
+                    word(1)
+                        .split(',')
+                        .map(|x| x.parse().map_err(|_| MtError(format!("{x:?} is not a clip number (1-based)"))))
+                        .collect::<Result<_, _>>()?
+                };
+                let ids = positions.iter().map(|p| mt.clip_at(track, *p)).collect::<Result<Vec<_>, _>>()?;
+                mt.set_clip_type(&ids, t)?;
+                Ok(format!("OK clips={}", ids.len()))
+            }
             ("SESSION", "new") if w.len() >= 2 => {
                 let (mut rate, mut bits) = (48_000_u32, 24_u32);
                 for kv in &w[2..] {
@@ -422,6 +518,21 @@ mod tests {
         assert_eq!(tokens(r#"add "Lead Vox" "/tmp/a b.wav" 1.5"#).unwrap().len(), 4);
         assert!(tokens(r#"add "open"#).is_err());
         assert_eq!(tokens("").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn cliptype_assigns_one_or_many_and_sets_the_filter() {
+        let mut v = MtView::default();
+        assert!(v.control("CLIPTYPE", "1 1 music", None).starts_with("ERR no session"));
+        v.control("SESSION", "new T", None);
+        v.control("TRACK", "add A", None);
+        assert!(v.control("CLIPTYPE", "A 1 music", None).starts_with("ERR no clip 1"));
+        assert!(v.control("CLIPTYPE", "A all music", None).starts_with("ERR no clips"));
+        assert!(v.control("CLIPTYPE", "A 1", None).starts_with("ERR usage"));
+        assert!(v.control("CLIPTYPE", "filter foley", None).starts_with("ERR no audio type"));
+        assert_eq!(v.control("CLIPTYPE", "filter sfx", None), "OK filter=sfx");
+        assert!(v.control("SESSION", "state", None).contains(r#""filter":"sfx""#));
+        assert_eq!(v.control("CLIPTYPE", "filter all", None), "OK filter=all");
     }
 
     #[test]
