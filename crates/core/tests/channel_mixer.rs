@@ -1,4 +1,4 @@
-//! Channel Mixer (z13.8, B027): identity, swap, sum, invert, mono pass-through, parsing, a
+//! Channel Mixer (B027): identity, swap, sum, invert, mono pass-through, parsing, a
 //! selection, and one undo.
 
 use std::path::{Path, PathBuf};
