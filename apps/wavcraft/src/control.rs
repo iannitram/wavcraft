@@ -12,6 +12,7 @@
 //! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
 //! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1> selection=<0|1> zone.left=<ids|-> zone.right=… zone.bottom=… zone.center=… front.left=<id|-> front.right=… front.bottom=… maximized=<id|->` (which panels are shown, then the shown tabs of each dock zone in order, the front tab of each, and the maximised panel)
 //! - `PANEL move <id> <left|right|bottom>` | `PANEL maximize <id>` (again restores) | `PANEL close <id>` | `PANEL activate <id>` → the same line as `PANELS`; the layout is saved in the settings file
+//! - `DIVIDER drag <left|right|bottom> <dx> <dy>` | `DIVIDER corner <dx> <dy> [left|right]` | `DIVIDER reset <zone>` → the same line as `PANELS` (which also carries `size.left=… size.right=… size.bottom=…`, in points); what dragging a divider, dragging a corner where two meet, and double-clicking a divider do; held to the zone minimum and the window; saved in the settings file
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
