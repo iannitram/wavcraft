@@ -909,9 +909,20 @@ fn decode_symphonia(
     let fmt_opts = FormatOptions { enable_gapless: true, ..FormatOptions::default() };
     let probed = symphonia::default::get_probe().format(&hint, mss, &fmt_opts, &MetadataOptions::default()).map_err(sym_err)?;
     let mut reader = probed.format;
-    let track =
-        reader.tracks().iter().find(|t| t.codec_params.codec != sc::CODEC_TYPE_NULL).ok_or_else(|| unsupported("no decodable audio track"))?;
+    let Some(track) = reader.tracks().iter().find(|t| t.codec_params.codec != sc::CODEC_TYPE_NULL) else {
+        // MOV/MP4 files list tracks whose codec symphonia does not know (AC-3, video...).
+        return Err(if reader.tracks().is_empty() {
+            unsupported("no decodable audio track")
+        } else {
+            unsupported("this file has no audio track in a codec WavCraft can read; the audio codec is not supported")
+        });
+    };
     let mut track_id = track.id;
+    let others = reader.tracks().iter().filter(|t| t.id != track_id && t.codec_params.codec != sc::CODEC_TYPE_NULL).count();
+    if others > 0 {
+        src.warnings
+            .push(format!("the file has {} audio tracks; opened the first one (track {track_id}) and left the other {others} unopened", others + 1));
+    }
     let params = track.codec_params.clone();
     src.sample_rate = params.sample_rate.filter(|&r| r > 0).ok_or_else(|| malformed("unknown sample rate"))?;
     check_rate(src.sample_rate, "the file")?;
