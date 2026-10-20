@@ -22,6 +22,12 @@
 //! program's session is refused), adopts the packs, checks every block against its pack, and
 //! rebuilds the states and labels. If anything fails, every file is left as found.
 //!
+//! Each history step is recorded with **its own** document state: its sample rate and its source
+//! (so an older step restored by undo has the rate and source it had), and any number of
+//! [`Extra`] records, opaque versioned text per step that features keeping data beside the
+//! samples (markers) give through [`Snapshot::with_extras`] and read back from
+//! [`Recovered::extras`]. Unknown keys and versions are carried, never dropped.
+//!
 //! The journal is plain text (see `encode`), versioned, with an FNV-1a checksum of everything
 //! before its last line, so a damaged one is refused rather than half-read.
 
@@ -46,21 +52,52 @@ use crate::store::{BlockHandle, BlockId, BlockRef, HELD_FILE, LOCK_FILE, Store, 
 pub const JOURNAL_FILE: &str = "journal.wcj";
 /// Where a journal is written before it is renamed over [`JOURNAL_FILE`].
 pub const JOURNAL_TMP: &str = "journal.wcj.tmp";
-const MAGIC: &str = "wavcraft-journal 1";
+/// Version 2 records each step's own sample rate and source, and per-step [`Extra`] records.
+/// (Version 1 never shipped: it kept one rate and source for all steps.)
+const MAGIC: &str = "wavcraft-journal 2";
 
 // ---------------------------------------------------------------- snapshot and encoding
 
+/// A piece of per-step document state the core does not know the shape of (markers, a selection,
+/// anything a later feature keeps beside the samples), carried through the journal as opaque
+/// versioned text so recovery gives it back with the step it belonged to. The owner of `key`
+/// defines `data` and bumps `version` when its meaning changes; a reader that does not know a
+/// key or version keeps the record and does not interpret it (so nothing is ever dropped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extra {
+    /// Who owns the record, e.g. `markers`. Not empty.
+    pub key: String,
+    /// The owner's format version for `data`.
+    pub version: u32,
+    /// The owner's text (any characters).
+    pub data: String,
+}
+
 /// What a journal records: the history's steps (label and state, oldest first) and the cursor.
+/// Each state's own sample rate and source are recorded with its step, and so is its `extras`.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub steps: Vec<(String, Arc<DocState>)>,
     pub cursor: usize,
+    /// Per-step [`Extra`] records, parallel to `steps` (a missing entry is none).
+    pub extras: Vec<Vec<Extra>>,
 }
 
 impl Snapshot {
     /// The history as it is now (cheap: clones `Arc`s).
     pub fn of(history: &History) -> Snapshot {
-        Snapshot { steps: history.steps().iter().map(|s| (s.label().to_string(), s.state().clone())).collect(), cursor: history.cursor() }
+        Snapshot {
+            steps: history.steps().iter().map(|s| (s.label().to_string(), s.state().clone())).collect(),
+            cursor: history.cursor(),
+            extras: Vec::new(),
+        }
+    }
+
+    /// The same snapshot with `f(step index, state)` giving each step's extra records (what the
+    /// app keeps per state beside the samples, such as markers).
+    pub fn with_extras(mut self, mut f: impl FnMut(usize, &DocState) -> Vec<Extra>) -> Snapshot {
+        self.extras = self.steps.iter().enumerate().map(|(i, (_, st))| f(i, st)).collect();
+        self
     }
 
     /// A token that changes when the history changes (a step added, dropped or replaced, the
@@ -166,35 +203,24 @@ fn sample_from(n: &str) -> SampleFormat {
 
 /// The journal's text for `snap`. `next_id` is the store's next block id.
 fn encode(snap: &Snapshot, next_id: u64) -> Result<String, String> {
-    let Some((_, cur)) = snap.steps.get(snap.cursor) else { return Err("the cursor is past the steps".to_string()) };
-    let src = cur.source();
+    if snap.cursor >= snap.steps.len() {
+        return Err("the cursor is past the steps".to_string());
+    }
     let mut o = String::new();
     let _ = writeln!(o, "{MAGIC}");
     let _ = writeln!(o, "next-id {next_id}");
-    let _ = writeln!(o, "rate {}", cur.sample_rate());
-    let _ = writeln!(o, "src-path {}", esc(&src.path.to_string_lossy()));
-    let _ = writeln!(o, "src-format {}", format_name(src.format));
-    let _ = writeln!(o, "src-sample {}", sample_name(src.sample_format));
-    let _ = writeln!(o, "src-rate {}", src.sample_rate);
-    let _ = writeln!(o, "src-channels {}", src.channels);
-    let _ = writeln!(o, "src-rf64 {}", u8::from(src.rf64));
-    if let Some(b) = &src.bwf {
-        let _ = writeln!(
-            o,
-            "src-bwf {} {} {} {} {} {}",
-            esc(&b.description),
-            esc(&b.originator),
-            esc(&b.originator_reference),
-            esc(&b.origination_date),
-            esc(&b.origination_time),
-            b.time_reference
-        );
+    // Distinct sources (states share most of them), written before the steps that name them.
+    let mut sources: Vec<&Arc<SourceFormat>> = Vec::new();
+    let mut source_index: HashMap<usize, usize> = HashMap::new();
+    for (_, st) in &snap.steps {
+        source_index.entry(Arc::as_ptr(st.source()) as usize).or_insert_with(|| {
+            sources.push(st.source());
+            sources.len() - 1
+        });
     }
-    for c in &src.chunks {
-        let _ = writeln!(o, "src-chunk {} {} {}", c.id.iter().map(|b| format!("{b:02x}")).collect::<String>(), c.offset, c.size);
-    }
-    for w in &src.warnings {
-        let _ = writeln!(o, "src-warn {}", esc(w));
+    for (i, src) in sources.iter().enumerate() {
+        let _ = writeln!(o, "source {i}");
+        encode_source(&mut o, src);
     }
     // Distinct blocks and distinct channels (states share most of both).
     let mut blocks: BTreeMap<BlockId, BlockRef> = BTreeMap::new();
@@ -230,9 +256,18 @@ fn encode(snap: &Snapshot, next_id: u64) -> Result<String, String> {
             let _ = writeln!(o, "p {} {} {}", p.block().block().id.0, p.offset(), p.len());
         }
     }
-    for ((label, _), idx) in snap.steps.iter().zip(&step_chans) {
+    for ((label, st), idx) in snap.steps.iter().zip(&step_chans) {
         let list: Vec<String> = idx.iter().map(usize::to_string).collect();
-        let _ = writeln!(o, "step {} {}", esc(label), list.join(" "));
+        let src = source_index[&(Arc::as_ptr(st.source()) as usize)];
+        let _ = writeln!(o, "step {} {} {src} {}", esc(label), st.sample_rate(), list.join(" "));
+    }
+    for (i, list) in snap.extras.iter().enumerate().take(snap.steps.len()) {
+        for x in list {
+            if x.key.is_empty() {
+                return Err("an extra record has no key".to_string());
+            }
+            let _ = writeln!(o, "extra {i} {} {} {}", esc(&x.key), x.version, esc(&x.data));
+        }
     }
     let _ = writeln!(o, "cursor {}", snap.cursor);
     let sum = fnv1a(o.as_bytes());
@@ -240,15 +275,55 @@ fn encode(snap: &Snapshot, next_id: u64) -> Result<String, String> {
     Ok(o)
 }
 
+fn encode_source(o: &mut String, src: &SourceFormat) {
+    let _ = writeln!(o, "src-path {}", esc(&src.path.to_string_lossy()));
+    let _ = writeln!(o, "src-format {}", format_name(src.format));
+    let _ = writeln!(o, "src-sample {}", sample_name(src.sample_format));
+    let _ = writeln!(o, "src-rate {}", src.sample_rate);
+    let _ = writeln!(o, "src-channels {}", src.channels);
+    let _ = writeln!(o, "src-rf64 {}", u8::from(src.rf64));
+    if let Some(b) = &src.bwf {
+        let _ = writeln!(
+            o,
+            "src-bwf {} {} {} {} {} {}",
+            esc(&b.description),
+            esc(&b.originator),
+            esc(&b.originator_reference),
+            esc(&b.origination_date),
+            esc(&b.origination_time),
+            b.time_reference
+        );
+    }
+    for c in &src.chunks {
+        let _ = writeln!(o, "src-chunk {} {} {}", c.id.iter().map(|b| format!("{b:02x}")).collect::<String>(), c.offset, c.size);
+    }
+    for w in &src.warnings {
+        let _ = writeln!(o, "src-warn {}", esc(w));
+    }
+}
+
 /// A journal read back, not yet tied to a store.
 struct Parsed {
     next_id: u64,
-    rate: u32,
-    source: SourceFormat,
+    sources: Vec<SourceFormat>,
     blocks: Vec<BlockRef>,
     chans: Vec<Vec<(u64, u32, u32)>>,
-    steps: Vec<(String, Vec<usize>)>,
+    steps: Vec<ParsedStep>,
+    extras: Vec<(usize, Extra)>,
     cursor: usize,
+}
+
+/// A step as read: label, sample rate, source index, channel indexes.
+struct ParsedStep {
+    label: String,
+    rate: u32,
+    source: usize,
+    chans: Vec<usize>,
+}
+
+/// The source the `src-*` line being read belongs to (the last `source` line).
+fn src_mut(sources: &mut [SourceFormat]) -> Result<&mut SourceFormat, String> {
+    sources.last_mut().ok_or_else(|| "a source line before any source".to_string())
 }
 
 fn decode(text: &str) -> Result<Parsed, String> {
@@ -263,32 +338,32 @@ fn decode(text: &str) -> Result<Parsed, String> {
     }
     let num =
         |t: Option<&str>| -> Result<u64, String> { t.ok_or("a line is too short")?.parse::<u64>().map_err(|_| "a number is wrong".to_string()) };
-    let mut p = Parsed {
-        next_id: 0,
-        rate: 0,
-        source: SourceFormat::synthetic(1, 1),
-        blocks: Vec::new(),
-        chans: Vec::new(),
-        steps: Vec::new(),
-        cursor: usize::MAX,
-    };
-    p.source.chunks.clear();
+    let mut p =
+        Parsed { next_id: 0, sources: Vec::new(), blocks: Vec::new(), chans: Vec::new(), steps: Vec::new(), extras: Vec::new(), cursor: usize::MAX };
     for line in lines {
         let mut t = line.split_whitespace();
         match t.next() {
             Some("next-id") => p.next_id = num(t.next())?,
-            Some("rate") => p.rate = u32::try_from(num(t.next())?).map_err(|_| "a rate is too big")?,
-            Some("src-path") => p.source.path = PathBuf::from(unesc(t.next().ok_or("a line is too short")?)?),
-            Some("src-format") => p.source.format = format_from(t.next().unwrap_or("")),
-            Some("src-sample") => p.source.sample_format = sample_from(t.next().unwrap_or("")),
-            Some("src-rate") => p.source.sample_rate = u32::try_from(num(t.next())?).map_err(|_| "a rate is too big")?,
-            Some("src-channels") => p.source.channels = u16::try_from(num(t.next())?).map_err(|_| "too many channels")?,
-            Some("src-rf64") => p.source.rf64 = num(t.next())? != 0,
+            Some("source") => {
+                if num(t.next())? != p.sources.len() as u64 {
+                    return Err("sources out of order".to_string());
+                }
+                let mut src = SourceFormat::synthetic(1, 1);
+                src.chunks.clear();
+                p.sources.push(src);
+            }
+            Some("src-path") => src_mut(&mut p.sources)?.path = PathBuf::from(unesc(t.next().ok_or("a line is too short")?)?),
+            Some("src-format") => src_mut(&mut p.sources)?.format = format_from(t.next().unwrap_or("")),
+            Some("src-sample") => src_mut(&mut p.sources)?.sample_format = sample_from(t.next().unwrap_or("")),
+            Some("src-rate") => src_mut(&mut p.sources)?.sample_rate = u32::try_from(num(t.next())?).map_err(|_| "a rate is too big")?,
+            Some("src-channels") => src_mut(&mut p.sources)?.channels = u16::try_from(num(t.next())?).map_err(|_| "too many channels")?,
+            Some("src-rf64") => src_mut(&mut p.sources)?.rf64 = num(t.next())? != 0,
             Some("src-bwf") => {
                 let mut f = || unesc(t.next().unwrap_or(""));
                 let (description, originator, originator_reference, origination_date, origination_time) = (f()?, f()?, f()?, f()?, f()?);
                 let time_reference = num(t.next())?;
-                p.source.bwf = Some(BwfInfo { description, originator, originator_reference, origination_date, origination_time, time_reference });
+                src_mut(&mut p.sources)?.bwf =
+                    Some(BwfInfo { description, originator, originator_reference, origination_date, origination_time, time_reference });
             }
             Some("src-chunk") => {
                 let hex = t.next().ok_or("a line is too short")?;
@@ -296,9 +371,9 @@ fn decode(text: &str) -> Result<Parsed, String> {
                 for (i, b) in id.iter_mut().enumerate() {
                     *b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2).ok_or("a chunk id is wrong")?, 16).map_err(|_| "a chunk id is wrong")?;
                 }
-                p.source.chunks.push(ChunkInfo { id, offset: num(t.next())?, size: num(t.next())? });
+                src_mut(&mut p.sources)?.chunks.push(ChunkInfo { id, offset: num(t.next())?, size: num(t.next())? });
             }
-            Some("src-warn") => p.source.warnings.push(unesc(t.next().ok_or("a line is too short")?)?),
+            Some("src-warn") => src_mut(&mut p.sources)?.warnings.push(unesc(t.next().ok_or("a line is too short")?)?),
             Some("block") => p.blocks.push(BlockRef {
                 id: BlockId(num(t.next())?),
                 pack: u32::try_from(num(t.next())?).map_err(|_| "a pack number is too big")?,
@@ -322,16 +397,34 @@ fn decode(text: &str) -> Result<Parsed, String> {
             }
             Some("step") => {
                 let label = unesc(t.next().ok_or("a line is too short")?)?;
-                let idx = t.map(|x| x.parse::<usize>().map_err(|_| "a channel index is wrong".to_string())).collect::<Result<Vec<_>, _>>()?;
-                p.steps.push((label, idx));
+                let rate = u32::try_from(num(t.next())?).map_err(|_| "a rate is too big")?;
+                let source = usize::try_from(num(t.next())?).map_err(|_| "a source index is too big")?;
+                let chans = t.map(|x| x.parse::<usize>().map_err(|_| "a channel index is wrong".to_string())).collect::<Result<Vec<_>, _>>()?;
+                p.steps.push(ParsedStep { label, rate, source, chans });
+            }
+            Some("extra") => {
+                let step = usize::try_from(num(t.next())?).map_err(|_| "a step index is too big")?;
+                let key = unesc(t.next().ok_or("a line is too short")?)?;
+                let version = u32::try_from(num(t.next())?).map_err(|_| "a version is too big")?;
+                let data = unesc(t.next().ok_or("a line is too short")?)?;
+                if key.is_empty() {
+                    return Err("an extra record has no key".to_string());
+                }
+                p.extras.push((step, Extra { key, version, data }));
             }
             Some("cursor") => p.cursor = usize::try_from(num(t.next())?).map_err(|_| "the cursor is too big")?,
             Some(other) => return Err(format!("a line this version does not know: {other}")),
             None => {}
         }
     }
-    if p.steps.is_empty() || p.cursor >= p.steps.len() || p.rate == 0 || p.next_id == 0 {
+    if p.steps.is_empty() || p.cursor >= p.steps.len() || p.next_id == 0 || p.steps.iter().any(|s| s.rate == 0) {
         return Err("the journal is incomplete".to_string());
+    }
+    if p.steps.iter().any(|s| s.source >= p.sources.len()) {
+        return Err("a step names a source that is not there".to_string());
+    }
+    if p.extras.iter().any(|(i, _)| *i >= p.steps.len()) {
+        return Err("an extra record names a step that is not there".to_string());
     }
     Ok(p)
 }
@@ -539,17 +632,17 @@ fn info_of(p: &Parsed) -> JournalInfo {
     let frames = p
         .steps
         .get(p.cursor)
-        .and_then(|(_, idx)| idx.first())
+        .and_then(|s| s.chans.first())
         .and_then(|c| p.chans.get(*c))
         .map_or(0, |c| c.iter().map(|x| u64::from(x.2)).sum::<u64>());
-    let channels = p.steps.get(p.cursor).map_or(0, |(_, idx)| idx.len());
+    let channels = p.steps.get(p.cursor).map_or(0, |s| s.chans.len());
     JournalInfo {
-        labels: p.steps.iter().map(|(l, _)| l.clone()).collect(),
+        labels: p.steps.iter().map(|s| s.label.clone()).collect(),
         cursor: p.cursor,
         frames,
         channels,
-        sample_rate: p.rate,
-        source_path: p.source.path.clone(),
+        sample_rate: p.steps.get(p.cursor).map_or(0, |s| s.rate),
+        source_path: p.steps.get(p.cursor).and_then(|s| p.sources.get(s.source)).map(|s| s.path.clone()).unwrap_or_default(),
     }
 }
 
@@ -607,6 +700,9 @@ pub struct Recovered {
     /// Label and state, oldest first.
     pub steps: Vec<(String, DocState)>,
     pub cursor: usize,
+    /// Each step's [`Extra`] records, parallel to `steps`: for the app to put back beside the
+    /// restored states (markers and the like), including records of keys it does not know.
+    pub extras: Vec<Vec<Extra>>,
 }
 
 impl Recovered {
@@ -661,18 +757,22 @@ pub fn recover(dir: &Path, opts: StoreOptions) -> Result<Recovered, RecoverError
         }
         channels.push(Arc::new(ch));
     }
-    let source = Arc::new(parsed.source);
+    let sources: Vec<Arc<SourceFormat>> = parsed.sources.into_iter().map(Arc::new).collect();
+    let mut extras: Vec<Vec<Extra>> = vec![Vec::new(); parsed.steps.len()];
+    for (i, x) in parsed.extras {
+        extras[i].push(x);
+    }
     let mut steps = Vec::with_capacity(parsed.steps.len());
-    for (label, idx) in parsed.steps {
-        let chs = idx
+    for ParsedStep { label, rate, source, chans } in parsed.steps {
+        let chs = chans
             .iter()
             .map(|i| channels.get(*i).cloned().ok_or_else(|| bad("a step names a channel that is not there".to_string())))
             .collect::<Result<Vec<_>, _>>()?;
-        let state = DocState::from_shared(store.clone(), chs, parsed.rate, source.clone()).map_err(|e| bad(e.to_string()))?;
+        let state = DocState::from_shared(store.clone(), chs, rate, sources[source].clone()).map_err(|e| bad(e.to_string()))?;
         steps.push((label, state));
     }
     store.thaw();
-    Ok(Recovered { store, steps, cursor: parsed.cursor })
+    Ok(Recovered { store, steps, cursor: parsed.cursor, extras })
 }
 
 /// Remove a stale session folder the owner chose to discard (its recovery declined). Refuses a
