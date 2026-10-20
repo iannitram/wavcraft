@@ -7,6 +7,11 @@
 //!
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> unsaved=<0|1> snap=<0|1> snapzero=<0|1> enabled=<one 0|1 per channel> clipboard=<1-5> clip_frames=<n> undo=<label> redo=<label>`
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
+//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
+//! - `OPEN <path>` → `OK` (the open runs in the background and adds a document; poll `STATE` until `busy=0`)
+//! - `DOCS` → `OK count=<n> current=<i> | <i> unsaved=<0|1> frames=<n> <name> | …` (the open documents, in the order opened)
+//! - `SWITCH <i>` → `OK current=<i>` (every other verb acts on the current document)
+//! - `CLOSE` → `OK count=<n>` (closes the current document); with unsaved changes `ERR …` unless `CLOSE discard`
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)
 //! - `ACTION <name>` (an action table name, `edit.delete`; `view.snap.toggle`, `view.snap.zero.toggle`, `channel.toggle.<n>` with n from 0) → `OK selection=<a>-<b> changed=<0|1>`
@@ -35,7 +40,7 @@
 //! - `INTERPRET <hz>` → `OK` (Interpret Sample Rate: relabel the rate, no resampling)
 //! - `PRESET list` | `PRESET save <name> | <settings>` | `PRESET delete <name>` → `OK …` (conversion presets)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
-//! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
+//! - `QUIT` → `OK`, then the window closes; with unsaved changes in any document `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
 

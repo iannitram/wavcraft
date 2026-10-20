@@ -11,6 +11,7 @@
 mod app;
 mod control;
 mod convert_ui;
+mod doclist;
 mod effect_dialog;
 mod mixpaste;
 mod oscb;

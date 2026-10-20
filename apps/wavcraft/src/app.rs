@@ -24,6 +24,7 @@ use wavcraft_core::{
 
 use crate::control;
 use crate::convert_ui::{self, ConvertDialog};
+use crate::doclist::{DocList, Where};
 use crate::effect_dialog::{Answer, EffectDialog};
 use crate::mixpaste;
 use crate::player::{Devices, Player};
@@ -116,6 +117,31 @@ struct Converting {
     cancel: Arc<AtomicBool>,
     doc_id: u64,
 }
+/// An open document that is not the current one: the per-document fields of [`WaveApp`], parked
+/// until it is switched to (the current document's own live in the window's fields).
+struct DocSlot {
+    doc: Option<Document>,
+    editor: Option<Editor>,
+    doc_path: PathBuf,
+    doc_id: u64,
+    saved: Option<Arc<DocState>>,
+    view: Viewport,
+    selection: Selection,
+    rebuilding: Option<Receiver<Result<Document, OpenError>>>,
+}
+
+/// Whether `editor`'s current step differs from `saved`, the one on disk.
+fn is_unsaved(editor: &Option<Editor>, saved: &Option<Arc<DocState>>) -> bool {
+    match (editor, saved) {
+        (Some(e), Some(saved)) => !Arc::ptr_eq(e.history.current(), saved),
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn path_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned())
+}
 
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
 struct SpectrumCache {
@@ -159,8 +185,14 @@ pub struct WaveApp {
     editor: Option<Editor>,
     /// Where the open file came from (kept while an edit leaves the document empty).
     doc_path: PathBuf,
-    /// Counts the files opened in this window: names the document a save belongs to.
+    /// Names the current document (the save in flight belongs to one).
     doc_id: u64,
+    /// Counts the files opened in this window; the next `doc_id`.
+    doc_serial: u64,
+    /// The other open documents; the fields above and below hold the current one.
+    docs: DocList<DocSlot>,
+    /// The "save changes?" prompt is for closing the current document, not the window.
+    closing_doc: bool,
     /// The views' copy of the document, being read back after an edit (newest request only).
     rebuilding: Option<Receiver<Result<Document, OpenError>>>,
     /// Requests from the control channel, when `WAVCRAFT_CONTROL_PORT` turned it on.
@@ -265,6 +297,9 @@ impl WaveApp {
             editor: None,
             doc_path: PathBuf::new(),
             doc_id: 0,
+            doc_serial: 0,
+            docs: DocList::new(),
+            closing_doc: false,
             rebuilding: None,
             saved: None,
             saving: None,
@@ -529,6 +564,9 @@ impl WaveApp {
         };
         match result {
             Ok(doc) => {
+                // The document that was open stays open, parked; this one is added at the end.
+                let old = self.editor.is_some().then(|| self.take_slot());
+                self.docs.add(old);
                 self.player.set_audio(Some(doc.audio.clone()));
                 let cap = History::default_cap(&self.sessions.path);
                 // Snapping stays as the owner left it from file to file.
@@ -540,7 +578,8 @@ impl WaveApp {
                 self.apply_crossfades();
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
-                self.doc_id += 1;
+                self.doc_serial += 1;
+                self.doc_id = self.doc_serial;
                 self.rebuilding = None;
                 self.doc = Some(doc);
                 self.generation += 1;
@@ -680,6 +719,114 @@ impl WaveApp {
                 log::warn!(target: "wavcraft", "{why}");
                 self.error = Some(why);
             }
+        }
+    }
+    /// Park the current document's fields (the window's are left empty).
+    fn take_slot(&mut self) -> DocSlot {
+        DocSlot {
+            doc: self.doc.take(),
+            editor: self.editor.take(),
+            doc_path: std::mem::take(&mut self.doc_path),
+            doc_id: self.doc_id,
+            saved: self.saved.take(),
+            view: self.view,
+            selection: self.selection,
+            rebuilding: self.rebuilding.take(),
+        }
+    }
+
+    /// Make a parked document the current one.
+    fn put_slot(&mut self, s: DocSlot) {
+        self.player.stop();
+        (self.doc, self.editor, self.doc_path, self.doc_id) = (s.doc, s.editor, s.doc_path, s.doc_id);
+        (self.saved, self.view, self.selection, self.rebuilding) = (s.saved, s.view, s.selection, s.rebuilding);
+        self.player.set_audio(self.doc.as_ref().map(|d| d.audio.clone()));
+        self.generation += 1;
+        self.spectrum = None;
+    }
+
+    /// Switch to open document `i` (0 is the first opened).
+    fn switch_doc(&mut self, i: usize) -> Result<(), String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        if self.editor.is_none() || i >= self.docs.len(true) {
+            return Err(format!("no document {i}"));
+        }
+        if i == self.docs.current() {
+            return Ok(());
+        }
+        // One clipboard for all documents: a clip copied here can be pasted there.
+        let clips = self.editor.as_mut().map(|e| (std::mem::take(&mut e.clipboards), e.current_clipboard));
+        let old = self.take_slot();
+        let next = self.docs.switch(i, old).unwrap_or_else(|old| old);
+        self.put_slot(next);
+        if let (Some((clips, current)), Some(e)) = (clips, self.editor.as_mut()) {
+            e.clipboards = clips;
+            e.current_clipboard = current;
+        }
+        Ok(())
+    }
+
+    /// Close the current document without asking; the next one (or the last) takes its place.
+    fn remove_current(&mut self) {
+        self.player.stop();
+        drop(self.take_slot());
+        match self.docs.close_current() {
+            Some(next) => self.put_slot(next),
+            None => {
+                self.generation += 1;
+                self.spectrum = None;
+            }
+        }
+    }
+
+    /// File › Close: close the current document, asking first when it has unsaved changes.
+    fn close_doc(&mut self) -> Result<(), String> {
+        if self.editor.is_none() {
+            return Err("no file is open".to_string());
+        }
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        if self.unsaved() {
+            self.closing_doc = true;
+            self.confirm_close = true;
+        } else {
+            self.remove_current();
+        }
+        Ok(())
+    }
+
+    /// Name, unsaved mark and length of open document `i`.
+    fn doc_info(&self, i: usize) -> (String, bool, u64) {
+        let frames = |e: &Option<Editor>| e.as_ref().map_or(0, |e| e.history.current().len_frames());
+        match self.docs.locate(i) {
+            Where::Current => (path_name(&self.doc_path), self.unsaved(), frames(&self.editor)),
+            Where::Parked(p) => self
+                .docs
+                .parked()
+                .get(p)
+                .map_or_else(|| (String::new(), false, 0), |s| (path_name(&s.doc_path), is_unsaved(&s.editor, &s.saved), frames(&s.editor))),
+        }
+    }
+
+    /// The tab strip above the editor, when more than one document is open.
+    fn doc_tabs(&mut self, ui: &mut egui::Ui) {
+        let (n, cur, mut go) = (self.docs.len(self.editor.is_some()), self.docs.current(), None);
+        ui.horizontal_wrapped(|ui| {
+            for i in 0..n {
+                let (name, unsaved, _) = self.doc_info(i);
+                let label = if unsaved { format!("*{name}") } else { name };
+                if ui.selectable_label(i == cur, label).clicked() && i != cur {
+                    go = Some(i);
+                }
+            }
+        });
+        if let Some(i) = go
+            && let Err(e) = self.switch_doc(i)
+        {
+            self.error = Some(e);
         }
     }
 
@@ -1479,11 +1626,12 @@ impl WaveApp {
 
     /// Whether the current step differs from the one on disk.
     fn unsaved(&self) -> bool {
-        match (&self.editor, &self.saved) {
-            (Some(e), Some(saved)) => !Arc::ptr_eq(e.history.current(), saved),
-            (Some(_), None) => true,
-            _ => false,
-        }
+        is_unsaved(&self.editor, &self.saved)
+    }
+
+    /// Whether any open document has unsaved changes.
+    fn any_unsaved(&self) -> bool {
+        self.unsaved() || self.docs.parked().iter().any(|s| is_unsaved(&s.editor, &s.saved))
     }
 
     /// File › Save: to the file's own path when it is a WAV (the only format written so far),
@@ -1543,8 +1691,17 @@ impl WaveApp {
             // written, but the open document is not the one saved, so its path, saved mark and
             // close request stay as they are.
             Ok(()) if doc_id != self.doc_id => {
-                log::info!(target: "wavcraft", "a save of an earlier file finished after another was opened: {}", path.display());
-                self.notice = Some(format!("Saved {} ({} WAV), the file open before this one", path.display(), ty.describe()));
+                if let Some(slot) = self.docs.parked_mut().iter_mut().find(|s| s.doc_id == doc_id) {
+                    slot.saved = Some(state);
+                    slot.doc_path = path.clone();
+                    if let Some(doc) = slot.doc.as_mut() {
+                        doc.path = path.clone();
+                    }
+                    self.notice = Some(format!("Saved {} ({} WAV)", path.display(), ty.describe()));
+                } else {
+                    log::info!(target: "wavcraft", "a save of a closed file finished: {}", path.display());
+                    self.notice = Some(format!("Saved {} ({} WAV), a file closed meanwhile", path.display(), ty.describe()));
+                }
             }
             Ok(()) => {
                 self.saved = Some(state);
@@ -1554,8 +1711,10 @@ impl WaveApp {
                 }
                 self.error = None;
                 self.notice = Some(format!("Saved {} ({} WAV)", path.display(), ty.describe()));
-                if then_close {
-                    self.allow_close = true;
+                if then_close && std::mem::take(&mut self.closing_doc) {
+                    self.remove_current();
+                } else if then_close {
+                    // Not allow_close: another document may still have unsaved changes.
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
@@ -1567,9 +1726,16 @@ impl WaveApp {
 
     /// The "save changes?" prompt when the window is closed with unsaved changes.
     fn close_prompt(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.unsaved() {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.any_unsaved() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm_close = true;
+            self.closing_doc = false;
+            // Ask about the current document first; else bring the first unsaved one up.
+            if !self.unsaved()
+                && let Some(p) = self.docs.parked().iter().position(|s| is_unsaved(&s.editor, &s.saved))
+            {
+                let _ = self.switch_doc(if p < self.docs.current() { p } else { p + 1 });
+            }
         }
         if !self.confirm_close {
             return;
@@ -1598,14 +1764,22 @@ impl WaveApp {
                 self.confirm_close = false;
                 if let Err(e) = self.save(ctx, false, None, true) {
                     self.error = Some(e);
+                    self.closing_doc = false;
                 }
             }
+            // Drop this document's changes; closing the window goes on to the next unsaved one.
             Some(1) => {
                 self.confirm_close = false;
-                self.allow_close = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                let only_doc = std::mem::take(&mut self.closing_doc);
+                self.remove_current();
+                if !only_doc {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
-            Some(_) => self.confirm_close = false,
+            Some(_) => {
+                self.confirm_close = false;
+                self.closing_doc = false;
+            }
             None => {}
         }
     }
@@ -2034,6 +2208,28 @@ impl WaveApp {
                 let d = crate::player::list_devices();
                 format!("OK output={} input={} playing_on={}", d.output.join("|"), d.input.join("|"), self.player.device)
             }
+            // The open documents, in the order opened, and the current one.
+            "DOCS" => {
+                let n = self.docs.len(self.editor.is_some());
+                let mut out = format!("OK count={n} current={}", self.docs.current());
+                for i in 0..n {
+                    let (name, unsaved, frames) = self.doc_info(i);
+                    out.push_str(&format!(" | {i} unsaved={} frames={frames} {name}", u8::from(unsaved)));
+                }
+                out
+            }
+            "SWITCH" => match rest.trim().parse::<usize>().map_err(|_| "SWITCH <index>, from DOCS".to_string()).and_then(|i| self.switch_doc(i)) {
+                Ok(()) => format!("OK current={}", self.docs.current()),
+                Err(e) => format!("ERR {e}"),
+            },
+            // Close the current document; with unsaved changes `ERR …` unless `CLOSE discard`.
+            "CLOSE" if self.unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or CLOSE discard".to_string(),
+            "CLOSE" if self.editor.is_none() => "ERR no file is open".to_string(),
+            "CLOSE" if self.saving.is_some() => "ERR wait for the save to finish".to_string(),
+            "CLOSE" => {
+                self.remove_current();
+                format!("OK count={}", self.docs.len(self.editor.is_some()))
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -2042,7 +2238,7 @@ impl WaveApp {
                 }
             }
             // A plain QUIT refuses with unsaved changes; `QUIT discard` closes anyway.
-            "QUIT" if self.unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
+            "QUIT" if self.any_unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
             "QUIT" => {
                 self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2146,6 +2342,11 @@ impl WaveApp {
                 }
                 if ui.add_enabled(has_doc, egui::Button::new("Save As…").shortcut_text(save_as)).clicked()
                     && let Err(e) = self.save(ui.ctx(), true, None, false)
+                {
+                    self.error = Some(e);
+                }
+                if ui.add_enabled(has_doc, egui::Button::new("Close").shortcut_text(if mac { "⌘W" } else { "Ctrl+W" })).clicked()
+                    && let Err(e) = self.close_doc()
                 {
                     self.error = Some(e);
                 }
@@ -2743,6 +2944,11 @@ impl eframe::App for WaveApp {
         if space {
             self.toggle_play();
         }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::W))
+            && let Err(e) = self.close_doc()
+        {
+            self.error = Some(e);
+        }
         if open {
             self.pick_file(&ctx);
         }
@@ -2770,6 +2976,9 @@ impl eframe::App for WaveApp {
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::top("tools").show(ui, |ui| self.tools_bar(ui));
         egui::Panel::top("zoom").show(ui, |ui| self.zoom_panel(ui));
+        if self.docs.len(self.editor.is_some()) > 1 {
+            egui::Panel::top("docs").show(ui, |ui| self.doc_tabs(ui));
+        }
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.show_sel_view_panel {
             egui::Panel::bottom("selection_view").show(ui, |ui| self.selection_view_panel(ui));
