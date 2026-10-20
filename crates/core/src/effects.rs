@@ -189,6 +189,9 @@ pub enum ParamKind {
     Time,
     /// One of [`ParamDesc::choices`]; the value is the index.
     Choice,
+    /// A plain number in `unit` (`Hz`, or none); a dialog draws a logarithmic slider for `Hz`
+    /// (f21).
+    Number,
 }
 
 /// One adjustable setting, described for a dialog.
@@ -218,6 +221,9 @@ impl ParamDesc {
     pub const fn time(id: &'static str, label: &'static str, min: f64, max: f64, default: f64, unit: &'static str) -> ParamDesc {
         ParamDesc { id, label, kind: ParamKind::Time, min, max, default, unit, choices: &[] }
     }
+    pub const fn number(id: &'static str, label: &'static str, min: f64, max: f64, default: f64, unit: &'static str) -> ParamDesc {
+        ParamDesc { id, label, kind: ParamKind::Number, min, max, default, unit, choices: &[] }
+    }
     pub const fn choice(id: &'static str, label: &'static str, choices: &'static [&'static str], default: usize) -> ParamDesc {
         ParamDesc { id, label, kind: ParamKind::Choice, min: 0.0, max: (choices.len() - 1) as f64, default: default as f64, unit: "", choices }
     }
@@ -243,14 +249,18 @@ fn range_text(p: &ParamDesc) -> String {
 /// Whether `params` suit `effect`: one finite value per parameter, each inside its range (a
 /// choice a whole index).
 pub fn validate(effect: &dyn Effect, params: &[f64]) -> Result<(), String> {
-    let descs = effect.parameters();
+    validate_list(effect.name(), effect.parameters(), params)
+}
+
+/// [`validate`] for any named list of settings (generators use it too).
+pub fn validate_list(name: &str, descs: &[ParamDesc], params: &[f64]) -> Result<(), String> {
     if params.len() != descs.len() {
-        return Err(format!("{} takes {} setting(s), got {}", effect.name(), descs.len(), params.len()));
+        return Err(format!("{name} takes {} setting(s), got {}", descs.len(), params.len()));
     }
     for (p, v) in descs.iter().zip(params) {
         let whole = p.kind != ParamKind::Choice || v.fract() == 0.0;
         if !v.is_finite() || *v < p.min || *v > p.max || !whole {
-            return Err(format!("{}: {} = {v} is not {}", effect.name(), p.id, range_text(p)));
+            return Err(format!("{name}: {} = {v} is not {}", p.id, range_text(p)));
         }
     }
     Ok(())
@@ -260,17 +270,17 @@ pub fn validate(effect: &dyn Effect, params: &[f64]) -> Result<(), String> {
 /// a key left out keeps its default. A value may carry its unit (`-6dB`, `25%`, `100ms`); a
 /// choice is a name (any case) or an index.
 pub fn parse_params(effect: &dyn Effect, args: &str) -> Result<Vec<f64>, String> {
-    let descs = effect.parameters();
-    let mut out = Params::defaults(effect);
+    parse_list(effect.name(), effect.parameters(), args)
+}
+
+/// [`parse_params`] for any named list of settings (generators use it too).
+pub fn parse_list(name: &str, descs: &[ParamDesc], args: &str) -> Result<Vec<f64>, String> {
+    let mut out: Vec<f64> = descs.iter().map(|p| p.default).collect();
     for word in args.split_whitespace() {
         let Some((key, text)) = word.split_once('=') else { return Err(format!("{word:?}: write key=value")) };
         let Some(i) = descs.iter().position(|p| p.id.eq_ignore_ascii_case(key)) else {
             let known: Vec<_> = descs.iter().map(|p| p.id).collect();
-            return Err(format!(
-                "{} has no setting {key:?} (it has: {})",
-                effect.name(),
-                if known.is_empty() { "none".to_string() } else { known.join(", ") }
-            ));
+            return Err(format!("{name} has no setting {key:?} (it has: {})", if known.is_empty() { "none".to_string() } else { known.join(", ") }));
         };
         let p = &descs[i];
         let by_name = p.choices.iter().position(|c| c.eq_ignore_ascii_case(text));
@@ -281,13 +291,18 @@ pub fn parse_params(effect: &dyn Effect, args: &str) -> Result<Vec<f64>, String>
             number.parse::<f64>().map_err(|_| format!("{}: {text:?} is not a number", p.id))?
         };
     }
-    validate(effect, &out)?;
+    validate_list(name, descs, &out)?;
     Ok(out)
 }
 
 /// One line describing the settings, for the control channel: `gain_db=0 [dB, -60 to 24]`.
 pub fn describe(effect: &dyn Effect) -> String {
-    effect.parameters().iter().map(|p| format!("{}={} ({})", p.id, p.default, range_text(p))).collect::<Vec<_>>().join(" ")
+    describe_list(effect.parameters())
+}
+
+/// [`describe`] for any list of settings.
+pub fn describe_list(descs: &[ParamDesc]) -> String {
+    descs.iter().map(|p| format!("{}={} ({})", p.id, p.default, range_text(p))).collect::<Vec<_>>().join(" ")
 }
 
 /// A process over audio.

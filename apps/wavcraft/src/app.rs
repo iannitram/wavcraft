@@ -248,6 +248,8 @@ pub struct WaveApp {
     devices_rx: Option<Receiver<Devices>>,
     /// Frames still to look at for a held Shift (Shift at launch resets the preferences).
     shift_frames: u32,
+    /// A Generate dialog's Preview is playing (f21): the player holds the preview, not the file.
+    previewing: bool,
 }
 
 impl WaveApp {
@@ -325,6 +327,7 @@ impl WaveApp {
             devices: Devices::default(),
             devices_rx: None,
             shift_frames: SHIFT_RESET_FRAMES,
+            previewing: false,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -1048,7 +1051,7 @@ impl WaveApp {
         }
         let width = self.editor_width.max(1.0);
         // Where play is, or the cursor when stopped.
-        let playhead = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
+        let playhead = if self.player.is_playing() && !self.previewing { self.player.position() } else { self.selection.start() };
         match id {
             ActionId::ZoomIn => self.view.zoom_at(2.0, width * 0.5, width, frames),
             ActionId::ZoomOut => self.view.zoom_at(0.5, width * 0.5, width, frames),
@@ -1510,8 +1513,87 @@ impl WaveApp {
     /// Draw the effect dialog, if up, and carry out its answer.
     fn effect_dialog_ui(&mut self, ctx: &egui::Context) {
         let Some(dialog) = self.effect_dialog.as_mut() else { return };
-        if let Some(answer) = dialog.show(ctx) {
-            let _ = self.finish_effect_dialog(answer == Answer::Ok, ctx);
+        match dialog.show(ctx) {
+            Some(Answer::Preview) => {
+                if let Err(why) = self.start_preview() {
+                    self.error = Some(why);
+                }
+            }
+            Some(answer) => {
+                let _ = self.finish_effect_dialog(answer == Answer::Ok, ctx);
+            }
+            None => {}
+        }
+        // The preview loops while the dialog is up.
+        if self.previewing && !self.player.is_playing() {
+            let _ = self.start_preview();
+        }
+        if self.previewing {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Play a short loop of the open Generate dialog's sound through the player (f21). The file
+    /// is put back by [`WaveApp::end_preview`] when the dialog closes. Returns the preview's
+    /// length in frames.
+    fn start_preview(&mut self) -> Result<usize, String> {
+        let Some(dialog) = self.effect_dialog.as_ref().filter(|d| d.generator) else { return Err("no generator dialog is open".to_string()) };
+        let Some(doc) = self.doc.as_ref() else { return Err("no file is open".to_string()) };
+        let g = wavcraft_core::generate::all()[usize::from(dialog.index)];
+        wavcraft_core::generate::validate(g, &dialog.values)?;
+        let rate = doc.sample_rate();
+        let secs = g.duration(&dialog.values).min(PREVIEW_SECONDS);
+        let frames = (secs * f64::from(rate)).round() as usize;
+        let channels = wavcraft_core::generate::render(g, &dialog.values, rate, doc.audio.channels.len().max(1), frames, PREVIEW_SEED);
+        self.player.set_audio(Some(Arc::new(wavcraft_core::AudioBuffer { sample_rate: rate, channels })));
+        self.player.play(0, frames);
+        self.previewing = true;
+        Ok(frames)
+    }
+
+    /// Stop a preview and give the player the open file back.
+    fn end_preview(&mut self) {
+        if self.previewing {
+            self.previewing = false;
+            self.player.set_audio(self.doc.as_ref().map(|d| d.audio.clone()));
+        }
+    }
+
+    /// Generate › Tones / Noise: insert at the cursor, or replace the selection (f21).
+    fn run_generator(&mut self, index: u16, params: Vec<f64>, seed: u64, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let sel = self.selection_range();
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let name = wavcraft_core::generate::all().get(usize::from(index)).map_or("Generate", |g| g.name());
+        match editor.generate(index, &params, sel, seed) {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.error = None;
+                self.notice = out.message;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                let why = format!("{name}: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// The Generate menu: one entry per generator, each opening its dialog.
+    fn generate_menu(&mut self, ui: &mut egui::Ui) {
+        let enabled = self.editor.is_some() && self.saving.is_none();
+        for (i, g) in wavcraft_core::generate::all().iter().enumerate() {
+            if ui.add_enabled(enabled, egui::Button::new(format!("{}…", g.name().trim_start_matches("Generate ")))).clicked() {
+                self.effect_dialog = EffectDialog::new_generator(i as u16, None);
+                ui.close();
+            }
         }
     }
 
@@ -1519,8 +1601,12 @@ impl WaveApp {
     /// the document changed.
     fn finish_effect_dialog(&mut self, ok: bool, ctx: &egui::Context) -> Result<bool, String> {
         let Some(dialog) = self.effect_dialog.take() else { return Err("no effect dialog is open".to_string()) };
+        self.end_preview();
         if !ok {
             return Ok(false);
+        }
+        if dialog.generator {
+            return self.run_generator(dialog.index, dialog.values, clock_seed(), ctx);
         }
         self.run_effect(dialog.index, dialog.values, ctx)
     }
@@ -2064,7 +2150,7 @@ impl WaveApp {
             // `EFFECT_DIALOG` says what is open, `EFFECT_DIALOG OK|CANCEL` presses the button.
             "EFFECT_DIALOG" => match rest.trim() {
                 "" => match &self.effect_dialog {
-                    Some(d) => format!("OK open={} values={:?}", d.effect().id(), d.values),
+                    Some(d) => format!("OK open={} values={:?}", d.id(), d.values),
                     None => "OK open=none".to_string(),
                 },
                 "OK" | "CANCEL" => match self.finish_effect_dialog(rest.trim() == "OK", ctx) {
@@ -2091,6 +2177,61 @@ impl WaveApp {
                 Ok(req) => match self.run_mix_paste(req, ctx) {
                     Ok(()) => format!("OK selection={}", sel(self)),
                 },
+            },
+            // Generate (f21): `GENERATE` lists the generators; `GENERATE tone key=value ... [seed=N]`
+            // inserts at the cursor or replaces the selection. `GENERATE_DIALOG <name> [key=value ...]`
+            // opens the dialog, `GENERATE_DIALOG PREVIEW` starts its preview (`OK preview=<frames>`),
+            // `GENERATE_DIALOG OK|CANCEL` presses a button.
+            "GENERATE" if rest.is_empty() => {
+                let all: Vec<String> = wavcraft_core::generate::all()
+                    .iter()
+                    .map(|g| format!("{} [{}]", g.id(), wavcraft_core::effects::describe_list(g.parameters())))
+                    .collect();
+                format!("OK {}", all.join("; "))
+            }
+            "GENERATE" => {
+                let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                let (seed, args) = split_seed(args);
+                match wavcraft_core::generate::find(name) {
+                    None => format!("ERR no generator named {name:?}"),
+                    Some(g) => match (wavcraft_core::generate::parse_params(g, &args), seed) {
+                        (Err(e), _) | (_, Err(e)) => format!("ERR {e}"),
+                        (Ok(params), Ok(seed)) => {
+                            let i = wavcraft_core::generate::all().iter().position(|x| x.id() == g.id()).unwrap_or(0);
+                            match self.run_generator(i as u16, params, seed, ctx) {
+                                Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                                Err(e) => format!("ERR {e}"),
+                            }
+                        }
+                    },
+                }
+            }
+            "GENERATE_DIALOG" => match rest.trim() {
+                "OK" | "CANCEL" => match self.finish_effect_dialog(rest.trim() == "OK", ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+                "PREVIEW" => match self.start_preview() {
+                    Ok(frames) => format!("OK preview={frames}"),
+                    Err(e) => format!("ERR {e}"),
+                },
+                "" => match &self.effect_dialog {
+                    Some(d) => format!("OK open={} values={:?} previewing={}", d.id(), d.values, u8::from(self.previewing)),
+                    None => "OK open=none".to_string(),
+                },
+                _ => {
+                    let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                    match wavcraft_core::generate::all().iter().position(|g| g.id() == name) {
+                        Some(i) if self.editor.is_some() => match wavcraft_core::generate::parse_params(wavcraft_core::generate::all()[i], args) {
+                            Err(e) => format!("ERR {e}"),
+                            Ok(v) => {
+                                self.effect_dialog = EffectDialog::new_generator(i as u16, Some(v));
+                                "OK".to_string()
+                            }
+                        },
+                        _ => format!("ERR no generator named {name:?}, or no file is open"),
+                    }
+                }
             },
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
@@ -2373,6 +2514,7 @@ impl WaveApp {
                 }
             });
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
+            ui.menu_button("Generate", |ui| self.generate_menu(ui));
             ui.menu_button("View", |ui| {
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
                     self.spectrum = None;
@@ -2861,7 +3003,7 @@ impl WaveApp {
             }
         };
         line(self.selection.start(), CURSOR);
-        if self.player.is_playing() {
+        if self.player.is_playing() && !self.previewing {
             line(self.player.position(), PLAYHEAD);
             ui.ctx().request_repaint();
         }
@@ -3204,6 +3346,33 @@ fn palette() -> Vec<Color32> {
         .collect()
 }
 
+/// How much of a generator a dialog's Preview plays, in seconds, looped.
+const PREVIEW_SECONDS: f64 = 2.0;
+/// Previews of noise are the same every time, so a changed setting is what you hear change.
+const PREVIEW_SEED: u64 = 0x5EED;
+
+/// A seed for noise that differs between runs.
+fn clock_seed() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64)
+}
+
+/// `seed=N` pulled out of a `GENERATE` argument string: the seed (the clock's when absent) and
+/// the rest.
+fn split_seed(args: &str) -> (Result<u64, String>, String) {
+    let mut seed = Ok(clock_seed());
+    let rest: Vec<&str> = args
+        .split_whitespace()
+        .filter(|w| match w.strip_prefix("seed=") {
+            Some(n) => {
+                seed = n.parse::<u64>().map_err(|_| format!("seed={n}: a whole number"));
+                false
+            }
+            None => true,
+        })
+        .collect();
+    (seed, rest.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -3279,5 +3448,13 @@ mod tests {
         assert_eq!(lane(area, 0, 2), Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 200.0)));
         assert_eq!(lane(area, 1, 2), Rect::from_min_max(pos2(0.0, 200.0), pos2(800.0, 300.0)));
         assert_eq!(lane(area, 0, 0), area);
+    }
+
+    #[test]
+    fn split_seed_pulls_the_seed_out() {
+        let (seed, rest) = split_seed("freq=440 seed=7 dur=2");
+        assert_eq!((seed, rest.as_str()), (Ok(7), "freq=440 dur=2"));
+        assert!(split_seed("seed=x").0.is_err());
+        assert!(split_seed("dur=2").0.is_ok());
     }
 }

@@ -5,6 +5,7 @@
 //! Keys follow Adobe Audition's defaults (`plan/audition-parity.md` and task 07's table): only
 //! the binding is matched, never Adobe's text. `cmd` is Command on a Mac and Ctrl elsewhere.
 
+use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -12,6 +13,7 @@ use std::sync::atomic::AtomicBool;
 use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, MixOptions, PasteAt};
 use crate::doc::history::History;
 use crate::effects::{self, EffectParams, FadeCurve, FadeDir};
+use crate::generate;
 use crate::snap::{self, SnapSettings};
 use std::sync::OnceLock;
 
@@ -703,6 +705,32 @@ impl Editor {
     /// The clipboard's audio (the one place its content is read).
     fn clipboard_clip(&self) -> Option<Clip> {
         self.clipboard().cloned()
+    }
+
+    /// Generate › Tones / Noise (f21): the generator at index `i` of [`generate::all`] with these
+    /// settings, inserted at the cursor (`selection.start`) or replacing the selection, on every
+    /// channel, as one undoable step. The new audio ends up selected. `seed` makes noise
+    /// repeatable. Not remembered for Repeat Last Command.
+    pub fn generate(&mut self, i: u16, params: &[f64], selection: Range<u64>, seed: u64) -> Result<Outcome, EditError> {
+        let Some(generator) = generate::all().get(usize::from(i)) else {
+            return Err(EditError::Io(io::Error::new(io::ErrorKind::InvalidInput, "no such generator")));
+        };
+        generate::validate(*generator, params).map_err(|why| EditError::Io(io::Error::new(io::ErrorKind::InvalidInput, why)))?;
+        let doc = self.history.current().clone();
+        let len = doc.len_frames();
+        let range = selection.start.min(len)..selection.end.min(len);
+        let rate = doc.sample_rate();
+        let frames = (generator.duration(params) * f64::from(rate)).round() as u64;
+        let mut sources: Vec<_> = (0..doc.channel_count()).map(|c| generator.source(params, rate, c, seed)).collect();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let edit = edit::generate(&doc, range.clone(), frames, generator.name(), &cancel, |c, out| {
+            sources[c].fill(out);
+            Ok(())
+        })?;
+        let changed = !edit.is_noop();
+        let label = edit.label.clone();
+        self.history.push_edit(edit);
+        Ok(Outcome { doc_changed: changed, selection: range.start..range.start + frames, message: changed.then_some(label) })
     }
 
     /// Run `id` on `selection`. A disabled action does nothing and says why.

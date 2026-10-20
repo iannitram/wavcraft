@@ -24,6 +24,7 @@ pub mod convert;
 pub mod doc;
 pub mod document;
 pub mod effects;
+pub mod generate;
 pub mod io;
 pub mod markers;
 pub mod panels;
