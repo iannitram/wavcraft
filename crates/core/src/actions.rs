@@ -79,6 +79,9 @@ pub enum ActionId {
     TimeCompact,
     TimeSamples,
     TimeSmpte30,
+    MarkerDelete,
+    MarkerToRange,
+    MarkerToPoint,
 }
 
 /// Which part of the program carries an action out.
@@ -210,6 +213,10 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::MarkerAdd, "marker.add", "Add Marker", &[key("M")]),
     edit(ActionId::MarkerPrev, "marker.prev", "Playhead to Previous Marker", &[cmd_alt("ArrowLeft")]),
     edit(ActionId::MarkerNext, "marker.next", "Playhead to Next Marker", &[cmd_alt("ArrowRight")]),
+    // Delete and convert act on the markers the selection (or cursor) touches; no default keys.
+    edit(ActionId::MarkerDelete, "marker.delete", "Delete Marker", &[]),
+    edit(ActionId::MarkerToRange, "marker.toRange", "Convert Marker to Range", &[]),
+    edit(ActionId::MarkerToPoint, "marker.toPoint", "Convert Marker to Point", &[]),
     window(ActionId::ZoomIn, "view.zoomIn", "Zoom In", &[key("Equals")]),
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
@@ -464,6 +471,9 @@ impl Editor {
             ActionId::MarkerPrev => self.history.current().markers().prev_before(selection.start).is_some(),
             ActionId::ConvertSampleType | ActionId::InterpretSampleRate => self.len() > 0,
             ActionId::TimeDecimal | ActionId::TimeCompact | ActionId::TimeSamples | ActionId::TimeSmpte30 | ActionId::ToolTimeSelection => true,
+            ActionId::MarkerDelete => !self.history.current().markers().touched(selection).is_empty(),
+            ActionId::MarkerToRange => has_sel && !self.history.current().markers().touched_kind(selection, true).is_empty(),
+            ActionId::MarkerToPoint => !self.history.current().markers().touched_kind(selection, false).is_empty(),
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -771,6 +781,22 @@ impl Editor {
                 self.history.push_markers("Add Marker", Arc::new(markers));
                 // Markers draw over the same audio: the views need no rebuild.
                 return Ok(Outcome { doc_changed: false, selection: sel, message: Some("Add Marker".to_string()) });
+            }
+            ActionId::MarkerDelete => {
+                let ids = doc.markers().touched(&sel);
+                let Some(markers) = doc.markers().without(&ids) else { return Ok(Outcome { doc_changed: false, selection: sel, message: Some("No marker here".to_string()) }) };
+                self.history.push_markers("Delete Marker", Arc::new(markers));
+                return Ok(Outcome { doc_changed: false, selection: sel, message: Some("Delete Marker".to_string()) });
+            }
+            ActionId::MarkerToRange | ActionId::MarkerToPoint => {
+                let to_range = id == ActionId::MarkerToRange;
+                let found = doc.markers().touched_kind(&sel, to_range).first().copied();
+                let extent = found.and_then(|i| doc.markers().iter().find(|m| m.id == i)).map(|m| if to_range { sel.clone() } else { m.start..m.start });
+                let changed = found.zip(extent).and_then(|(i, r)| doc.markers().with_extent(i, r));
+                let label = if to_range { "Convert Marker to Range" } else { "Convert Marker to Point" };
+                let Some(markers) = changed else { return Ok(Outcome { doc_changed: false, selection: sel, message: Some(format!("{label} is not available now")) }) };
+                self.history.push_markers(label, Arc::new(markers));
+                return Ok(Outcome { doc_changed: false, selection: sel, message: Some(label.to_string()) });
             }
             ActionId::MarkerNext | ActionId::MarkerPrev => {
                 let m = doc.markers();
