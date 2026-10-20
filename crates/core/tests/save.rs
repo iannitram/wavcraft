@@ -503,9 +503,9 @@ fn f100_aiff_without_markers_has_no_mark_chunk_and_flac_and_failed_saves_stay_cl
     assert!(!std::fs::read(&path).unwrap().windows(4).any(|w| w == b"MARK"));
     assert!(reopen(&path, &t.0.join("r")).markers().is_empty());
     // A failed marked AIFF save leaves no file and no temporary.
-    let marked = marked_doc(&t.0.join("s2"), 5_000);
+    let marked = marked_doc(&t.0.join("s2"), 3 * BLOCK_FRAMES);
     let bad = t.0.join("bad.aiff");
-    assert!(save_failing_after(&marked, &bad, SaveFormat::Aiff, SampleType::Int16, 1_000).is_err());
+    assert!(save_failing_after(&marked, &bad, SaveFormat::Aiff, SampleType::Int16, 1).is_err());
     assert!(!bad.exists());
     assert!(temp_files(&bad).is_empty());
 }
