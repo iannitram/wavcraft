@@ -35,6 +35,9 @@ pub enum ActionId {
     ZoomOut,
     ZoomToSelection,
     ZoomOutFull,
+    ZoomAmpIn,
+    ZoomAmpOut,
+    ZoomAmpReset,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -71,6 +74,9 @@ const fn cmd(key: &'static str) -> Shortcut {
 }
 const fn cmd_shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: true, shift: true, alt: false, key }
+}
+const fn alt(key: &'static str) -> Shortcut {
+    Shortcut { cmd: false, shift: false, alt: true, key }
 }
 const fn shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: false, shift: true, alt: false, key }
@@ -161,6 +167,9 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
+    window(ActionId::ZoomAmpIn, "view.zoom.ampIn", "Zoom In Vertically", &[alt("Equals")]),
+    window(ActionId::ZoomAmpOut, "view.zoom.ampOut", "Zoom Out Vertically", &[alt("Minus")]),
+    window(ActionId::ZoomAmpReset, "view.zoom.ampReset", "Reset Vertical Zoom", &[]),
 ];
 
 /// The table row for `id`.
@@ -170,6 +179,14 @@ pub fn action(id: ActionId) -> &'static Action {
 
 /// The action the control channel calls `name`.
 pub fn by_name(name: &str) -> Option<&'static Action> {
+    // The zoom actions also answer to a `view.zoom.*` name (the zoom panel's buttons).
+    let name = match name {
+        "view.zoom.in" => "view.zoomIn",
+        "view.zoom.out" => "view.zoomOut",
+        "view.zoom.selection" => "view.zoomToSelection",
+        "view.zoom.full" => "view.zoomOutFull",
+        n => n,
+    };
     TABLE.iter().find(|a| a.name == name)
 }
 
@@ -288,7 +305,14 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
-            ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
+            ActionId::SetIn
+            | ActionId::SetOut
+            | ActionId::ZoomIn
+            | ActionId::ZoomOut
+            | ActionId::ZoomOutFull
+            | ActionId::ZoomAmpIn
+            | ActionId::ZoomAmpOut
+            | ActionId::ZoomAmpReset => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
@@ -456,6 +480,9 @@ impl Editor {
             | ActionId::ZoomOut
             | ActionId::ZoomToSelection
             | ActionId::ZoomOutFull
+            | ActionId::ZoomAmpIn
+            | ActionId::ZoomAmpOut
+            | ActionId::ZoomAmpReset
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast
