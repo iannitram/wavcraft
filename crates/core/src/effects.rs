@@ -363,6 +363,12 @@ pub trait Effect: Sync {
         let chunk: Vec<&[f32]> = input.iter().map(|i| i.get(ctx.lead..ctx.lead + m).unwrap_or(&[])).collect();
         self.process(params, ctx.first_frame, &chunk, output)
     }
+    /// A stateful block processor for live use and the rack (f31), or `None` (the default) for an
+    /// effect that needs no memory between blocks. Must allocate everything it needs here, not
+    /// in `process_block`.
+    fn stream(&self, _params: &[f64], _channels: usize, _rate: u32) -> Option<Box<dyn EffectStream>> {
+        None
+    }
 }
 
 /// What a stateful effect is told when a run starts (see [`Effect::begin`]).
@@ -381,6 +387,42 @@ pub struct RunContext<'a> {
 pub trait Run {
     /// Same contract as [`Effect::process`]; `first_frame` is within the document.
     fn process(&mut self, first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()>;
+}
+
+/// An effect running block by block over a live or streamed signal (f31): it keeps whatever
+/// state it needs per channel (filter memory, delay lines), so successive blocks join up. Built
+/// by [`open_stream`] with all its memory allocated, so [`EffectStream::process_block`] can run
+/// on an audio thread.
+pub trait EffectStream: Send {
+    /// Process one block: `input` and `output` hold one slice per channel, all the same length.
+    fn process_block(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]);
+}
+
+/// The stream of an effect that keeps no state between blocks: each block goes through
+/// [`Effect::process`].
+struct Stateless {
+    effect: &'static dyn Effect,
+    params: Vec<f64>,
+    frame: u64,
+}
+
+impl EffectStream for Stateless {
+    fn process_block(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
+        if self.effect.process(&self.params, self.frame, input, output).is_err() {
+            for (i, o) in input.iter().zip(output.iter_mut()) {
+                o.copy_from_slice(i);
+            }
+        }
+        self.frame += input.first().map_or(0, |c| c.len() as u64);
+    }
+}
+
+/// Open `effect` for streaming over `channels` channels at `rate` Hz with these settings
+/// (checked first). An effect with its own state supplies it through [`Effect::stream`]; the
+/// others run block by block through [`Effect::process`].
+pub fn open_stream(effect: &'static dyn Effect, params: &[f64], channels: usize, rate: u32) -> Result<Box<dyn EffectStream>, String> {
+    validate(effect, params)?;
+    Ok(effect.stream(params, channels, rate).unwrap_or_else(|| Box::new(Stateless { effect, params: params.to_vec(), frame: 0 })))
 }
 
 /// Polarity inversion: every sample times -1. The reference effect.

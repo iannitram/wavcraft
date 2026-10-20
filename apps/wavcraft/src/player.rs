@@ -9,9 +9,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use cpal::Sample as _;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::AudioBuffer;
 use wavcraft_core::levels::LevelTap;
+use wavcraft_core::rack::{MAX_BLOCK, RackConfig, RackProcessor};
 use wavcraft_core::transport::Plan;
 
 struct Shared {
@@ -35,6 +37,12 @@ struct Shared {
     failed: AtomicBool,
     /// The peaks of what is sent, for the Levels panel (lock-free; see `wavcraft_core::levels`).
     levels: LevelTap,
+    /// A new Effects Rack for the callback to pick up (f31): the UI builds it (all memory
+    /// allocated) and parks it here; the callback swaps it with the one it runs, using
+    /// `try_lock` only, so it never waits, allocates or frees. The old one is left here for the
+    /// UI to drop.
+    rack_mailbox: Mutex<Option<Box<RackProcessor>>>,
+    rack_new: AtomicBool,
 }
 
 /// The output stream and the play state shared with its callback.
@@ -55,6 +63,9 @@ pub struct Player {
     sim_last: Option<Instant>,
     /// `WAVCRAFT_NO_AUDIO` is set: never open a device (scripted runs).
     silent: bool,
+    /// The output stream's channel count and sample rate (what a rack is built for).
+    out_channels: usize,
+    out_rate: u32,
 }
 
 impl Shared {
@@ -73,6 +84,8 @@ impl Shared {
             muted: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             levels: LevelTap::default(),
+            rack_mailbox: Mutex::new(None),
+            rack_new: AtomicBool::new(false),
         }
     }
 
@@ -103,7 +116,18 @@ impl Player {
     pub fn new(wanted: Option<String>) -> Player {
         let shared = Arc::new(Shared::new());
         let silent = std::env::var_os("WAVCRAFT_NO_AUDIO").is_some();
-        let mut player = Player { shared, stream: None, error: None, device: String::new(), wanted, rate: 0, sim_last: None, silent };
+        let mut player = Player {
+            shared,
+            stream: None,
+            error: None,
+            device: String::new(),
+            wanted,
+            rate: 0,
+            sim_last: None,
+            silent,
+            out_channels: 2,
+            out_rate: 48_000,
+        };
         player.reopen();
         player
     }
@@ -125,13 +149,27 @@ impl Player {
         }
         self.shared.failed.store(false, Ordering::Relaxed);
         match open_stream(&self.shared, self.wanted.as_deref()) {
-            Ok((stream, device)) => {
+            Ok((stream, device, channels, rate)) => {
                 self.stream = Some(stream);
                 self.device = device;
+                self.out_channels = channels;
+                self.out_rate = rate;
                 self.error = None;
             }
             Err(e) => self.error = Some(e),
         }
+    }
+
+    /// Set the Effects Rack the player runs on what it plays (f31). An inactive rack (power off,
+    /// nothing switched on) is removed. The swap into the audio callback is lock-free; calling
+    /// this while playing is fine. Takes effect for the next audio buffer.
+    pub fn set_rack(&self, config: &RackConfig) -> Result<(), String> {
+        let new = if config.is_active() { Some(Box::new(RackProcessor::new(config, self.out_channels.min(2), self.out_rate)?)) } else { None };
+        if let Ok(mut slot) = self.shared.rack_mailbox.lock() {
+            *slot = new;
+            self.shared.rack_new.store(true, Ordering::Release);
+        }
+        Ok(())
     }
 
     /// Whether the output stream has reported an error since it was opened.
@@ -319,7 +357,7 @@ fn pick(wanted: Option<&str>, available: &[String]) -> Option<usize> {
     available.iter().position(|n| n == wanted)
 }
 
-fn open_stream(shared: &Arc<Shared>, wanted: Option<&str>) -> Result<(cpal::Stream, String), String> {
+fn open_stream(shared: &Arc<Shared>, wanted: Option<&str>) -> Result<(cpal::Stream, String, usize, u32), String> {
     let host = cpal::default_host();
     let chosen = wanted.and_then(|w| {
         // Not `output_devices()`: that asks every device about output, which can block.
@@ -346,21 +384,30 @@ fn open_stream(shared: &Arc<Shared>, wanted: Option<&str>) -> Result<(cpal::Stre
         other => Err(format!("unsupported output sample format {other:?}")),
     }?;
     stream.play().map_err(|e| e.to_string())?;
-    Ok((stream, name))
+    Ok((stream, name, usize::from(config.channels).max(1), config.sample_rate.0.max(1)))
 }
 
 fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, shared: &Arc<Shared>) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
+    f32: cpal::FromSample<T>,
 {
     let on_error = Arc::clone(shared);
     let shared = Arc::clone(shared);
     let channels = usize::from(config.channels).max(1);
     let device_rate = f64::from(config.sample_rate.0.max(1));
+    let mut rack: Option<Box<RackProcessor>> = None;
     device
         .build_output_stream(
             config,
-            move |out: &mut [T], _: &cpal::OutputCallbackInfo| render(&shared, out, channels, device_rate),
+            move |out: &mut [T], _: &cpal::OutputCallbackInfo| {
+                let was_playing = shared.playing.load(Ordering::Relaxed);
+                render(&shared, out, channels, device_rate);
+                take_rack(&shared, &mut rack);
+                if let (true, Some(r)) = (was_playing, rack.as_mut()) {
+                    run_rack(r, out, channels);
+                }
+            },
             move |err| {
                 log::warn!("audio output: {err}");
                 on_error.failed.store(true, Ordering::Relaxed);
@@ -369,6 +416,40 @@ where
             None,
         )
         .map_err(|e| e.to_string())
+}
+
+/// Pick up a rack the UI parked in the mailbox (see [`Shared::rack_mailbox`]). Never blocks.
+fn take_rack(shared: &Shared, rack: &mut Option<Box<RackProcessor>>) {
+    if shared.rack_new.load(Ordering::Acquire)
+        && let Ok(mut parked) = shared.rack_mailbox.try_lock()
+    {
+        std::mem::swap(&mut *parked, rack);
+        shared.rack_new.store(false, Ordering::Release);
+    }
+}
+
+/// Run the rack over one device buffer in place, in chunks of at most [`MAX_BLOCK`] frames. No
+/// allocation: the rack's own buffers hold each chunk. Channels beyond the rack's are untouched.
+fn run_rack<T>(rack: &mut RackProcessor, out: &mut [T], channels: usize)
+where
+    T: cpal::Sample + cpal::FromSample<f32>,
+    f32: cpal::FromSample<T>,
+{
+    let rack_channels = rack.channels().min(channels);
+    for chunk in out.chunks_mut(channels * MAX_BLOCK) {
+        let n = chunk.len() / channels;
+        for c in 0..rack_channels {
+            for (f, slot) in rack.chunk_in(c).iter_mut().take(n).enumerate() {
+                *slot = f32::from_sample(chunk[f * channels + c]);
+            }
+        }
+        rack.run_chunk(n);
+        for c in 0..rack_channels {
+            for (f, v) in rack.chunk_out(c).iter().take(n).enumerate() {
+                chunk[f * channels + c] = T::from_sample(*v);
+            }
+        }
+    }
 }
 
 /// Fill one device buffer. Runs on the audio thread.
@@ -605,7 +686,7 @@ mod tests {
     /// Pause keeps the place; resume carries on from it. Without a device the silent clock moves it.
     #[test]
     fn the_silent_clock_advances_pauses_and_resumes() {
-        let mut p = Player::new();
+        let mut p = Player::new(None);
         p.silent = true;
         p.reopen();
         assert!(!p.has_output());
@@ -626,5 +707,63 @@ mod tests {
         assert!(p.position() > held, "resumed from the same place");
         p.stop();
         assert!(!p.is_playing());
+    }
+
+    fn rack_of(slots: &[(&str, Option<Vec<f64>>)]) -> RackConfig {
+        let mut c = RackConfig::new();
+        for (i, (id, p)) in slots.iter().enumerate() {
+            c.set_slot(i, id, p.clone()).unwrap();
+        }
+        c
+    }
+
+    #[test]
+    fn a_rack_parked_in_the_mailbox_processes_what_plays() {
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 5000], vec![-0.25; 5000]] });
+        let mut local = None;
+        // Nothing parked: the callback keeps no rack.
+        take_rack(&shared, &mut local);
+        assert!(local.is_none());
+        // Park Invert + Gain -6.0206 dB (two slots), as Player::set_rack does.
+        let cfg = rack_of(&[("invert", None), ("gain", Some(vec![-6.0206]))]);
+        *shared.rack_mailbox.lock().unwrap() = Some(Box::new(RackProcessor::new(&cfg, 2, 48_000).unwrap()));
+        shared.rack_new.store(true, Ordering::Release);
+        // A busy mailbox is skipped, not waited for.
+        {
+            let _held = shared.rack_mailbox.lock().unwrap();
+            take_rack(&shared, &mut local);
+            assert!(local.is_none() && shared.rack_new.load(Ordering::Acquire));
+        }
+        take_rack(&shared, &mut local);
+        assert!(local.is_some() && !shared.rack_new.load(Ordering::Acquire));
+        // 3000 frames: more than one rack chunk.
+        play(&shared, 0.0, 5000.0);
+        let mut out = vec![0.0f32; 6000];
+        render(&shared, &mut out, 2, 48_000.0);
+        run_rack(local.as_mut().unwrap(), &mut out, 2);
+        for f in [0usize, 1, 1023, 1024, 2999] {
+            assert!((out[2 * f] + 0.25).abs() < 1e-4 && (out[2 * f + 1] - 0.125).abs() < 1e-4, "frame {f}: {} {}", out[2 * f], out[2 * f + 1]);
+        }
+        // Swapping in "no rack" leaves the old one in the mailbox for the UI to drop.
+        shared.rack_new.store(true, Ordering::Release);
+        take_rack(&shared, &mut local);
+        assert!(local.is_none() && shared.rack_mailbox.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn the_rack_runs_on_integer_output_and_leaves_extra_channels_alone() {
+        let cfg = rack_of(&[("invert", None)]);
+        let mut rack = RackProcessor::new(&cfg, 2, 48_000).unwrap();
+        let mut out = vec![0i16; 4 * 3];
+        for f in 0..3 {
+            out[4 * f] = 8192;
+            out[4 * f + 1] = -16384;
+            out[4 * f + 2] = 1234;
+        }
+        run_rack(&mut rack, &mut out, 4);
+        for f in 0..3 {
+            assert!((i32::from(out[4 * f]) + 8192).abs() <= 1 && (i32::from(out[4 * f + 1]) - 16384).abs() <= 1, "{out:?}");
+            assert_eq!((out[4 * f + 2], out[4 * f + 3]), (1234, 0), "channels 3 and 4 are not the rack's");
+        }
     }
 }

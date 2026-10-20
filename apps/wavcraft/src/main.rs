@@ -18,6 +18,7 @@ mod meters_ui;
 mod mixpaste;
 mod oscb;
 mod player;
+mod rack_panel;
 mod recording;
 mod recovery;
 mod selflog;

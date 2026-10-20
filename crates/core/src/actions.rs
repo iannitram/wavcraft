@@ -790,6 +790,23 @@ impl Editor {
         self.run_with(ActionId::Effect(i), selection, Some(params))
     }
 
+    /// Process `selection` (the whole file when empty) through the Effects Rack as one undo step
+    /// named "Effects Rack" (f31). An inactive rack changes nothing.
+    pub fn run_rack(&mut self, rack: &crate::rack::RackConfig, selection: Range<u64>) -> Result<Outcome, EditError> {
+        let len = self.len();
+        let sel = selection.start.min(len)..selection.end.min(len);
+        if len == 0 || !rack.is_active() {
+            return Ok(Outcome { doc_changed: false, selection: sel, message: Some("The Effects Rack has nothing switched on".to_string()) });
+        }
+        let doc = self.history.current().clone();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let edit = crate::rack::apply(rack, &doc, sel.clone(), self.channels.within(doc.channel_count()), self.crossfades, &cancel)?;
+        let changed = !edit.is_noop();
+        let label = edit.label.clone();
+        self.history.push_edit(edit);
+        Ok(Outcome { doc_changed: changed, selection: sel, message: changed.then_some(label) })
+    }
+
     fn run_with(&mut self, id: ActionId, selection: Range<u64>, params: Option<Vec<f64>>) -> Result<Outcome, EditError> {
         let len = self.len();
         let sel = selection.start.min(len)..selection.end.min(len);

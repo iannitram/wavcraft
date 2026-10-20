@@ -33,6 +33,8 @@ pub mod loudness;
 pub mod markers;
 pub mod noise;
 pub mod panels;
+pub mod presets;
+pub mod rack;
 pub mod random;
 pub mod record;
 pub mod save;

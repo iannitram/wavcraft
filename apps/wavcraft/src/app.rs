@@ -32,6 +32,7 @@ use crate::effect_dialog::{Answer, EffectDialog};
 use crate::meters_ui::{self, MetersUi};
 use crate::mixpaste;
 use crate::player::{Devices, Player};
+use crate::rack_panel::{RackPanel, Request};
 use crate::recording::Recording;
 use crate::recovery::{self, Choice, Recovery};
 use crate::spectrum::{Job, Renderer};
@@ -321,6 +322,8 @@ pub struct WaveApp {
     meters: MetersUi,
     /// Recording a take (File › New Recording…, the Record button, `RECORD` on the control channel).
     rec: Recording,
+    /// The Effects Rack panel and its settings (f31).
+    rack: RackPanel,
 }
 
 impl WaveApp {
@@ -412,6 +415,7 @@ impl WaveApp {
             previewing: false,
             meters: MetersUi::new(),
             rec: Recording::default(),
+            rack: RackPanel::new(),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -2301,6 +2305,13 @@ impl WaveApp {
     fn finish_effect_dialog(&mut self, ok: bool, ctx: &egui::Context) -> Result<bool, String> {
         let Some(dialog) = self.effect_dialog.take() else { return Err("no effect dialog is open".to_string()) };
         self.end_preview();
+        if let Some(slot) = dialog.rack_slot {
+            // Opened from the rack: keep the settings in the slot, run nothing.
+            if ok {
+                self.rack.set_slot_params(slot, dialog.index, dialog.values);
+            }
+            return Ok(false);
+        }
         if !ok {
             return Ok(false);
         }
@@ -2336,6 +2347,67 @@ impl WaveApp {
                 log::warn!(target: "wavcraft", "{why}");
                 self.error = Some(why.clone());
                 Err(why)
+            }
+        }
+    }
+
+    /// Process the selection (the whole file when none) through the Effects Rack as one step,
+    /// then reset the rack to bypass (f31). Returns whether the document changed.
+    fn apply_rack(&mut self, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let sel = self.selection_range();
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        if !self.rack.config.is_active() {
+            return Err("the Effects Rack has nothing switched on".to_string());
+        }
+        match editor.run_rack(&self.rack.config, sel) {
+            Ok(out) => {
+                self.error = None;
+                self.notice = out.message;
+                if out.doc_changed {
+                    self.rack.config.bypass();
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                let why = format!("Effects Rack: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// Draw the Effects Rack window, carry out what it asked for, and keep the player's copy of
+    /// the rack current.
+    fn rack_ui(&mut self, ctx: &egui::Context) {
+        let can_apply = self.editor.is_some() && self.saving.is_none();
+        self.rack.show(ctx, self.player.is_playing(), can_apply);
+        for request in std::mem::take(&mut self.rack.requests) {
+            match request {
+                Request::EditSlot(i) => self.effect_dialog = self.rack.dialog_for(i),
+                Request::TogglePlay => self.toggle_play(),
+                Request::Apply => {
+                    let _ = self.apply_rack(ctx);
+                }
+            }
+        }
+        self.sync_rack();
+    }
+
+    /// Hand the player the rack when it differs from the one it has.
+    fn sync_rack(&mut self) {
+        if self.rack.pushed.as_ref() != Some(&self.rack.config) {
+            match self.player.set_rack(&self.rack.config) {
+                Ok(()) => self.rack.pushed = Some(self.rack.config.clone()),
+                Err(why) => {
+                    log::warn!(target: "wavcraft", "Effects Rack: {why}");
+                    self.error = Some(format!("Effects Rack: {why}"));
+                    self.rack.pushed = Some(self.rack.config.clone());
+                }
             }
         }
     }
@@ -2974,6 +3046,20 @@ impl WaveApp {
                     }
                 }
             },
+            // The Effects Rack (f31): `RACK` says its state, `RACK set <slot> <effect|none>
+            // [key=value ...]`, `RACK power <slot|master> on|off`, `RACK in|out <dB>`,
+            // `RACK mix <pct>`, `RACK apply`. Slots count from 1.
+            "RACK" if rest.trim() == "apply" => match self.apply_rack(ctx) {
+                Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                Err(e) => format!("ERR {e}"),
+            },
+            "RACK" => self.rack.command(rest),
+            // `PRESET save|load|delete|list <effect|rack> [name]`.
+            // (The conversion presets' `PRESET list|save <name> | ...` is further down; a second word
+            // of `rack`, `effect` or `effect.<id>` makes it this one.)
+            "PRESET" if rest.split_whitespace().nth(1).is_some_and(|k| k == "rack" || k == "effect" || k.starts_with("effect.")) => {
+                self.rack.preset(rest, &mut self.effect_dialog)
+            }
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
@@ -3270,6 +3356,11 @@ impl WaveApp {
             if ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
                 chosen = Some((a.id, has_dialog));
             }
+        }
+        ui.separator();
+        if ui.button("Effects Rack…").clicked() {
+            self.rack.open = !self.rack.open;
+            ui.close();
         }
         match chosen {
             Some((ActionId::Effect(i), true)) => {
@@ -4185,6 +4276,7 @@ impl eframe::App for WaveApp {
         self.mix_paste_dialog(&ctx);
         self.preferences_dialog(&ctx);
         self.new_audio_dialog(&ctx);
+        self.rack_ui(&ctx);
         self.clear_history_prompt(&ctx);
         match self.recovery.show(&ctx) {
             Some(Choice::Recover(i)) => {
