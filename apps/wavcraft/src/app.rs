@@ -750,7 +750,7 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
-            "SESSION" | "TRACK" | "CLIP" | "VIEW" => self.mtv.control(cmd, rest, self.doc.as_ref()),
+            "SESSION" | "TRACK" | "CLIP" | "VIEW" | "MASTER" => self.mtv.control(cmd, rest, self.doc.as_ref()),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {

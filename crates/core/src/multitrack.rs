@@ -70,11 +70,48 @@ pub struct Multitrack {
 impl Multitrack {
     /// A new, empty session. The rate must be 8 kHz to 768 kHz; an empty name is refused.
     pub fn new(name: &str, rate_hz: u32, depth: BitDepthSetting) -> Result<Multitrack, MtError> {
+        Multitrack::new_with_master(name, rate_hz, depth, ChannelFormat::Stereo)
+    }
+
+    /// A new session whose master track has the given format: stereo or 5.1 (`Surround51`).
+    /// The format is chosen here and kept in the session model (the master track and the first
+    /// output path).
+    pub fn new_with_master(name: &str, rate_hz: u32, depth: BitDepthSetting, master: ChannelFormat) -> Result<Multitrack, MtError> {
+        if !matches!(master, ChannelFormat::Stereo | ChannelFormat::Surround51) {
+            return err("a session's master is stereo or 5.1");
+        }
         let name = clean_name(name)?;
         let rate = SampleRate::new(rate_hz).map_err(|_| MtError(format!("a session's sample rate must be 8000 to 768000 Hz, not {rate_hz}")))?;
         let mut session = Session::new(name, rate);
         session.bit_depth = depth;
+        session.add_track(TrackKind::Master, master, None);
+        if let Some(o) = session.outputs.first_mut() {
+            o.format = master;
+        }
         Ok(Multitrack { session })
+    }
+
+    /// The master's format (stereo or 5.1).
+    pub fn master_format(&self) -> ChannelFormat {
+        self.session.master().map_or(ChannelFormat::Stereo, |m| m.format)
+    }
+
+    fn master_mut(&mut self) -> Result<&mut soundcraft_model::Track, MtError> {
+        self.session.tracks.iter_mut().find(|t| t.kind == TrackKind::Master).ok_or_else(|| MtError("this session has no master track".into()))
+    }
+
+    /// The master fader, in dB (-60 to +12).
+    pub fn set_master_volume_db(&mut self, db: f32) -> Result<(), MtError> {
+        if !db.is_finite() {
+            return err("a volume must be a number of dB");
+        }
+        self.master_mut()?.mixer.volume_db = db.clamp(-60.0, 12.0);
+        Ok(())
+    }
+
+    pub fn set_master_mute(&mut self, on: bool) -> Result<(), MtError> {
+        self.master_mut()?.mixer.mute = on;
+        Ok(())
     }
 
     pub fn name(&self) -> &str {
@@ -104,12 +141,17 @@ impl Multitrack {
         self.session.sample_rate.seconds(self.session.content_end())
     }
 
-    /// Add a stereo (`channels` 2) or mono (1) audio track; `None` names it "Audio 1", "Audio 2"…
+    /// Add a stereo (`channels` 2) or mono (1) audio track, or a 5.1 one (6, only in a 5.1
+    /// session); `None` names it "Audio 1", "Audio 2"…
+    /// (f118 keeps this minimal; issue #333 does per-track formats on its own branch, so expect
+    /// this match to overlap with it.)
     pub fn add_track(&mut self, name: Option<&str>, channels: usize) -> Result<TrackId, MtError> {
         let format = match channels {
             1 => ChannelFormat::Mono,
             2 => ChannelFormat::Stereo,
-            n => return err(format!("an audio track here has 1 or 2 channels, not {n}")),
+            6 if self.master_format() == ChannelFormat::Surround51 => ChannelFormat::Surround51,
+            6 => return err("a 5.1 track needs a 5.1 session: make the session with master=5.1"),
+            n => return err(format!("an audio track here has 1, 2 or (in a 5.1 session) 6 channels, not {n}")),
         };
         let name = match name {
             Some(n) => {
@@ -299,13 +341,98 @@ impl Multitrack {
                 json!({"name": t.name, "channels": t.channels(), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "clips": clips})
             })
             .collect();
-        json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "tracks": tracks})
+        let master = self
+            .session
+            .master()
+            .map(|m| json!({"format": m.format.label(), "channels": m.channels(), "mute": m.mixer.mute, "volume_db": m.mixer.volume_db}));
+        json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "master": master, "tracks": tracks})
             .to_string()
+    }
+
+    /// Mix `frames` frames from session frame `start` down to the master: audio tracks (mute and
+    /// solo honoured) at their faders, then the master's fader and mute. Returns one buffer per
+    /// master channel (2, or 6 in L R C LFE Ls Rs order). Clip fades and gain envelopes are not
+    /// applied yet; clip gain is. This is a plain reference mix for tests and bounce; it holds
+    /// `frames` frames only (callers render in blocks).
+    pub fn render(&self, start: i64, frames: usize) -> Vec<Vec<f32>> {
+        let out_ch = self.master_format().channels();
+        let mut out = vec![vec![0.0_f32; frames]; out_ch];
+        let any_solo = self.session.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.mixer.solo);
+        let mut frame_in: Vec<f32> = Vec::new();
+        for t in self.session.tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
+            if t.mixer.mute || (any_solo && !t.mixer.solo) {
+                continue;
+            }
+            let tg = db_gain(t.mixer.volume_db);
+            for c in t.clips().iter().filter(|c| !c.muted) {
+                let Some(src) = c.source() else { continue };
+                let Some(audio) = self.session.pool.get(src) else { continue };
+                let offset = match c.content {
+                    soundcraft_model::ClipContent::Audio { offset, .. } => offset,
+                    _ => 0,
+                };
+                let g = tg * db_gain(c.gain_db);
+                let n_in = audio.buffer.num_channels();
+                for i in 0..frames {
+                    let pos = start + i as i64 - c.start;
+                    if pos < 0 || pos >= c.length {
+                        continue;
+                    }
+                    let sp = (pos + offset) as usize;
+                    frame_in.clear();
+                    frame_in.extend((0..n_in).map(|ch| audio.channel(ch).and_then(|d| d.get(sp)).copied().unwrap_or(0.0)));
+                    add_frame(&frame_in, g, &mut out, i);
+                }
+            }
+        }
+        let mg = self.session.master().map_or(1.0, |m| if m.mixer.mute { 0.0 } else { db_gain(m.mixer.volume_db) });
+        for ch in &mut out {
+            ch.iter_mut().for_each(|x| *x *= mg);
+        }
+        out
     }
 
     /// The session as the model's own JSON (audio is not in it; the sources' file names are).
     pub fn to_json(&self) -> Result<String, MtError> {
         self.session.to_json().map_err(|e| MtError(e.to_string()))
+    }
+}
+
+fn db_gain(db: f32) -> f32 {
+    10.0_f32.powf(db / 20.0)
+}
+
+/// The 5.1 to stereo downmix (the ITU-R BS.775 fold-down, the same one `soundcraft-mix` uses).
+/// Channel order is L R C LFE Ls Rs. The LFE is dropped; the centre and the surrounds go to both
+/// sides at -3 dB (0.7071):
+/// `Lo = L + 0.7071 C + 0.7071 Ls`, `Ro = R + 0.7071 C + 0.7071 Rs`. No normalisation is applied,
+/// so a loud full-scale 5.1 mix can exceed full scale in stereo.
+pub fn downmix_51_to_stereo(f: [f32; 6]) -> [f32; 2] {
+    const K: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    [f[0] + K * f[2] + K * f[4], f[1] + K * f[2] + K * f[5]]
+}
+
+/// Add one input frame (1, 2 or 6 channels) at gain `g` into the master buffers at index `i`.
+/// Mono goes to L and R (to the centre in 5.1); stereo goes to L and R; 5.1 goes straight to a
+/// 5.1 master and through [`downmix_51_to_stereo`] to a stereo one. Other widths are skipped.
+fn add_frame(inp: &[f32], g: f32, out: &mut [Vec<f32>], i: usize) {
+    match (inp.len(), out.len()) {
+        (1, 2) => {
+            out[0][i] += inp[0] * g;
+            out[1][i] += inp[0] * g;
+        }
+        (1, 6) => out[2][i] += inp[0] * g,
+        (2, 2 | 6) => {
+            out[0][i] += inp[0] * g;
+            out[1][i] += inp[1] * g;
+        }
+        (6, 6) => inp.iter().enumerate().for_each(|(ch, v)| out[ch][i] += v * g),
+        (6, 2) => {
+            let d = downmix_51_to_stereo([inp[0], inp[1], inp[2], inp[3], inp[4], inp[5]]);
+            out[0][i] += d[0] * g;
+            out[1][i] += d[1] * g;
+        }
+        _ => {}
     }
 }
 
@@ -451,6 +578,91 @@ mod tests {
         assert_eq!((v["rate"].as_u64(), v["bits"].as_u64(), v["tracks"].as_array().map(Vec::len)), (Some(48_000), Some(24), Some(2)));
         assert_eq!(v["tracks"][0]["clips"][0]["start"].as_f64(), Some(2.0));
         assert_eq!(v["end"].as_f64(), Some(3.0));
+    }
+
+    fn dc(rate: u32, frames: usize, ch: usize, v: f32) -> ModelBuffer {
+        ModelBuffer { sample_rate: rate, channels: vec![vec![v; frames]; ch] }
+    }
+
+    #[test]
+    fn a_session_has_a_master_with_the_chosen_format() {
+        let m = Multitrack::new("A", 48_000, BitDepthSetting::Int24).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.master_format(), ChannelFormat::Stereo);
+        let m = Multitrack::new_with_master("B", 48_000, BitDepthSetting::Int24, ChannelFormat::Surround51).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((m.master_format(), m.session.main_format()), (ChannelFormat::Surround51, ChannelFormat::Surround51));
+        assert_eq!(m.track_count(), 0, "the master is not an audio track");
+        assert!(Multitrack::new_with_master("C", 48_000, BitDepthSetting::Int24, ChannelFormat::Quad).is_err());
+        let v: serde_json::Value = serde_json::from_str(&m.state_json()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((v["master"]["format"].as_str(), v["master"]["channels"].as_u64()), (Some("5.1"), Some(6)));
+    }
+
+    #[test]
+    fn the_masters_settings_survive_the_models_json() {
+        let mut m = Multitrack::new_with_master("B", 48_000, BitDepthSetting::Int24, ChannelFormat::Surround51).unwrap_or_else(|e| panic!("{e}"));
+        m.set_master_volume_db(-6.0).unwrap_or_else(|e| panic!("{e}"));
+        m.set_master_mute(true).unwrap_or_else(|e| panic!("{e}"));
+        let back = Session::from_json(&m.to_json().unwrap_or_else(|e| panic!("{e}"))).unwrap_or_else(|e| panic!("{e}"));
+        let t = back.master().unwrap_or_else(|| panic!("master"));
+        assert_eq!(
+            (t.format, t.mixer.volume_db, t.mixer.mute, back.main_format()),
+            (ChannelFormat::Surround51, -6.0, true, ChannelFormat::Surround51)
+        );
+        assert!(m.set_master_volume_db(f32::NAN).is_err());
+    }
+
+    #[test]
+    fn five_one_tracks_need_a_five_one_session() {
+        let mut st = Multitrack::new("S", 48_000, BitDepthSetting::Int24).unwrap_or_else(|e| panic!("{e}"));
+        assert!(st.add_track(None, 6).unwrap_or_default_err().contains("master=5.1"));
+        let mut m = Multitrack::new_with_master("M", 48_000, BitDepthSetting::Int24, ChannelFormat::Surround51).unwrap_or_else(|e| panic!("{e}"));
+        let t = m.add_track(Some("Surround"), 6).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.session.track(t).map(|t| t.channels()), Some(6));
+        assert_eq!(m.track_ids(), vec![t]);
+    }
+
+    #[test]
+    fn the_downmix_follows_the_itu_fold_down() {
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        assert_eq!(downmix_51_to_stereo([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]), [1.0, 0.0]);
+        assert_eq!(downmix_51_to_stereo([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), [0.0, 0.0], "the LFE is dropped");
+        let c = downmix_51_to_stereo([0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+        assert!((c[0] - k).abs() < 1e-6 && (c[1] - k).abs() < 1e-6, "the centre is -3 dB in both");
+        let s = downmix_51_to_stereo([0.0, 0.0, 0.0, 0.0, 1.0, 1.0]);
+        assert!((s[0] - k).abs() < 1e-6 && (s[1] - k).abs() < 1e-6, "each surround is -3 dB on its own side");
+    }
+
+    #[test]
+    fn master_volume_and_mute_apply_in_a_render() {
+        let (mut m, a, _) = two_tracks();
+        m.add_clip_buffer(a, "dc", "dc.wav", dc(48_000, 1000, 2, 0.5), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        let r = m.render(0, 100);
+        assert_eq!((r.len(), r[0][10], r[1][10]), (2, 0.5, 0.5));
+        m.set_master_volume_db(-6.0).unwrap_or_else(|e| panic!("{e}"));
+        let g = db_gain(-6.0) * 0.5;
+        assert!((m.render(0, 100)[0][10] - g).abs() < 1e-6, "master -6 dB");
+        m.set_master_mute(true).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.render(0, 100)[0][10], 0.0);
+        m.set_master_mute(false).unwrap_or_else(|e| panic!("{e}"));
+        m.set_volume_db(a, -6.0).unwrap_or_else(|e| panic!("{e}"));
+        assert!((m.render(0, 100)[0][10] - g * db_gain(-6.0)).abs() < 1e-6, "track and master faders multiply");
+    }
+
+    #[test]
+    fn a_five_one_track_downmixes_into_a_stereo_master_and_stays_six_in_a_five_one_session() {
+        let mut st = Multitrack::new("S", 48_000, BitDepthSetting::Int24).unwrap_or_else(|e| panic!("{e}"));
+        let mut five = Multitrack::new_with_master("F", 48_000, BitDepthSetting::Int24, ChannelFormat::Surround51).unwrap_or_else(|e| panic!("{e}"));
+        let t5 = five.add_track(None, 6).unwrap_or_else(|e| panic!("{e}"));
+        let mut buf = dc(48_000, 100, 6, 0.0);
+        buf.channels[2] = vec![1.0; 100];
+        five.add_clip_buffer(t5, "x", "x", buf.clone(), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        let r = five.render(0, 10);
+        assert_eq!((r.len(), r[2][5], r[0][5]), (6, 1.0, 0.0), "centre stays on the centre channel");
+        // The same 6-channel clip on a stereo track of a stereo session: refused to be a 5.1 track,
+        // but a clip may still be placed (the track is stereo) and is folded down.
+        let t = st.add_track(None, 2).unwrap_or_else(|e| panic!("{e}"));
+        st.add_clip_buffer(t, "x", "x", buf, 0.0).unwrap_or_else(|e| panic!("{e}"));
+        let r = st.render(0, 10);
+        assert!((r[0][5] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
     }
 
     trait ErrText {

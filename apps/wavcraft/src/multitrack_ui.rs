@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use wavcraft_core::Document;
-use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, TrackId};
+use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, ChannelFormat, TrackId};
 use wavcraft_core::multitrack::{MtError, Multitrack, bit_depth_from_bits, bits_of};
 
 const HEADER_W: f32 = 230.0;
@@ -20,6 +20,7 @@ pub struct NewDialog {
     name: String,
     rate: u32,
     bits: u32,
+    five_one: bool,
 }
 
 /// The Multitrack view's state: the session (if one was made), which view is up, and the small
@@ -56,11 +57,11 @@ impl Default for MtView {
 impl MtView {
     pub fn open_dialog(&mut self) {
         self.sessions_made += 1;
-        self.dialog = Some(NewDialog { name: format!("Session {}", self.sessions_made), rate: 48_000, bits: 24 });
+        self.dialog = Some(NewDialog { name: format!("Session {}", self.sessions_made), rate: 48_000, bits: 24, five_one: false });
     }
 
-    fn create(&mut self, name: &str, rate: u32, depth: BitDepthSetting) -> Result<(), MtError> {
-        self.mt = Some(Multitrack::new(name, rate, depth)?);
+    fn create_with_master(&mut self, name: &str, rate: u32, depth: BitDepthSetting, master: ChannelFormat) -> Result<(), MtError> {
+        self.mt = Some(Multitrack::new_with_master(name, rate, depth, master)?);
         self.selected = None;
         self.rename = None;
         self.show = true;
@@ -94,6 +95,12 @@ impl MtView {
                             ui.selectable_value(&mut d.bits, 32, "32-bit float");
                         });
                     ui.end_row();
+                    ui.label("Master");
+                    egui::ComboBox::from_id_salt("new-master").selected_text(if d.five_one { "5.1" } else { "Stereo" }).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut d.five_one, false, "Stereo");
+                        ui.selectable_value(&mut d.five_one, true, "5.1");
+                    });
+                    ui.end_row();
                 });
                 if let Some(m) = &self.message {
                     ui.colored_label(Color32::from_rgb(235, 80, 70), m);
@@ -106,8 +113,9 @@ impl MtView {
         );
         if create {
             let (name, rate, bits) = (d.name.clone(), d.rate, d.bits);
+            let master = if d.five_one { ChannelFormat::Surround51 } else { ChannelFormat::Stereo };
             let depth = bit_depth_from_bits(bits).unwrap_or_default();
-            self.message = match self.create(&name, rate, depth) {
+            self.message = match self.create_with_master(&name, rate, depth, master) {
                 Ok(()) => {
                     self.dialog = None;
                     None
@@ -141,6 +149,9 @@ impl MtView {
             }
             if ui.button("Add Mono Track").clicked() {
                 note(&mut failure, mt.add_track(None, 1).map(|_| ()));
+            }
+            if mt.master_format() == ChannelFormat::Surround51 && ui.button("Add 5.1 Track").clicked() {
+                note(&mut failure, mt.add_track(None, 6).map(|_| ()));
             }
             ui.separator();
             ui.label("Clip at");
@@ -218,7 +229,11 @@ impl MtView {
                         if l.double_clicked() {
                             self.rename = Some((id, name.clone()));
                         }
-                        ui.weak(if chans == 1 { "mono" } else { "stereo" });
+                        ui.weak(match chans {
+                            1 => "mono",
+                            6 => "5.1",
+                            _ => "stereo",
+                        });
                     }
                 });
                 h.horizontal(|ui| {
@@ -249,6 +264,25 @@ impl MtView {
                     p.rect_stroke(cr, 3.0, Stroke::new(1.0, colour), StrokeKind::Inside);
                     p.text(cr.left_top() + vec2(4.0, 3.0), egui::Align2::LEFT_TOP, &c.name, egui::FontId::proportional(12.0), Color32::WHITE);
                 }
+            }
+            // The master track, always at the bottom: its own fader and mute.
+            if let Some(m) = mt.session.master() {
+                let (label, mut mute, mut vol) = (m.format.label(), m.mixer.mute, m.mixer.volume_db);
+                let (row, _) = ui.allocate_exact_size(vec2(HEADER_W + width, ROW_H), Sense::hover());
+                let header = Rect::from_min_size(row.min, vec2(HEADER_W - 4.0, ROW_H));
+                let p = ui.painter();
+                p.rect_filled(header, 3.0, Color32::from_rgb(40, 40, 40));
+                p.rect_filled(Rect::from_min_size(pos2(row.left() + HEADER_W, row.top()), vec2(width, ROW_H)), 0.0, BACKGROUND);
+                p.rect_filled(Rect::from_min_size(header.min, vec2(4.0, ROW_H)), 0.0, Color32::from_rgb(140, 140, 140));
+                let mut h =
+                    ui.new_child(egui::UiBuilder::new().max_rect(header.shrink2(vec2(8.0, 3.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+                h.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Master").strong());
+                    ui.weak(label);
+                    ui.toggle_value(&mut mute, "M").on_hover_text("Mute the master");
+                });
+                h.add(egui::Slider::new(&mut vol, -60.0..=12.0).suffix(" dB").fixed_decimals(1));
+                let _ = (mt.set_master_mute(mute), mt.set_master_volume_db(vol));
             }
             if mt.track_count() == 0 {
                 ui.label("No tracks yet: Add Stereo Track or Add Mono Track.");
@@ -287,19 +321,36 @@ impl MtView {
             }
             ("VIEW", _) => usage("VIEW waveform|multitrack"),
             ("SESSION", "new") if w.len() >= 2 => {
-                let (mut rate, mut bits) = (48_000_u32, 24_u32);
+                let (mut rate, mut bits, mut master) = (48_000_u32, 24_u32, ChannelFormat::Stereo);
                 for kv in &w[2..] {
                     match kv.split_once('=') {
+                        Some(("master", "stereo")) => master = ChannelFormat::Stereo,
+                        Some(("master", "5.1")) => master = ChannelFormat::Surround51,
+                        Some(("master", _)) => return usage("master=stereo|5.1"),
                         Some(("rate", v)) => rate = v.parse().map_err(|_| MtError("rate=<hz>".into()))?,
                         Some(("depth" | "bits", v)) => bits = v.parse().map_err(|_| MtError("depth=16|24|32".into()))?,
-                        _ => return usage("SESSION new <name> [rate=48000] [depth=16|24|32]"),
+                        _ => return usage("SESSION new <name> [rate=48000] [depth=16|24|32] [master=stereo|5.1]"),
                     }
                 }
                 let depth = bit_depth_from_bits(bits).ok_or_else(|| MtError("depth must be 16, 24 or 32 (float)".into()))?;
-                self.create(word(1), rate, depth)?;
+                self.create_with_master(word(1), rate, depth, master)?;
                 Ok("OK".into())
             }
-            ("SESSION", "new") => usage("SESSION new <name> [rate=48000] [depth=16|24|32]"),
+            ("SESSION", "new") => usage("SESSION new <name> [rate=48000] [depth=16|24|32] [master=stereo|5.1]"),
+            ("MASTER", _) => {
+                let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+                if w.is_empty() {
+                    return usage("MASTER vol=<dB> mute=0|1");
+                }
+                for kv in w {
+                    match kv.split_once('=') {
+                        Some(("vol" | "volume", v)) => mt.set_master_volume_db(v.parse().map_err(|_| MtError("vol is a number of dB".into()))?)?,
+                        Some(("mute", v)) => mt.set_master_mute(matches!(v, "1" | "on"))?,
+                        _ => return usage("MASTER vol=<dB> mute=0|1"),
+                    }
+                }
+                Ok("OK".into())
+            }
             ("SESSION", "state") => match &self.mt {
                 Some(mt) => {
                     let json = mt.state_json();
@@ -315,7 +366,8 @@ impl MtView {
                         let channels = match word(2) {
                             "" | "stereo" | "2" => 2,
                             "mono" | "1" => 1,
-                            _ => return usage("TRACK add [name] [mono|stereo]"),
+                            "5.1" | "6" => 6,
+                            _ => return usage("TRACK add [name] [mono|stereo|5.1]"),
                         };
                         let name = Some(word(1)).filter(|n| !n.is_empty());
                         mt.add_track(name, channels)?;
@@ -422,6 +474,21 @@ mod tests {
         assert_eq!(tokens(r#"add "Lead Vox" "/tmp/a b.wav" 1.5"#).unwrap().len(), 4);
         assert!(tokens(r#"add "open"#).is_err());
         assert_eq!(tokens("").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn the_control_verbs_set_the_master() {
+        let mut v = MtView::default();
+        assert!(v.control("MASTER", "vol=-3", None).starts_with("ERR no session"));
+        assert!(v.control("SESSION", "new X master=quad", None).starts_with("ERR"));
+        assert_eq!(v.control("SESSION", "new X master=5.1", None), "OK");
+        assert_eq!(v.control("TRACK", "add Surr 5.1", None), "OK tracks=1");
+        assert_eq!(v.control("MASTER", "vol=-6 mute=1", None), "OK");
+        let st = v.control("SESSION", "state", None);
+        assert!(st.contains(r#""master":{"channels":6"#) && st.contains(r#""mute":true"#) && st.contains(r#""volume_db":-6.0"#), "{st}");
+        assert!(v.control("MASTER", "vol=x", None).starts_with("ERR"));
+        assert_eq!(v.control("SESSION", "new Y", None), "OK");
+        assert!(v.control("TRACK", "add Surr 5.1", None).starts_with("ERR"), "a stereo session has no 5.1 tracks");
     }
 
     #[test]
