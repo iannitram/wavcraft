@@ -10,6 +10,7 @@ use std::ops::Range;
 use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, PasteAt};
 use crate::doc::history::History;
 use crate::effects::{self, EffectParams, FadeCurve, FadeDir};
+use crate::snap::{self, SnapSettings};
 use std::sync::OnceLock;
 
 /// An action's id, as the menu, the keys and the control channel name it.
@@ -54,6 +55,12 @@ pub enum ActionId {
     FadeOutCosine,
     /// A registered effect: its index in [`effects::all`].
     Effect(u16),
+    /// View › Snapping on or off (Audition's default key S).
+    SnapToggle,
+    /// Snap to zero crossings on or off (f09).
+    SnapZeroToggle,
+    /// Enable or disable channel `n` (0-based): edits and the selection act on enabled ones.
+    ToggleChannel(u8),
 }
 
 /// Which part of the program carries an action out.
@@ -181,6 +188,8 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::FadeInCosine, "effect.fadeIn.cosine", "Fade In (Raised Cosine)", &[]),
     edit(ActionId::FadeOutLinear, "effect.fadeOut.linear", "Fade Out (Linear)", &[]),
     edit(ActionId::FadeOutCosine, "effect.fadeOut.cosine", "Fade Out (Raised Cosine)", &[]),
+    edit(ActionId::SnapToggle, "view.snap.toggle", "Snapping", &[key("S")]),
+    edit(ActionId::SnapZeroToggle, "view.snap.zero.toggle", "Snap to Zero Crossings", &[]),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -207,14 +216,28 @@ pub fn all_actions() -> impl Iterator<Item = &'static Action> {
     TABLE.iter().chain(effect_rows())
 }
 
+/// The row every `channel.toggle.<n>` action shares (the channel number is in the id).
+const CHANNEL_ROW: Action = edit(ActionId::ToggleChannel(0), "channel.toggle", "Toggle Channel", &[]);
+
 /// The table row for `id`.
 pub fn action(id: ActionId) -> &'static Action {
+    if matches!(id, ActionId::ToggleChannel(_)) {
+        return &CHANNEL_ROW;
+    }
     all_actions().find(|a| a.id == id).unwrap_or(&TABLE[0])
 }
 
-/// The action the control channel calls `name`.
+/// The action the control channel calls `name` (table rows only; see [`id_by_name`]).
 pub fn by_name(name: &str) -> Option<&'static Action> {
     all_actions().find(|a| a.name == name)
+}
+
+/// The id the control channel's `name` stands for: a table row, or `channel.toggle.<n>`.
+pub fn id_by_name(name: &str) -> Option<ActionId> {
+    if let Some(n) = name.strip_prefix("channel.toggle.") {
+        return n.parse::<u8>().ok().filter(|&n| n < 64).map(ActionId::ToggleChannel);
+    }
+    by_name(name).map(|a| a.id)
 }
 
 /// What a run did, for the window to follow.
@@ -239,6 +262,8 @@ pub struct Editor {
     pub last: Option<Repeat>,
     /// The numbers Amplify and Normalize use.
     pub params: EffectParams,
+    /// Snapping (f09): the master switch and snap to zero crossings.
+    pub snap: SnapSettings,
 }
 
 /// A command Repeat Last Command can run again, with its settings.
@@ -324,6 +349,7 @@ impl Editor {
             crossfades: Crossfades::default(),
             last: None,
             params: EffectParams::default(),
+            snap: SnapSettings::default(),
         }
     }
 
@@ -357,6 +383,8 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::SnapToggle | ActionId::SnapZeroToggle => true,
+            ActionId::ToggleChannel(n) => usize::from(n) < self.channel_count(),
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -381,6 +409,8 @@ impl Editor {
         match id {
             ActionId::Undo => self.history.undo_label().map_or_else(|| a.menu.to_string(), |l| format!("Undo {l}")),
             ActionId::Redo => self.history.redo_label().map_or_else(|| a.menu.to_string(), |l| format!("Redo {l}")),
+            ActionId::SnapToggle => format!("Snapping ({})", if self.snap.enabled { "on" } else { "off" }),
+            ActionId::SnapZeroToggle => format!("Snap to Zero Crossings ({})", if self.snap.zero_crossings { "on" } else { "off" }),
             ActionId::LeftChannel if self.channels == ChannelMask::only(0) => "Both Channels".to_string(),
             ActionId::RightChannel if self.channels == ChannelMask::only(1) => "Both Channels".to_string(),
             ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
@@ -455,6 +485,36 @@ impl Editor {
         Ok(())
     }
 
+    /// Enable or disable channel `ch` for edits and the selection. At least one channel stays
+    /// enabled; the mask is `ALL` again when every channel is.
+    fn toggle_channel(&mut self, ch: usize, selection: Range<u64>) -> Outcome {
+        let count = self.channel_count();
+        let cur = self.channels.within(count);
+        let next = if cur.contains(ch) { ChannelMask::from_bits(cur.bits() & !ChannelMask::only(ch).bits()) } else { cur.with(ch) };
+        let message = if next == ChannelMask::NONE {
+            "At least one channel stays enabled".to_string()
+        } else {
+            self.channels = if next.covers_all(count) { ChannelMask::ALL } else { next };
+            format!("Channel {} {}", ch + 1, if self.channels.within(count).contains(ch) { "enabled" } else { "disabled" })
+        };
+        Outcome { doc_changed: false, selection, message: Some(message) }
+    }
+
+    /// One flag per channel, `1` enabled and `0` not (`"10"`: only the first of two).
+    pub fn enabled_flags(&self) -> String {
+        let mask = self.channels.within(self.channel_count());
+        (0..self.channel_count()).map(|c| if mask.contains(c) { '1' } else { '0' }).collect()
+    }
+
+    /// The snap step selection and cursor gestures call: `frame` moved to the nearest snap
+    /// target within a few pixels (`frames_per_px` is the view's zoom), or unchanged when
+    /// snapping is off. `targets` are the frames to snap to besides the ruler's ticks: the
+    /// selection's edges and the cursor. Zero crossings use the enabled channels.
+    pub fn snap(&self, frame: u64, frames_per_px: f64, targets: &[u64]) -> u64 {
+        let doc = self.history.current();
+        snap::snap_frame(doc, &self.snap, self.channels.within(doc.channel_count()), frames_per_px, targets, frame)
+    }
+
     /// Insert › Silence: `frames` of silence at `at` on every channel (Audition inserts across
     /// all channels); the inserted range ends up selected.
     pub fn insert_silence(&mut self, at: u64, frames: u64) -> Result<Outcome, EditError> {
@@ -481,6 +541,13 @@ impl Editor {
         }
         match id {
             ActionId::RepeatLast => return self.repeat(sel),
+            ActionId::SnapToggle | ActionId::SnapZeroToggle => {
+                let flag = if id == ActionId::SnapToggle { &mut self.snap.enabled } else { &mut self.snap.zero_crossings };
+                *flag = !*flag;
+                let (what, on) = if id == ActionId::SnapToggle { ("Snapping", *flag) } else { ("Snap to zero crossings", *flag) };
+                return Ok(Outcome { doc_changed: false, selection: sel, message: Some(format!("{what} {}", if on { "on" } else { "off" })) });
+            }
+            ActionId::ToggleChannel(n) => return Ok(self.toggle_channel(usize::from(n), sel)),
             ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -569,6 +636,9 @@ impl Editor {
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast
+            | ActionId::SnapToggle
+            | ActionId::SnapZeroToggle
+            | ActionId::ToggleChannel(_)
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft

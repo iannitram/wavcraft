@@ -12,9 +12,10 @@ use wavcraft_core::io::OpenOptions;
 use wavcraft_core::panels::{self, PanelSet};
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
+use wavcraft_core::snap::ruler_step;
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::{ChannelMask, DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
 use crate::player::Player;
@@ -106,6 +107,9 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Frames a selection drag snaps to besides the ruler: the edges of the selection that was
+    /// there when the gesture began (the cursor is its start).
+    snap_targets: Vec<u64>,
 }
 
 impl WaveApp {
@@ -134,6 +138,7 @@ impl WaveApp {
             generation: 0,
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
             selection: Selection::default(),
+            snap_targets: Vec::new(),
             player: Player::new(),
             params: SpectrogramParams::default(),
             panels: PanelSet::from_hidden(&settings.hidden_panels),
@@ -210,7 +215,12 @@ impl WaveApp {
             Ok(doc) => {
                 self.player.set_audio(Some(doc.audio.clone()));
                 let cap = History::default_cap(&self.sessions.path);
+                // Snapping stays as the owner left it from file to file.
+                let snap = self.editor.as_ref().map(|e| e.snap);
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
+                if let (Some(e), Some(snap)) = (self.editor.as_mut(), snap) {
+                    e.snap = snap;
+                }
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
                 self.doc_id += 1;
@@ -748,7 +758,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} snap={} snapzero={} enabled={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -756,11 +766,30 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            u8::from(e.snap.enabled),
+                            u8::from(e.snap.zero_crossings),
+                            e.enabled_flags(),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 snap=1 snapzero=0 enabled= undo=- redo=-",
+                        u8::from(busy)
+                    ),
+                }
+            }
+            // The snap step a selection gesture calls, for scripted checks: `SNAP <frame> [frames_per_px]`
+            // (the view's zoom when omitted); the selection's edges are the extra targets.
+            "SNAP" => {
+                let mut it = rest.split_whitespace();
+                let frame = it.next().and_then(|f| f.parse::<u64>().ok());
+                let fpp = it.next().map_or(Some(self.view.frames_per_px), |f| f.parse::<f64>().ok());
+                match (frame, fpp, self.editor.as_ref()) {
+                    (Some(frame), Some(fpp), Some(e)) => {
+                        format!("OK frame={}", e.snap(frame, fpp, &[self.selection.start() as u64, self.selection.end() as u64]))
+                    }
+                    _ => "ERR SNAP <frame> [frames_per_px], with a file open".to_string(),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -797,8 +826,8 @@ impl WaveApp {
             // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
             "PANELS" => format!("OK {}", self.panels.report()),
             "GESTURE" => self.control_gesture(rest),
-            "ACTION" => match actions::by_name(rest) {
-                Some(a) => match self.run_action(a.id, ctx) {
+            "ACTION" => match actions::id_by_name(rest) {
+                Some(id) => match self.run_action(id, ctx) {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
                     Err(e) => format!("ERR {e}"),
                 },
@@ -954,7 +983,8 @@ impl WaveApp {
                 for a in TABLE.iter().filter(|a| a.name.starts_with("view.")) {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
                     let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
-                    if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
+                    let label = self.editor.as_ref().map_or_else(|| a.menu.to_string(), |e| e.label(a.id));
+                    if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
                         chosen = Some(a.id);
                     }
                 }
@@ -1061,6 +1091,11 @@ impl WaveApp {
 
         // Click places the cursor, drag selects; near a selection edge a drag adjusts it,
         // Shift-click extends, double-click selects what is on screen, triple-click everything.
+        // Drags and clicks snap (Editor::snap) to the ruler, the selection's edges and, when on,
+        // zero crossings.
+        let fpp = self.view.frames_per_px;
+        let snap =
+            |editor: &Option<Editor>, frame: usize, targets: &[u64]| editor.as_ref().map_or(frame, |e| e.snap(frame as u64, fpp, targets) as usize);
         let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
         let edge_at = |sel: &Selection, view: &Viewport, pos: Pos2| sel.edge_near(view, pos.x - rect.left(), GRAB_PX);
         let shift = ui.input(|i| i.modifiers.shift);
@@ -1075,18 +1110,23 @@ impl WaveApp {
             // A drag is only reported once the pointer has moved a few pixels: anchor the
             // selection where the button went down, not where the pointer has got to.
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
+            self.snap_targets = vec![self.selection.start() as u64, self.selection.end() as u64];
             if let Some(edge) = edge_at(&self.selection, &self.view, origin) {
                 self.selection.grab(edge);
-                self.selection.head = frame_at(&self.view, pos);
+                self.selection.head = snap(&self.editor, frame_at(&self.view, pos), &self.snap_targets);
             } else if shift {
-                self.selection.extend_to(frame_at(&self.view, pos));
+                self.selection.extend_to(snap(&self.editor, frame_at(&self.view, pos), &self.snap_targets));
             } else {
-                self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
+                let (anchor, head) = (
+                    snap(&self.editor, frame_at(&self.view, origin), &self.snap_targets),
+                    snap(&self.editor, frame_at(&self.view, pos), &self.snap_targets),
+                );
+                self.selection = Selection { anchor, head };
             }
         } else if response.dragged()
             && let Some(pos) = response.interact_pointer_pos()
         {
-            self.selection.head = frame_at(&self.view, pos);
+            self.selection.head = snap(&self.editor, frame_at(&self.view, pos), &self.snap_targets);
         } else if response.triple_clicked() {
             self.selection = Selection::all(frames);
         } else if response.double_clicked() {
@@ -1094,10 +1134,12 @@ impl WaveApp {
         } else if response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
         {
+            let targets = [self.selection.start() as u64, self.selection.end() as u64];
+            let at = snap(&self.editor, frame_at(&self.view, pos), &targets);
             if shift {
-                self.selection.extend_to(frame_at(&self.view, pos));
+                self.selection.extend_to(at);
             } else {
-                self.selection = Selection::at(frame_at(&self.view, pos));
+                self.selection = Selection::at(at);
             }
         }
 
@@ -1162,10 +1204,45 @@ impl WaveApp {
             }
         }
 
+        // Channel enable (A132): a button at each lane's left edge; a disabled lane is dimmed and
+        // takes no part in the selection.
+        let enabled = self.editor.as_ref().map_or(ChannelMask::ALL, |e| e.channels.within(channels));
+        let lanes_area = wave_area.or(spectrum_area).unwrap_or(body);
+        let mut toggle = None;
+        for ch in 0..channels {
+            let (lane, on) = (lane(lanes_area, ch, channels), enabled.contains(ch));
+            if !on {
+                painter.rect_filled(lane, 0.0, Color32::from_black_alpha(120));
+            }
+            let button = Rect::from_min_size(lane.left_top() + vec2(3.0, 3.0), vec2(20.0, 16.0));
+            // Click and drag both, so a press here does not start a selection underneath.
+            if ui.interact(button, ui.id().with(("channel", ch)), Sense::click_and_drag()).clicked() {
+                toggle = Some(ch);
+            }
+            painter.rect_filled(button, 3.0, if on { Color32::from_rgb(50, 110, 90) } else { Color32::from_gray(45) });
+            let name = if channels == 2 { ["L", "R"][ch].to_string() } else { (ch + 1).to_string() };
+            painter.text(
+                button.center(),
+                egui::Align2::CENTER_CENTER,
+                name,
+                egui::FontId::monospace(11.0),
+                if on { Color32::WHITE } else { Color32::from_gray(120) },
+            );
+        }
+
         // Selection, cursor and playhead over everything.
         if !self.selection.is_empty() {
             let (a, b) = (rect.left() + self.view.x_of(self.selection.start() as f64), rect.left() + self.view.x_of(self.selection.end() as f64));
-            painter.rect_filled(Rect::from_min_max(pos2(a.max(rect.left()), body.top()), pos2(b.min(rect.right()), body.bottom())), 0.0, SELECTION);
+            for area in [wave_area, spectrum_area].into_iter().flatten() {
+                for ch in (0..channels).filter(|&c| enabled.contains(c)) {
+                    let lane = lane(area, ch, channels);
+                    painter.rect_filled(
+                        Rect::from_min_max(pos2(a.max(rect.left()), lane.top()), pos2(b.min(rect.right()), lane.bottom())),
+                        0.0,
+                        SELECTION,
+                    );
+                }
+            }
         }
         let line = |frame: usize, color: Color32| {
             let x = rect.left() + self.view.x_of(frame as f64);
@@ -1177,6 +1254,9 @@ impl WaveApp {
         if self.player.is_playing() {
             line(self.player.position(), PLAYHEAD);
             ui.ctx().request_repaint();
+        }
+        if let Some(ch) = toggle {
+            let _ = self.run_action(ActionId::ToggleChannel(ch as u8), ui.ctx());
         }
     }
 }
@@ -1254,22 +1334,27 @@ fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
     let mut keys: Vec<(ActionId, actions::Shortcut)> = TABLE.iter().flat_map(|a| a.keys.iter().map(move |k| (a.id, *k))).collect();
     keys.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
-        keys.iter()
-            .filter_map(|(id, k)| {
-                let key = Key::from_name(k.key)?;
-                let mut mods = egui::Modifiers::NONE;
-                if k.cmd {
-                    mods |= egui::Modifiers::COMMAND;
-                }
-                if k.shift {
-                    mods |= egui::Modifiers::SHIFT;
-                }
-                if k.alt {
-                    mods |= egui::Modifiers::ALT;
-                }
-                i.consume_key(mods, key).then_some(*id)
-            })
-            .collect()
+        // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
+        let mut pressed: Vec<ActionId> = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
+            .into_iter()
+            .enumerate()
+            .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(ActionId::ToggleChannel(n as u8)))
+            .collect();
+        pressed.extend(keys.iter().filter_map(|(id, k)| {
+            let key = Key::from_name(k.key)?;
+            let mut mods = egui::Modifiers::NONE;
+            if k.cmd {
+                mods |= egui::Modifiers::COMMAND;
+            }
+            if k.shift {
+                mods |= egui::Modifiers::SHIFT;
+            }
+            if k.alt {
+                mods |= egui::Modifiers::ALT;
+            }
+            i.consume_key(mods, key).then_some(*id)
+        }));
+        pressed
     })
 }
 
@@ -1303,12 +1388,6 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32) {
 /// loses a millisecond at rates that 1000 does not divide: 3 ms at 44.1 kHz read "0.002".)
 fn tick_label(seconds: f64) -> String {
     format_time((seconds.max(0.0) * 1000.0).round() as usize, 1000)
-}
-
-/// The smallest "round" number of seconds that is at least `min_seconds`.
-fn ruler_step(min_seconds: f64) -> f64 {
-    const STEPS: [f64; 19] = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0];
-    STEPS.iter().copied().find(|s| *s >= min_seconds).unwrap_or(3600.0)
 }
 
 /// 256 colours from black through blue, magenta and orange to pale yellow.
