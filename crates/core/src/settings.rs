@@ -22,6 +22,7 @@ pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the 
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
+const KEY_METADATA_FIELDS: &str = "metadata_fields";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -30,6 +31,9 @@ pub struct Settings {
     pub session_folder: Option<PathBuf>,
     /// Ids of the panels the person hid (`crate::panels`); a panel not listed is shown.
     pub hidden_panels: Vec<String>,
+    /// Ids of the metadata fields file-listing panels show (`crate::panels::MetadataField`);
+    /// `None`: never chosen, use the defaults.
+    pub metadata_fields: Option<Vec<String>>,
 }
 
 impl Settings {
@@ -65,6 +69,9 @@ impl Settings {
             match key.trim() {
                 KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
+                KEY_METADATA_FIELDS => {
+                    s.metadata_fields = Some(value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect())
+                }
                 _ => {}
             }
         }
@@ -79,6 +86,10 @@ impl Settings {
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
         out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\n");
         out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}\n", self.hidden_panels.join(",")));
+        if let Some(fields) = &self.metadata_fields {
+            out.push_str("# metadata_fields: what file lists show (Metadata Display), comma separated.\n");
+            out.push_str(&format!("{KEY_METADATA_FIELDS} = {}\n", fields.join(",")));
+        }
         out
     }
 

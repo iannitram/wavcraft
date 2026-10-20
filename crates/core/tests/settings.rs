@@ -41,6 +41,12 @@ fn the_settings_file_round_trips_and_ignores_what_it_does_not_know() {
     hidden.save(&file).unwrap();
     assert_eq!(Settings::load(&file), hidden, "hidden panels are remembered");
     assert_eq!(Settings::parse("hidden_panels = history , ,spectral\n").hidden_panels, vec!["history", "spectral"]);
+    let meta = Settings { metadata_fields: Some(vec!["name".into(), "size".into()]), ..Settings::default() };
+    meta.save(&file).unwrap();
+    assert_eq!(Settings::load(&file), meta, "metadata fields are remembered");
+    let none = Settings { metadata_fields: Some(vec![]), ..Settings::default() };
+    none.save(&file).unwrap();
+    assert_eq!(Settings::load(&file), none, "an empty choice is not the default");
     Settings::default().save(&file).unwrap();
     let parsed = Settings::parse("# a comment\nnonsense line\nfuture_key = 3\n  session_folder =  /Volumes/Big/ws  \n");
     assert_eq!(parsed.session_folder, Some(PathBuf::from("/Volumes/Big/ws")));
