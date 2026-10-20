@@ -131,6 +131,24 @@ impl History {
         h
     }
 
+    /// A history rebuilt from steps (label and state, oldest first) with the cursor on `cursor`:
+    /// what crash recovery restores. `None` for no steps or a cursor past them. The first step
+    /// is kept as it is (it is "Open" unless the oldest steps were dropped by the cap).
+    pub fn restore(steps: Vec<(String, DocState)>, cursor: usize, cap_disk_bytes: u64) -> Option<History> {
+        if cursor >= steps.len() {
+            return None;
+        }
+        let mut h =
+            History { steps: Vec::new(), cursor, cap_disk_bytes, counts: HashMap::new(), held_bytes: 0, current_bytes: 0, dropped: 0, free_space };
+        for (label, state) in steps {
+            let state = Arc::new(state);
+            let made = h.add_counts(&state);
+            h.steps.push(Step { label, state, made_bytes: made, change: Change::LengthFrom { frame: 0 } });
+        }
+        h.current_bytes = h.current().disk_bytes_referenced();
+        Some(h)
+    }
+
     /// Use another free-space query (tests).
     pub fn with_free_space(mut self, f: FreeSpaceFn) -> History {
         self.free_space = f;
