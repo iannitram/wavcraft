@@ -53,10 +53,8 @@ impl SpectrogramParams {
 
     /// The usable frequency range for `sample_rate`: `(low, high)` in Hz with `low < high`.
     pub fn range_hz(&self, sample_rate: u32) -> (f32, f32) {
-        let nyquist = (sample_rate as f32 / 2.0).max(2.0);
-        let hi = if self.max_hz.is_finite() { self.max_hz.clamp(2.0, nyquist) } else { nyquist };
-        let lo = if self.min_hz.is_finite() { self.min_hz.clamp(1.0, hi / 2.0) } else { 1.0 };
-        (lo, hi)
+        let axis = crate::freq_axis::FreqAxis::from_params(self).clamped(sample_rate);
+        (axis.min_hz, axis.max_hz)
     }
 
     /// The frequency at the top edge of `row` of `rows` (row 0 is the top of the picture, the
@@ -668,5 +666,46 @@ mod tests {
         assert!((p.row_edge_hz(100, 100, 48_000) - 40.0).abs() < 0.01);
         let edges: Vec<f32> = (0..=100).map(|r| p.row_edge_hz(r, 100, 48_000)).collect();
         assert!(edges.windows(2).all(|w| w[0] > w[1]));
+    }
+
+    #[test]
+    fn a_zoomed_band_puts_the_tone_on_the_row_the_axis_maps_it_to() {
+        use crate::freq_axis::FreqAxis;
+        let rate = 48_000;
+        let x = sine(1_000.0, 1.0, 48_000, rate);
+        for axis in [
+            FreqAxis { min_hz: 900.0, max_hz: 1_100.0, log: false },
+            FreqAxis { min_hz: 500.0, max_hz: 2_000.0, log: true },
+            FreqAxis { min_hz: 0.0, max_hz: 3_000.0, log: false },
+        ] {
+            let mut p = SpectrogramParams { fft_size: 8192, ..SpectrogramParams::default() };
+            axis.apply_to(&mut p);
+            let (cols, rows) = (8, 200);
+            let image = render(&x, rate, 0.0, 48_000.0, cols, rows, &p);
+            let r = brightest_row(&image, cols, rows, 4);
+            let want = axis.row_of_hz(1_000.0, rows).unwrap();
+            assert!(r.abs_diff(want) <= 3, "{axis:?}: brightest row {r}, the axis says {want}");
+        }
+        // A band that leaves the tone out shows none of it.
+        let p = SpectrogramParams { fft_size: 8192, min_hz: 3_000.0, max_hz: 6_000.0, log_freq: false, ..SpectrogramParams::default() };
+        assert!(render(&x, rate, 0.0, 48_000.0, 8, 64, &p).iter().all(|l| *l < 60));
+    }
+
+    #[test]
+    fn one_overview_serves_every_band_with_the_same_picture_as_the_audio() {
+        let rate = 8_000;
+        let block = BLOCK_HOPS * 128;
+        let frames = 120 * block + 391;
+        let x = busy(frames, rate);
+        let p = SpectrogramParams { fft_size: 256, ..SpectrogramParams::default() };
+        let overview = Overview::build(&x, &p);
+        for (min_hz, max_hz, log_freq) in [(40.0, 4_000.0, true), (300.0, 900.0, true), (0.0, 1_000.0, false), (1_200.0, 1_500.0, false)] {
+            let q = SpectrogramParams { min_hz, max_hz, log_freq, ..p };
+            let c = Columns::covering(0.0, frames as f64, 40.0 * 128.0, &q);
+            let live = render(&x, rate, c.start, c.end, c.cols, 60, &q);
+            let read = render_columns(&x, rate, c, 60, &q, Some(&overview));
+            assert!(live.iter().any(|v| *v > 100), "band {min_hz}-{max_hz}: something to see");
+            assert_eq!(live, read, "band {min_hz}-{max_hz} log {log_freq}");
+        }
     }
 }

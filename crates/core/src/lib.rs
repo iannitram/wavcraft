@@ -11,6 +11,8 @@
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
 //!   and its waveform peaks.
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
+//! - [`freq_axis`]: the spectral display's frequency band, scale, zoom, scroll and ruler ticks.
+//! - [`statusbar`]: the status bar's fields and which are shown.
 //! - [`view`]: zoom and scroll arithmetic, selections and time formatting.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -18,12 +20,14 @@
 pub mod actions;
 pub mod doc;
 pub mod document;
+pub mod freq_axis;
 pub mod io;
 pub mod random;
 pub mod save;
 pub mod settings;
 pub mod space;
 pub mod spectrogram;
+pub mod statusbar;
 pub mod store;
 pub mod view;
 

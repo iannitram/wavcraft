@@ -2,8 +2,8 @@
 //!
 //! Settings live in a small text file, `settings.txt` in the system's config folder under
 //! `wavcraft` (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on a
-//! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. Today it
-//! holds one key, `session_folder`.
+//! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. It holds
+//! `session_folder`, `status_fields` and `spectral_view`.
 //!
 //! The **session folder** is where opening a file writes its session store (one subfolder per
 //! open file). The first of these that is set wins: the `--session-dir` command-line flag, the
@@ -15,18 +15,28 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::freq_axis::FreqAxis;
+use crate::statusbar::StatusFields;
+
 /// The environment variable that sets the session folder (over the settings file).
 pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 /// How a person changes the session folder, for messages.
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_STATUS_FIELDS: &str = "status_fields";
+const KEY_SPECTRAL_VIEW: &str = "spectral_view";
 
 /// What the settings file holds.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// Which fields the status bar shows (`status_fields = name,format,…`).
+    pub status_fields: StatusFields,
+    /// The spectral display's frequency band and scale (`spectral_view = <lo_hz> <hi_hz> log|lin`);
+    /// `None`: the whole range on the logarithmic scale.
+    pub spectral_view: Option<FreqAxis>,
 }
 
 impl Settings {
@@ -59,8 +69,11 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
-            if key.trim() == KEY_SESSION_FOLDER {
-                s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            match key.trim() {
+                KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+                KEY_STATUS_FIELDS => s.status_fields = StatusFields::parse_list(value),
+                KEY_SPECTRAL_VIEW => s.spectral_view = parse_view(value),
+                _ => {}
             }
         }
         s
@@ -72,6 +85,12 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        out.push_str("# status_fields: the status bar's fields that are shown, comma separated.\n");
+        out.push_str(&format!("{KEY_STATUS_FIELDS} = {}\n", self.status_fields.to_list()));
+        if let Some(v) = &self.spectral_view {
+            out.push_str("# spectral_view: the spectral display's lowest and highest Hz, and log or lin.\n");
+            out.push_str(&format!("{KEY_SPECTRAL_VIEW} = {} {} {}\n", v.min_hz, v.max_hz, if v.log { "log" } else { "lin" }));
+        }
         out
     }
 
@@ -84,6 +103,19 @@ impl Settings {
         std::fs::write(&tmp, self.to_text())?;
         std::fs::rename(&tmp, path)
     }
+}
+
+/// `<lo> <hi> [log|lin]`: a band that is finite and has a low end below its high end.
+fn parse_view(value: &str) -> Option<FreqAxis> {
+    let mut it = value.split_whitespace();
+    let lo: f32 = it.next()?.parse().ok()?;
+    let hi: f32 = it.next()?.parse().ok()?;
+    let log = match it.next() {
+        Some("lin") => false,
+        Some("log") | None => true,
+        Some(_) => return None,
+    };
+    (lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo).then_some(FreqAxis { min_hz: lo, max_hz: hi, log })
 }
 
 /// Make `path` if it is missing and check that a file can be written in it. The error says why

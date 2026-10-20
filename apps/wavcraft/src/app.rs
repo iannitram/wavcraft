@@ -8,10 +8,13 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
+use wavcraft_core::freq_axis::FreqAxis;
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
+use wavcraft_core::space;
 use wavcraft_core::spectrogram::Columns;
+use wavcraft_core::statusbar::{self, StatusField};
 use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
@@ -25,6 +28,10 @@ const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
 const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
 const RULER_HEIGHT: f32 = 22.0;
+/// Width of the frequency ruler on the left of the spectral display.
+const FREQ_RULER_WIDTH: f32 = 54.0;
+/// How long the free-space figure in the status bar is kept before it is read again.
+const FREE_SPACE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A file being opened on a worker thread.
 struct Opening {
@@ -51,6 +58,19 @@ struct Saving {
     doc_id: u64,
 }
 
+/// A drag that started on the frequency ruler: left button scrolls the band, right button zooms it.
+#[derive(Clone, Copy)]
+struct FreqDrag {
+    origin: Pos2,
+    /// The band when the drag started; the drag is applied to it, so it never drifts.
+    axis: FreqAxis,
+    zoom: bool,
+    /// Where in the lane (0 bottom, 1 top) the drag began: the frequency kept in place when zooming.
+    anchor_t: f32,
+    /// Height of the lane it began in.
+    lane_height: f32,
+}
+
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
 struct SpectrumCache {
     job: Job,
@@ -68,6 +88,10 @@ pub struct WaveApp {
     show_waveform: bool,
     show_spectrum: bool,
     spectrum: Option<SpectrumCache>,
+    /// A drag on the frequency ruler, while the button is down.
+    freq_drag: Option<FreqDrag>,
+    /// Free space in the session folder's disk, when last read.
+    free_space: Option<(std::time::Instant, Option<u64>)>,
     renderer: Renderer,
     opening: Option<Opening>,
     error: Option<String>,
@@ -130,16 +154,22 @@ impl WaveApp {
                 wavcraft_core::store::sweep_stale_sessions(Some(&root));
             }
         });
+        let mut params = SpectrogramParams::default();
+        if let Some(view) = settings.spectral_view {
+            view.apply_to(&mut params);
+        }
         let mut app = WaveApp {
             doc: None,
             generation: 0,
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
             selection: Selection::default(),
             player: Player::new(),
-            params: SpectrogramParams::default(),
+            params,
             show_waveform: true,
             show_spectrum: true,
             spectrum: None,
+            freq_drag: None,
+            free_space: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
             error: sessions.warning.clone(),
@@ -269,6 +299,99 @@ impl WaveApp {
         }
         self.error = None;
         self.notice = Some(msg);
+    }
+
+    /// Write the settings file; a failure is logged, the setting still holds for this run.
+    fn persist_settings(&mut self) {
+        if let Some(file) = &self.settings_path
+            && let Err(e) = self.settings.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not save the settings to {}: {e}", file.display());
+        }
+    }
+
+    /// The open file's sample rate (48 kHz with none open, only to bound the band).
+    fn rate(&self) -> u32 {
+        self.doc.as_ref().map_or(48_000, |d| d.sample_rate())
+    }
+
+    /// The spectral display's band as drawn: the parameters' band made usable for the file's rate.
+    fn freq_axis(&self) -> FreqAxis {
+        FreqAxis::from_params(&self.params).clamped(self.rate())
+    }
+
+    /// Show `axis` (made usable for the file's rate) in the spectral display.
+    fn set_freq_axis(&mut self, axis: FreqAxis) {
+        let rate = self.rate();
+        set_axis(&mut self.params, &mut self.spectrum, axis, rate);
+    }
+
+    /// Keep the band and scale in the settings once nothing is being dragged.
+    fn keep_freq_axis(&mut self, ctx: &egui::Context) {
+        let shown = FreqAxis::from_params(&self.params);
+        let kept = self.settings.spectral_view.unwrap_or_else(|| FreqAxis::from_params(&SpectrogramParams::default()));
+        if shown != kept && self.freq_drag.is_none() && !ctx.input(|i| i.pointer.any_down()) {
+            self.settings.spectral_view = Some(shown);
+            self.persist_settings();
+        }
+    }
+
+    /// `SPECTRAL view <lo_hz> <hi_hz> [log|lin]` and `SPECTRAL reset` from the control channel.
+    fn control_spectral(&mut self, rest: &str) -> String {
+        let mut words = rest.split_whitespace();
+        match words.next() {
+            Some("view") => {
+                let (lo, hi) = (words.next().and_then(|w| w.parse::<f32>().ok()), words.next().and_then(|w| w.parse::<f32>().ok()));
+                let log = match words.next() {
+                    None => Some(self.params.log_freq),
+                    Some("log") => Some(true),
+                    Some("lin") => Some(false),
+                    Some(_) => None,
+                };
+                match (lo, hi, log) {
+                    (Some(lo), Some(hi), Some(log)) if lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo => {
+                        self.set_freq_axis(FreqAxis { min_hz: lo, max_hz: hi, log });
+                        format!("OK {}", self.spectral_state())
+                    }
+                    _ => "ERR SPECTRAL view <lo_hz> <hi_hz> [log|lin], with 0 <= lo < hi".to_string(),
+                }
+            }
+            Some("reset") => {
+                self.set_freq_axis(FreqAxis::full(self.params.log_freq, self.rate()));
+                format!("OK {}", self.spectral_state())
+            }
+            _ => "ERR SPECTRAL view <lo_hz> <hi_hz> [log|lin] | SPECTRAL reset".to_string(),
+        }
+    }
+
+    /// `spectral=<lo>-<hi>:<log|lin>`: the band as drawn.
+    fn spectral_state(&self) -> String {
+        let a = self.freq_axis();
+        format!("spectral={}-{}:{}", a.min_hz, a.max_hz, if a.log { "log" } else { "lin" })
+    }
+
+    /// `statusbar=<fields shown>`.
+    fn status_state(&self) -> String {
+        format!("statusbar={}", self.settings.status_fields.to_list())
+    }
+
+    /// `STATUSBAR show|hide <field>` and `STATUSBAR list` from the control channel.
+    fn control_statusbar(&mut self, rest: &str) -> String {
+        let mut words = rest.split_whitespace();
+        let (verb, name) = (words.next(), words.next());
+        let usage = || {
+            let names: Vec<&str> = StatusField::ALL.iter().map(|f| f.key()).collect();
+            format!("ERR STATUSBAR show|hide <field> | STATUSBAR list; fields: {}", names.join(" "))
+        };
+        match (verb, name.map(StatusField::parse)) {
+            (Some("list"), _) => format!("OK {}", self.status_state()),
+            (Some(v @ ("show" | "hide")), Some(Some(field))) => {
+                self.settings.status_fields.set(field, v == "show");
+                self.persist_settings();
+                format!("OK {}", self.status_state())
+            }
+            _ => usage(),
+        }
     }
 
     fn toggle_play(&mut self) {
@@ -677,7 +800,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {} {} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -685,11 +808,18 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            self.spectral_state(),
+                            self.status_state(),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {} {} undo=- redo=-",
+                        u8::from(busy),
+                        self.spectral_state(),
+                        self.status_state()
+                    ),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -714,6 +844,9 @@ impl WaveApp {
                 },
                 None => format!("ERR no action named {rest:?}"),
             },
+            // The spectral display's frequency band and scale; the status bar's fields.
+            "SPECTRAL" => self.control_spectral(rest),
+            "STATUSBAR" => self.control_statusbar(rest),
             // Minimise or restore the window (scripted checks of hidden-window behaviour).
             "WINDOW" => match rest {
                 "minimize" => {
@@ -823,6 +956,11 @@ impl WaveApp {
                 ui.checkbox(&mut self.show_spectrum, "Spectral frequency display");
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
                     self.spectrum = None;
+                    self.set_freq_axis(FreqAxis::from_params(&self.params));
+                }
+                if ui.button("Reset frequency range").on_hover_text("Show the whole frequency range (or double-click the frequency ruler)").clicked()
+                {
+                    self.set_freq_axis(FreqAxis::full(self.params.log_freq, self.rate()));
                 }
                 ui.separator();
                 let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
@@ -847,7 +985,40 @@ impl WaveApp {
         });
     }
 
-    fn status(&self, ui: &mut egui::Ui) {
+    /// Free space in the session folder's disk, read again at most every few seconds.
+    fn free_space_now(&mut self) -> Option<u64> {
+        if let Some((at, bytes)) = self.free_space
+            && at.elapsed() < FREE_SPACE_TTL
+        {
+            return bytes;
+        }
+        let bytes = space::free_space(&self.sessions.path);
+        self.free_space = Some((std::time::Instant::now(), bytes));
+        bytes
+    }
+
+    fn status(&mut self, ui: &mut egui::Ui) {
+        // The whole bar answers a right-click with the menu of fields; registered first, so the
+        // labels drawn after it keep their own hover text.
+        let top = ui.available_rect_before_wrap();
+        let bar = Rect::from_min_size(top.min, vec2(top.width(), ui.spacing().interact_size.y + 2.0));
+        let menu = ui.interact(bar, ui.id().with("status-menu"), Sense::click());
+        let mut changed = false;
+        menu.context_menu(|ui| {
+            ui.label("Show in the status bar");
+            for field in StatusField::ALL {
+                let mut shown = self.settings.status_fields.is_shown(field);
+                if ui.checkbox(&mut shown, field.label()).changed() {
+                    self.settings.status_fields.set(field, shown);
+                    changed = true;
+                }
+            }
+        });
+        if changed {
+            self.persist_settings();
+        }
+        let fields = self.settings.status_fields;
+        let free = if self.doc.is_some() && fields.is_shown(StatusField::FreeSpace) { Some(self.free_space_now()) } else { None };
         ui.horizontal(|ui| {
             if let Some(o) = &self.opening {
                 ui.spinner();
@@ -865,35 +1036,57 @@ impl WaveApp {
                 ui.label(n);
             } else if let Some(doc) = &self.doc {
                 let rate = doc.sample_rate();
-                ui.label(doc.name());
-                ui.separator();
-                ui.label(format!(
-                    "{:?} {:?} · {} Hz · {} ch · {}",
-                    doc.info.format,
-                    doc.info.sample_format,
-                    rate,
-                    doc.channels(),
-                    format_time(doc.frames(), rate)
-                ));
-                // What was wrong with the file that still opened: the first in the bar, all of
-                // them on hover.
-                if let Some(first) = doc.warnings().first() {
-                    ui.separator();
-                    ui.colored_label(CURSOR, format!("Warning: {first}")).on_hover_text(doc.warnings().join("\n"));
-                }
-                ui.separator();
-                if self.selection.is_empty() {
-                    ui.label(format!("Cursor {}", format_time(self.selection.start(), rate)));
-                } else {
-                    let (a, b) = (self.selection.start(), self.selection.end());
-                    ui.label(format!("Selection {} – {}  ({})", format_time(a, rate), format_time(b, rate), format_time(b - a, rate)));
-                }
-                ui.separator();
-                match &self.player.error {
-                    Some(e) => ui.colored_label(CURSOR, format!("No sound: {e}")),
-                    None if self.player.failed() => ui.colored_label(CURSOR, "No sound: the output device stopped (Play tries it again)"),
-                    None => ui.label(format!("Out: {}", self.player.device)),
+                let mut first = true;
+                let mut gap = |ui: &mut egui::Ui| {
+                    if !first {
+                        ui.separator();
+                    }
+                    first = false;
                 };
+                for field in StatusField::ALL {
+                    if !fields.is_shown(field) {
+                        continue;
+                    }
+                    let text = match field {
+                        StatusField::Name => doc.name().to_string(),
+                        StatusField::Format => format!("{:?}", doc.info.format),
+                        StatusField::SampleRate => format!("{rate} Hz"),
+                        StatusField::BitDepth => statusbar::sample_label(doc.info.sample_format).to_string(),
+                        StatusField::Channels => format!("{} ch", doc.channels()),
+                        StatusField::FileSize => format!(
+                            "{} uncompressed",
+                            space::format_bytes(statusbar::uncompressed_bytes(doc.frames() as u64, doc.channels() as u64, doc.info.sample_format))
+                        ),
+                        StatusField::Duration => format_time(doc.frames(), rate),
+                        StatusField::FreeSpace => match free.flatten() {
+                            Some(bytes) => format!("{} free", space::format_bytes(bytes)),
+                            None => "free space unknown".to_string(),
+                        },
+                        StatusField::Selection if self.selection.is_empty() => format!("Cursor {}", format_time(self.selection.start(), rate)),
+                        StatusField::Selection => {
+                            format!("Selection {} – {}", format_time(self.selection.start(), rate), format_time(self.selection.end(), rate))
+                        }
+                        StatusField::SelectionLength if self.selection.is_empty() => continue,
+                        StatusField::SelectionLength => format!("Length {}", format_time(self.selection.end() - self.selection.start(), rate)),
+                        StatusField::Output => {
+                            gap(ui);
+                            match &self.player.error {
+                                Some(e) => ui.colored_label(CURSOR, format!("No sound: {e}")),
+                                None if self.player.failed() => ui.colored_label(CURSOR, "No sound: the output device stopped (Play tries it again)"),
+                                None => ui.label(format!("Out: {}", self.player.device)),
+                            };
+                            continue;
+                        }
+                    };
+                    gap(ui);
+                    ui.label(text);
+                }
+                // What was wrong with the file that still opened: the first in the bar, all of
+                // them on hover. Always shown, whichever fields are.
+                if let Some(first_warning) = doc.warnings().first() {
+                    gap(ui);
+                    ui.colored_label(CURSOR, format!("Warning: {first_warning}")).on_hover_text(doc.warnings().join("\n"));
+                }
             } else {
                 ui.label("File › Open, or drop an audio file here.");
             }
@@ -913,11 +1106,47 @@ impl WaveApp {
             self.fit_on_next_frame = false;
         }
 
+        let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
+        let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
+
+        let (wave_area, spectrum_area) = match (self.show_waveform, self.show_spectrum) {
+            (true, true) => {
+                let split = body.top() + body.height() * 0.5;
+                (Some(Rect::from_min_max(body.min, pos2(body.right(), split))), Some(Rect::from_min_max(pos2(body.left(), split), body.max)))
+            }
+            (true, false) => (Some(body), None),
+            (false, true) => (None, Some(body)),
+            (false, false) => (None, None),
+        };
+        // The frequency ruler: a strip down the left of the spectral display, if it has room.
+        let freq_ruler =
+            spectrum_area.filter(|a| a.width() > 3.0 * FREQ_RULER_WIDTH).map(|a| Rect::from_min_size(a.min, vec2(FREQ_RULER_WIDTH, a.height())));
+        let over_freq_ruler = |pos: Pos2| freq_ruler.is_some_and(|r| r.contains(pos));
+        // Where in the lane under `y` (0 bottom, 1 top) and how tall that lane is.
+        let lane_at = |y: f32| {
+            spectrum_area.map_or((0.5, 1.0), |a| {
+                let ch = (((y - a.top()) / (a.height() / channels as f32)).floor().max(0.0) as usize).min(channels - 1);
+                let l = lane(a, ch, channels).shrink2(vec2(0.0, 1.0));
+                (((l.bottom() - y) / l.height().max(1.0)).clamp(0.0, 1.0), l.height().max(1.0))
+            })
+        };
+
         // Wheel zooms around the pointer; Shift+wheel and sideways scrolling move through time.
+        // Over the frequency ruler the wheel scrolls the band and Ctrl+wheel (or a pinch) zooms it.
         if let Some(pointer) = response.hover_pos() {
             let (scroll, pinch, shift) = ui.input(|i| (i.smooth_scroll_delta(), i.zoom_delta(), i.modifiers.shift));
             let x = pointer.x - rect.left();
-            if pinch != 1.0 {
+            if over_freq_ruler(pointer) {
+                let (t, lane_height) = lane_at(pointer.y);
+                let mut axis = self.freq_axis();
+                if pinch != 1.0 {
+                    axis = axis.zoom_at(1.0 / pinch, t, rate);
+                }
+                if scroll.y != 0.0 {
+                    axis = axis.pan_by(scroll.y / lane_height, rate);
+                }
+                set_axis(&mut self.params, &mut self.spectrum, axis, rate);
+            } else if pinch != 1.0 {
                 self.view.zoom_at(f64::from(pinch), x, width, frames);
             }
             if shift {
@@ -937,9 +1166,37 @@ impl WaveApp {
         }
         self.view.clamp(width, frames);
 
-        // Click places the cursor, drag selects.
+        // Click places the cursor, drag selects. A drag that starts on the frequency ruler scrolls
+        // the band instead (right button: zooms it), and a double-click there shows all of it.
         let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
-        if response.drag_started()
+        if over_freq_ruler(ui.input(|i| i.pointer.hover_pos()).unwrap_or(Pos2::ZERO)) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if response.drag_started() {
+            let origin = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos());
+            self.freq_drag = origin.filter(|o| over_freq_ruler(*o)).map(|origin| {
+                let (anchor_t, lane_height) = lane_at(origin.y);
+                FreqDrag { origin, axis: self.freq_axis(), zoom: response.dragged_by(egui::PointerButton::Secondary), anchor_t, lane_height }
+            });
+        }
+        if let Some(drag) = self.freq_drag {
+            if response.dragged()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let dy = pos.y - drag.origin.y;
+                let axis = if drag.zoom {
+                    drag.axis.zoom_at((-dy * 0.01).exp(), drag.anchor_t, rate)
+                } else {
+                    drag.axis.pan_by(dy / drag.lane_height, rate)
+                };
+                set_axis(&mut self.params, &mut self.spectrum, axis, rate);
+            } else {
+                self.freq_drag = None;
+            }
+        } else if response.double_clicked() && response.interact_pointer_pos().is_some_and(over_freq_ruler) {
+            let full = FreqAxis::full(self.params.log_freq, rate);
+            set_axis(&mut self.params, &mut self.spectrum, full, rate);
+        } else if response.drag_started()
             && let Some(pos) = response.interact_pointer_pos()
         {
             // A drag is only reported once the pointer has moved a few pixels: anchor the
@@ -952,24 +1209,13 @@ impl WaveApp {
             self.selection.head = frame_at(&self.view, pos);
         } else if response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
+            && !over_freq_ruler(pos)
         {
             self.selection = Selection::at(frame_at(&self.view, pos));
         }
 
         let (start, end) = (self.view.start, self.view.end(width));
-        let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
-        let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate);
-
-        let (wave_area, spectrum_area) = match (self.show_waveform, self.show_spectrum) {
-            (true, true) => {
-                let split = body.top() + body.height() * 0.5;
-                (Some(Rect::from_min_max(body.min, pos2(body.right(), split))), Some(Rect::from_min_max(pos2(body.left(), split), body.max)))
-            }
-            (true, false) => (Some(body), None),
-            (false, true) => (None, Some(body)),
-            (false, false) => (None, None),
-        };
 
         if let Some(area) = wave_area {
             let cols = area.width().round().max(1.0) as usize;
@@ -1005,14 +1251,29 @@ impl WaveApp {
                 // being made, the last one still lines up with the ruler and the waveform.
                 let (left, right) = (area.left() + self.view.x_of(cache.job.columns.start), area.left() + self.view.x_of(cache.job.columns.end));
                 let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                // The picture shows its own band. If the band has moved since, it is placed where
+                // that band now falls (and clipped to the lane) until the new picture arrives; one
+                // made on the other scale can't be, and waits.
+                let (shown, drawn) = (self.freq_axis(), FreqAxis::from_params(&cache.job.params).clamped(rate));
                 for (ch, texture) in cache.textures.iter().enumerate() {
                     let lane = lane(area, ch, channels).shrink2(vec2(0.0, 1.0));
-                    painter.with_clip_rect(lane).image(
-                        texture.id(),
-                        Rect::from_min_max(pos2(left, lane.top()), pos2(right, lane.bottom())),
-                        uv,
-                        Color32::WHITE,
-                    );
+                    let y_of = |hz: f32| lane.bottom() - shown.fraction_of_hz(hz) * lane.height();
+                    let (top, bottom) = (y_of(drawn.max_hz), y_of(drawn.min_hz));
+                    if shown.log == drawn.log && top.is_finite() && bottom.is_finite() && bottom > top {
+                        painter.with_clip_rect(lane).image(
+                            texture.id(),
+                            Rect::from_min_max(pos2(left, top), pos2(right, bottom)),
+                            uv,
+                            Color32::WHITE,
+                        );
+                    }
+                }
+            }
+            if let Some(strip) = freq_ruler {
+                let axis = self.freq_axis();
+                for ch in 0..channels {
+                    let lane = lane(strip, ch, channels).shrink2(vec2(0.0, 1.0));
+                    draw_freq_ruler(&painter, lane, &axis);
                 }
             }
         }
@@ -1096,6 +1357,7 @@ impl eframe::App for WaveApp {
         if self.show_history {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
+        self.keep_freq_axis(&ctx);
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
@@ -1125,6 +1387,35 @@ fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
             })
             .collect()
     })
+}
+
+/// Show `axis` (made usable for `rate`) in `params`; a picture drawn on the other scale is dropped.
+fn set_axis(params: &mut SpectrogramParams, spectrum: &mut Option<SpectrumCache>, axis: FreqAxis, rate: u32) {
+    let axis = axis.clamped(rate);
+    if axis.log != params.log_freq {
+        *spectrum = None;
+    }
+    axis.apply_to(params);
+}
+
+/// The frequency ruler for one lane: a darkened strip with a tick and a Hz or kHz label at each mark.
+fn draw_freq_ruler(painter: &egui::Painter, lane: Rect, axis: &FreqAxis) {
+    let painter = painter.with_clip_rect(lane);
+    painter.rect_filled(lane, 0.0, Color32::from_black_alpha(170));
+    painter.line_segment([pos2(lane.right(), lane.top()), pos2(lane.right(), lane.bottom())], Stroke::new(1.0, Color32::from_gray(90)));
+    for tick in axis.ticks(lane.height(), 26.0) {
+        let y = lane.bottom() - tick.t * lane.height();
+        painter.line_segment([pos2(lane.right() - 5.0, y), pos2(lane.right(), y)], Stroke::new(1.0, Color32::from_gray(160)));
+        // Keep the label inside the lane at the very top and bottom.
+        let label_y = y.clamp(lane.top() + 6.0, lane.bottom() - 6.0);
+        painter.text(
+            pos2(lane.right() - 8.0, label_y),
+            egui::Align2::RIGHT_CENTER,
+            tick.label,
+            egui::FontId::monospace(10.0),
+            Color32::from_gray(210),
+        );
+    }
 }
 
 /// The vertical slice of `area` for channel `ch` of `channels`.
