@@ -174,9 +174,10 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
     let free_space = opts.free_space.unwrap_or(crate::space::free_space);
     let mut job = Job { file: &mut file, file_len, progress, cancel, free_space };
     let is_wav_file = is_wav(&head);
+    let is_aiff_file = !is_wav_file && is_aiff(&head);
     let built = if is_wav_file {
         open_wav(&mut job, &store, &mut src)
-    } else if is_aiff(&head) {
+    } else if is_aiff_file {
         open_aiff(&mut job, &store, &mut src)
     } else {
         let detected = soundcraft_audio_io::detect_format(&head, ext);
@@ -196,7 +197,14 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
         log::warn!("{}: {w}", path.display());
     }
     let rate = src.sample_rate;
-    let markers = if is_wav_file { read_wav_markers(&mut job, &src, built.channels.first().map_or(0, Channel::len)) } else { Markers::new() };
+    let frames = built.channels.first().map_or(0, Channel::len);
+    let markers = if is_wav_file {
+        read_wav_markers(&mut job, &src, frames)
+    } else if is_aiff_file {
+        read_aiff_markers(&mut job, &src, frames)
+    } else {
+        Markers::new()
+    };
     DocState::new(store, built.channels, rate, src)
         .map(|d| if markers.is_empty() { d } else { d.with_markers(Arc::new(markers)) })
         .map_err(|e| malformed(e.to_string()))
@@ -222,6 +230,20 @@ fn read_wav_markers(job: &mut Job<'_>, src: &SourceFormat, frames: u64) -> Marke
     }
     let lists: Vec<&[u8]> = lists.iter().map(Vec::as_slice).collect();
     Markers::from_wav_chunks(&cue, &lists, frames)
+}
+
+/// The markers an AIFF file carries (A184): its `MARK` chunk. None if it has none or it is damaged.
+fn read_aiff_markers(job: &mut Job<'_>, src: &SourceFormat, frames: u64) -> Markers {
+    let file_len = job.file_len;
+    let Some(c) =
+        src.chunks.iter().find(|c| &c.id == b"MARK" && c.size <= (16 << 20) && c.offset.saturating_add(8).saturating_add(c.size) <= file_len)
+    else {
+        return Markers::new();
+    };
+    match job.read_at(c.offset + 8, c.size) {
+        Ok(body) => Markers::from_aiff_mark(&body, frames),
+        Err(_) => Markers::new(),
+    }
 }
 
 struct Job<'a> {

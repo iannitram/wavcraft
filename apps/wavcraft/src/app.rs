@@ -812,9 +812,20 @@ impl WaveApp {
 
     /// The `MARKER` control verb (see `control_request`).
     fn control_marker(&mut self, rest: &str) -> String {
-        const USAGE: &str = "ERR MARKER rename <i> <name> | move <i> <frame> | select <i> [add]";
+        const USAGE: &str =
+            "ERR MARKER rename <i> <name> | move <i> <frame> | select <i> [add] | merge <i> <j> ... | color <i> <n> | desc <i> <text> | info <i>";
         if self.saving.is_some() {
             return "ERR wait for the save to finish".to_string();
+        }
+        if let Some(list) = rest.strip_prefix("merge ") {
+            let Some(editor) = self.editor.as_mut() else { return "ERR no file is open".to_string() };
+            let markers = editor.history.current().markers().clone();
+            let ids: Option<Vec<u64>> = list.split_whitespace().map(|i| i.parse::<usize>().ok().and_then(|i| markers.id_at(i))).collect();
+            return match ids {
+                Some(ids) if editor.merge_markers(&ids) => "OK".to_string(),
+                Some(_) => "ERR need two or more different markers, and no other marker may already have the merged extent".to_string(),
+                None => USAGE.to_string(),
+            };
         }
         let mut it = rest.splitn(3, ' ');
         let (verb, index, arg) = (it.next().unwrap_or(""), it.next().and_then(|i| i.parse::<usize>().ok()), it.next().unwrap_or("").trim());
@@ -835,6 +846,21 @@ impl WaveApp {
                 Ok(_) => "ERR the marker would not move (same place, or another marker is there)".to_string(),
                 Err(_) => USAGE.to_string(),
             },
+            "color" => match arg.parse::<u8>() {
+                Ok(n) if editor.set_marker_color(id, n) => "OK".to_string(),
+                Ok(_) => format!("ERR colour is 0 (none) to {}, and must differ from the current one", wavcraft_core::PALETTE.len()),
+                Err(_) => USAGE.to_string(),
+            },
+            "desc" => {
+                if editor.set_marker_description(id, arg) {
+                    "OK".to_string()
+                } else {
+                    "ERR the description is unchanged".to_string()
+                }
+            }
+            "info" => {
+                markers.iter().nth(index).map_or_else(String::new, |m| format!("OK color={} desc={}", m.color, m.description.replace('\n', " ")))
+            }
             "select" if arg.is_empty() || arg == "add" => {
                 if let Some(span) = self.markers_ui.click(&markers, index, false, arg == "add") {
                     self.selection = Selection { anchor: span.start as usize, head: span.end as usize };
@@ -1280,7 +1306,12 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32) {
 fn draw_markers(painter: &egui::Painter, rect: Rect, view: &Viewport, markers: &wavcraft_core::Markers, picked: &[u64]) {
     let painter = painter.with_clip_rect(rect);
     for m in markers.iter() {
-        let color = if picked.contains(&m.id) { Color32::from_rgb(255, 255, 255) } else { Color32::from_rgb(240, 190, 60) };
+        let own = m
+            .color
+            .checked_sub(1)
+            .and_then(|n| wavcraft_core::PALETTE.get(usize::from(n)))
+            .map_or(Color32::from_rgb(240, 190, 60), |(_, c)| Color32::from_rgb(c[0], c[1], c[2]));
+        let color = if picked.contains(&m.id) { Color32::from_rgb(255, 255, 255) } else { own };
         let x0 = rect.left() + view.x_of(m.start as f64);
         let x1 = rect.left() + view.x_of(m.end.max(m.start) as f64);
         if x1 < rect.left() - 200.0 || x0 > rect.right() {
