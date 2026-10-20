@@ -18,6 +18,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::chanmap::ChannelMap;
+
 /// The environment variable that sets the session folder (over the settings file).
 pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 /// How a person changes the session folder, for messages.
@@ -28,9 +30,18 @@ const KEY_CUT_JOIN: &str = "crossfade_cut_join_ms";
 const KEY_EDGE: &str = "crossfade_edge_ms";
 const KEY_OUTPUT: &str = "output_device";
 const KEY_INPUT: &str = "input_device";
+const KEY_HOST: &str = "audio_host";
+const KEY_BUFFER: &str = "buffer_frames";
+const KEY_OUT_MAP: &str = "output_map";
+const KEY_IN_MAP: &str = "input_map";
 
 /// Every preference key, in the order the file lists them.
-pub const KEYS: [&str; 5] = [KEY_SESSION_FOLDER, KEY_CUT_JOIN, KEY_EDGE, KEY_OUTPUT, KEY_INPUT];
+pub const KEYS: [&str; 9] = [KEY_SESSION_FOLDER, KEY_CUT_JOIN, KEY_EDGE, KEY_OUTPUT, KEY_INPUT, KEY_HOST, KEY_BUFFER, KEY_OUT_MAP, KEY_IN_MAP];
+
+/// What the buffer size preference shows (and accepts) for "the device's own default".
+pub const DEVICE_DEFAULT: &str = "Device default";
+/// The largest buffer size (frames) the preference accepts.
+pub const MAX_BUFFER_FRAMES: u32 = 65_536;
 
 /// What a device preference shows (and accepts) for "no device chosen: use the system's".
 pub const SYSTEM_DEFAULT: &str = "System default";
@@ -54,11 +65,29 @@ pub struct Settings {
     pub output_device: Option<String>,
     /// The input device's name (`None`: the system default). Kept for recording.
     pub input_device: Option<String>,
+    /// The audio host (driver API) by name: CoreAudio, WASAPI, ALSA… (`None`: the system's default).
+    pub audio_host: Option<String>,
+    /// The output buffer size in frames, applied when the stream reopens (`None`: the device's).
+    pub buffer_frames: Option<u32>,
+    /// Document channel → device output channel (empty: the automatic layout).
+    pub output_map: ChannelMap,
+    /// Device input channel → record channel (empty: the automatic layout). Kept for recording.
+    pub input_map: ChannelMap,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { session_folder: None, cut_join_ms: DEFAULT_CUT_JOIN_MS, edge_ms: DEFAULT_EDGE_MS, output_device: None, input_device: None }
+        Settings {
+            session_folder: None,
+            cut_join_ms: DEFAULT_CUT_JOIN_MS,
+            edge_ms: DEFAULT_EDGE_MS,
+            output_device: None,
+            input_device: None,
+            audio_host: None,
+            buffer_frames: None,
+            output_map: ChannelMap::default(),
+            input_map: ChannelMap::default(),
+        }
     }
 }
 
@@ -112,6 +141,10 @@ impl Settings {
             KEY_EDGE => self.edge_ms.to_string(),
             KEY_OUTPUT => self.output_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
             KEY_INPUT => self.input_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
+            KEY_HOST => self.audio_host.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
+            KEY_BUFFER => self.buffer_frames.map_or_else(|| DEVICE_DEFAULT.to_string(), |n| n.to_string()),
+            KEY_OUT_MAP => self.output_map.to_string(),
+            KEY_IN_MAP => self.input_map.to_string(),
             _ => return Err(unknown_key(key)),
         })
     }
@@ -130,6 +163,18 @@ impl Settings {
             KEY_EDGE => self.edge_ms = ms(value)?,
             KEY_OUTPUT => self.output_device = device(value),
             KEY_INPUT => self.input_device = device(value),
+            KEY_HOST => self.audio_host = device(value),
+            KEY_BUFFER => {
+                self.buffer_frames = match value {
+                    "" | "0" | DEVICE_DEFAULT => None,
+                    v => match v.parse::<u32>() {
+                        Ok(n) if n <= MAX_BUFFER_FRAMES => Some(n),
+                        _ => return Err(format!("{key} is a whole number of frames, 1 to {MAX_BUFFER_FRAMES} (0: the device default)")),
+                    },
+                }
+            }
+            KEY_OUT_MAP => self.output_map = ChannelMap::parse(value)?,
+            KEY_IN_MAP => self.input_map = ChannelMap::parse(value)?,
             _ => return Err(unknown_key(key)),
         }
         Ok(())
@@ -146,6 +191,11 @@ impl Settings {
         out.push_str("# output_device, input_device: a device name from the Audio Hardware page (empty: the system default).\n");
         out.push_str(&format!("{KEY_OUTPUT} = {}\n", self.output_device.as_deref().unwrap_or_default()));
         out.push_str(&format!("{KEY_INPUT} = {}\n", self.input_device.as_deref().unwrap_or_default()));
+        out.push_str("# audio_host: the audio system to use (empty: the default). buffer_frames: output buffer size, applied when the stream reopens (empty: the device's).\n");
+        out.push_str(&format!("{KEY_HOST} = {}\n", self.audio_host.as_deref().unwrap_or_default()));
+        out.push_str(&format!("{KEY_BUFFER} = {}\n", self.buffer_frames.map(|n| n.to_string()).unwrap_or_default()));
+        out.push_str("# output_map, input_map: channel pairs from:to counting from 1 (document -> device output; device input -> record channel). Empty: automatic.\n");
+        out.push_str(&format!("{KEY_OUT_MAP} = {}\n{KEY_IN_MAP} = {}\n", self.output_map, self.input_map));
         out
     }
 
