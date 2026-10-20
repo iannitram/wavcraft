@@ -9,6 +9,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod cd_ui;
 mod control;
 mod multitrack_ui;
 mod player;

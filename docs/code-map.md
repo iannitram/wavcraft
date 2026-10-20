@@ -20,12 +20,14 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | | `document.rs` | `Document`: the open file as the app sees it: streamed open, then read back whole (`audio`) until task 05, the `DocState` kept in `state`, per-channel waveform peaks, `waveform_columns()` for drawing, `warnings()` (the open's `SourceFormat::warnings`, since W8b) |
 | | `spectrogram.rs` | The spectral display maths: `SpectrogramParams`, `Columns` (file-fixed column grid), `Overview` (coarse per-channel cache), `render()` / `render_columns()`. Private: `Analysis` (FFT plan, Hann window, dB→level table), `Analyser` (FFT scratch, per-bin max) |
 | | `multitrack.rs` (f103) | `Multitrack` over `soundcraft_model::Session`: new session (name, rate, bit depth), add / remove / rename audio tracks, mute / solo / volume, clips from a file, a buffer or an open `Document` (in-RAM sources, capped at `MAX_IMPORT_SAMPLES`; long files wait for the fork's disk-backed sources, #302), `state_json`. The model is pinned separately from audio-io (see the root `Cargo.toml`) |
+| | `cd.rs` (f121) | CD Layout: `CdLayout` (ordered `CdTrack`s: a `DocState` source, pause before (2 s first, 0 others), title, performer, ISRC; `DiscLimit` 74/80 min), `timeline()` in CD frames (75/s, 588 samples; each track padded to whole frames, so `INDEX 00/01` are frame-exact), `isrc_normalize`/`isrc_valid`, `cue_sheet`, `export` (one 44.1 kHz 16-bit stereo WAV + `.cue`, streamed 64 K frames at a time, rate by linear interpolation, mono to stereo, written through `save::save_atomic`). No burning (C243), no CD-Text (C244) |
 | | `view.rs` | `Viewport` (zoom/scroll in frames), `Selection` (anchor/head), `format_time` |
 | | `examples/spectrogram_cost.rs` | Measures overview build and far-view render times on a synthetic 3-hour mono file |
 | `apps/wavcraft` (`wavcraft`, binary, egui/eframe 0.36, wgpu DX12 on Windows) | `main.rs` | Window options, DX12-only wgpu on Windows, `parse_args` (`[--session-dir DIR] [FILE]`), runs `WaveApp` |
 | | `app.rs` | `WaveApp`: menu (File › Session Folder… / Use the Default Session Folder since item 03b), status bar, the editor painter (ruler, waveform lanes, spectral lanes, selection, cursor, playhead), input (wheel zoom, drag select, Space, Home, `\`, Ctrl+O, drop), opening on a worker thread; the status bar shows the open's first warning (all of them on hover) since W8b |
 | | `player.rs` | `Player`: cpal output stream, play/stop, playhead position |
 | | `spectrum.rs` | `Renderer`: the spectrogram worker thread and its overview cache |
+| | `cd_ui.rs` (f121) | The CD Layout view (View › CD Layout) and the `CD` control verb (`add`, `adddoc`, `pause`, `meta`, `move`, `remove`, `limit`, `view`, `state`, `export`) |
 
 Workspace: `Cargo.toml` at the root; `unsafe_code = "forbid"` for every crate that inherits the
 workspace lints. Tests: 21 in the core, 9 in the app (before task 02).

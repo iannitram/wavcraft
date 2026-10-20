@@ -174,6 +174,30 @@ pub fn save_wav_failing_after(doc: &DocState, target: &Path, ty: SampleType, fai
     save_wav_inner(doc, target, ty, &mut |_| {}, Some(fail_after))
 }
 
+/// Write a file of the caller's own (the CD layout's WAV and CUE sheet) with the save's safety:
+/// a fresh locked temporary file beside `target`, synced, renamed over it only when `write` has
+/// finished; on any failure the temporary file goes and `target` is as it was. `write` gets the
+/// file and returns it (flushed) when done.
+pub fn save_atomic(target: &Path, write: impl FnOnce(File) -> io::Result<File>) -> Result<(), SaveError> {
+    remove_leftover_temps(target);
+    let TempFile { path: tmp, file } = TempFile::create(target).map_err(SaveError::Io)?;
+    let file = match write(file) {
+        Ok(file) => file,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            log::warn!(target: "wavcraft_core::save", "write to {} failed, the file is unchanged: {e}", target.display());
+            return Err(SaveError::Io(e));
+        }
+    };
+    if let Err(e) = std::fs::rename(&tmp, target) {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(SaveError::Io(io::Error::new(e.kind(), format!("could not replace the file ({e}); it is unchanged"))));
+    }
+    drop(file);
+    Ok(())
+}
+
 fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> Result<(), SaveError> {
     let frames = doc.len_frames();
     if frames == 0 {
@@ -248,7 +272,7 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
 }
 
 /// The RIFF (or, above 4 GiB, RF64) header and the `data` chunk's header; returns the data size.
-fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
+pub(crate) fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(u64::from(channels)).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("WAV too long"))?;
     let float = ty == SampleType::Float32;

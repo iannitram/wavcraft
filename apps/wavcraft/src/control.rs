@@ -16,6 +16,8 @@
 //! - `SESSION new <name> [rate=48000] [depth=24]`, `SESSION state`, `TRACK add|remove|rename|mute|solo|volume …`,
 //!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`
 //!   (multitrack basics, f103; see `multitrack_ui.rs`; `SESSION state` answers `OK view=… <json>`)
+//! - `CD add <path>|adddoc|pause <i> <s>|meta <i> title=.. performer=.. isrc=..|move|remove|limit 74|80|view|state|export <dir>`
+//!   (CD Layout, f121; see `cd_ui.rs`; `export` writes `disc.wav` and `disc.cue` in `<dir>`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

@@ -383,7 +383,7 @@ fn ruler_step(min: f32) -> f64 {
 }
 
 /// Split a control line into words; double quotes keep spaces inside one word.
-fn tokens(line: &str) -> Result<Vec<String>, String> {
+pub(crate) fn tokens(line: &str) -> Result<Vec<String>, String> {
     let (mut out, mut cur, mut quoted, mut has) = (Vec::new(), String::new(), false, false);
     for ch in line.chars() {
         match ch {
