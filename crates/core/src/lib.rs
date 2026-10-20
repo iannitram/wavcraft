@@ -26,6 +26,7 @@ pub mod convert;
 pub mod doc;
 pub mod document;
 pub mod effects;
+mod flac_enc;
 pub mod generate;
 pub mod io;
 pub mod levels;

@@ -48,7 +48,8 @@
 //!   (Convert Sample Type, in the background; poll `STATE` until `busy=0`; `ERR` for a bad setting)
 //! - `INTERPRET <hz>` → `OK` (Interpret Sample Rate: relabel the rate, no resampling)
 //! - `PRESET list` | `PRESET save <name> | <settings>` | `PRESET delete <name>` → `OK …` (conversion presets)
-//! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `SAVE [path] [bits=16|24|32] [float=0|1]` → `OK` (Save, or Save As to `path`, the format from
+//!   its extension: .wav, .aiff/.aif, .flac; `bits`/`float=1` choose the sample type; poll `STATE` until `busy=0`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes in any document `ERR …` unless `QUIT discard`
 //! - `METERS [PUSH <l> <r> | RESET]` → `OK l=<dBFS> l_hold=<dBFS> l_clip=<0|1> r=… r_hold=… r_clip=…` (the Levels
 //!   panel's bars; `PUSH` gives the tap linear peaks as the audio callback would, `RESET` clears the clip lights)
