@@ -71,6 +71,8 @@ pub struct WaveApp {
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
+    /// Test hook (`HOLD_BUSY`, fake input only): counts as an open or save running until then.
+    test_busy_until: Option<std::time::Instant>,
     error: Option<String>,
     /// A message that is not an error (the session folder was changed).
     notice: Option<String>,
@@ -145,6 +147,7 @@ impl WaveApp {
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
+            test_busy_until: None,
             error: sessions.warning.clone(),
             notice: None,
             sessions,
@@ -286,9 +289,41 @@ impl WaveApp {
 
     /// Start a take that stops by itself after `max_secs` of recorded audio, if given (C028).
     fn start_recording_max(&mut self, fmt: wavcraft_core::record::RecFormat, max_secs: Option<u64>) -> Result<PathBuf, String> {
-        if self.opening.is_some() || self.saving.is_some() {
+        if self.op_running() {
             return Err("wait for the open or save to finish".to_string());
         }
+        self.begin_recording(fmt, max_secs)
+    }
+
+    /// An open or save is running (or the test hook says so).
+    fn op_running(&self) -> bool {
+        self.opening.is_some() || self.saving.is_some() || self.test_busy_until.is_some_and(|t| std::time::Instant::now() < t)
+    }
+
+    /// A timed start whose time has come. A take has its own writer and shares nothing with an
+    /// open or save, so it starts right away even while one runs; it is never dropped. The delay
+    /// and the overlap are logged, shown in the status bar and kept in `STATE`.
+    fn start_timed(&mut self, fmt: wavcraft_core::record::RecFormat, max_secs: Option<u64>) {
+        let busy = self.op_running();
+        match self.begin_recording(fmt, max_secs) {
+            Ok(path) => {
+                let late = self.rec.last_timed.map_or(0, |t| t.0);
+                self.rec.last_timed = Some((late, busy));
+                let msg = format!(
+                    "Timed recording started {late} ms after its time{} -> {}",
+                    if busy { ", while an open or save was running" } else { "" },
+                    path.display()
+                );
+                log::info!(target: "wavcraft", "{msg}");
+                if busy || late >= 1000 {
+                    self.notice = Some(msg);
+                }
+            }
+            Err(why) => log::error!(target: "wavcraft", "Timed recording could NOT start: {why}"),
+        }
+    }
+
+    fn begin_recording(&mut self, fmt: wavcraft_core::record::RecFormat, max_secs: Option<u64>) -> Result<PathBuf, String> {
         self.player.set_muted(true);
         match self.rec.start(fmt, max_secs) {
             Ok(path) => {
@@ -741,7 +776,7 @@ impl WaveApp {
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
             "STATE" => {
-                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
+                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() || self.op_running();
                 let unsaved = u8::from(self.unsaved());
                 match &self.editor {
                     Some(e) => {
@@ -767,6 +802,14 @@ impl WaveApp {
                     ),
                 }
             }
+            // Test hook: count as busy (open or save running) for <ms>. Fake input only.
+            "HOLD_BUSY" if std::env::var_os("WAVCRAFT_FAKE_INPUT").is_some() => match rest.trim().parse::<u64>() {
+                Ok(ms) => {
+                    self.test_busy_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(ms));
+                    "OK".to_string()
+                }
+                Err(_) => "ERR HOLD_BUSY <ms>".to_string(),
+            },
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -1202,8 +1245,7 @@ impl eframe::App for WaveApp {
             self.finish_recording(true, ctx);
         }
         if let Some((fmt, max)) = self.rec.due() {
-            // Errors show in the status bar and the log.
-            let _ = self.start_recording_max(fmt, max);
+            self.start_timed(fmt, max);
         }
         if self.rec.is_active() || self.rec.is_armed() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));

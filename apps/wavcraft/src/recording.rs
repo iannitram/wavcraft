@@ -72,6 +72,8 @@ pub fn parse_start_args(args: &str, now_unix: u64) -> Result<(RecFormat, StartOp
 pub struct Recording {
     active: Option<Active>,
     armed: Option<Armed>,
+    /// How the last timed start went: (milliseconds after its due time, an open or save was running).
+    pub last_timed: Option<(u64, bool)>,
     /// The format of the last take started; Quick Record (C031) and the dialog begin from it.
     last_fmt: Option<RecFormat>,
     /// File › New Recording…: the format being chosen while the dialog is up.
@@ -129,7 +131,10 @@ impl Recording {
     /// The armed take when its time has come.
     pub fn due(&mut self) -> Option<(RecFormat, Option<u64>)> {
         if self.armed.as_ref().is_some_and(|a| Instant::now() >= a.at) {
-            return self.armed.take().map(|a| (a.fmt, a.max_secs));
+            return self.armed.take().map(|a| {
+                self.last_timed = Some((Instant::now().saturating_duration_since(a.at).as_millis() as u64, false));
+                (a.fmt, a.max_secs)
+            });
         }
         None
     }
@@ -250,6 +255,14 @@ impl Recording {
         self.armed.as_ref().map_or(-1, |a| a.at.saturating_duration_since(Instant::now()).as_secs() as i64)
     }
 
+    /// ` rec_late_ms=<n> rec_start_busy=<0|1>` for the last timed start, `-1 -1` before any.
+    fn timed_fields(&self) -> String {
+        match self.last_timed {
+            Some((late, busy)) => format!(" rec_late_ms={late} rec_start_busy={}", u8::from(busy)),
+            None => " rec_late_ms=-1 rec_start_busy=-1".to_string(),
+        }
+    }
+
     /// Seconds of recording that fit in the free space, if known.
     fn left_secs(a: &Active) -> Option<u64> {
         a.free.map(|f| f / a.recorder.format().bytes_per_second().max(1))
@@ -259,14 +272,15 @@ impl Recording {
     pub fn state_fields(&self) -> String {
         match &self.active {
             None => format!(
-                " recording=0 rec_frames=0 rec_bytes=0 rec_dropped=0 rec_left_s=-1 rec_paused=0 rec_resumes=0 rec_max_s=-1 rec_armed={}",
-                self.armed_in()
+                " recording=0 rec_frames=0 rec_bytes=0 rec_dropped=0 rec_left_s=-1 rec_paused=0 rec_resumes=0 rec_max_s=-1 rec_armed={}{}",
+                self.armed_in(),
+                self.timed_fields()
             ),
             Some(a) => {
                 let s = a.recorder.status();
                 let left = Self::left_secs(a).map_or(-1, |l| l.min(i64::MAX as u64) as i64);
                 format!(
-                    " recording=1 rec_frames={} rec_bytes={} rec_dropped={} rec_left_s={left} rec_paused={} rec_resumes={} rec_resume_at={} rec_max_s={} rec_armed=-1 rec_rate={} rec_ch={} rec_bits={}",
+                    " recording=1 rec_frames={} rec_bytes={} rec_dropped={} rec_left_s={left} rec_paused={} rec_resumes={} rec_resume_at={} rec_max_s={} rec_armed=-1 rec_rate={} rec_ch={} rec_bits={}{}",
                     s.frames,
                     s.file_bytes,
                     s.dropped_frames,
@@ -276,7 +290,8 @@ impl Recording {
                     a.max_frames.map_or(-1, |m| (m / u64::from(a.recorder.format().rate.max(1))) as i64),
                     a.recorder.format().rate,
                     a.recorder.format().channels,
-                    a.recorder.format().bits
+                    a.recorder.format().bits,
+                    self.timed_fields()
                 )
             }
         }
@@ -370,6 +385,20 @@ impl Recording {
 mod tests {
     use super::{StartOpts, clock, parse_start_args};
     use wavcraft_core::record::RecFormat;
+
+    #[test]
+    fn a_timed_start_reports_how_late_it_was() {
+        let mut r = super::Recording::default();
+        assert!(r.state_fields().contains("rec_late_ms=-1"));
+        r.arm(RecFormat::default(), std::time::Duration::ZERO, Some(3)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let (_, max) = r.due().expect("due");
+        assert_eq!(max, Some(3));
+        let (late, busy) = r.last_timed.unwrap();
+        assert!(late >= 15 && !busy, "{late} {busy}");
+        assert!(r.state_fields().contains("rec_start_busy=0"));
+        assert!(r.due().is_none(), "a due take is handed out once");
+    }
 
     #[test]
     fn start_arguments_split_the_timer_from_the_format() {
