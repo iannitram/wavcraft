@@ -16,7 +16,9 @@ use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
 mod gain;
+mod speech_leveler;
 pub use gain::Gain;
+pub use speech_leveler::SpeechLeveler;
 
 /// What a setting means, so a dialog can pick the right control and units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +204,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &SpeechLeveler];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
