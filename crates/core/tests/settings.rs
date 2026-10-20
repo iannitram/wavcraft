@@ -58,7 +58,7 @@ fn the_panel_layout_is_kept_in_the_settings_file() {
     Settings { panel_layout, zone_sizes, ..Settings::default() }.save(&file).unwrap();
     let back = Settings::load(&file);
     assert_eq!(Layout::decode(&back.panel_layout, &back.zone_sizes), layout);
-    assert!(std::fs::read_to_string(&file).unwrap().contains("panel_layout = left:;right:selection;bottom:history*"));
+    assert!(std::fs::read_to_string(&file).unwrap().contains("panel_layout = left:;right:;bottom:selection,history*"));
 }
 
 #[test]

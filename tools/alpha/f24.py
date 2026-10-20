@@ -90,12 +90,12 @@ def main():
 
     def run1(c):
         z = zones(c)
-        check("default: History and Selection tab together on the right, editor in the centre",
-              z["zone.right"] == "history,selection" and z["zone.left"] == "-" and z["zone.bottom"] == "-"
-              and z["zone.center"] == "waveform,spectral" and z["front.right"] == "history" and z["maximized"] == "-", z)
+        check("default: History on the right, Selection below, editor in the centre",
+              z["zone.right"] == "history" and z["zone.left"] == "-" and z["zone.bottom"] == "selection"
+              and z["zone.center"] == "editor,waveform,spectral" and z["front.right"] == "history" and z["maximized"] == "-", z)
         c.ask("PANEL move history left")
         z = zones(c)
-        check("PANEL move history left", z["zone.left"] == "history" and z["zone.right"] == "selection", z)
+        check("PANEL move history left", z["zone.left"] == "history" and z["zone.right"] == "-" and z["zone.bottom"] == "selection", z)
         c.ask("PANEL move selection left")
         z = zones(c)
         check("a second panel joins the left zone as a tab, in front", z["zone.left"] == "history,selection" and z["front.left"] == "selection" and z["zone.right"] == "-", z)
