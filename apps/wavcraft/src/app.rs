@@ -36,6 +36,17 @@ struct Opening {
     progress: Arc<AtomicU32>,
 }
 
+/// A file being streamed into the open document's session store for Insert > Audio from File.
+struct Inserting {
+    path: PathBuf,
+    result: Receiver<Result<DocState, String>>,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<AtomicU32>,
+    /// The document it belongs to ([`WaveApp::doc_id`] when it started): a result that arrives
+    /// after another file was opened is dropped.
+    doc_id: u64,
+}
+
 /// A save running on a worker thread.
 struct Saving {
     path: PathBuf,
@@ -70,6 +81,7 @@ pub struct WaveApp {
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
+    inserting: Option<Inserting>,
     error: Option<String>,
     /// A message that is not an error (the session folder was changed).
     notice: Option<String>,
@@ -142,6 +154,7 @@ impl WaveApp {
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
+            inserting: None,
             error: sessions.warning.clone(),
             notice: None,
             sessions,
@@ -176,6 +189,10 @@ impl WaveApp {
     /// long files. A file still opening is cancelled first.
     fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
         if let Some(old) = self.opening.take() {
+            old.cancel.store(true, Ordering::Relaxed);
+        }
+        // A file being inserted belongs to the document that is being replaced.
+        if let Some(old) = self.inserting.take() {
             old.cancel.store(true, Ordering::Relaxed);
         }
         let (tx, rx) = channel();
@@ -227,6 +244,94 @@ impl WaveApp {
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
         }
         self.opening = None;
+    }
+
+    /// Insert › Audio from File…: pick a file, then [`insert_file`](Self::insert_file).
+    fn pick_insert_file(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        if self.editor.is_none() {
+            return Err("no file is open".to_string());
+        }
+        let picked =
+            rfd::FileDialog::new().add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "caf"]).pick_file();
+        match picked {
+            Some(path) => self.insert_file(path, ctx),
+            None => Ok(()),
+        }
+    }
+
+    /// Stream `path` into the open document's own session store on a worker thread (never the
+    /// whole file in memory), then insert it at the cursor or over the selection as one step.
+    fn insert_file(&mut self, path: PathBuf, ctx: &egui::Context) -> Result<(), String> {
+        let why = if self.saving.is_some() {
+            Some("wait for the save to finish")
+        } else if self.opening.is_some() {
+            Some("wait for the file to finish opening")
+        } else if self.inserting.is_some() {
+            Some("another file is being inserted")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Err(why.to_string());
+        }
+        let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
+        let opts = OpenOptions { into_store: Some(editor.history.current().store().clone()), ..OpenOptions::default() };
+        let (tx, rx) = channel();
+        let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
+        let (ctx, job_path, job_cancel, job_progress) = (ctx.clone(), path.clone(), cancel.clone(), progress.clone());
+        std::thread::spawn(move || {
+            let mut last = 0;
+            let mut report = |p: f64| {
+                let permille = (p.clamp(0.0, 1.0) * 1000.0) as u32;
+                job_progress.store(permille, Ordering::Relaxed);
+                if permille >= last + 10 {
+                    last = permille;
+                    ctx.request_repaint();
+                }
+            };
+            let result = wavcraft_core::io::open(&job_path, &opts, &mut report, &job_cancel).map_err(|e| e.to_string());
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        self.inserting = Some(Inserting { path, result: rx, cancel, progress, doc_id: self.doc_id });
+        self.error = None;
+        self.notice = None;
+        Ok(())
+    }
+
+    fn finish_inserting(&mut self, ctx: &egui::Context) {
+        let Some(Inserting { path, result: rx, doc_id, .. }) = &self.inserting else { return };
+        let (path, doc_id) = (path.clone(), *doc_id);
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the decoder stopped unexpectedly".to_string()),
+        };
+        self.inserting = None;
+        if doc_id != self.doc_id {
+            return;
+        }
+        let sel = self.selection_range();
+        let outcome = match (result, self.editor.as_mut()) {
+            (Ok(file), Some(editor)) => editor.insert_file(&file, sel),
+            (Err(e), _) => Err(e),
+            (_, None) => Err("no file is open".to_string()),
+        };
+        match outcome {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.notice = out.message;
+                self.error = None;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+            }
+            Err(e) => {
+                let why = format!("Insert Audio from File: {}: {e}", path.display());
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why);
+            }
+        }
     }
 
     fn pick_file(&mut self, ctx: &egui::Context) {
@@ -326,7 +431,7 @@ impl WaveApp {
     /// Insert Silence dialog.
     fn run_window_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
         let frames = self.doc.as_ref().map_or(0, Document::frames);
-        if frames == 0 && id != ActionId::InsertSilence {
+        if frames == 0 && !matches!(id, ActionId::InsertSilence | ActionId::InsertFile) {
             return Err("no file is open".to_string());
         }
         let width = self.editor_width.max(1.0);
@@ -351,6 +456,7 @@ impl WaveApp {
                 self.selection = Selection { anchor: start, head: playhead };
             }
             ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
+            ActionId::InsertFile => self.pick_insert_file(ctx)?,
             // Repeat Last Command with its dialog: Insert Silence opens its dialog with the last
             // length; the other repeatable commands have no dialog and simply run again.
             ActionId::RepeatLastDialog => {
@@ -671,7 +777,7 @@ impl WaveApp {
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
             "STATE" => {
-                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
+                let busy = self.opening.is_some() || self.inserting.is_some() || self.rebuilding.is_some() || self.saving.is_some();
                 let unsaved = u8::from(self.unsaved());
                 match &self.editor {
                     Some(e) => {
@@ -696,6 +802,12 @@ impl WaveApp {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
             }
+            // Insert › Audio from File at the cursor (or over the selection); poll STATE until busy=0.
+            "INSERT_FILE" if !rest.is_empty() => match self.insert_file(PathBuf::from(rest), ctx) {
+                Ok(()) => "OK".to_string(),
+                Err(e) => format!("ERR {e}"),
+            },
+            "INSERT_FILE" => "ERR INSERT_FILE <path>".to_string(),
             "SELECT" => {
                 let mut it = rest.split_whitespace().map(str::parse::<usize>);
                 match (it.next(), it.next()) {
@@ -853,6 +965,9 @@ impl WaveApp {
                 ui.spinner();
                 let permille = o.progress.load(Ordering::Relaxed);
                 ui.label(format!("Opening {}… {}%", o.path.display(), permille / 10));
+            } else if let Some(i) = &self.inserting {
+                ui.spinner();
+                ui.label(format!("Inserting {}… {}%", i.path.display(), i.progress.load(Ordering::Relaxed) / 10));
             } else if let Some(s) = &self.saving {
                 ui.spinner();
                 ui.label(format!("Saving {}… {}%", s.path.display(), s.progress.load(Ordering::Relaxed) / 10));
@@ -1043,6 +1158,7 @@ impl eframe::App for WaveApp {
     /// found the channel silent behind another window).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finish_opening();
+        self.finish_inserting(ctx);
         self.finish_rebuild();
         self.finish_saving(ctx);
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
@@ -1067,12 +1183,14 @@ impl eframe::App for WaveApp {
             let _ = self.run_action(id, &ctx);
         }
         // Home and Zoom Out Full come from the action table now (Audition's Home and Cmd+\).
-        let (space, open, dropped) = ctx.input(|i| {
+        let (space, open, dropped, hovering, dropped_without_path) = ctx.input(|i| {
             (
                 // Not `key_pressed`: that also counts auto-repeat, so a long press would toggle again.
                 i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Space, pressed: true, repeat: false, .. })),
                 i.modifiers.command && i.key_pressed(Key::O),
-                i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()),
+                dropped_path(&i.raw.dropped_files),
+                !i.raw.hovered_files.is_empty(),
+                !i.raw.dropped_files.is_empty() && dropped_path(&i.raw.dropped_files).is_none(),
             )
         });
         if space {
@@ -1083,6 +1201,17 @@ impl eframe::App for WaveApp {
         }
         if let Some(path) = dropped {
             self.open(path, &ctx);
+        } else if dropped_without_path {
+            self.error = Some("The dropped item has no file path here, so it was not opened (use File › Open)".to_string());
+        }
+        if hovering {
+            // The OS is carrying a file over the window: say that dropping opens it.
+            egui::Area::new(egui::Id::new("drop-hint")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+                &ctx,
+                |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| ui.heading("Drop a file to open it"));
+                },
+            );
         }
         let star = if self.unsaved() { "*" } else { "" };
         let title = self.doc.as_ref().map_or_else(|| "WavCraft".to_string(), |d| format!("{star}{} — WavCraft", d.name()));
@@ -1100,6 +1229,13 @@ impl eframe::App for WaveApp {
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
     }
+}
+
+/// The file to open from the files dropped on the window this frame: the first with a path. The
+/// path is empty or missing where the platform hands over no file (a browser, some Wayland
+/// compositors, #66); then nothing is opened.
+fn dropped_path(files: &[Arc<dyn egui::DroppedFile + Send + Sync>]) -> Option<PathBuf> {
+    files.iter().map(|f| f.path()).find(|p| !p.as_os_str().is_empty()).map(std::path::Path::to_path_buf)
 }
 
 /// The actions whose keys were pressed this frame. Keys with more modifiers are taken first, so
@@ -1190,6 +1326,24 @@ fn palette() -> Vec<Color32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drop_opens_the_first_file_that_has_a_path() {
+        #[derive(Debug)]
+        struct Dropped(PathBuf);
+        impl egui::DroppedFile for Dropped {
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                Err("not a file".to_string())
+            }
+        }
+        let file = |path: &str| -> Arc<dyn egui::DroppedFile + Send + Sync> { Arc::new(Dropped(PathBuf::from(path))) };
+        assert_eq!(dropped_path(&[]), None);
+        assert_eq!(dropped_path(&[file("")]), None);
+        assert_eq!(dropped_path(&[file(""), file("/a/b.wav"), file("/c.wav")]), Some(PathBuf::from("/a/b.wav")));
+    }
 
     #[test]
     fn ruler_steps_are_round_and_wide_enough() {

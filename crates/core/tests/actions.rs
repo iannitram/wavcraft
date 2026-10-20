@@ -8,6 +8,8 @@ use wavcraft_core::actions::{ActionId, Editor, Repeat, TABLE, Toward, action, by
 use wavcraft_core::doc::edit::Crossfades;
 use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
+use wavcraft_core::io::{OpenOptions, open};
+use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 const RATE: u32 = 48_000;
@@ -390,4 +392,95 @@ fn repeat_last_command_runs_silence_again_on_the_new_selection_but_never_delete(
     assert_eq!(text(ActionId::ZeroInward), ["Shift+I"]);
     assert_eq!(text(ActionId::ZeroRightToRight), ["Shift+L"]);
     assert_eq!(by_name("edit.zeroCrossings.outward").map(|a| a.id), Some(ActionId::ZeroOutward));
+}
+
+// ---- Insert > Audio from File (A169) ----
+
+/// Write `data` at `rate` as a 32-bit float WAV in `dir` (a file to insert), made in its own store.
+fn wav_file(dir: &Path, name: &str, data: &[Vec<f32>], rate: u32) -> PathBuf {
+    let s = store(&dir.join(format!("src-{name}")));
+    let chans = data.iter().map(|c| Channel::from_pieces(c.chunks(BLOCK_FRAMES).map(|b| Piece::whole(s.append(b).unwrap()).unwrap()))).collect();
+    let doc = DocState::new(s.clone(), chans, rate, SourceFormat::synthetic(rate, data.len() as u16)).unwrap();
+    let path = dir.join(format!("{name}.wav"));
+    save_wav(&doc, &path, SampleType::Float32, &mut |_| {}).unwrap();
+    path
+}
+
+/// Stream `path` into the editor's own store, as the app does.
+fn open_into(e: &Editor, path: &Path) -> DocState {
+    let opts = OpenOptions { into_store: Some(e.history.current().store().clone()), ..OpenOptions::default() };
+    open(path, &opts, &mut |_| {}, &AtomicBool::new(false)).unwrap()
+}
+
+use std::sync::atomic::AtomicBool;
+
+#[test]
+fn insert_file_at_the_cursor_is_one_undoable_step_and_copies_no_samples() {
+    let t = TempDir::new("insfile-cursor");
+    let mut e = editor(&t.0.join("doc"), &stereo(1000));
+    let before = now(&e);
+    let file_data = vec![(0..300).map(|k| 10_000.0 + k as f32).collect::<Vec<_>>(), (0..300).map(|k| -10_000.0 - k as f32).collect()];
+    let path = wav_file(&t.0, "ins", &file_data, RATE);
+    let file = open_into(&e, &path);
+    let bytes0 = e.history.current().store().bytes_on_disk();
+    let out = e.insert_file(&file, 400..400).unwrap();
+    assert!(out.doc_changed);
+    assert_eq!(out.selection, 400..700);
+    assert_eq!(e.history.undo_label(), Some("Insert Audio from File"));
+    assert_eq!(e.history.steps().len(), 2);
+    let after = now(&e);
+    for ch in 0..2 {
+        assert_eq!(&after[ch][..400], &before[ch][..400]);
+        assert_eq!(&after[ch][400..700], &file_data[ch][..]);
+        assert_eq!(&after[ch][700..], &before[ch][400..]);
+    }
+    assert_eq!(e.history.current().store().bytes_on_disk(), bytes0, "the inserted blocks are shared, not copied");
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(now(&e), before);
+}
+
+#[test]
+fn insert_file_over_a_selection_replaces_it_and_mono_goes_to_both_channels() {
+    let t = TempDir::new("insfile-replace");
+    let mut e = editor(&t.0.join("doc"), &stereo(1000));
+    let before = now(&e);
+    let mono = vec![(0..100).map(|k| 5_000.0 + k as f32).collect::<Vec<_>>()];
+    let file = open_into(&e, &wav_file(&t.0, "mono", &mono, RATE));
+    let out = e.insert_file(&file, 200..500).unwrap();
+    assert_eq!(out.selection, 200..300);
+    let after = now(&e);
+    assert_eq!(e.history.current().len_frames(), 1000 - 300 + 100);
+    for ch in 0..2 {
+        assert_eq!(&after[ch][..200], &before[ch][..200]);
+        assert_eq!(&after[ch][200..300], &mono[0][..]);
+        assert_eq!(&after[ch][300..], &before[ch][500..]);
+    }
+}
+
+#[test]
+fn insert_file_with_another_sample_rate_is_refused_and_changes_nothing() {
+    let t = TempDir::new("insfile-rate");
+    let mut e = editor(&t.0.join("doc"), &stereo(1000));
+    let file = open_into(&e, &wav_file(&t.0, "r44", &stereo(100), 44_100));
+    let err = e.insert_file(&file, 10..10).unwrap_err();
+    assert!(err.contains("44100 Hz") && err.contains("48000 Hz") && err.contains("nothing was inserted"), "{err}");
+    assert_eq!(e.history.steps().len(), 1);
+    assert_eq!(e.history.current().len_frames(), 1000);
+}
+
+#[test]
+fn insert_file_refuses_a_file_opened_into_another_store() {
+    let t = TempDir::new("insfile-store");
+    let mut e = editor(&t.0.join("doc"), &stereo(1000));
+    let path = wav_file(&t.0, "x", &stereo(50), RATE);
+    let opts = OpenOptions { sessions_root: Some(t.0.join("sessions")), ..OpenOptions::default() };
+    let other = open(&path, &opts, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+    assert!(e.insert_file(&other, 0..0).is_err());
+    assert_eq!(e.history.steps().len(), 1);
+}
+
+#[test]
+fn insert_file_is_not_repeatable_and_is_a_window_action() {
+    assert_eq!(action(ActionId::InsertFile).kind, wavcraft_core::actions::Kind::Window);
+    assert_eq!(action(ActionId::InsertFile).name, "edit.insertFile");
 }

@@ -29,6 +29,14 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 Workspace: `Cargo.toml` at the root; `unsafe_code = "forbid"` for every crate that inherits the
 workspace lints. Tests: 21 in the core, 9 in the app (before task 02).
 
+- **Insert > Audio from File (f13, A169):** `OpenOptions::into_store` streams a file into the open
+  document's own store; `edit::insert_file` / `Editor::insert_file` then paste all of it (blocks
+  shared, no copy) at the cursor or over the selection as one step "Insert Audio from File" (our
+  wording; Audition's was not seen). Another sample rate is refused (conversion is another
+  feature). App: `ActionId::InsertFile` (menu, file dialog), control verb `INSERT_FILE <path>`,
+  worker `Inserting` in `app.rs`. Drag-and-drop open: `dropped_path` in `app.rs`.
+  Scripted run: `tools/alpha/f13.py`.
+
 ## Known differences from Audition
 
 Choices made where Audition 26.5.0.82 was not seen (`plan/tasks/audition-check.md`, 2026-10-16
