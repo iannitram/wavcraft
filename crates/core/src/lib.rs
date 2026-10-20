@@ -19,6 +19,7 @@ pub mod actions;
 pub mod doc;
 pub mod document;
 pub mod io;
+pub mod monitors;
 pub mod panels;
 pub mod random;
 pub mod save;

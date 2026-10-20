@@ -16,6 +16,8 @@
 //! of the tab text (so settings files and workspaces carry them with no new key), and docking the
 //! panel back puts it in a zone again.
 
+use crate::monitors::{self, Monitor};
+
 /// Where a panel sits by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockSide {
@@ -170,6 +172,8 @@ pub struct Float {
     pub pos: [f32; 2],
     pub size: [f32; 2],
     pub from: DockSide,
+    /// The monitor (by name) the window was on when last placed; `None` until one is known.
+    pub monitor: Option<String>,
 }
 
 fn clean_rect(pos: [f32; 2], size: [f32; 2]) -> Option<([f32; 2], [f32; 2])> {
@@ -309,7 +313,7 @@ impl Layout {
         }
         let n = self.floating.len() as f32 * 28.0;
         let (pos, size) = rect.and_then(|(p, s)| clean_rect(p, s)).unwrap_or(([120.0 + n, 120.0 + n], DEFAULT_FLOAT_SIZE));
-        self.floating.push(Float { id: id.to_string(), pos, size, from });
+        self.floating.push(Float { id: id.to_string(), pos, size, from, monitor: None });
         Ok(())
     }
 
@@ -329,6 +333,43 @@ impl Layout {
             (f.pos, f.size) = (pos, size);
         }
         moved
+    }
+
+    /// Note which monitor each floating window is on (by its centre), for the workspace to keep.
+    /// True when any tag changed.
+    pub fn tag_monitors(&mut self, mons: &[Monitor]) -> bool {
+        let mut changed = false;
+        for f in &mut self.floating {
+            let centre = [f.pos[0] + f.size[0] / 2.0, f.pos[1] + f.size[1] / 2.0];
+            let name = monitors::monitor_at(mons, centre).map(|m| m.name.clone());
+            if name.is_some() && f.monitor != name {
+                f.monitor = name;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Put floating windows right for the monitors there are now (the first is the primary). A
+    /// window whose monitor is gone moves onto the primary monitor; one with no monitor noted is
+    /// given the one it is nearest; every window is clamped wholly inside its monitor. Returns how
+    /// many windows changed.
+    pub fn reconcile_monitors(&mut self, mons: &[Monitor]) -> usize {
+        let Some(primary) = mons.first() else { return 0 };
+        let mut changed = 0;
+        for f in &mut self.floating {
+            let centre = [f.pos[0] + f.size[0] / 2.0, f.pos[1] + f.size[1] / 2.0];
+            let home = match &f.monitor {
+                Some(name) => mons.iter().find(|m| &m.name == name).unwrap_or(primary),
+                None => monitors::monitor_at(mons, centre).unwrap_or(primary),
+            };
+            let (pos, size) = monitors::clamp_into(f.pos, f.size, home);
+            if f.monitor.as_deref() != Some(home.name.as_str()) || pos != f.pos || size != f.size {
+                changed += 1;
+            }
+            (f.pos, f.size, f.monitor) = (pos, size, Some(home.name.clone()));
+        }
+        changed
     }
 
     /// Dock a floating panel back into `zone` (its old one when `None`) at the end of the tabs.
@@ -382,7 +423,8 @@ impl Layout {
 
     /// The two settings lines' values: `left:history*,selection;right:;bottom:` (a `*` marks the
     /// front tab) and `left:220,right:240,bottom:180`. Floating panels add a part to the first:
-    /// `;float:history@120_120_320_260_left` (x, y, width, height, the zone it came from).
+    /// `;float:history@120_120_320_260_left_main` (x, y, width, height, the zone it came from, and the
+    /// name of the monitor it was on, left off when none was known).
     pub fn encode(&self) -> (String, String) {
         let tabs = ZONES
             .iter()
@@ -398,8 +440,14 @@ impl Layout {
         if self.floating.is_empty() {
             return (tabs, sizes);
         }
-        let floats: Vec<String> =
-            self.floating.iter().map(|f| format!("{}@{}_{}_{}_{}_{}", f.id, f.pos[0], f.pos[1], f.size[0], f.size[1], f.from.name())).collect();
+        let floats: Vec<String> = self
+            .floating
+            .iter()
+            .map(|f| {
+                let mon = f.monitor.as_deref().map_or(String::new(), |m| format!("_{}", crate::monitors::clean_name(m)));
+                format!("{}@{}_{}_{}_{}_{}{mon}", f.id, f.pos[0], f.pos[1], f.size[0], f.size[1], f.from.name())
+            })
+            .collect();
         (format!("{tabs};float:{}", floats.join(",")), sizes)
     }
 
@@ -424,7 +472,8 @@ impl Layout {
                         && let Some((pos, size)) = clean_rect([x, y], [w, h])
                     {
                         seen.push(id.to_string());
-                        layout.floating.push(Float { id: id.to_string(), pos, size, from });
+                        let monitor = it.next().filter(|m| !m.is_empty()).map(String::from);
+                        layout.floating.push(Float { id: id.to_string(), pos, size, from, monitor });
                     }
                 }
                 continue;
@@ -476,6 +525,9 @@ impl Layout {
         out.push(format!("floating={}", list(floats.iter().map(|f| f.id.as_str()).collect())));
         for f in floats {
             out.push(format!("float.{}={},{},{},{}", f.id, f.pos[0], f.pos[1], f.size[0], f.size[1]));
+            if let Some(m) = &f.monitor {
+                out.push(format!("floatmon.{}={m}", f.id));
+            }
         }
         out.join(" ")
     }
@@ -497,7 +549,17 @@ impl Layout {
             }
             "float" => {
                 known(id)?;
-                self.float(id, None)?;
+                let rest: Vec<&str> = words.collect();
+                let rect = match rest[..] {
+                    [] => None,
+                    [x, y, w, h] => {
+                        let n: Vec<f32> = [x, y, w, h].iter().filter_map(|v| v.parse().ok()).collect();
+                        let [x, y, w, h] = n[..] else { return Err("PANEL float <id> [<x> <y> <w> <h>], in screen points".into()) };
+                        Some(([x, y], [w, h]))
+                    }
+                    _ => return Err("PANEL float <id> [<x> <y> <w> <h>], in screen points".into()),
+                };
+                self.float(id, rect)?;
                 set.set(id, true);
                 Ok(())
             }
@@ -539,7 +601,7 @@ impl Layout {
                 }
                 if self.activate(id) { Ok(()) } else { Err("that panel is in the centre".into()) }
             }
-            _ => Err("PANEL move <id> <zone> | float <id> | dock <id> [zone] | maximize <id> | close <id> | activate <id>".into()),
+            _ => Err("PANEL move <id> <zone> | float <id> [x y w h] | dock <id> [zone] | maximize <id> | close <id> | activate <id>".into()),
         }
     }
 }
@@ -793,5 +855,65 @@ mod tests {
         l.apply_command(&mut set, "dock selection").unwrap();
         assert_eq!(l.zone_of("selection"), Some(DockSide::Right));
         assert_eq!(l.float_group(DockSide::Bottom, &set), 1);
+    }
+
+    fn mons(text: &str) -> Vec<Monitor> {
+        monitors::parse(text).unwrap()
+    }
+
+    #[test]
+    fn a_floating_window_remembers_its_monitor_in_the_layout_text() {
+        let both = mons("main:0,0,1920,1080;side:1920,0,1280,1024");
+        let mut l = Layout::default();
+        l.float("history", Some(([2000.0, 100.0], [320.0, 260.0]))).unwrap();
+        l.float("selection", Some(([100.0, 100.0], [320.0, 260.0]))).unwrap();
+        assert!(l.tag_monitors(&both));
+        assert!(!l.tag_monitors(&both));
+        let (tabs, sizes) = l.encode();
+        assert!(tabs.contains("history@2000_100_320_260_right_side"), "{tabs}");
+        assert!(tabs.contains("selection@100_100_320_260_right_main"), "{tabs}");
+        let back = Layout::decode(&tabs, &sizes);
+        assert_eq!(back, l);
+        // Old text without a monitor still decodes (no monitor noted).
+        let old = Layout::decode("left:;right:;bottom:;float:history@5_5_300_200_left", "");
+        assert_eq!(old.floats(&PanelSet::default())[0].monitor, None);
+    }
+
+    #[test]
+    fn a_window_whose_monitor_is_gone_moves_onto_the_primary_and_stays_inside() {
+        let both = mons("main:0,0,1920,1080;side:1920,0,1280,1024");
+        let mut l = Layout::default();
+        l.float("history", Some(([2800.0, 700.0], [320.0, 260.0]))).unwrap();
+        l.float("selection", Some(([100.0, 100.0], [320.0, 260.0]))).unwrap();
+        l.tag_monitors(&both);
+        assert_eq!(l.reconcile_monitors(&both), 0, "nothing moves while both are there");
+        let only_main = mons("main:0,0,1920,1080");
+        assert_eq!(l.reconcile_monitors(&only_main), 1);
+        let set = PanelSet::default();
+        let f = l.floats(&set);
+        assert_eq!((f[0].pos, f[0].monitor.as_deref()), ([1600.0, 700.0], Some("main")));
+        assert_eq!((f[1].pos, f[1].monitor.as_deref()), ([100.0, 100.0], Some("main")));
+        // The primary need not be the first one the window knew, nor the one at the origin.
+        let mut l2 = Layout::default();
+        l2.float("history", Some(([10.0, 10.0], [320.0, 260.0]))).unwrap();
+        l2.tag_monitors(&both);
+        let other = mons("tv:-1000,200,800,600");
+        assert_eq!(l2.reconcile_monitors(&other), 1);
+        assert_eq!(l2.floats(&set)[0].pos, [-520.0, 200.0]);
+    }
+
+    #[test]
+    fn an_untagged_window_is_tagged_by_where_it_is_and_float_takes_a_rect_in_the_command() {
+        let mut l = Layout::default();
+        let mut set = PanelSet::default();
+        l.apply_command(&mut set, "float history 2000 100 300 200").unwrap();
+        assert!(l.apply_command(&mut set, "float selection 1 2 3").is_err());
+        assert!(l.apply_command(&mut set, "float selection 1 2 x 4").is_err());
+        assert_eq!(l.floats(&set)[0].pos, [2000.0, 100.0]);
+        let both = mons("main:0,0,1920,1080;side:1920,0,1280,1024");
+        l.reconcile_monitors(&both);
+        let f = l.floats(&set)[0];
+        assert_eq!((f.pos, f.monitor.as_deref()), ([2000.0, 100.0], Some("side")));
+        assert!(l.report(&set).contains("floatmon.history=side"));
     }
 }
