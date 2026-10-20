@@ -71,16 +71,28 @@ pub struct Settings {
     pub output_device: Option<String>,
     /// The input device's name (`None`: the system default). Kept for recording.
     pub input_device: Option<String>,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Settings { session_folder: None, cut_join_ms: DEFAULT_CUT_JOIN_MS, edge_ms: DEFAULT_EDGE_MS, output_device: None, input_device: None }
-    }
     /// Where the panels are docked, as `crate::panels::Layout::encode` writes it (empty: default).
     pub panel_layout: String,
     /// The dock zones' sizes, as `Layout::encode` writes them (empty: default).
     pub zone_sizes: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            session_folder: None,
+            hidden_panels: Vec::new(),
+            time_display: crate::view::TimeFormat::default(),
+            right_click_menu: false,
+            amp_scale: crate::view::AmpScale::default(),
+            cut_join_ms: DEFAULT_CUT_JOIN_MS,
+            edge_ms: DEFAULT_EDGE_MS,
+            output_device: None,
+            input_device: None,
+            panel_layout: String::new(),
+            zone_sizes: String::new(),
+        }
+    }
 }
 
 impl Settings {
