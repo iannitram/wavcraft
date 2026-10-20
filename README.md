@@ -157,6 +157,38 @@ To move it: tag the new commit on the fork, change `rev`, run
 - Before a commit: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`.
 
+## Third-party code and credits
+
+Adopted or recommended sources, by project, link and licence only:
+
+- SoundCraft, https://github.com/storytold/soundcraft (MIT OR Apache-2.0)
+- FilmCraft, https://github.com/storytold/filmcraft (MIT OR Apache-2.0)
+- EffectCraft, https://github.com/storytold/effectcraft (MIT OR Apache-2.0)
+- craft-libs, https://github.com/storytold/craft-libs (MIT OR Apache-2.0)
+- Symphonia, https://github.com/pdeljanov/Symphonia (MPL-2.0, unmodified dependency)
+- rubato, https://github.com/HEnquist/rubato (MIT OR Apache-2.0)
+- ebur128, https://github.com/sdroege/ebur128 (MIT)
+- bwavfile, https://github.com/iluvcapra/bwavfile (MIT)
+- lofty, https://crates.io/crates/lofty (MIT OR Apache-2.0)
+- id3, https://crates.io/crates/id3 (MIT)
+- quick-xml, https://crates.io/crates/quick-xml (MIT); xmp_writer, https://crates.io/crates/xmp_writer (MIT OR Apache-2.0)
+- RustFFT, https://crates.io/crates/rustfft (MIT OR Apache-2.0); realfft, https://crates.io/crates/realfft (MIT)
+- fft-convolver, https://crates.io/crates/fft-convolver (MIT)
+- Signalsmith Stretch and its Rust wrapper, https://crates.io/crates/signalsmith-stretch (MIT)
+- nnnoiseless, https://github.com/jneem/nnnoiseless (BSD-3-Clause, with RNNoise)
+- ogg, https://crates.io/crates/ogg (BSD-3-Clause)
+- vorbis_rs, https://crates.io/crates/vorbis_rs (BSD-3-Clause, with libvorbis and libogg)
+- flac-codec, https://crates.io/crates/flac-codec (MIT OR Apache-2.0)
+- rtrb, https://crates.io/crates/rtrb; basedrop, https://crates.io/crates/basedrop; creek, https://codeberg.org/Meadowlark/creek (MIT OR Apache-2.0)
+- triple_buffer, https://crates.io/crates/triple_buffer (MPL-2.0, unmodified dependency)
+- egui_plot, egui_table, egui_kittest, undo (MIT OR Apache-2.0); egui_dock, egui_knob, egui-bind (MIT), all on crates.io
+- cpal, https://crates.io/crates/cpal (Apache-2.0)
+- VST 3 SDK (MIT), clap-sys and vst3 (MIT OR Apache-2.0), libloading (ISC)
+
+Every source is checked against WavCraft's MIT OR Apache-2.0 licence before any code is reused.
+The full table (versions, rows served, notes, and the "do not use" list) is in
+[docs/roadmap-audition-parity.md](docs/roadmap-audition-parity.md), section "Reuse sources".
+
 ## License
 
 MIT or Apache-2.0, at your option.
