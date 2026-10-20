@@ -17,6 +17,7 @@ use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selectio
 
 use crate::control;
 use crate::player::Player;
+use crate::recording::Recording;
 use crate::spectrum::{Job, Renderer};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
@@ -107,6 +108,8 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Recording a take (File › New Recording…, the Record button, `RECORD` on the control channel).
+    rec: Recording,
 }
 
 impl WaveApp {
@@ -161,6 +164,7 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            rec: Recording::default(),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -175,6 +179,10 @@ impl WaveApp {
     /// Stream `path` into a session store on a worker thread; the window stays responsive for
     /// long files. A file still opening is cancelled first.
     fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if self.rec.is_active() {
+            self.error = Some("Stop recording before opening a file".to_string());
+            return;
+        }
         if let Some(old) = self.opening.take() {
             old.cancel.store(true, Ordering::Relaxed);
         }
@@ -271,7 +279,48 @@ impl WaveApp {
         self.notice = Some(msg);
     }
 
+    /// Start a take. Nothing plays while it runs (C024).
+    fn start_recording(&mut self, fmt: wavcraft_core::record::RecFormat) -> Result<PathBuf, String> {
+        if self.opening.is_some() || self.saving.is_some() {
+            return Err("wait for the open or save to finish".to_string());
+        }
+        self.player.set_muted(true);
+        match self.rec.start(fmt) {
+            Ok(path) => {
+                self.error = None;
+                self.notice = None;
+                Ok(path)
+            }
+            Err(e) => {
+                self.player.set_muted(false);
+                let why = format!("Recording: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// Stop the take and, when `open` is set, open it in the editor by the normal path.
+    fn finish_recording(&mut self, open: bool, ctx: &egui::Context) -> Option<wavcraft_core::record::Take> {
+        let take = self.rec.stop()?;
+        self.player.set_muted(false);
+        if let Some(e) = &take.error {
+            self.error = Some(format!("Recording stopped early: {e} The take so far is kept in {}", take.path.display()));
+        }
+        if open && take.frames > 0 {
+            self.open(take.path.clone(), ctx);
+            if take.error.is_none() {
+                self.notice = Some(format!("Recorded {}", take.path.display()));
+            }
+        }
+        Some(take)
+    }
+
     fn toggle_play(&mut self) {
+        if self.rec.is_active() {
+            return;
+        }
         let Some(doc) = &self.doc else { return };
         if self.player.is_playing() {
             self.player.stop();
@@ -677,7 +726,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved}{} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -685,11 +734,16 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            self.rec.state_fields(),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0{} undo=- redo=-",
+                        u8::from(busy),
+                        self.rec.state_fields()
+                    ),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -746,6 +800,22 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
+            // RECORD start [rate=48000 ch=1 bits=24] | RECORD stop
+            "RECORD" => {
+                let (verb, args) = rest.split_once(' ').unwrap_or((rest, ""));
+                match verb {
+                    "start" => match wavcraft_core::record::RecFormat::parse_args(args).and_then(|f| self.start_recording(f)) {
+                        Ok(path) => format!("OK path={}", path.display()),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    "stop" => match self.finish_recording(true, ctx) {
+                        Some(t) if t.error.is_none() => format!("OK frames={} dropped={} path={}", t.frames, t.dropped_frames, t.path.display()),
+                        Some(t) => format!("ERR the take stopped early: {} (kept at {})", t.error.unwrap_or_default(), t.path.display()),
+                        None => "ERR not recording".to_string(),
+                    },
+                    _ => "ERR RECORD start [rate=48000 ch=1 bits=24] | RECORD stop".to_string(),
+                }
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -756,6 +826,7 @@ impl WaveApp {
             // A plain QUIT refuses with unsaved changes; `QUIT discard` closes anyway.
             "QUIT" if self.unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
             "QUIT" => {
+                self.finish_recording(false, ctx);
                 self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 "OK".to_string()
@@ -804,6 +875,10 @@ impl WaveApp {
                 {
                     self.error = Some(e);
                 }
+                let idle = !self.rec.is_active() && self.opening.is_none() && self.saving.is_none();
+                if ui.add_enabled(idle, egui::Button::new("New Recording…")).clicked() {
+                    self.rec.dialog = Some(wavcraft_core::record::RecFormat::default());
+                }
                 ui.separator();
                 let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
                 if ui.button("Session Folder…").on_hover_text(&now).clicked() {
@@ -841,15 +916,28 @@ impl WaveApp {
                 ui.checkbox(&mut self.show_history, "History panel");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
-            if ui.button(label).on_hover_text("Space").clicked() {
+            if ui.add_enabled(!self.rec.is_active(), egui::Button::new(label)).on_hover_text("Space").clicked() {
                 self.toggle_play();
+            }
+            if self.rec.is_active() {
+                if ui.button("■ Stop Recording").clicked() {
+                    self.finish_recording(true, ui.ctx());
+                }
+            } else if ui
+                .add_enabled(self.opening.is_none() && self.saving.is_none(), egui::Button::new("● Record"))
+                .on_hover_text("New Recording")
+                .clicked()
+            {
+                self.rec.dialog = Some(wavcraft_core::record::RecFormat::default());
             }
         });
     }
 
     fn status(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if let Some(o) = &self.opening {
+            if let Some((text, warn)) = self.rec.status_text() {
+                ui.colored_label(if warn { CURSOR } else { Color32::from_rgb(230, 230, 230) }, text);
+            } else if let Some(o) = &self.opening {
                 ui.spinner();
                 let permille = o.progress.load(Ordering::Relaxed);
                 ui.label(format!("Opening {}… {}%", o.path.display(), permille / 10));
@@ -1045,6 +1133,10 @@ impl eframe::App for WaveApp {
         self.finish_opening();
         self.finish_rebuild();
         self.finish_saving(ctx);
+        if let Some(why) = self.rec.refresh() {
+            log::warn!(target: "wavcraft", "recording: {why}");
+            self.finish_recording(true, ctx);
+        }
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
@@ -1053,7 +1145,19 @@ impl eframe::App for WaveApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.rec.is_active() {
+            // Closing the window ends the take cleanly; a kill is covered by the header.
+            if ctx.input(|i| i.viewport().close_requested()) {
+                self.finish_recording(false, &ctx);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
         self.close_prompt(&ctx);
+        if let Some(fmt) = self.rec.dialog(&ctx) {
+            // Errors show in the status bar.
+            let _ = self.start_recording(fmt);
+        }
         let (save_as, save) = ctx.input_mut(|i| {
             let save_as = i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::S);
             (save_as, i.consume_key(egui::Modifiers::COMMAND, Key::S))

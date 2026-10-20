@@ -1,0 +1,759 @@
+//! Recording a take (roadmap C020-C023): the audio side, with no UI and no audio device.
+//!
+//! The path of a sample: the input callback (or the fake input's timer thread) calls
+//! [`Ring::push`], which never blocks, locks or allocates and drops whole frames, counting them,
+//! when the writer falls behind. A writer thread ([`Recorder`]) drains the ring and appends to the
+//! take through [`TakeWriter`], which keeps the WAV header valid on disk at all times: it is
+//! written (with zero data) when the file is made, and its two size fields are rewritten and the
+//! file synced about once a second. A process killed mid-take leaves a plain WAV that every
+//! reader opens, holding everything up to the last header update (at most about a second less
+//! than was recorded; the bytes after it are still in the file for a repair tool to find).
+//!
+//! A take never overwrites a file ([`create_take`] makes it with exclusive create).
+
+use std::fs::File;
+use std::io::{self, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+/// Bytes in the header [`TakeWriter`] writes (RIFF, `fmt ` of 16 bytes, `data`).
+pub const HEADER_BYTES: u64 = 44;
+/// How often the header's sizes are rewritten and the file synced.
+pub const HEADER_INTERVAL: Duration = Duration::from_secs(1);
+/// A WAV file's sizes are 32-bit: a take stops here (about 4 GB, 8 hours of 48 kHz 24-bit mono).
+pub const MAX_DATA_BYTES: u64 = 4_000_000_000;
+
+/// The environment variable that replaces the input device with a generated one (`sine:440`).
+pub const ENV_FAKE_INPUT: &str = "WAVCRAFT_FAKE_INPUT";
+
+/// What a take is recorded as. Samples are stored as 16-bit or 24-bit integers, or 32-bit float.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecFormat {
+    pub rate: u32,
+    pub channels: u16,
+    pub bits: u16,
+}
+
+impl Default for RecFormat {
+    /// 48 kHz, mono, 24-bit: the owner's v1 rule (issue 51).
+    fn default() -> Self {
+        RecFormat { rate: 48_000, channels: 1, bits: 24 }
+    }
+}
+
+impl RecFormat {
+    pub const RATES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
+    pub const BITS: [u16; 3] = [16, 24, 32];
+
+    pub fn validate(self) -> Result<RecFormat, String> {
+        if !(8_000..=192_000).contains(&self.rate) {
+            return Err(format!("sample rate {} Hz is outside 8000 to 192000", self.rate));
+        }
+        if !(1..=8).contains(&self.channels) {
+            return Err(format!("{} channels is outside 1 to 8", self.channels));
+        }
+        if !Self::BITS.contains(&self.bits) {
+            return Err(format!("{} bits: use 16, 24 or 32 (32 is float)", self.bits));
+        }
+        Ok(self)
+    }
+
+    /// Bytes in one frame (one sample of every channel).
+    pub fn block_align(self) -> u64 {
+        u64::from(self.channels) * u64::from(self.bits / 8)
+    }
+
+    /// Bytes written for each second of the take (the header excluded).
+    pub fn bytes_per_second(self) -> u64 {
+        self.block_align() * u64::from(self.rate)
+    }
+
+    /// `rate=48000 ch=1 bits=24` (any subset, any order; the rest are the defaults).
+    pub fn parse_args(text: &str) -> Result<RecFormat, String> {
+        let mut f = RecFormat::default();
+        for word in text.split_whitespace() {
+            let (key, value) = word.split_once('=').ok_or_else(|| format!("expected key=value, got {word:?}"))?;
+            let bad = |_| format!("{key}: {value:?} is not a number");
+            match key {
+                "rate" => f.rate = value.parse().map_err(bad)?,
+                "ch" | "channels" => f.channels = value.parse().map_err(bad)?,
+                "bits" => f.bits = value.parse().map_err(bad)?,
+                _ => return Err(format!("unknown setting {key:?} (rate, ch, bits)")),
+            }
+        }
+        f.validate()
+    }
+
+    fn header(self, data_bytes: u64) -> [u8; HEADER_BYTES as usize] {
+        let data = data_bytes.min(u64::from(u32::MAX) - 36) as u32;
+        let float = self.bits == 32;
+        let mut h = [0u8; HEADER_BYTES as usize];
+        h[0..4].copy_from_slice(b"RIFF");
+        h[4..8].copy_from_slice(&(36 + data).to_le_bytes());
+        h[8..16].copy_from_slice(b"WAVEfmt ");
+        h[16..20].copy_from_slice(&16u32.to_le_bytes());
+        h[20..22].copy_from_slice(&(if float { 3u16 } else { 1u16 }).to_le_bytes());
+        h[22..24].copy_from_slice(&self.channels.to_le_bytes());
+        h[24..28].copy_from_slice(&self.rate.to_le_bytes());
+        h[28..32].copy_from_slice(&(self.bytes_per_second() as u32).to_le_bytes());
+        h[32..34].copy_from_slice(&(self.block_align() as u16).to_le_bytes());
+        h[34..36].copy_from_slice(&self.bits.to_le_bytes());
+        h[36..40].copy_from_slice(b"data");
+        h[40..44].copy_from_slice(&data.to_le_bytes());
+        h
+    }
+}
+
+/// A lock-free single-producer, single-consumer queue of `f32` samples (interleaved frames).
+///
+/// The producer is the audio callback; the consumer is the writer thread. Samples live in
+/// atomics, so there is no `unsafe`. When the queue is full the producer drops whole frames and
+/// counts them; it never waits.
+pub struct Ring {
+    slots: Box<[AtomicU32]>,
+    channels: usize,
+    /// Next sample the consumer reads (counts samples since the start, never wraps in practice).
+    head: AtomicU64,
+    /// Next sample the producer writes.
+    tail: AtomicU64,
+    dropped_frames: AtomicU64,
+    /// Largest absolute sample since the last [`Ring::take_peak`], as the bits of a non-negative
+    /// `f32` (which order like integers).
+    peak: AtomicU32,
+}
+
+impl Ring {
+    /// A ring holding up to `frames` frames of `channels` samples.
+    pub fn new(frames: usize, channels: u16) -> Arc<Ring> {
+        let channels = usize::from(channels.max(1));
+        let slots = (0..frames.max(1) * channels).map(|_| AtomicU32::new(0)).collect();
+        Arc::new(Ring {
+            slots,
+            channels,
+            head: AtomicU64::new(0),
+            tail: AtomicU64::new(0),
+            dropped_frames: AtomicU64::new(0),
+            peak: AtomicU32::new(0),
+        })
+    }
+
+    /// Producer side: queue whole frames from `samples` (a trailing partial frame is ignored).
+    /// Returns the frames queued; the rest are counted as dropped.
+    pub fn push(&self, samples: &[f32]) -> usize {
+        let ch = self.channels;
+        let frames = samples.len() / ch;
+        let cap = self.slots.len() as u64;
+        let (tail, head) = (self.tail.load(Ordering::Relaxed), self.head.load(Ordering::Acquire));
+        let free_frames = (cap - (tail - head)) as usize / ch;
+        let take = frames.min(free_frames);
+        let mut peak = 0u32;
+        for (i, s) in samples[..take * ch].iter().enumerate() {
+            let bits = s.abs().to_bits();
+            peak = peak.max(if s.is_nan() { 0 } else { bits });
+            self.slots[((tail + i as u64) % cap) as usize].store(s.to_bits(), Ordering::Relaxed);
+        }
+        self.tail.store(tail + (take * ch) as u64, Ordering::Release);
+        if peak > 0 {
+            self.peak.fetch_max(peak, Ordering::Relaxed);
+        }
+        if take < frames {
+            self.dropped_frames.fetch_add((frames - take) as u64, Ordering::Relaxed);
+        }
+        take
+    }
+
+    /// Consumer side: move up to `max_frames` frames into `out` (appended). Returns the frames moved.
+    pub fn pop(&self, out: &mut Vec<f32>, max_frames: usize) -> usize {
+        let ch = self.channels;
+        let cap = self.slots.len() as u64;
+        let (head, tail) = (self.head.load(Ordering::Relaxed), self.tail.load(Ordering::Acquire));
+        let frames = (((tail - head) as usize) / ch).min(max_frames);
+        out.reserve(frames * ch);
+        for i in 0..(frames * ch) as u64 {
+            out.push(f32::from_bits(self.slots[((head + i) % cap) as usize].load(Ordering::Relaxed)));
+        }
+        self.head.store(head + (frames * ch) as u64, Ordering::Release);
+        frames
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
+    }
+
+    /// Frames dropped so far because the writer fell behind.
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped_frames.load(Ordering::Relaxed)
+    }
+
+    /// The largest absolute sample since the last call (0.0 to above 1.0 when it clipped).
+    pub fn take_peak(&self) -> f32 {
+        f32::from_bits(self.peak.swap(0, Ordering::Relaxed))
+    }
+
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+}
+
+/// The take's file: a WAV header that is valid after every call to [`TakeWriter::update_header`].
+pub struct TakeWriter {
+    file: File,
+    path: PathBuf,
+    fmt: RecFormat,
+    data_bytes: u64,
+    /// The data size the header on disk holds now.
+    header_bytes: u64,
+    scratch: Vec<u8>,
+}
+
+impl TakeWriter {
+    /// Make `path` (never over an existing file) with a valid, empty header, synced.
+    pub fn create(path: &Path, fmt: RecFormat) -> io::Result<TakeWriter> {
+        let fmt = fmt.validate().map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let mut file = std::fs::OpenOptions::new().write(true).read(true).create_new(true).open(path)?;
+        file.write_all(&fmt.header(0))?;
+        file.sync_all()?;
+        Ok(TakeWriter { file, path: path.to_path_buf(), fmt, data_bytes: 0, header_bytes: 0, scratch: Vec::new() })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn format(&self) -> RecFormat {
+        self.fmt
+    }
+
+    /// Frames written so far (whether or not the header has caught up).
+    pub fn frames(&self) -> u64 {
+        self.data_bytes / self.fmt.block_align()
+    }
+
+    /// Bytes the file holds now (header and data).
+    pub fn file_bytes(&self) -> u64 {
+        HEADER_BYTES + self.data_bytes
+    }
+
+    /// Append interleaved frames. Stops short (and says so) at [`MAX_DATA_BYTES`].
+    pub fn write_frames(&mut self, samples: &[f32]) -> io::Result<()> {
+        let width = usize::from(self.fmt.bits / 8);
+        let room = (MAX_DATA_BYTES.saturating_sub(self.data_bytes) / self.fmt.block_align()) as usize * usize::from(self.fmt.channels);
+        let samples = &samples[..samples.len().min(room)];
+        self.scratch.clear();
+        for &s in samples {
+            let s = if s.is_nan() { 0.0 } else { s };
+            match self.fmt.bits {
+                16 => self.scratch.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes()),
+                24 => self.scratch.extend_from_slice(&((s.clamp(-1.0, 1.0) * 8_388_607.0).round() as i32).to_le_bytes()[..3]),
+                _ => self.scratch.extend_from_slice(&s.to_le_bytes()),
+            }
+        }
+        debug_assert_eq!(self.scratch.len(), samples.len() * width);
+        self.file.write_all(&self.scratch)?;
+        self.data_bytes += self.scratch.len() as u64;
+        if self.data_bytes >= MAX_DATA_BYTES {
+            return Err(io::Error::other("the take reached the 4 GB limit of a WAV file"));
+        }
+        Ok(())
+    }
+
+    /// Rewrite the header's sizes to match the data on disk, then sync. After this returns, a
+    /// kill loses nothing written so far.
+    pub fn update_header(&mut self) -> io::Result<()> {
+        self.file.sync_data()?;
+        let whole = self.data_bytes - self.data_bytes % self.fmt.block_align();
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(&self.fmt.header(whole))?;
+        self.file.seek(SeekFrom::End(0))?;
+        self.file.sync_all()?;
+        self.header_bytes = whole;
+        Ok(())
+    }
+
+    /// The data size the header holds on disk.
+    pub fn header_data_bytes(&self) -> u64 {
+        self.header_bytes
+    }
+}
+
+/// Make a new take in `dir` (made if missing) named `Take YYYY-MM-DD HH.MM.SS.wav` (UTC), with
+/// ` (2)`, ` (3)`... if that name exists. Never overwrites.
+pub fn create_take(dir: &Path, fmt: RecFormat, unix_secs: u64) -> io::Result<TakeWriter> {
+    std::fs::create_dir_all(dir)?;
+    let stem = take_stem(unix_secs);
+    for n in 1..1000 {
+        let name = if n == 1 { format!("{stem}.wav") } else { format!("{stem} ({n}).wav") };
+        match TakeWriter::create(&dir.join(name), fmt) {
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            other => return other,
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "a thousand takes with this name exist"))
+}
+
+/// `Take 2026-10-20 14.03.22` for a Unix time in seconds (UTC).
+pub fn take_stem(unix_secs: u64) -> String {
+    let days = (unix_secs / 86_400) as i64;
+    let secs = unix_secs % 86_400;
+    // Civil date from days since 1970-01-01 (Hinnant's algorithm, public domain).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("Take {year:04}-{month:02}-{day:02} {:02}.{:02}.{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+}
+
+/// A finished take.
+#[derive(Clone, Debug)]
+pub struct Take {
+    pub path: PathBuf,
+    pub fmt: RecFormat,
+    pub frames: u64,
+    pub dropped_frames: u64,
+    /// Set when the writer stopped early (disk full, the size limit); the take up to there is kept.
+    pub error: Option<String>,
+}
+
+/// What the status readout shows (C023).
+#[derive(Clone, Debug, Default)]
+pub struct RecStatus {
+    pub frames: u64,
+    pub file_bytes: u64,
+    pub dropped_frames: u64,
+    pub error: Option<String>,
+}
+
+struct Shared {
+    ring: Arc<Ring>,
+    stop: AtomicBool,
+    frames: AtomicU64,
+    file_bytes: AtomicU64,
+    error: Mutex<Option<String>>,
+}
+
+/// The writer thread and its take. Dropping it stops and finishes the take.
+pub struct Recorder {
+    shared: Arc<Shared>,
+    handle: Option<JoinHandle<TakeWriter>>,
+    path: PathBuf,
+    fmt: RecFormat,
+}
+
+impl Recorder {
+    /// Start draining `ring` into `writer` on its own thread.
+    pub fn start(writer: TakeWriter, ring: Arc<Ring>) -> io::Result<Recorder> {
+        let (path, fmt) = (writer.path.clone(), writer.fmt);
+        let shared = Arc::new(Shared {
+            ring,
+            stop: AtomicBool::new(false),
+            frames: AtomicU64::new(0),
+            file_bytes: AtomicU64::new(writer.file_bytes()),
+            error: Mutex::new(None),
+        });
+        let worker = shared.clone();
+        let handle = std::thread::Builder::new().name("take writer".into()).spawn(move || write_loop(writer, &worker))?;
+        Ok(Recorder { shared, handle: Some(handle), path, fmt })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn format(&self) -> RecFormat {
+        self.fmt
+    }
+
+    pub fn status(&self) -> RecStatus {
+        RecStatus {
+            frames: self.shared.frames.load(Ordering::Relaxed),
+            file_bytes: self.shared.file_bytes.load(Ordering::Relaxed),
+            dropped_frames: self.shared.ring.dropped_frames(),
+            error: self.shared.error.lock().ok().and_then(|e| e.clone()),
+        }
+    }
+
+    /// Stop the callback's source first (it must not push after this), then call this: the
+    /// ring is drained, the header made final and the file synced.
+    pub fn stop(mut self) -> Take {
+        self.finish()
+    }
+
+    fn finish(&mut self) -> Take {
+        self.shared.stop.store(true, Ordering::Release);
+        let mut error = None;
+        if let Some(h) = self.handle.take()
+            && h.join().is_err()
+        {
+            error = Some("the take writer stopped unexpectedly".to_string());
+        }
+        let status = self.status();
+        Take { path: self.path.clone(), fmt: self.fmt, frames: status.frames, dropped_frames: status.dropped_frames, error: error.or(status.error) }
+    }
+}
+
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        if self.handle.is_some() {
+            self.finish();
+        }
+    }
+}
+
+fn write_loop(mut w: TakeWriter, shared: &Shared) -> TakeWriter {
+    let mut buf: Vec<f32> = Vec::new();
+    let max_frames = 8_192;
+    let mut last_header = Instant::now();
+    let fail = |why: String| {
+        if let Ok(mut e) = shared.error.lock() {
+            e.get_or_insert(why);
+        }
+    };
+    loop {
+        // Read the stop flag first: whatever is queued before it was set is still drained.
+        let stopping = shared.stop.load(Ordering::Acquire);
+        buf.clear();
+        let n = shared.ring.pop(&mut buf, max_frames);
+        if n > 0 {
+            let result = w.write_frames(&buf);
+            shared.frames.store(w.frames(), Ordering::Relaxed);
+            shared.file_bytes.store(w.file_bytes(), Ordering::Relaxed);
+            if let Err(e) = result {
+                fail(format!("writing the take stopped: {e}"));
+                break;
+            }
+        }
+        if last_header.elapsed() >= HEADER_INTERVAL {
+            if let Err(e) = w.update_header() {
+                fail(format!("updating the take's header failed: {e}"));
+                break;
+            }
+            last_header = Instant::now();
+        }
+        if n == 0 {
+            if stopping {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    if let Err(e) = w.update_header() {
+        fail(format!("finishing the take's header failed: {e}"));
+    }
+    w
+}
+
+/// A generated input: a sine on every channel, produced on a timer thread at the take's rate.
+/// Stands in for a microphone in tests and scripted runs (`WAVCRAFT_FAKE_INPUT=sine:440`).
+pub struct FakeInput {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+/// What `WAVCRAFT_FAKE_INPUT` asks for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FakeSpec {
+    pub hz: f64,
+}
+
+impl FakeSpec {
+    /// `sine:440`. `Ok(None)` when the variable is unset or empty.
+    pub fn parse(text: Option<&str>) -> Result<Option<FakeSpec>, String> {
+        let Some(text) = text.map(str::trim).filter(|t| !t.is_empty()) else { return Ok(None) };
+        let hz = text.strip_prefix("sine:").and_then(|v| v.trim().parse::<f64>().ok()).filter(|h| h.is_finite() && *h > 0.0);
+        hz.map(|hz| Some(FakeSpec { hz })).ok_or_else(|| format!("{ENV_FAKE_INPUT}={text:?}: expected sine:<hz>"))
+    }
+
+    pub fn from_env() -> Result<Option<FakeSpec>, String> {
+        FakeSpec::parse(std::env::var(ENV_FAKE_INPUT).ok().as_deref())
+    }
+}
+
+impl FakeInput {
+    /// Feed `ring` from a timer thread, in step with the clock (a slow wake-up catches up).
+    pub fn spawn(spec: FakeSpec, fmt: RecFormat, ring: Arc<Ring>) -> io::Result<FakeInput> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let handle = std::thread::Builder::new().name("fake input".into()).spawn(move || {
+            let (rate, ch) = (f64::from(fmt.rate), usize::from(fmt.channels));
+            let start = Instant::now();
+            let mut made: u64 = 0;
+            let mut chunk = vec![0.0f32; 480 * ch];
+            while !flag.load(Ordering::Relaxed) {
+                let due = (start.elapsed().as_secs_f64() * rate) as u64;
+                while made < due && !flag.load(Ordering::Relaxed) {
+                    let frames = ((due - made) as usize).min(480);
+                    for f in 0..frames {
+                        let v = (std::f64::consts::TAU * spec.hz * (made + f as u64) as f64 / rate).sin() as f32 * 0.5;
+                        chunk[f * ch..(f + 1) * ch].fill(v);
+                    }
+                    ring.push(&chunk[..frames * ch]);
+                    made += frames as u64;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        })?;
+        Ok(FakeInput { stop, handle: Some(handle) })
+    }
+
+    /// Stop producing and wait for the thread.
+    pub fn stop(mut self) {
+        self.shutdown();
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for FakeInput {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wavcraft-record-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// (channels, rate, bits, data size from the header) read straight from the bytes.
+    fn header_of(path: &Path) -> (u16, u32, u16, u32, u64) {
+        let b = std::fs::read(path).unwrap();
+        assert_eq!(&b[0..4], b"RIFF");
+        assert_eq!(&b[8..16], b"WAVEfmt ");
+        assert_eq!(&b[36..40], b"data");
+        let u16at = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+        let u32at = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        assert_eq!(u32at(4), 36 + u32at(40), "RIFF size matches the data size");
+        (u16at(22), u32at(24), u16at(34), u32at(40), b.len() as u64)
+    }
+
+    #[test]
+    fn ring_keeps_order_wraps_and_drops_whole_frames() {
+        let ring = Ring::new(4, 2);
+        assert_eq!(ring.push(&[1.0, -1.0, 2.0, -2.0, 3.0, -3.0]), 3);
+        // One frame of room: of two pushed, one is kept and one dropped.
+        assert_eq!(ring.push(&[4.0, -4.0, 5.0, -5.0]), 1);
+        assert_eq!(ring.dropped_frames(), 1);
+        let mut out = Vec::new();
+        assert_eq!(ring.pop(&mut out, 3), 3);
+        assert_eq!(out, [1.0, -1.0, 2.0, -2.0, 3.0, -3.0]);
+        // Wrap around the end of the storage; an odd trailing sample is ignored, not queued.
+        assert_eq!(ring.push(&[6.0, -6.0, 7.0, -7.0, 8.0]), 2);
+        out.clear();
+        assert_eq!(ring.pop(&mut out, 10), 3);
+        assert_eq!(out, [4.0, -4.0, 6.0, -6.0, 7.0, -7.0]);
+        assert!(ring.is_empty());
+        assert_eq!(ring.take_peak(), 7.0);
+        assert_eq!(ring.take_peak(), 0.0);
+    }
+
+    #[test]
+    fn ring_between_two_threads_loses_and_reorders_nothing() {
+        let ring = Ring::new(1024, 1);
+        let producer = ring.clone();
+        let total = 200_000usize;
+        let t = std::thread::spawn(move || {
+            let mut i = 0usize;
+            while i < total {
+                let end = (i + 100).min(total);
+                let block: Vec<f32> = (i..end).map(|v| v as f32).collect();
+                let n = producer.push(&block);
+                i += n;
+                if n < block.len() {
+                    std::thread::yield_now();
+                }
+            }
+        });
+        let mut got = 0usize;
+        let mut out = Vec::new();
+        while got < total {
+            out.clear();
+            let n = ring.pop(&mut out, 512);
+            for (k, v) in out.iter().enumerate() {
+                assert_eq!(*v, (got + k) as f32);
+            }
+            got += n;
+        }
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn rec_format_parses_and_refuses() {
+        assert_eq!(RecFormat::parse_args("").unwrap(), RecFormat { rate: 48_000, channels: 1, bits: 24 });
+        assert_eq!(RecFormat::parse_args("ch=2 bits=16 rate=44100").unwrap(), RecFormat { rate: 44_100, channels: 2, bits: 16 });
+        assert!(RecFormat::parse_args("bits=20").is_err());
+        assert!(RecFormat::parse_args("ch=0").is_err());
+        assert!(RecFormat::parse_args("rate=5").is_err());
+        assert!(RecFormat::parse_args("rate=abc").is_err());
+        assert!(RecFormat::parse_args("speed=3").is_err());
+        assert_eq!(RecFormat::default().bytes_per_second(), 144_000);
+    }
+
+    #[test]
+    fn take_names_are_utc_dates_and_never_collide() {
+        assert_eq!(take_stem(0), "Take 1970-01-01 00.00.00");
+        assert_eq!(take_stem(1_792_505_002), "Take 2026-10-20 14.03.22");
+        assert_eq!(take_stem(951_782_400 + 86_399), "Take 2000-02-29 23.59.59");
+        let dir = scratch("names");
+        let a = create_take(&dir, RecFormat::default(), 1_792_505_002).unwrap();
+        let b = create_take(&dir, RecFormat::default(), 1_792_505_002).unwrap();
+        assert_ne!(a.path(), b.path());
+        assert!(b.path().to_string_lossy().ends_with("Take 2026-10-20 14.03.22 (2).wav"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_take_is_never_overwritten() {
+        let dir = scratch("exclusive");
+        let path = dir.join("x.wav");
+        std::fs::write(&path, b"precious").unwrap();
+        assert!(TakeWriter::create(&path, RecFormat::default()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"precious");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// C022: the header is valid from the moment the file exists, and after each update it
+    /// covers everything written; a copy of the file taken then (what a kill leaves) reads whole.
+    #[test]
+    fn the_header_is_valid_at_every_moment() {
+        let dir = scratch("header");
+        let fmt = RecFormat { rate: 48_000, channels: 2, bits: 24 };
+        let mut w = create_take(&dir, fmt, 5).unwrap();
+        assert_eq!(header_of(w.path()), (2, 48_000, 24, 0, 44), "valid and empty at once");
+        w.write_frames(&vec![0.25; 2 * 1000]).unwrap();
+        // Before an update the header still says 0: valid, but short.
+        assert_eq!(header_of(w.path()).3, 0);
+        w.update_header().unwrap();
+        assert_eq!(header_of(w.path()), (2, 48_000, 24, 6_000, 44 + 6_000));
+        // More data after the update: a kill now leaves the file longer than its header says,
+        // and the header still describes a whole number of frames.
+        w.write_frames(&vec![0.25; 2 * 500]).unwrap();
+        let killed = dir.join("killed.wav");
+        std::fs::copy(w.path(), &killed).unwrap();
+        let (_, _, _, data, len) = header_of(&killed);
+        assert_eq!(data, 6_000);
+        assert_eq!(len, 44 + 9_000);
+        assert_eq!(u64::from(data) % fmt.block_align(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn samples_are_converted_at_each_depth() {
+        for (bits, width) in [(16u16, 2usize), (24, 3), (32, 4)] {
+            let dir = scratch(&format!("depth{bits}"));
+            let mut w = create_take(&dir, RecFormat { rate: 48_000, channels: 1, bits }, 1).unwrap();
+            w.write_frames(&[1.0, -1.0, 0.5, 0.0, 2.0, f32::NAN]).unwrap();
+            w.update_header().unwrap();
+            let b = std::fs::read(w.path()).unwrap();
+            let d = &b[44..];
+            assert_eq!(d.len(), 6 * width);
+            let at = |i: usize| -> f64 {
+                let s = &d[i * width..(i + 1) * width];
+                match bits {
+                    16 => f64::from(i16::from_le_bytes([s[0], s[1]])) / 32767.0,
+                    24 => f64::from(i32::from_le_bytes([0, s[0], s[1], s[2]]) >> 8) / 8_388_607.0,
+                    _ => f64::from(f32::from_le_bytes([s[0], s[1], s[2], s[3]])),
+                }
+            };
+            let tol = if bits == 32 { 0.0 } else { 1e-4 };
+            let want = if bits == 32 { [1.0, -1.0, 0.5, 0.0, 2.0, 0.0] } else { [1.0, -1.0, 0.5, 0.0, 1.0, 0.0] };
+            for (i, w) in want.iter().enumerate() {
+                assert!((at(i) - w).abs() <= tol, "{bits}-bit sample {i}: {} vs {w}", at(i));
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn the_recorder_drains_the_ring_and_finishes_the_header() {
+        let dir = scratch("recorder");
+        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 16 };
+        let ring = Ring::new(48_000, 1);
+        let rec = Recorder::start(create_take(&dir, fmt, 9).unwrap(), ring.clone()).unwrap();
+        for _ in 0..10 {
+            ring.push(&[0.5; 480]);
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        let take = rec.stop();
+        assert_eq!((take.frames, take.dropped_frames, take.error.clone()), (4_800, 0, None));
+        assert_eq!(header_of(&take.path), (1, 48_000, 16, 9_600, 44 + 9_600));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dropping_the_recorder_still_finishes_the_take() {
+        let dir = scratch("dropped");
+        let ring = Ring::new(4_800, 1);
+        let rec = Recorder::start(create_take(&dir, RecFormat::default(), 3).unwrap(), ring.clone()).unwrap();
+        let path = rec.path().to_path_buf();
+        ring.push(&[0.1; 1_000]);
+        drop(rec);
+        assert_eq!(header_of(&path).3, 3_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fake_input_spec_parses() {
+        assert_eq!(FakeSpec::parse(None), Ok(None));
+        assert_eq!(FakeSpec::parse(Some("")), Ok(None));
+        assert_eq!(FakeSpec::parse(Some("sine:440")), Ok(Some(FakeSpec { hz: 440.0 })));
+        assert!(FakeSpec::parse(Some("sine:abc")).is_err());
+        assert!(FakeSpec::parse(Some("noise")).is_err());
+        assert!(FakeSpec::parse(Some("sine:-5")).is_err());
+    }
+
+    /// The whole path without a device: fake sine -> ring -> writer thread -> file. The take
+    /// has about the wall-clock length and the sine's frequency, found by counting zero crossings.
+    #[test]
+    fn a_fake_sine_take_has_the_right_length_and_pitch() {
+        let dir = scratch("fake");
+        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 24 };
+        let ring = Ring::new(48_000, 1);
+        let rec = Recorder::start(create_take(&dir, fmt, 7).unwrap(), ring.clone()).unwrap();
+        let fake = FakeInput::spawn(FakeSpec { hz: 440.0 }, fmt, ring).unwrap();
+        std::thread::sleep(Duration::from_millis(1_200));
+        fake.stop();
+        let take = rec.stop();
+        assert_eq!(take.error, None);
+        assert_eq!(take.dropped_frames, 0);
+        let seconds = take.frames as f64 / 48_000.0;
+        assert!((1.0..1.6).contains(&seconds), "{seconds} s");
+        let (_, _, _, data, _) = header_of(&take.path);
+        assert_eq!(u64::from(data), take.frames * 3);
+        let bytes = std::fs::read(&take.path).unwrap();
+        let samples: Vec<i32> = bytes[44..].as_chunks::<3>().0.iter().map(|s| i32::from_le_bytes([0, s[0], s[1], s[2]]) >> 8).collect();
+        let crossings = samples.windows(2).filter(|p| p[0] <= 0 && p[1] > 0).count() as f64;
+        let hz = crossings / seconds;
+        assert!((hz - 440.0).abs() < 5.0, "{hz} Hz");
+        let peak = samples.iter().map(|s| s.abs()).max().unwrap();
+        assert!((3_900_000..4_300_000).contains(&peak), "peak {peak} is about half of full scale");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_slow_writer_shows_as_dropped_frames_not_a_stall() {
+        let ring = Ring::new(100, 1);
+        for _ in 0..5 {
+            ring.push(&[0.0; 50]);
+        }
+        assert_eq!(ring.dropped_frames(), 150);
+    }
+}

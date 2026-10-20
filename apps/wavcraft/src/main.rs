@@ -10,7 +10,9 @@
 
 mod app;
 mod control;
+mod input;
 mod player;
+mod recording;
 mod selflog;
 mod spectrum;
 #[cfg(windows)]

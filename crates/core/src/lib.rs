@@ -7,6 +7,7 @@
 //!   (pure functions from one state to the next), and [`doc::history`], undo with a disk cap.
 //! - [`io`]: streamed open into the store.
 //! - [`space`]: the store's size for a file and the free space on its disk.
+//! - [`record`]: recording a take: the ring buffer, the crash-safe WAV writer, the fake input.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
 //!   and its waveform peaks.
@@ -20,6 +21,7 @@ pub mod doc;
 pub mod document;
 pub mod io;
 pub mod random;
+pub mod record;
 pub mod save;
 pub mod settings;
 pub mod space;
