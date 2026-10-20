@@ -44,7 +44,7 @@ pub struct Dynamics;
 
 /// The curve before the makeup and the limiter.
 fn curve_core(p: &[f64], x: f64) -> f64 {
-    let y = if x < p[GATE] {
+    if x < p[GATE] {
         p[GATE] + (x - p[GATE]) * p[EXPAND]
     } else if p[RATIO] > 1.0 {
         let (t, r, w) = (p[COMP], p[RATIO], p[KNEE]);
@@ -61,8 +61,7 @@ fn curve_core(p: &[f64], x: f64) -> f64 {
         }
     } else {
         x
-    };
-    y
+    }
 }
 
 /// The output level in dB for an input level in dB under `params` (in the order of
