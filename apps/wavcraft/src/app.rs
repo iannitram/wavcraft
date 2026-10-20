@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
-use wavcraft_core::freq_axis::FreqAxis;
+use wavcraft_core::freq_axis::{FreqAxis, Scale};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
@@ -336,38 +336,56 @@ impl WaveApp {
         }
     }
 
-    /// `SPECTRAL view <lo_hz> <hi_hz> [log|lin]` and `SPECTRAL reset` from the control channel.
+    /// `SPECTRAL view <lo_hz> <hi_hz> [lin|log_partial|log]`, `SPECTRAL scale lin|log_partial|log_full`,
+    /// `SPECTRAL scroll <hz>` (the band's low edge, as dragging the ruler would move it) and
+    /// `SPECTRAL reset` from the control channel.
     fn control_spectral(&mut self, rest: &str) -> String {
+        const USAGE: &str = "ERR SPECTRAL view <lo_hz> <hi_hz> [lin|log_partial|log] | scale lin|log_partial|log_full | scroll <hz> | reset";
+        let current = self.freq_axis().scale();
         let mut words = rest.split_whitespace();
         match words.next() {
             Some("view") => {
                 let (lo, hi) = (words.next().and_then(|w| w.parse::<f32>().ok()), words.next().and_then(|w| w.parse::<f32>().ok()));
-                let log = match words.next() {
-                    None => Some(self.params.log_freq),
-                    Some("log") => Some(true),
-                    Some("lin") => Some(false),
-                    Some(_) => None,
+                let scale = match words.next() {
+                    None => Some(current),
+                    Some(word) => Scale::parse(word),
                 };
-                match (lo, hi, log) {
-                    (Some(lo), Some(hi), Some(log)) if lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo => {
-                        self.set_freq_axis(FreqAxis { min_hz: lo, max_hz: hi, log });
+                match (lo, hi, scale) {
+                    (Some(lo), Some(hi), Some(scale)) if lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo => {
+                        self.set_freq_axis(FreqAxis { min_hz: lo, max_hz: hi, log: scale != Scale::Linear, partial: scale == Scale::LogPartial });
                         format!("OK {}", self.spectral_state())
                     }
-                    _ => "ERR SPECTRAL view <lo_hz> <hi_hz> [log|lin], with 0 <= lo < hi".to_string(),
+                    _ => USAGE.to_string(),
                 }
             }
+            Some("scale") => match words.next().and_then(Scale::parse) {
+                Some(scale) => {
+                    let axis = self.freq_axis().with_scale_kind(scale, self.rate());
+                    self.set_freq_axis(axis);
+                    format!("OK {}", self.spectral_state())
+                }
+                None => USAGE.to_string(),
+            },
+            Some("scroll") => match words.next().and_then(|w| w.parse::<f32>().ok()).filter(|hz| hz.is_finite()) {
+                Some(hz) => {
+                    let axis = self.freq_axis().scroll_to(hz, self.rate());
+                    self.set_freq_axis(axis);
+                    format!("OK {}", self.spectral_state())
+                }
+                None => USAGE.to_string(),
+            },
             Some("reset") => {
-                self.set_freq_axis(FreqAxis::full(self.params.log_freq, self.rate()));
+                self.set_freq_axis(FreqAxis::full_scale(current, self.rate()));
                 format!("OK {}", self.spectral_state())
             }
-            _ => "ERR SPECTRAL view <lo_hz> <hi_hz> [log|lin] | SPECTRAL reset".to_string(),
+            _ => USAGE.to_string(),
         }
     }
 
-    /// `spectral=<lo>-<hi>:<log|lin>`: the band as drawn.
+    /// `spectral=<lo>-<hi>:<lin|log_partial|log>`: the band as drawn.
     fn spectral_state(&self) -> String {
         let a = self.freq_axis();
-        format!("spectral={}-{}:{}", a.min_hz, a.max_hz, if a.log { "log" } else { "lin" })
+        format!("spectral={}-{}:{}", a.min_hz, a.max_hz, a.scale().word())
     }
 
     /// `statusbar=<fields shown>`.
@@ -954,13 +972,21 @@ impl WaveApp {
             ui.menu_button("View", |ui| {
                 ui.checkbox(&mut self.show_waveform, "Waveform");
                 ui.checkbox(&mut self.show_spectrum, "Spectral frequency display");
-                if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
-                    self.spectrum = None;
-                    self.set_freq_axis(FreqAxis::from_params(&self.params));
-                }
+                ui.menu_button("Frequency scale", |ui| {
+                    let current = self.freq_axis().scale();
+                    for (scale, name) in
+                        [(Scale::Linear, "Linear"), (Scale::LogPartial, "Logarithmic (above 1 kHz)"), (Scale::LogFull, "Logarithmic (full)")]
+                    {
+                        if ui.radio(current == scale, name).clicked() {
+                            let axis = self.freq_axis().with_scale_kind(scale, self.rate());
+                            self.set_freq_axis(axis);
+                            ui.close();
+                        }
+                    }
+                });
                 if ui.button("Reset frequency range").on_hover_text("Show the whole frequency range (or double-click the frequency ruler)").clicked()
                 {
-                    self.set_freq_axis(FreqAxis::full(self.params.log_freq, self.rate()));
+                    self.set_freq_axis(FreqAxis::full_scale(self.freq_axis().scale(), self.rate()));
                 }
                 ui.separator();
                 let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
@@ -1194,7 +1220,7 @@ impl WaveApp {
                 self.freq_drag = None;
             }
         } else if response.double_clicked() && response.interact_pointer_pos().is_some_and(over_freq_ruler) {
-            let full = FreqAxis::full(self.params.log_freq, rate);
+            let full = FreqAxis::full_scale(self.freq_axis().scale(), rate);
             set_axis(&mut self.params, &mut self.spectrum, full, rate);
         } else if response.drag_started()
             && let Some(pos) = response.interact_pointer_pos()
@@ -1259,7 +1285,7 @@ impl WaveApp {
                     let lane = lane(area, ch, channels).shrink2(vec2(0.0, 1.0));
                     let y_of = |hz: f32| lane.bottom() - shown.fraction_of_hz(hz) * lane.height();
                     let (top, bottom) = (y_of(drawn.max_hz), y_of(drawn.min_hz));
-                    if shown.log == drawn.log && top.is_finite() && bottom.is_finite() && bottom > top {
+                    if shown.scale() == drawn.scale() && top.is_finite() && bottom.is_finite() && bottom > top {
                         painter.with_clip_rect(lane).image(
                             texture.id(),
                             Rect::from_min_max(pos2(left, top), pos2(right, bottom)),
@@ -1392,7 +1418,7 @@ fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
 /// Show `axis` (made usable for `rate`) in `params`; a picture drawn on the other scale is dropped.
 fn set_axis(params: &mut SpectrogramParams, spectrum: &mut Option<SpectrumCache>, axis: FreqAxis, rate: u32) {
     let axis = axis.clamped(rate);
-    if axis.log != params.log_freq {
+    if axis.log != params.log_freq || axis.partial != params.partial_log {
         *spectrum = None;
     }
     axis.apply_to(params);

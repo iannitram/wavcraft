@@ -34,6 +34,9 @@ pub struct SpectrogramParams {
     pub max_hz: f32,
     /// Logarithmic frequency axis (speech-friendly) instead of linear.
     pub log_freq: bool,
+    /// With `log_freq`: logarithmic only above the knee ([`crate::freq_axis::PARTIAL_KNEE_HZ`]),
+    /// linear below it.
+    pub partial_log: bool,
     /// Level drawn as 0, in dBFS.
     pub floor_db: f32,
     /// Level drawn as 255, in dBFS. A full-scale sine reads 0 dBFS.
@@ -42,7 +45,7 @@ pub struct SpectrogramParams {
 
 impl Default for SpectrogramParams {
     fn default() -> Self {
-        SpectrogramParams { fft_size: 2048, min_hz: 40.0, max_hz: 24_000.0, log_freq: true, floor_db: -100.0, ceil_db: 0.0 }
+        SpectrogramParams { fft_size: 2048, min_hz: 40.0, max_hz: 24_000.0, log_freq: true, partial_log: false, floor_db: -100.0, ceil_db: 0.0 }
     }
 }
 
@@ -60,9 +63,9 @@ impl SpectrogramParams {
     /// The frequency at the top edge of `row` of `rows` (row 0 is the top of the picture, the
     /// highest frequency; `row == rows` is the bottom edge).
     pub fn row_edge_hz(&self, row: usize, rows: usize, sample_rate: u32) -> f32 {
-        let (lo, hi) = self.range_hz(sample_rate);
+        let axis = crate::freq_axis::FreqAxis::from_params(self).clamped(sample_rate);
         let t = if rows == 0 { 0.0 } else { 1.0 - (row.min(rows) as f32 / rows as f32) };
-        if self.log_freq { lo * (hi / lo).powf(t) } else { lo + (hi - lo) * t }
+        axis.hz_at_fraction(t)
     }
 }
 
@@ -651,7 +654,15 @@ mod tests {
         assert_eq!(render(&x, 48_000, 1e9, 1e9 + 100.0, 4, 4, &p), vec![0; 16]);
         assert_eq!(render(&x, 48_000, -1e9, -1e9 + 100.0, 4, 4, &p), vec![0; 16]);
         // NaN samples, absurd parameters and oversized requests are clamped, not trusted.
-        let wild = SpectrogramParams { fft_size: usize::MAX, min_hz: f32::NAN, max_hz: f32::INFINITY, floor_db: 0.0, ceil_db: 0.0, log_freq: true };
+        let wild = SpectrogramParams {
+            fft_size: usize::MAX,
+            min_hz: f32::NAN,
+            max_hz: f32::INFINITY,
+            floor_db: 0.0,
+            ceil_db: 0.0,
+            log_freq: true,
+            partial_log: false,
+        };
         let nan = vec![f32::NAN; 4_800];
         assert_eq!(render(&nan, 48_000, 0.0, 4_800.0, 4, 4, &wild), vec![0; 16]);
         assert_eq!(render(&x, 48_000, 0.0, 4_800.0, usize::MAX, 2, &p).len(), MAX_SIDE * 2);
@@ -674,9 +685,9 @@ mod tests {
         let rate = 48_000;
         let x = sine(1_000.0, 1.0, 48_000, rate);
         for axis in [
-            FreqAxis { min_hz: 900.0, max_hz: 1_100.0, log: false },
-            FreqAxis { min_hz: 500.0, max_hz: 2_000.0, log: true },
-            FreqAxis { min_hz: 0.0, max_hz: 3_000.0, log: false },
+            FreqAxis { min_hz: 900.0, max_hz: 1_100.0, log: false, partial: false },
+            FreqAxis { min_hz: 500.0, max_hz: 2_000.0, log: true, partial: false },
+            FreqAxis { min_hz: 0.0, max_hz: 3_000.0, log: false, partial: false },
         ] {
             let mut p = SpectrogramParams { fft_size: 8192, ..SpectrogramParams::default() };
             axis.apply_to(&mut p);

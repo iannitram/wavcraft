@@ -15,7 +15,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::freq_axis::FreqAxis;
+use crate::freq_axis::{FreqAxis, Scale};
 use crate::statusbar::StatusFields;
 
 /// The environment variable that sets the session folder (over the settings file).
@@ -88,8 +88,8 @@ impl Settings {
         out.push_str("# status_fields: the status bar's fields that are shown, comma separated.\n");
         out.push_str(&format!("{KEY_STATUS_FIELDS} = {}\n", self.status_fields.to_list()));
         if let Some(v) = &self.spectral_view {
-            out.push_str("# spectral_view: the spectral display's lowest and highest Hz, and log or lin.\n");
-            out.push_str(&format!("{KEY_SPECTRAL_VIEW} = {} {} {}\n", v.min_hz, v.max_hz, if v.log { "log" } else { "lin" }));
+            out.push_str("# spectral_view: the spectral display's lowest and highest Hz, and lin, log_partial or log.\n");
+            out.push_str(&format!("{KEY_SPECTRAL_VIEW} = {} {} {}\n", v.min_hz, v.max_hz, v.scale().word()));
         }
         out
     }
@@ -105,17 +105,21 @@ impl Settings {
     }
 }
 
-/// `<lo> <hi> [log|lin]`: a band that is finite and has a low end below its high end.
+/// `<lo> <hi> [lin|log_partial|log]`: a band that is finite and has a low end below its high end.
 fn parse_view(value: &str) -> Option<FreqAxis> {
     let mut it = value.split_whitespace();
     let lo: f32 = it.next()?.parse().ok()?;
     let hi: f32 = it.next()?.parse().ok()?;
-    let log = match it.next() {
-        Some("lin") => false,
-        Some("log") | None => true,
-        Some(_) => return None,
+    let scale = match it.next() {
+        None => Scale::LogFull,
+        Some(word) => Scale::parse(word)?,
     };
-    (lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo).then_some(FreqAxis { min_hz: lo, max_hz: hi, log })
+    (lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo).then_some(FreqAxis {
+        min_hz: lo,
+        max_hz: hi,
+        log: scale != Scale::Linear,
+        partial: scale == Scale::LogPartial,
+    })
 }
 
 /// Make `path` if it is missing and check that a file can be written in it. The error says why
