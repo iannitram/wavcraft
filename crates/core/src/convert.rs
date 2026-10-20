@@ -23,6 +23,10 @@
 //!   16-bit, 24-bit and 32-bit float.
 //! - **Interpret Sample Rate** ([`interpret_rate`]) only relabels the rate: no sample changes, so
 //!   the audio plays faster or slower and is longer or shorter in time.
+//! - **Per-document state** (markers, ...) is carried through both ([`DocState::with_parts`], not a
+//!   rebuild from shared parts). Convert rescales frame positions by `new / old`
+//!   ([`DocState::rescale_positions`]) so they keep their place in time; Interpret keeps them on
+//!   the same frames, because the audio itself is what changes in time.
 //!
 //! Presets ([`Preset`], [`builtin_presets`], [`PresetFile`]) are named settings: a few built in
 //! and any number the user saves, kept in `convert-presets.txt` beside `settings.txt`.
@@ -305,7 +309,9 @@ pub fn convert(doc: &DocState, s: &ConvertSettings, cancel: &AtomicBool, progres
     if let Some(b) = s.bits {
         source.sample_format = format_for(b);
     }
-    let state = DocState::from_shared(doc.store().clone(), channels, out_rate, Arc::new(source))?;
+    // Everything else per-document (markers, ...) rides along; frame positions follow the rate.
+    let mut state = doc.with_parts(channels, out_rate, Arc::new(source))?;
+    state.rescale_positions(in_rate, out_rate);
     progress(1.0);
     Ok(Edit { state, label: CONVERT.to_string(), change: Change::LengthFrom { frame: 0 } })
 }
@@ -319,7 +325,9 @@ pub fn interpret_rate(doc: &DocState, rate: u32) -> Result<Edit, EditError> {
     }
     let mut source: SourceFormat = doc.source().as_ref().clone();
     source.sample_rate = rate;
-    let state = DocState::from_shared(doc.store().clone(), doc.channels().to_vec(), rate, Arc::new(source))?;
+    // Interpret keeps frame positions as they are (markers stay on the same sample, so they move
+    // in time with the audio): no rescale. Everything per-document is carried over.
+    let state = doc.with_parts(doc.channels().to_vec(), rate, Arc::new(source))?;
     Ok(Edit { state, label: INTERPRET.to_string(), change: Change::LengthFrom { frame: 0 } })
 }
 
@@ -643,4 +651,50 @@ fn write_text(path: &Path, text: &str) -> io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(path, text)
+}
+
+#[cfg(test)]
+mod carry_tests {
+    use super::*;
+    use crate::doc::SourceFormat;
+    use crate::store::{Store, StoreOptions};
+
+    fn doc(name: &str, rate: u32, frames: usize) -> DocState {
+        let dir = std::env::temp_dir().join(format!("wavcraft-carry-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = Store::create_with(&dir, StoreOptions::default()).unwrap();
+        let data = vec![0.25f32; frames];
+        let ch = Channel::from_pieces([Piece::whole(s.append(&data).unwrap()).unwrap()]);
+        DocState::new(s, vec![ch], rate, SourceFormat::synthetic(rate, 1)).unwrap()
+    }
+
+    #[test]
+    fn convert_carries_per_document_state_and_rescales_it_with_the_rate() {
+        let mut d = doc("rescale", 48_000, 4800);
+        d.set_standin(vec![0, 2400, 4800]);
+        let settings = ConvertSettings { rate: Some(24_000), ..ConvertSettings::default() };
+        let e = convert(&d, &settings, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert_eq!(e.state.sample_rate(), 24_000);
+        assert_eq!(e.state.len_frames(), 2400);
+        assert_eq!(e.state.standin(), &[0, 1200, 2400], "kept, and moved with the rate");
+    }
+
+    #[test]
+    fn convert_without_a_rate_change_keeps_state_untouched() {
+        let mut d = doc("bits", 48_000, 4800);
+        d.set_standin(vec![7, 99]);
+        let settings = ConvertSettings { bits: Some(SampleType::Int16), ..ConvertSettings::default() };
+        let e = convert(&d, &settings, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert_eq!(e.state.standin(), &[7, 99]);
+    }
+
+    #[test]
+    fn interpret_carries_state_and_keeps_frame_positions() {
+        let mut d = doc("interpret", 48_000, 4800);
+        d.set_standin(vec![10, 4000]);
+        let e = interpret_rate(&d, 24_000).unwrap();
+        assert_eq!(e.state.sample_rate(), 24_000);
+        assert_eq!(e.state.standin(), &[10, 4000], "same frames: they move in time with the audio");
+    }
 }

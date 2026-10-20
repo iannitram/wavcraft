@@ -526,7 +526,7 @@ impl WaveApp {
         ));
         editor.history.push_edit(edit);
         // The selection keeps its place in time.
-        let scale = |f: usize| ((f as u128 * u128::from(new_rate) / u128::from(old_rate.max(1))) as usize).min(new_len);
+        let scale = |f: usize| (wavcraft_core::doc::rescale_frame(f as u64, old_rate, new_rate) as usize).min(new_len);
         self.selection = Selection { anchor: scale(self.selection.anchor), head: scale(self.selection.head) };
         self.fit_on_next_frame = true;
         self.error = None;

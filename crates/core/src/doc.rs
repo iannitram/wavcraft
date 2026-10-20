@@ -288,6 +288,20 @@ impl std::fmt::Display for DocError {
 
 impl std::error::Error for DocError {}
 
+fn check_parts(channels: &[Arc<Channel>], sample_rate: u32) -> Result<(), DocError> {
+    if channels.is_empty() {
+        return Err(DocError::NoChannels);
+    }
+    if sample_rate == 0 {
+        return Err(DocError::ZeroSampleRate);
+    }
+    let lens: Vec<u64> = channels.iter().map(|c| c.len()).collect();
+    if lens.windows(2).any(|w| w[0] != w[1]) {
+        return Err(DocError::LengthMismatch(lens));
+    }
+    Ok(())
+}
+
 /// One state of a document: its channels (all the same length), sample rate and source.
 #[derive(Debug, Clone)]
 pub struct DocState {
@@ -295,6 +309,18 @@ pub struct DocState {
     channels: Vec<Arc<Channel>>,
     sample_rate: u32,
     source: Arc<SourceFormat>,
+    /// Stand-in for the per-document state other rows add (markers on A170): positions in
+    /// frames. Tests only; it proves [`DocState::with_parts`] carries state through and
+    /// [`DocState::rescale_positions`] moves it.
+    #[cfg(test)]
+    standin: Vec<u64>,
+}
+
+/// `frame` re-expressed at `new_rate` so it keeps its place in time: `frame * new / old`,
+/// rounded to the nearest frame (the rule [`crate::convert::convert`] uses for the length).
+pub fn rescale_frame(frame: u64, old_rate: u32, new_rate: u32) -> u64 {
+    let old = u128::from(old_rate.max(1));
+    ((u128::from(frame) * u128::from(new_rate) + old / 2) / old) as u64
 }
 
 impl DocState {
@@ -304,19 +330,48 @@ impl DocState {
 
     /// From channels that may be shared with other states (edits keep the ones they don't change).
     pub fn from_shared(store: Store, channels: Vec<Arc<Channel>>, sample_rate: u32, source: Arc<SourceFormat>) -> Result<DocState, DocError> {
-        if channels.is_empty() {
-            return Err(DocError::NoChannels);
-        }
-        if sample_rate == 0 {
-            return Err(DocError::ZeroSampleRate);
-        }
-        let lens: Vec<u64> = channels.iter().map(|c| c.len()).collect();
-        if lens.windows(2).any(|w| w[0] != w[1]) {
-            return Err(DocError::LengthMismatch(lens));
-        }
-        let doc = DocState { store, channels, sample_rate, source };
+        check_parts(&channels, sample_rate)?;
+        let doc = DocState {
+            store,
+            channels,
+            sample_rate,
+            source,
+            #[cfg(test)]
+            standin: Vec::new(),
+        };
         debug_assert!(doc.channels.iter().all(|c| c.len() == doc.len_frames()), "all channels of a DocState are the same length");
         Ok(doc)
+    }
+
+    /// This state with other audio parts and **every other field carried over** (markers and
+    /// whatever later rows add). Use this, not [`DocState::from_shared`], to derive a state that
+    /// is the same document with changed audio, so nothing per-document is dropped; positions
+    /// in frames are not moved here (see [`DocState::rescale_positions`]).
+    pub fn with_parts(&self, channels: Vec<Arc<Channel>>, sample_rate: u32, source: Arc<SourceFormat>) -> Result<DocState, DocError> {
+        check_parts(&channels, sample_rate)?;
+        Ok(DocState { channels, sample_rate, source, ..self.clone() })
+    }
+
+    /// The hook for per-document state stored as frame positions (markers, regions, loop
+    /// points): re-express them for a change of sample rate from `old_rate` to `new_rate` with
+    /// [`rescale_frame`]. A row that adds such state adds its line here. Selection and cursor
+    /// belong to the window, not the document, and are rescaled by the caller.
+    pub fn rescale_positions(&mut self, old_rate: u32, new_rate: u32) {
+        let _ = (old_rate, new_rate);
+        #[cfg(test)]
+        for p in &mut self.standin {
+            *p = rescale_frame(*p, old_rate, new_rate);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_standin(&mut self, positions: Vec<u64>) {
+        self.standin = positions;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn standin(&self) -> &[u64] {
+        &self.standin
     }
 
     pub fn store(&self) -> &Store {
