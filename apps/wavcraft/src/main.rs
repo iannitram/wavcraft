@@ -10,6 +10,7 @@
 
 mod app;
 mod control;
+mod freq_panel;
 mod player;
 mod selflog;
 mod spectrum;

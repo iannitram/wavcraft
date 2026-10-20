@@ -11,11 +11,13 @@
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
 //!   and its waveform peaks.
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
+//! - [`analysis`]: read-only analysis of a document's audio (the Frequency Analysis spectrum).
 //! - [`view`]: zoom and scroll arithmetic, selections and time formatting.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod actions;
+pub mod analysis;
 pub mod doc;
 pub mod document;
 pub mod io;

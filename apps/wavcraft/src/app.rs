@@ -17,6 +17,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
+use crate::freq_panel::{self, FreqPanel};
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 
@@ -68,6 +69,8 @@ pub struct WaveApp {
     params: SpectrogramParams,
     /// Which registered panels are shown (Window menu; kept in the settings file).
     panels: PanelSet,
+    /// Window › Frequency Analysis.
+    freq: FreqPanel,
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
@@ -137,6 +140,7 @@ impl WaveApp {
             player: Player::new(),
             params: SpectrogramParams::default(),
             panels: PanelSet::from_hidden(&settings.hidden_panels),
+            freq: FreqPanel::default(),
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
@@ -218,6 +222,7 @@ impl WaveApp {
                 self.doc = Some(doc);
                 self.generation += 1;
                 self.selection = Selection::default();
+                self.freq.reset();
                 self.spectrum = None;
                 self.fit_on_next_frame = true;
             }
@@ -735,6 +740,11 @@ impl WaveApp {
             }
             // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
             "PANELS" => format!("OK {}", self.panels.report()),
+            // The spectrum's peaks: `FREQ [fft=4096] [window=hann] [start end]`.
+            "FREQ" => match &self.editor {
+                Some(e) => freq_panel::control(e.history.current(), e.channels, self.selection_range(), rest),
+                None => "ERR no file open".to_string(),
+            },
             "ACTION" => match actions::by_name(rest) {
                 Some(a) => match self.run_action(a.id, ctx) {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
@@ -1127,6 +1137,14 @@ impl eframe::App for WaveApp {
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.panels.is_shown("history") {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
+        }
+        if self.panels.is_shown("freq") {
+            let (doc, channels, sel) = (
+                self.editor.as_ref().map(|e| e.history.current().clone()),
+                self.editor.as_ref().map_or(wavcraft_core::ChannelMask::ALL, |e| e.channels),
+                self.selection_range(),
+            );
+            egui::Panel::bottom("freq").resizable(true).default_size(260.0).show(ui, |ui| self.freq.show(ui, doc.as_ref(), channels, sel));
         }
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);

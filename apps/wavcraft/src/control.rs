@@ -10,7 +10,8 @@
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
-//! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1>` (which panels are shown)
+//! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1> freq=<0|1>` (which panels are shown)
+//! - `FREQ [fft=4096] [window=hann|blackman|rectangular] [start end]` → `OK range=<a>-<b> fft=<n> window=<w> ch1=<hz>Hz/<db>dB …` (the peak of each channel; `start end` in frames, else the selection, else the moment at the cursor, `at=<frame>`)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
