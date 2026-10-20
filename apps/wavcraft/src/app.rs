@@ -19,6 +19,7 @@ use crate::control;
 use crate::multitrack_ui::MtView;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
+use wavcraft_core::multitrack::soundcraft_model::{SourceId, TrackId};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
 const WAVE: Color32 = Color32::from_rgb(64, 200, 140);
@@ -110,6 +111,19 @@ pub struct WaveApp {
     confirm_clear_history: bool,
     /// The Multitrack session and its editor view (f103).
     mtv: MtView,
+    /// A clip's source open in the Waveform editor, waiting for Return to session (f116).
+    clip_edit: Option<ClipEdit>,
+}
+
+/// A clip's source open in the Waveform editor (f116).
+struct ClipEdit {
+    source: SourceId,
+    name: String,
+    /// The temp WAV the source was written to, and its folder (removed on return).
+    path: PathBuf,
+    dir: PathBuf,
+    /// The file that was open before, opened again on return.
+    back_to: Option<PathBuf>,
 }
 
 impl WaveApp {
@@ -165,6 +179,7 @@ impl WaveApp {
             insert_silence: None,
             confirm_clear_history: false,
             mtv: MtView::default(),
+            clip_edit: None,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -498,6 +513,107 @@ impl WaveApp {
         }
     }
 
+    /// Show a failure from a menu or click (a control request gets it as its answer instead).
+    fn report(&mut self, r: Result<(), String>) {
+        if let Err(e) = r {
+            self.error = Some(e);
+        }
+    }
+
+    /// `CLIP edit <track> <i>` from the control channel.
+    fn control_edit_clip(&mut self, rest: &str, ctx: &egui::Context) -> String {
+        let w = match crate::multitrack_ui::tokens(rest) {
+            Ok(w) if w.len() == 3 => w,
+            _ => return "ERR usage: CLIP edit <track> <clip number, from 1>".to_string(),
+        };
+        let r = self.mtv.find_track(&w[1]).map_err(|e| e.0).and_then(|t| {
+            let i = w[2].parse::<usize>().map_err(|_| "<clip number> is a number from 1".to_string())?;
+            self.edit_clip_source(t, i, ctx)
+        });
+        match r {
+            Ok(()) => "OK".to_string(),
+            Err(e) => format!("ERR {e}"),
+        }
+    }
+
+    /// Multitrack › a clip › Edit in Waveform editor: write the clip's source to a float WAV in a
+    /// private temp folder, open it in the Waveform editor (which has one document at a time, so
+    /// it replaces the current view) and remember the way back. The open document must have no
+    /// unsaved changes; it is opened again on return (its undo history is not kept).
+    fn edit_clip_source(&mut self, track: TrackId, i: usize, ctx: &egui::Context) -> Result<(), String> {
+        if self.clip_edit.is_some() {
+            return Err("a clip source is already open: Return to session first".into());
+        }
+        if self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() {
+            return Err("busy: wait for the open, edit or save to finish".into());
+        }
+        if self.doc.is_some() && (self.unsaved() || self.doc_path.as_os_str().is_empty()) {
+            return Err("save the open document first: opening the clip source replaces it".into());
+        }
+        let (source, name, wav) = self.mtv.clip_source_wav(track, i).map_err(|e| e.0)?;
+        let dir = std::env::temp_dir().join(format!("wavcraft-clip-source-{}-{}", std::process::id(), self.doc_id));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make a folder for the source: {e}"))?;
+        let stem: String = name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
+        let path = dir.join(format!("{}.wav", stem.trim()));
+        if let Err(e) = std::fs::write(&path, wav) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(format!("cannot write the source: {e}"));
+        }
+        let back_to = self.doc.is_some().then(|| self.doc_path.clone());
+        self.clip_edit = Some(ClipEdit { source, name, path: path.clone(), dir, back_to });
+        self.mtv.show = false;
+        self.open(path, ctx);
+        Ok(())
+    }
+
+    /// Return to session: the edited audio becomes the source (clips that use it keep their
+    /// start and are trimmed to the new length, see `Multitrack::replace_source_audio`), the
+    /// Multitrack view is shown and the document that was open before comes back.
+    fn return_to_session(&mut self, ctx: &egui::Context) -> Result<String, String> {
+        let Some(edit) = self.clip_edit.take() else { return Err("no clip source is open: CLIP edit <track> <i> first".into()) };
+        let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
+        let ready = !busy && self.doc.is_some() && self.doc_path == edit.path;
+        if !ready {
+            let why = if busy {
+                "busy: wait for the open or edit to finish"
+            } else {
+                "the clip source is not open (the open failed or another file was opened)"
+            };
+            if busy {
+                self.clip_edit = Some(edit);
+            } else {
+                let _ = std::fs::remove_dir_all(&edit.dir);
+                self.mtv.show = true;
+            }
+            return Err(why.into());
+        }
+        let Some(doc) = &self.doc else { return Err("no document".into()) };
+        let audio = wavcraft_core::multitrack::ModelBuffer { sample_rate: doc.sample_rate(), channels: doc.audio.channels.clone() };
+        let change = match self.mtv.replace_source(edit.source, audio) {
+            Ok(c) => c,
+            Err(e) => {
+                self.clip_edit = Some(edit);
+                return Err(e.0);
+            }
+        };
+        let _ = std::fs::remove_dir_all(&edit.dir);
+        self.mtv.show = true;
+        self.player.stop();
+        match edit.back_to {
+            Some(p) => self.open(p, ctx),
+            None => {
+                self.player.set_audio(None);
+                self.doc = None;
+                self.editor = None;
+                self.saved = None;
+                self.doc_path = PathBuf::new();
+                self.generation += 1;
+                self.spectrum = None;
+            }
+        }
+        Ok(format!("OK frames={} was={} trimmed={} removed={}", change.new_frames, change.old_frames, change.trimmed, change.removed))
+    }
+
     /// Read the current step back for the views and the player on a worker thread (task 05
     /// replaces this with views that read the document directly).
     fn rebuild(&mut self, ctx: &egui::Context) {
@@ -750,6 +866,11 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
+            "CLIP" if rest.starts_with("edit") => self.control_edit_clip(rest, ctx),
+            "SESSION" if rest.trim() == "return" => match self.return_to_session(ctx) {
+                Ok(s) => s,
+                Err(e) => format!("ERR {e}"),
+            },
             "SESSION" | "TRACK" | "CLIP" | "VIEW" => self.mtv.control(cmd, rest, self.doc.as_ref()),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
@@ -832,6 +953,10 @@ impl WaveApp {
             ui.menu_button("View", |ui| {
                 ui.radio_value(&mut self.mtv.show, false, "Waveform editor");
                 ui.radio_value(&mut self.mtv.show, true, "Multitrack editor");
+                if self.clip_edit.is_some() && ui.button("Return to session").clicked() {
+                    let r = self.return_to_session(ui.ctx()).map(|_| ());
+                    self.report(r);
+                }
                 ui.separator();
                 ui.checkbox(&mut self.show_waveform, "Waveform");
                 ui.checkbox(&mut self.show_spectrum, "Spectral frequency display");
@@ -1113,6 +1238,22 @@ impl eframe::App for WaveApp {
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         self.mtv.dialog_ui(&ctx);
+        if let Some((track, i)) = self.mtv.edit_request.take() {
+            let r = self.edit_clip_source(track, i, &ctx);
+            self.report(r);
+        }
+        if self.clip_edit.is_some() && !self.mtv.show {
+            egui::Panel::top("clip_edit_bar").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let name = self.clip_edit.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+                    ui.label(format!("Editing the source of clip \u{201c}{name}\u{201d}: its clips change when you return."));
+                    if ui.button("Return to session").clicked() {
+                        let r = self.return_to_session(&ctx).map(|_| ());
+                        self.report(r);
+                    }
+                });
+            });
+        }
         if self.mtv.show {
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
                 self.mtv.ui(ui, self.doc.as_ref());
