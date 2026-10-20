@@ -228,7 +228,9 @@ impl Multitrack {
     /// A track by name (any case) or by 1-based position among the audio tracks ("2", or "#2").
     pub fn find_track(&self, key: &str) -> Result<TrackId, MtError> {
         let ids = self.track_ids();
-        if let Some(t) = self.session.tracks.iter().find(|t| matches!(t.kind, TrackKind::Audio | TrackKind::Video) && t.name.eq_ignore_ascii_case(key)) {
+        if let Some(t) =
+            self.session.tracks.iter().find(|t| matches!(t.kind, TrackKind::Audio | TrackKind::Video) && t.name.eq_ignore_ascii_case(key))
+        {
             return Ok(t.id);
         }
         if let Ok(n) = key.trim_start_matches('#').parse::<usize>()
@@ -445,7 +447,7 @@ mod tests {
         let a = m.add_track(None, 2).unwrap_or_else(|e| panic!("{e}"));
         let v = m.add_video_track(None).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(m.session.track(v).map(|t| t.kind), Some(TrackKind::Video));
-        assert_eq!(m.find_track("video 1"), Ok(v));
+        assert_eq!(m.find_track("video"), Ok(v));
         assert!(m.add_clip_video(a, "/x/c.mp4", &meta(2.0), 1.0).is_err(), "not on an audio track");
         assert!(!m.has_video());
         m.add_clip_video(v, "/x/c.mp4", &meta(2.0), 1.0).unwrap_or_else(|e| panic!("{e}"));
