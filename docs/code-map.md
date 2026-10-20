@@ -40,6 +40,7 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | | `doclist.rs` (f04) | `DocList<T>`: order of the open documents. The current one lives in `WaveApp`'s own fields; the others are parked as `DocSlot`s and switching swaps them (`take_slot`/`put_slot`). Control: `DOCS`, `SWITCH <i>`, `CLOSE [discard]`; `QUIT` refuses while any document is unsaved |
 | | `player.rs` | `Player`: cpal output stream, play/pause/resume/stop, playhead position; plays a `transport::Plan` (loop, skipped part) in the callback; with no output device (or `WAVCRAFT_NO_AUDIO`) a silent wall-clock moves the position (test mode, `output=none` in `STATE`) |
 | | `effect_dialog.rs` (f14) | `EffectDialog`: draws any effect's `ParamDesc` list (slider per dB/percent/time, combo box per choice) with OK / Cancel / Reset; the app applies the values. Control: `EFFECT`, `EFFECT <name> key=value ...`, `EFFECT_DIALOG ...` |
+| | `doc/newdoc.rs` (f30) | `empty` (a document with no audio, chosen rate/channels/16-24-bit-or-float) and `from_clip` (a clip streamed a block at a time into a new store: Copy to New, Paste to New; keeps the clip's channels, rate and sample type; cancel and free-space check). `Clip` now carries the source's `SampleFormat` |
 | | `spectrum.rs` | `Renderer`: the spectrogram worker thread and its overview cache |
 
 Workspace: `Cargo.toml` at the root; `unsafe_code = "forbid"` for every crate that inherits the

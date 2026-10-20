@@ -32,6 +32,10 @@ pub enum ActionId {
     Clipboard3,
     Clipboard4,
     Clipboard5,
+    CopyToNew,
+    PasteToNew,
+    CloseAll,
+    SaveAll,
     Delete,
     Silence,
     Crop,
@@ -207,6 +211,12 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::Clipboard4, "edit.clipboard.4", "Set Current Clipboard: 4", &[cmd("4")]),
     edit(ActionId::Clipboard5, "edit.clipboard.5", "Set Current Clipboard: 5", &[cmd("5")]),
     edit(ActionId::CaptureNoisePrint, "nr.capture_print", "Capture Noise Print", &[shift("P")]),
+    // New documents and the all-documents commands: the window carries them out (they add or
+    // close documents, ask questions, or start saves).
+    window(ActionId::CopyToNew, "edit.copy_to_new", "Copy to New", &[]),
+    window(ActionId::PasteToNew, "edit.paste_to_new", "Paste to New", &[]),
+    window(ActionId::CloseAll, "file.close_all", "Close All", &[]),
+    window(ActionId::SaveAll, "file.save_all", "Save All", &[]),
     edit(ActionId::Delete, "edit.delete", "Delete", &[key("Delete"), key("Backspace")]),
     edit(ActionId::Silence, "edit.silence", "Silence", &[]),
     // Insert › Silence… asks for a length (the window's dialog), then runs `Editor::insert_silence`.
@@ -493,7 +503,9 @@ impl Editor {
             ActionId::Redo => self.history.can_redo(),
             // With no selection, Cut and Copy take the whole file (Audition).
             ActionId::Cut | ActionId::Copy => self.len() > 0,
-            ActionId::Paste => self.clipboard().is_some(),
+            ActionId::Paste | ActionId::PasteToNew => self.clipboard().is_some(),
+            ActionId::CopyToNew => self.len() > 0,
+            ActionId::CloseAll | ActionId::SaveAll => true,
             ActionId::Clipboard1 | ActionId::Clipboard2 | ActionId::Clipboard3 | ActionId::Clipboard4 | ActionId::Clipboard5 => true,
             ActionId::Delete | ActionId::Silence | ActionId::Crop | ActionId::CaptureNoisePrint => has_sel,
             // Like Copy: with no selection the effects take the whole file.
@@ -926,6 +938,10 @@ impl Editor {
             }
             ActionId::InsertSilence
             | ActionId::InsertFile
+            | ActionId::CopyToNew
+            | ActionId::PasteToNew
+            | ActionId::CloseAll
+            | ActionId::SaveAll
             | ActionId::SetIn
             | ActionId::SetOut
             | ActionId::ZoomIn

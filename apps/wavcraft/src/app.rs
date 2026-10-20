@@ -9,6 +9,8 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::convert::{self, ConvertSettings, PresetFile};
+use wavcraft_core::doc::edit as doc_edit;
+use wavcraft_core::doc::newdoc::{self, NewDocOptions};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::panels::{self, DockSide, Layout, PanelSet};
 use wavcraft_core::save::{SampleType, save_wav};
@@ -19,8 +21,8 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::transport::{self, Follow, Mode, Transport};
 use wavcraft_core::view::nav_hit;
 use wavcraft_core::{
-    AmpScale, AmpZoom, ChannelMask, DocState, Document, Edit, FileFormat, GRAB_PX, History, NavPart, OpenError, Selection, SpectrogramParams,
-    TimeFormat, Tool, Viewport, format_time,
+    AmpScale, AmpZoom, ChannelMask, Clip, DocState, Document, Edit, FileFormat, GRAB_PX, History, NavPart, OpenError, SampleFormat, Selection,
+    SpectrogramParams, TimeFormat, Tool, Viewport, format_time,
 };
 
 use crate::control;
@@ -95,6 +97,48 @@ struct Inserting {
     /// The document it belongs to ([`WaveApp::doc_id`] when it started): a result that arrives
     /// after another file was opened is dropped.
     doc_id: u64,
+}
+
+/// A new document being made from a clip on a worker thread (Copy to New, Paste to New).
+struct Making {
+    what: &'static str,
+    result: Receiver<Result<DocState, String>>,
+    progress: Arc<AtomicU32>,
+}
+
+/// File > New > Audio File…: the values in the dialog while it is up.
+struct NewAudio {
+    rate: u32,
+    channels: usize,
+    bits: u8,
+}
+
+impl Default for NewAudio {
+    fn default() -> Self {
+        NewAudio { rate: 48_000, channels: 2, bits: 32 }
+    }
+}
+
+/// The sample type a bit depth in the dialog (or `bits=` of `NEWDOC`) means.
+fn sample_format_for_bits(bits: u8) -> Option<SampleFormat> {
+    match bits {
+        16 => Some(SampleFormat::Int16),
+        24 => Some(SampleFormat::Int24),
+        32 => Some(SampleFormat::Float32),
+        _ => None,
+    }
+}
+
+/// File > Save All, working through the unsaved documents one save at a time.
+struct SaveAllRun {
+    /// `doc_id`s still to save.
+    queue: Vec<u64>,
+    /// May open a Save As dialog for a document with no file (the menu); a script's run skips it.
+    interactive: bool,
+    /// The document that was current when it started: made current again at the end.
+    back_to: u64,
+    /// Documents it could not save without a dialog.
+    skipped: usize,
 }
 
 /// A save running on a worker thread.
@@ -223,6 +267,13 @@ pub struct WaveApp {
     allow_close: bool,
     /// The editor's width last frame, for zoom keys (which have no pointer to zoom around).
     editor_width: f32,
+    /// A new document being made from a clip.
+    making: Option<Making>,
+    /// File > New > Audio File…, while its dialog is up.
+    new_audio: Option<NewAudio>,
+    /// File > Close All is going through the documents, asking about unsaved ones.
+    close_all: bool,
+    save_all: Option<SaveAllRun>,
     /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
     insert_silence: Option<String>,
     /// Edit › Mix Paste…: the dialog's fields while it is up.
@@ -339,6 +390,10 @@ impl WaveApp {
             show_time_panel: true,
             show_sel_view_panel: true,
             panel_edit: None,
+            making: None,
+            new_audio: None,
+            close_all: false,
+            save_all: None,
             insert_silence: None,
             mix_paste: None,
             confirm_clear_history: false,
@@ -601,6 +656,7 @@ impl WaveApp {
         match result {
             Ok(doc) => {
                 // The document that was open stays open, parked; this one is added at the end.
+                let clip = self.editor.as_mut().map(|e| (std::mem::take(&mut e.clipboards), e.current_clipboard));
                 let old = self.editor.is_some().then(|| self.take_slot());
                 self.docs.add(old);
                 self.player.set_audio(Some(doc.audio.clone()));
@@ -614,6 +670,10 @@ impl WaveApp {
                     e.snap = snap;
                 }
                 self.apply_crossfades();
+                if let (Some((clips, current)), Some(e)) = (clip, self.editor.as_mut()) {
+                    e.clipboards = clips;
+                    e.current_clipboard = current;
+                }
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
                 self.doc_serial += 1;
@@ -809,14 +869,314 @@ impl WaveApp {
     /// Close the current document without asking; the next one (or the last) takes its place.
     fn remove_current(&mut self) {
         self.player.stop();
+        // The clipboard outlives the document it was copied from.
+        let clip = self.editor.as_mut().map(|e| (std::mem::take(&mut e.clipboards), e.current_clipboard));
         drop(self.take_slot());
         match self.docs.close_current() {
-            Some(next) => self.put_slot(next),
+            Some(next) => {
+                self.put_slot(next);
+                if let (Some((clips, current)), Some(e)) = (clip, self.editor.as_mut()) {
+                    e.clipboards = clips;
+                    e.current_clipboard = current;
+                }
+            }
             None => {
                 self.generation += 1;
                 self.spectrum = None;
             }
         }
+    }
+
+    /// The session folder and store setup for a new document.
+    fn new_doc_options(&self) -> NewDocOptions {
+        NewDocOptions { sessions_root: Some(self.sessions.path.clone()), ..NewDocOptions::default() }
+    }
+
+    /// Add `state` as a new untitled document and make it current. It has no file, so it counts
+    /// as unsaved until Save As, and Close or Quit ask about it.
+    fn add_document(&mut self, state: DocState, ctx: &egui::Context) {
+        let clip = self.editor.as_mut().map(|e| (std::mem::take(&mut e.clipboards), e.current_clipboard));
+        let old = self.editor.is_some().then(|| self.take_slot());
+        self.docs.add(old);
+        self.player.stop();
+        self.player.set_audio(None);
+        let frames = state.len_frames();
+        let mut editor = Editor::new(History::new(state, History::default_cap(&self.sessions.path)));
+        if let Some((clips, current)) = clip {
+            editor.clipboards = clips;
+            editor.current_clipboard = current;
+        }
+        self.editor = Some(editor);
+        (self.doc, self.saved, self.doc_path, self.rebuilding) = (None, None, PathBuf::new(), None);
+        self.doc_serial += 1;
+        self.doc_id = self.doc_serial;
+        self.generation += 1;
+        self.selection = Selection::default();
+        self.spectrum = None;
+        self.fit_on_next_frame = true;
+        if frames > 0 {
+            self.rebuild(ctx);
+        }
+    }
+
+    /// File › New › Audio File: an empty untitled document.
+    fn new_audio_file(&mut self, rate: u32, channels: usize, bits: u8, ctx: &egui::Context) -> Result<(), String> {
+        let fmt = sample_format_for_bits(bits).ok_or_else(|| "the bit depth must be 16, 24 or 32 (float)".to_string())?;
+        let state = newdoc::empty(&self.new_doc_options(), rate, channels, fmt).map_err(|e| e.to_string())?;
+        self.add_document(state, ctx);
+        self.error = None;
+        self.notice =
+            Some(format!("New empty file: {rate} Hz, {channels} ch, {} bit", if bits == 32 { "32-bit float".to_string() } else { bits.to_string() }));
+        Ok(())
+    }
+
+    /// Stream `clip` into a new document on a worker thread.
+    fn start_making(&mut self, what: &'static str, clip: Clip, ctx: &egui::Context) -> Result<(), String> {
+        if self.making.is_some() {
+            return Err("a new document is already being made".to_string());
+        }
+        let (tx, rx) = channel();
+        let progress = Arc::new(AtomicU32::new(0));
+        let (opts, job_progress, ctx) = (self.new_doc_options(), progress.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let mut report = |p: f64| job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+            let _ = tx.send(newdoc::from_clip(&opts, &clip, &mut report, &AtomicBool::new(false)).map_err(|e| e.to_string()));
+            ctx.request_repaint();
+        });
+        self.making = Some(Making { what, result: rx, progress });
+        self.error = None;
+        Ok(())
+    }
+
+    fn finish_making(&mut self, ctx: &egui::Context) {
+        let Some(m) = &self.making else { return };
+        let result = match m.result.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the worker stopped unexpectedly".to_string()),
+        };
+        let what = m.what;
+        self.making = None;
+        match result {
+            Ok(state) => self.add_document(state, ctx),
+            Err(e) => self.error = Some(format!("{what}: {e}")),
+        }
+    }
+
+    /// Edit › Copy to New: the selection (the whole file with none) becomes a new document.
+    fn copy_to_new(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        let sel = self.selection_range();
+        let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
+        let doc = editor.history.current();
+        let len = doc.len_frames();
+        let range = if sel.start < sel.end { sel.start.min(len)..sel.end.min(len) } else { 0..len };
+        if range.is_empty() {
+            return Err("Copy to New: there is no audio to copy".to_string());
+        }
+        let clip = doc_edit::copy(doc, range, editor.channels.within(doc.channel_count())).map_err(|e| e.to_string())?;
+        self.start_making("Copy to New", clip, ctx)
+    }
+
+    /// Edit › Paste to New: the clipboard becomes a new document.
+    fn paste_to_new(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        let Some(clip) = self.editor.as_ref().and_then(|e| e.clipboard().cloned()) else {
+            return Err("Paste to New: the clipboard is empty".to_string());
+        };
+        self.start_making("Paste to New", clip, ctx)
+    }
+
+    /// The `doc_id` and unsaved mark of open document `i`.
+    fn doc_id_at(&self, i: usize) -> Option<(u64, bool)> {
+        match self.docs.locate(i) {
+            Where::Current => self.editor.as_ref().map(|_| (self.doc_id, self.unsaved())),
+            Where::Parked(p) => self.docs.parked().get(p).map(|s| (s.doc_id, is_unsaved(&s.editor, &s.saved))),
+        }
+    }
+
+    fn unsaved_count(&self) -> usize {
+        (0..self.docs.len(self.editor.is_some())).filter(|&i| self.doc_id_at(i).is_some_and(|(_, u)| u)).count()
+    }
+
+    /// File › Close All. In the window it goes through the documents in order, asking about each
+    /// unsaved one (Cancel stops). From a script (`interactive` false) it refuses while any
+    /// document is unsaved, as `CLOSE` does.
+    fn close_all_docs(&mut self, interactive: bool) -> Result<(), String> {
+        if self.editor.is_none() {
+            return Err("no file is open".to_string());
+        }
+        if self.saving.is_some() || self.making.is_some() || self.save_all.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        if interactive {
+            self.close_all = true;
+            return Ok(());
+        }
+        let n = self.unsaved_count();
+        if n > 0 {
+            return Err(format!("{n} document(s) have unsaved changes: SAVE them first, or CLOSE discard each"));
+        }
+        while self.editor.is_some() {
+            self.remove_current();
+        }
+        Ok(())
+    }
+
+    /// Carries Close All on: closes documents from the first on, and stops at an unsaved one to
+    /// ask. Called every frame; it waits for a prompt or a save in progress.
+    fn pump_close_all(&mut self) {
+        if !self.close_all || self.confirm_close || self.saving.is_some() {
+            return;
+        }
+        loop {
+            if self.editor.is_none() {
+                self.close_all = false;
+                return;
+            }
+            if self.docs.current() != 0 && self.switch_doc(0).is_err() {
+                self.close_all = false;
+                return;
+            }
+            if self.unsaved() {
+                self.closing_doc = true;
+                self.confirm_close = true;
+                return;
+            }
+            self.remove_current();
+        }
+    }
+
+    /// File › Save All: every unsaved document, one after another. A document with a WAV file
+    /// saves to it; one without asks for a file name (the window) or is skipped (a script).
+    fn save_all_docs(&mut self, interactive: bool) -> Result<(), String> {
+        if self.editor.is_none() {
+            return Err("no file is open".to_string());
+        }
+        if self.saving.is_some() || self.making.is_some() || self.save_all.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let queue: Vec<u64> = (0..self.docs.len(true)).filter_map(|i| self.doc_id_at(i)).filter(|(_, u)| *u).map(|(id, _)| id).collect();
+        if queue.is_empty() {
+            self.notice = Some("Save All: nothing to save".to_string());
+            return Ok(());
+        }
+        self.save_all = Some(SaveAllRun { queue, interactive, back_to: self.doc_id, skipped: 0 });
+        Ok(())
+    }
+
+    fn pump_save_all(&mut self, ctx: &egui::Context) {
+        if self.saving.is_some() || self.confirm_close {
+            return;
+        }
+        let Some(mut run) = self.save_all.take() else { return };
+        while !run.queue.is_empty() {
+            let id = run.queue.remove(0);
+            let n = self.docs.len(self.editor.is_some());
+            let Some(i) = (0..n).find(|&i| self.doc_id_at(i).is_some_and(|(d, u)| d == id && u)) else { continue };
+            if self.switch_doc(i).is_err() {
+                break;
+            }
+            let own =
+                !self.doc_path.as_os_str().is_empty() && self.editor.as_ref().is_some_and(|e| e.history.current().source().format == FileFormat::Wav);
+            if !own && !run.interactive {
+                run.skipped += 1;
+                continue;
+            }
+            match self.save(ctx, false, None, false) {
+                Ok(()) if self.saving.is_some() => {
+                    self.save_all = Some(run);
+                    return;
+                }
+                // The file dialog was cancelled: stop here.
+                Ok(()) => {
+                    run.queue.clear();
+                    break;
+                }
+                Err(e) => {
+                    self.error = Some(format!("Save All: {e}"));
+                    run.queue.clear();
+                    break;
+                }
+            }
+        }
+        let n = self.docs.len(self.editor.is_some());
+        if let Some(i) = (0..n).find(|&i| self.doc_id_at(i).is_some_and(|(d, _)| d == run.back_to)) {
+            let _ = self.switch_doc(i);
+        }
+        if run.skipped > 0 {
+            self.error = Some(format!("Save All: {} document(s) have no file yet: use Save As", run.skipped));
+        }
+    }
+
+    /// The File › New › Audio File dialog: sample rate, channels, bit depth.
+    fn new_audio_dialog(&mut self, ctx: &egui::Context) {
+        let Some(d) = self.new_audio.as_mut() else { return };
+        let mut choice = None;
+        egui::Window::new("New Audio File").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+            egui::Grid::new("new_audio").num_columns(2).show(ui, |ui| {
+                ui.label("Sample rate:");
+                egui::ComboBox::from_id_salt("rate").selected_text(format!("{} Hz", d.rate)).show_ui(ui, |ui| {
+                    for r in [8_000, 11_025, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000] {
+                        ui.selectable_value(&mut d.rate, r, format!("{r} Hz"));
+                    }
+                });
+                ui.end_row();
+                ui.label("Channels:");
+                egui::ComboBox::from_id_salt("channels")
+                    .selected_text(match d.channels {
+                        1 => "Mono".to_string(),
+                        2 => "Stereo".to_string(),
+                        6 => "5.1".to_string(),
+                        n => format!("{n} channels"),
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut d.channels, 1, "Mono");
+                        ui.selectable_value(&mut d.channels, 2, "Stereo");
+                        ui.selectable_value(&mut d.channels, 6, "5.1");
+                    });
+                ui.end_row();
+                ui.label("Bit depth:");
+                egui::ComboBox::from_id_salt("bits")
+                    .selected_text(if d.bits == 32 { "32-bit float".to_string() } else { format!("{}-bit", d.bits) })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut d.bits, 16, "16-bit");
+                        ui.selectable_value(&mut d.bits, 24, "24-bit");
+                        ui.selectable_value(&mut d.bits, 32, "32-bit float");
+                    });
+                ui.end_row();
+            });
+            ui.horizontal(|ui| {
+                if ui.button("OK").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        match choice {
+            Some(true) => {
+                if let Some(d) = self.new_audio.take()
+                    && let Err(e) = self.new_audio_file(d.rate, d.channels, d.bits, ctx)
+                {
+                    self.error = Some(e);
+                }
+            }
+            Some(false) => self.new_audio = None,
+            None => {}
+        }
+    }
+
+    /// The actions that add, close or save documents: the window carries them out.
+    /// `interactive` is false for the control channel, which cannot answer a dialog.
+    fn run_doc_action(&mut self, id: ActionId, ctx: &egui::Context, interactive: bool) -> Result<bool, String> {
+        match id {
+            ActionId::CopyToNew => self.copy_to_new(ctx)?,
+            ActionId::PasteToNew => self.paste_to_new(ctx)?,
+            ActionId::CloseAll => self.close_all_docs(interactive)?,
+            ActionId::SaveAll => self.save_all_docs(interactive)?,
+            _ => return Err(format!("{} is not available now", actions::action(id).menu)),
+        }
+        Ok(false)
     }
 
     /// File › Close: close the current document, asking first when it has unsaved changes.
@@ -1278,6 +1638,9 @@ impl WaveApp {
         }
         if self.converting.is_some() {
             return Err("wait for the conversion to finish".to_string());
+        }
+        if matches!(id, ActionId::CopyToNew | ActionId::PasteToNew | ActionId::CloseAll | ActionId::SaveAll) {
+            return self.run_doc_action(id, ctx, true).inspect_err(|e| self.error = Some(e.clone()));
         }
         if actions::action(id).kind == Kind::Window {
             return self.run_window_action(id, ctx);
@@ -2141,6 +2504,8 @@ impl WaveApp {
                 }
             }
             Err(e) => {
+                self.close_all = false;
+                self.closing_doc = false;
                 self.error = Some(format!("Not saved: {e}. {} is unchanged.", path.display()));
             }
         }
@@ -2162,7 +2527,7 @@ impl WaveApp {
         if !self.confirm_close {
             return;
         }
-        let name = self.doc.as_ref().map_or_else(|| "the file".to_string(), Document::name);
+        let name = path_name(&self.doc_path);
         let mut choice = None;
         egui::Window::new("Unsaved changes").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
             ctx,
@@ -2187,6 +2552,7 @@ impl WaveApp {
                 if let Err(e) = self.save(ctx, false, None, true) {
                     self.error = Some(e);
                     self.closing_doc = false;
+                    self.close_all = false;
                 }
             }
             // Drop this document's changes; closing the window goes on to the next unsaved one.
@@ -2201,6 +2567,7 @@ impl WaveApp {
             Some(_) => {
                 self.confirm_close = false;
                 self.closing_doc = false;
+                self.close_all = false;
             }
             None => {}
         }
@@ -2288,7 +2655,8 @@ impl WaveApp {
                     || self.saving.is_some()
                     || self.converting.is_some();
                 self.poll_transport();
-                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
+                let busy =
+                    self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() || self.making.is_some() || self.save_all.is_some();
                 let unsaved = u8::from(self.unsaved());
                 let t = &self.transport;
                 let playhead = if t.mode == Mode::Stopped { self.selection.start() } else { self.player.position() };
@@ -2460,7 +2828,11 @@ impl WaveApp {
                 None => "ERR AMPSCALE db|percent|samples|normalized".to_string(),
             },
             "ACTION" => match actions::id_by_name(rest) {
-                Some(id) => match self.run_action(id, ctx) {
+                Some(id) => match if matches!(id, ActionId::CopyToNew | ActionId::PasteToNew | ActionId::CloseAll | ActionId::SaveAll) {
+                    self.run_doc_action(id, ctx, false)
+                } else {
+                    self.run_action(id, ctx)
+                } {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
                     Err(e) => format!("ERR {e}"),
                 },
@@ -2728,6 +3100,26 @@ impl WaveApp {
                 }
                 out
             }
+            // A new empty document: `NEWDOC rate=48000 ch=2 bits=32` (all optional; bits 16, 24, 32 float).
+            "NEWDOC" => {
+                let mut d = NewAudio::default();
+                let mut bad = None;
+                for kv in rest.split_whitespace() {
+                    match kv.split_once('=') {
+                        Some(("rate", v)) => d.rate = v.parse().unwrap_or(0),
+                        Some(("ch", v)) => d.channels = v.parse().unwrap_or(0),
+                        Some(("bits", v)) => d.bits = v.parse().unwrap_or(0),
+                        _ => bad = Some(kv),
+                    }
+                }
+                match bad {
+                    Some(kv) => format!("ERR NEWDOC rate=<hz> ch=<n> bits=<16|24|32>, not {kv:?}"),
+                    None => match self.new_audio_file(d.rate, d.channels, d.bits, ctx) {
+                        Ok(()) => format!("OK count={} current={}", self.docs.len(true), self.docs.current()),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                }
+            }
             "SWITCH" => match rest.trim().parse::<usize>().map_err(|_| "SWITCH <index>, from DOCS".to_string()).and_then(|i| self.switch_doc(i)) {
                 Ok(()) => format!("OK current={}", self.docs.current()),
                 Err(e) => format!("ERR {e}"),
@@ -2902,6 +3294,12 @@ impl WaveApp {
                 if ui.button("Open…  Ctrl+O").clicked() {
                     self.pick_file(ui.ctx());
                 }
+                ui.menu_button("New", |ui| {
+                    if ui.button("Audio File…").clicked() {
+                        self.new_audio = Some(NewAudio::default());
+                        ui.close();
+                    }
+                });
                 let mac = cfg!(target_os = "macos");
                 let has_doc = self.editor.is_some() && self.saving.is_none();
                 let (save, save_as) = if mac { ("⌘S", "⇧⌘S") } else { ("Ctrl+S", "Ctrl+Shift+S") };
@@ -2917,6 +3315,17 @@ impl WaveApp {
                 }
                 if ui.add_enabled(has_doc, egui::Button::new("Close").shortcut_text(if mac { "⌘W" } else { "Ctrl+W" })).clicked()
                     && let Err(e) = self.close_doc()
+                {
+                    self.error = Some(e);
+                }
+                let busy = self.saving.is_some() || self.making.is_some() || self.save_all.is_some();
+                if ui.add_enabled(self.editor.is_some() && !busy, egui::Button::new("Save All")).clicked()
+                    && let Err(e) = self.save_all_docs(true)
+                {
+                    self.error = Some(e);
+                }
+                if ui.add_enabled(self.editor.is_some() && !busy, egui::Button::new("Close All")).clicked()
+                    && let Err(e) = self.close_all_docs(true)
                 {
                     self.error = Some(e);
                 }
@@ -2987,7 +3396,6 @@ impl WaveApp {
                 }
                 ui.checkbox(&mut self.show_time_panel, "Time panel");
                 ui.checkbox(&mut self.show_sel_view_panel, "Selection/View panel");
-                ui.checkbox(&mut self.show_history, "History panel");
                 ui.checkbox(&mut self.meters.show_levels, "Levels");
                 ui.checkbox(&mut self.meters.show_stats, "Amplitude/Loudness Statistics");
             });
@@ -3029,6 +3437,9 @@ impl WaveApp {
                 if ui.button("Cancel").clicked() {
                     c.cancel.store(true, Ordering::Relaxed);
                 }
+            } else if let Some(m) = &self.making {
+                ui.spinner();
+                ui.label(format!("{}… {}%", m.what, m.progress.load(Ordering::Relaxed) / 10));
             } else if self.rebuilding.is_some() {
                 ui.spinner();
                 ui.label("Updating the view…");
@@ -3067,6 +3478,8 @@ impl WaveApp {
                     None if self.player.failed() => ui.colored_label(CURSOR, "No sound: the output device stopped (Play tries it again)"),
                     None => ui.label(format!("Out: {}", self.player.device)),
                 };
+            } else if self.editor.is_some() {
+                ui.label(format!("{} (no audio yet): paste into it, or File › Save As once it has some", path_name(&self.doc_path)));
             } else {
                 ui.label("File › Open, or drop an audio file here.");
             }
@@ -3593,6 +4006,9 @@ impl eframe::App for WaveApp {
             self.finish_recording(true, ctx);
         }
         self.poll_transport();
+        self.finish_making(ctx);
+        self.pump_save_all(ctx);
+        self.pump_close_all();
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
@@ -3698,7 +4114,7 @@ impl eframe::App for WaveApp {
             );
         }
         let star = if self.unsaved() { "*" } else { "" };
-        let title = self.doc.as_ref().map_or_else(|| "WavCraft".to_string(), |d| format!("{star}{} — WavCraft", d.name()));
+        let title = if self.editor.is_some() { format!("{star}{} — WavCraft", path_name(&self.doc_path)) } else { "WavCraft".to_string() };
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
@@ -3768,6 +4184,7 @@ impl eframe::App for WaveApp {
         self.effect_dialog_ui(&ctx);
         self.mix_paste_dialog(&ctx);
         self.preferences_dialog(&ctx);
+        self.new_audio_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         match self.recovery.show(&ctx) {
             Some(Choice::Recover(i)) => {

@@ -22,6 +22,7 @@ use crate::store::{BLOCK_FRAMES, BlockHandle, BlockId, Store};
 
 pub mod edit;
 pub mod history;
+pub mod newdoc;
 
 /// Part of one block.
 #[derive(Debug, Clone)]
