@@ -34,6 +34,7 @@ pub mod snap;
 pub mod space;
 pub mod spectrogram;
 pub mod store;
+pub mod tools;
 pub mod view;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
@@ -44,4 +45,5 @@ pub use markers::{Marker, Markers};
 pub use document::{Document, OpenError};
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
+pub use tools::Tool;
 pub use view::{Edge, GRAB_PX, Selection, TimeFormat, Viewport, format_time};

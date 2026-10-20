@@ -107,3 +107,17 @@ fn the_time_display_is_saved_and_read_back() {
     }
     assert_eq!(Settings::parse("time_display = nonsense\n").time_display, TimeFormat::Decimal);
 }
+
+#[test]
+fn right_click_setting_round_trips_and_defaults_to_extend() {
+    assert!(!Settings::default().right_click_menu);
+    assert!(!Settings::parse("").right_click_menu);
+    let menu = Settings { right_click_menu: true, ..Settings::default() };
+    assert!(menu.to_text().contains("right_click = menu"));
+    assert!(Settings::parse(&menu.to_text()).right_click_menu);
+    let extend = Settings::default();
+    assert!(extend.to_text().contains("right_click = extend"));
+    assert!(!Settings::parse(&extend.to_text()).right_click_menu);
+    // Unknown values mean the default.
+    assert!(!Settings::parse("right_click = banana").right_click_menu);
+}

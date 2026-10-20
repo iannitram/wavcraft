@@ -46,6 +46,7 @@ pub enum ActionId {
     ZoomOut,
     ZoomToSelection,
     ZoomOutFull,
+    ToolTimeSelection,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -228,6 +229,8 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeCompact, "view.time_display.compact", "Compact", &[]),
     window(ActionId::TimeSamples, "view.time_display.samples", "Samples", &[]),
     window(ActionId::TimeSmpte30, "view.time_display.smpte30", "SMPTE 30 fps", &[]),
+    // Audition's single-key tool switch; Move and the spectral tools join when they exist.
+    window(ActionId::ToolTimeSelection, "tool.time_selection", "Time Selection Tool", &[key("T")]),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -460,7 +463,7 @@ impl Editor {
             ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
             ActionId::MarkerPrev => self.history.current().markers().prev_before(selection.start).is_some(),
             ActionId::ConvertSampleType | ActionId::InterpretSampleRate => self.len() > 0,
-            ActionId::TimeDecimal | ActionId::TimeCompact | ActionId::TimeSamples | ActionId::TimeSmpte30 => true,
+            ActionId::TimeDecimal | ActionId::TimeCompact | ActionId::TimeSamples | ActionId::TimeSmpte30 | ActionId::ToolTimeSelection => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -786,6 +789,7 @@ impl Editor {
             | ActionId::TimeCompact
             | ActionId::TimeSamples
             | ActionId::TimeSmpte30
+            | ActionId::ToolTimeSelection
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::ConvertSampleType

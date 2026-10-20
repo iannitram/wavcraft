@@ -23,6 +23,7 @@ pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the 
 const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
 const KEY_TIME_DISPLAY: &str = "time_display";
+const KEY_RIGHT_CLICK: &str = "right_click";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,6 +34,9 @@ pub struct Settings {
     pub hidden_panels: Vec<String>,
     /// View › Time Display.
     pub time_display: crate::view::TimeFormat,
+    /// Right-click in the waveform opens a context menu instead of extending the selection to
+    /// the click (Audition's preference; off is its default).
+    pub right_click_menu: bool,
 }
 
 impl Settings {
@@ -69,6 +73,7 @@ impl Settings {
                 KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
                 KEY_TIME_DISPLAY => s.time_display = crate::view::TimeFormat::from_name(value).unwrap_or_default(),
+                KEY_RIGHT_CLICK => s.right_click_menu = value.eq_ignore_ascii_case("menu"),
                 _ => {}
             }
         }
@@ -85,6 +90,8 @@ impl Settings {
         out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}\n", self.hidden_panels.join(",")));
         out.push_str("# time_display: decimal, compact, samples or smpte30 (View > Time Display).\n");
         out.push_str(&format!("{KEY_TIME_DISPLAY} = {}\n", self.time_display.name()));
+        out.push_str("# right_click: `extend` moves the nearest selection edge to the click, `menu` opens a context menu.\n");
+        out.push_str(&format!("{KEY_RIGHT_CLICK} = {}\n", if self.right_click_menu { "menu" } else { "extend" }));
         out
     }
 
