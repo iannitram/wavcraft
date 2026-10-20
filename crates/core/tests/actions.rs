@@ -391,3 +391,68 @@ fn repeat_last_command_runs_silence_again_on_the_new_selection_but_never_delete(
     assert_eq!(text(ActionId::ZeroRightToRight), ["Shift+L"]);
     assert_eq!(by_name("edit.zeroCrossings.outward").map(|a| a.id), Some(ActionId::ZeroOutward));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Markers (A170, A171, A176, A121)
+
+fn markers(e: &Editor) -> Vec<(u64, u64)> {
+    e.history.current().markers().iter().map(|m| (m.start, m.end)).collect()
+}
+
+#[test]
+fn m1_add_marker_is_a_point_at_the_cursor_or_a_range_for_a_selection_and_undo_redo_restore_it() {
+    let t = TempDir::new("markers");
+    let mut e = editor(&t.0, &stereo(1000));
+    assert_eq!(action(ActionId::MarkerAdd).keys[0].text(false), "M");
+    let steps = e.history.steps().len();
+    let out = e.run(ActionId::MarkerAdd, 100..100).unwrap();
+    assert!(!out.doc_changed, "the audio is untouched");
+    assert_eq!(out.selection, 100..100);
+    e.run(ActionId::MarkerAdd, 300..400).unwrap();
+    assert_eq!(markers(&e), [(100, 100), (300, 400)]);
+    assert_eq!(e.history.steps().len(), steps + 2);
+    assert_eq!(e.history.undo_label(), Some("Add Marker"));
+    // The same place twice adds nothing and records nothing.
+    e.run(ActionId::MarkerAdd, 100..100).unwrap();
+    assert_eq!(e.history.steps().len(), steps + 2);
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e), [(100, 100)]);
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert!(markers(&e).is_empty());
+    e.run(ActionId::Redo, 0..0).unwrap();
+    e.run(ActionId::Redo, 0..0).unwrap();
+    assert_eq!(markers(&e), [(100, 100), (300, 400)]);
+}
+
+#[test]
+fn m2_next_and_previous_marker_move_the_cursor_and_are_disabled_at_the_ends() {
+    let t = TempDir::new("marker-nav");
+    let mut e = editor(&t.0, &stereo(1000));
+    for at in [200, 500, 800] {
+        e.run(ActionId::MarkerAdd, at..at).unwrap();
+    }
+    assert!(!e.enabled(ActionId::MarkerPrev, &(200..200)));
+    assert!(e.enabled(ActionId::MarkerNext, &(200..200)));
+    assert_eq!(e.run(ActionId::MarkerNext, 0..0).unwrap().selection, 200..200);
+    assert_eq!(e.run(ActionId::MarkerNext, 200..200).unwrap().selection, 500..500);
+    assert_eq!(e.run(ActionId::MarkerNext, 600..650).unwrap().selection, 800..800, "from the selection's start");
+    assert!(!e.enabled(ActionId::MarkerNext, &(800..800)));
+    assert_eq!(e.run(ActionId::MarkerPrev, 800..800).unwrap().selection, 500..500);
+    assert_eq!(e.run(ActionId::MarkerPrev, 501..501).unwrap().selection, 500..500);
+    assert_eq!(e.run(ActionId::MarkerPrev, 100..100).unwrap().message.as_deref(), Some("Playhead to Previous Marker is not available now"));
+    // Moving the playhead is not an edit.
+    assert_eq!(e.history.steps().len(), 4);
+}
+
+#[test]
+fn m3_audio_edits_keep_the_markers_inside_the_new_length() {
+    let t = TempDir::new("marker-edit");
+    let mut e = editor(&t.0, &stereo(1000));
+    e.run(ActionId::MarkerAdd, 100..100).unwrap();
+    e.run(ActionId::MarkerAdd, 900..950).unwrap();
+    e.run(ActionId::Delete, 500..1000).unwrap();
+    assert_eq!(e.history.current().len_frames(), 500);
+    assert_eq!(markers(&e), [(100, 100), (500, 500)]);
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e), [(100, 100), (900, 950)], "undo brings the original positions back");
+}
