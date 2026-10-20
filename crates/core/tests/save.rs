@@ -8,7 +8,10 @@ use wavcraft_core::doc::edit::Crossfades;
 use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::io::{OpenOptions, open};
-use wavcraft_core::save::{LEFTOVER_AGE, SampleType, remove_leftover_temps, save_wav, save_wav_failing_after, temp_files, temp_path};
+use wavcraft_core::save::{
+    LEFTOVER_AGE, SampleType, SaveFormat, remove_leftover_temps, save, save_failing_after, save_wav, save_wav_failing_after, save_wav_rf64_over,
+    temp_files, temp_path,
+};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 const RATE: u32 = 48_000;
@@ -227,4 +230,173 @@ fn cx_w6_the_next_save_removes_only_temp_files_left_by_a_killed_save() {
     // Once its save has ended (lock gone) and it is old, it goes too.
     assert_eq!(remove_leftover_temps(&target), 1);
     assert!(!running.exists());
+}
+
+// ---- AIFF, FLAC, every sample type, RF64 (feature f35) ----
+
+/// `data` as 16-bit samples read back (what a 16-bit save holds).
+fn data_quantized(data: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    data.iter().map(|c| c.iter().map(|&x| wavcraft_core::save::quantize(x, 16) as f32 / 32768.0).collect()).collect()
+}
+
+fn float_data(frames: usize) -> Vec<Vec<f32>> {
+    vec![(0..frames).map(|k| (k as f32 * 0.37).sin() * 1.7).collect(), (0..frames).map(|k| -(k as f32) * 1e-6).collect()]
+}
+
+#[test]
+fn f35_aiff_round_trips_each_sample_type() {
+    let t = TempDir::new("aiff");
+    let frames = 2 * BLOCK_FRAMES + 123;
+    for (ty, data) in [(SampleType::Int16, exact(16, frames)), (SampleType::Int24, exact(24, frames)), (SampleType::Float32, float_data(frames))] {
+        let doc = doc_from(&t.0.join(format!("{ty:?}-store")), &data);
+        let path = t.0.join(format!("{ty:?}.aiff"));
+        save(&doc, &path, SaveFormat::Aiff, ty, &mut |_| {}).unwrap();
+        let back = reopen(&path, &t.0.join("sessions"));
+        assert_eq!((back.sample_rate(), back.channel_count(), back.len_frames()), (RATE, 2, frames as u64), "{ty:?}");
+        assert_eq!(back.source().format, soundcraft_audio_io::FileFormat::Aiff);
+        assert_eq!(bits(&content(&back)), bits(&data), "{ty:?} bit for bit");
+        assert_eq!(SampleType::for_source(back.source()), ty, "{ty:?}: the type is kept");
+    }
+}
+
+#[test]
+fn f35_thirty_two_bit_integer_round_trips_within_the_step_in_wav_and_aiff() {
+    let t = TempDir::new("int32");
+    let data = float_data(BLOCK_FRAMES + 5).into_iter().map(|c| c.into_iter().map(|x| x.clamp(-1.0, 0.999)).collect()).collect::<Vec<Vec<f32>>>();
+    let doc = doc_from(&t.0.join("store"), &data);
+    for (format, name) in [(SaveFormat::Wav, "a.wav"), (SaveFormat::Aiff, "a.aif")] {
+        let path = t.0.join(name);
+        save(&doc, &path, format, SampleType::Int32, &mut |_| {}).unwrap();
+        let back = content(&reopen(&path, &t.0.join("s")));
+        for (a, b) in data.iter().flatten().zip(back.iter().flatten()) {
+            assert!((a - b).abs() <= 1e-6, "{format:?}: {a} vs {b}");
+        }
+    }
+}
+
+#[test]
+fn f35_flac_round_trips_16_and_24_bit_bit_for_bit() {
+    let t = TempDir::new("flac");
+    for frames in [1usize, 10, 4096, 4097, 2 * BLOCK_FRAMES + 123] {
+        for (ty, bits_n) in [(SampleType::Int16, 16), (SampleType::Int24, 24)] {
+            let data = exact(bits_n, frames);
+            let doc = doc_from(&t.0.join(format!("{frames}-{bits_n}-store")), &data);
+            let path = t.0.join(format!("{frames}-{bits_n}.flac"));
+            save(&doc, &path, SaveFormat::Flac, ty, &mut |_| {}).unwrap();
+            let back = reopen(&path, &t.0.join("sessions"));
+            assert_eq!((back.sample_rate(), back.channel_count(), back.len_frames()), (RATE, 2, frames as u64), "{frames} frames, {ty:?}");
+            assert_eq!(back.source().format, soundcraft_audio_io::FileFormat::Flac);
+            assert_eq!(bits(&content(&back)), bits(&data), "{frames} frames, {ty:?} bit for bit");
+        }
+    }
+}
+
+#[test]
+fn f35_flac_compresses_quiet_and_silent_audio() {
+    let t = TempDir::new("flacsize");
+    let frames = 4 * BLOCK_FRAMES;
+    let silent = vec![vec![0.0f32; frames]; 2];
+    let tone: Vec<Vec<f32>> = (0..2).map(|_| (0..frames).map(|k| (k as f32 * 0.05).sin() * 0.5).collect()).collect();
+    for (name, data, max_ratio) in [("silent", silent, 50), ("tone", tone, 1)] {
+        let doc = doc_from(&t.0.join(format!("{name}-store")), &data);
+        let path = t.0.join(format!("{name}.flac"));
+        save(&doc, &path, SaveFormat::Flac, SampleType::Int16, &mut |_| {}).unwrap();
+        let raw = frames * 2 * 2;
+        let size = std::fs::metadata(&path).unwrap().len() as usize;
+        assert!(size * max_ratio < raw, "{name}: {size} bytes of {raw}, wanted under 1/{max_ratio}");
+        assert_eq!(bits(&content(&reopen(&path, &t.0.join("s")))), bits(&data_quantized(&data)), "{name}");
+    }
+}
+
+#[test]
+fn f35_flac_refuses_32_bit_and_leaves_the_target_whole() {
+    let t = TempDir::new("flacrefuse");
+    let doc = doc_from(&t.0.join("store"), &exact(16, 1000));
+    let target = t.0.join("keep.flac");
+    std::fs::write(&target, b"the original bytes").unwrap();
+    for ty in [SampleType::Int32, SampleType::Float32] {
+        assert!(save(&doc, &target, SaveFormat::Flac, ty, &mut |_| {}).is_err(), "{ty:?}");
+    }
+    assert_eq!(std::fs::read(&target).unwrap(), b"the original bytes");
+    assert!(temp_files(&target).is_empty());
+    assert_eq!(SaveFormat::Flac.fit(SampleType::Float32), SampleType::Int24);
+}
+
+#[test]
+fn f35_a_failed_aiff_or_flac_save_leaves_no_temp_file_and_the_original_whole() {
+    let t = TempDir::new("failfmt");
+    let doc = doc_from(&t.0.join("store"), &exact(16, 3 * BLOCK_FRAMES));
+    for (format, name, ty) in [
+        (SaveFormat::Aiff, "x.aiff", SampleType::Int24),
+        (SaveFormat::Flac, "x.flac", SampleType::Int16),
+        (SaveFormat::Aiff, "y.aiff", SampleType::Float32),
+    ] {
+        let target = t.0.join(name);
+        std::fs::write(&target, b"the original bytes").unwrap();
+        assert!(save_failing_after(&doc, &target, format, ty, BLOCK_FRAMES as u64).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"the original bytes", "{name}: target untouched");
+        assert!(temp_files(&target).is_empty(), "{name}: no temp file left behind");
+        save(&doc, &target, format, ty, &mut |_| {}).unwrap();
+        assert_ne!(std::fs::read(&target).unwrap(), b"the original bytes");
+        assert!(temp_files(&target).is_empty());
+    }
+}
+
+#[test]
+fn f35_the_extension_picks_the_format() {
+    for (name, want) in [
+        ("a.wav", Some(SaveFormat::Wav)),
+        ("a.WAV", Some(SaveFormat::Wav)),
+        ("a.aif", Some(SaveFormat::Aiff)),
+        ("a.AIFF", Some(SaveFormat::Aiff)),
+        ("a.flac", Some(SaveFormat::Flac)),
+        ("a.mp3", None),
+        ("a", None),
+    ] {
+        assert_eq!(SaveFormat::from_path(Path::new(name)), want, "{name}");
+    }
+}
+
+#[test]
+fn f35_a_wav_above_the_threshold_is_rf64_and_reads_back() {
+    let t = TempDir::new("rf64");
+    for (ty, data) in
+        [(SampleType::Int24, exact(24, BLOCK_FRAMES + 11)), (SampleType::Float32, float_data(BLOCK_FRAMES + 11)), (SampleType::Int16, exact(16, 7))]
+    {
+        let doc = doc_from(&t.0.join(format!("{ty:?}-store")), &data);
+        let big = t.0.join(format!("{ty:?}-big.wav"));
+        save_wav_rf64_over(&doc, &big, ty, 1000).unwrap();
+        let bytes = std::fs::read(&big).unwrap();
+        let rf64 = bytes.len() > 1000;
+        assert_eq!(&bytes[..4], if rf64 { b"RF64" } else { b"RIFF" }, "{ty:?}");
+        if rf64 {
+            assert_eq!(&bytes[4..8], &u32::MAX.to_le_bytes());
+            assert_eq!(&bytes[12..16], b"ds64");
+            let (riff, data_len, frames) = (
+                u64::from_le_bytes(bytes[20..28].try_into().unwrap()),
+                u64::from_le_bytes(bytes[28..36].try_into().unwrap()),
+                u64::from_le_bytes(bytes[36..44].try_into().unwrap()),
+            );
+            assert_eq!(riff, bytes.len() as u64 - 8, "ds64 RIFF size");
+            assert_eq!(frames, data[0].len() as u64);
+            assert_eq!(
+                data_len,
+                frames
+                    * 2
+                    * if ty == SampleType::Int24 {
+                        3
+                    } else if ty == SampleType::Int16 {
+                        2
+                    } else {
+                        4
+                    }
+            );
+        }
+        let back = reopen(&big, &t.0.join("s"));
+        assert_eq!(bits(&content(&back)), bits(&data), "{ty:?}");
+        // The same save under the real threshold is a plain RIFF.
+        let small = t.0.join(format!("{ty:?}-small.wav"));
+        save_wav(&doc, &small, ty, &mut |_| {}).unwrap();
+        assert_eq!(&std::fs::read(&small).unwrap()[..4], b"RIFF");
+    }
 }

@@ -18,6 +18,7 @@
 pub mod actions;
 pub mod doc;
 pub mod document;
+mod flac_enc;
 pub mod io;
 pub mod random;
 pub mod save;

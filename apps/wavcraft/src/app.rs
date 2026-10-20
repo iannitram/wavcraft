@@ -9,11 +9,11 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
-use wavcraft_core::save::{SampleType, save_wav};
+use wavcraft_core::save::{SampleType, SaveFormat, save};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::{DocState, Document, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
 use crate::player::Player;
@@ -42,6 +42,7 @@ struct Saving {
     /// The step being saved: it becomes the saved state when the save succeeds.
     state: Arc<DocState>,
     ty: SampleType,
+    format: SaveFormat,
     result: Receiver<Result<(), String>>,
     progress: Arc<AtomicU32>,
     /// Close the window once it is saved (Save from the close prompt).
@@ -95,6 +96,8 @@ pub struct WaveApp {
     /// current step is this one; undoing back to it clears the mark, as in Audition).
     saved: Option<Arc<DocState>>,
     saving: Option<Saving>,
+    /// File › Sample Type on Save: the type every save writes, or `None` to keep the file's own.
+    save_type: Option<SampleType>,
     /// The "save changes before closing?" prompt is up.
     confirm_close: bool,
     /// Closing was confirmed (or nothing was unsaved): let the next close request through.
@@ -155,6 +158,7 @@ impl WaveApp {
             rebuilding: None,
             saved: None,
             saving: None,
+            save_type: None,
             confirm_close: false,
             allow_close: false,
             editor_width: 800.0,
@@ -544,21 +548,46 @@ impl WaveApp {
         }
     }
 
-    /// File › Save: to the file's own path when it is a WAV (the only format written so far),
-    /// else as Save As. `to` skips the dialog (the control channel).
+    /// File › Save: to the file's own path when it is a format a save writes (WAV, AIFF, FLAC),
+    /// else as Save As. `to` skips the dialog (the control channel); the format follows its
+    /// extension.
     fn save(&mut self, ctx: &egui::Context, save_as: bool, to: Option<PathBuf>, then_close: bool) -> Result<(), String> {
+        self.save_with(ctx, save_as, to, then_close, self.save_type, false)
+    }
+
+    /// [`WaveApp::save`] with the sample type given (`explicit`: asked for by name, so a format
+    /// that can't hold it refuses instead of using the nearest type).
+    fn save_with(
+        &mut self,
+        ctx: &egui::Context,
+        save_as: bool,
+        to: Option<PathBuf>,
+        then_close: bool,
+        ty: Option<SampleType>,
+        explicit: bool,
+    ) -> Result<(), String> {
         if self.saving.is_some() {
             return Err("a save is already running".to_string());
         }
         let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
         let state = editor.history.current().clone();
-        let own = !self.doc_path.as_os_str().is_empty() && state.source().format == FileFormat::Wav;
+        let own_format = SaveFormat::from_path(&self.doc_path).filter(|f| SaveFormat::from_file_format(state.source().format) == Some(*f));
         let path = match to {
             Some(p) => p,
-            None if own && !save_as => self.doc_path.clone(),
+            None if own_format.is_some() && !save_as => self.doc_path.clone(),
             None => {
                 let stem = self.doc_path.file_stem().map_or_else(|| "Untitled".to_string(), |s| s.to_string_lossy().into_owned());
-                let mut dialog = rfd::FileDialog::new().add_filter("WAV", &["wav"]).set_file_name(format!("{stem}.wav"));
+                let first = own_format.unwrap_or(SaveFormat::Wav);
+                let mut dialog = rfd::FileDialog::new().set_file_name(format!("{stem}.{}", first.extension()));
+                for f in [first, SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac].iter().fold(Vec::new(), |mut v, f| {
+                    if !v.contains(f) {
+                        v.push(*f);
+                    }
+                    v
+                }) {
+                    let exts: &[&str] = if f == SaveFormat::Aiff { &["aiff", "aif"] } else { &[f.extension()] };
+                    dialog = dialog.add_filter(f.name(), exts);
+                }
                 if let Some(dir) = self.doc_path.parent().filter(|d| !d.as_os_str().is_empty()) {
                     dialog = dialog.set_directory(dir);
                 }
@@ -568,7 +597,17 @@ impl WaveApp {
                 }
             }
         };
-        let ty = SampleType::for_source(state.source());
+        // The extension picks the format; a name without one is a WAV.
+        let (path, format) = match SaveFormat::from_path(&path) {
+            Some(f) => (path, f),
+            None if path.extension().is_none() => (path.with_extension("wav"), SaveFormat::Wav),
+            None => return Err(format!("{} is not a format WavCraft saves: use .wav, .aiff or .flac", path.display())),
+        };
+        let wanted = ty.unwrap_or_else(|| SampleType::for_source(state.source()));
+        if !format.accepts(wanted) && (explicit || ty.is_some()) {
+            return Err(format!("{} cannot hold {} samples: use 16 or 24 bit", format.name(), wanted.describe()));
+        }
+        let ty = format.fit(wanted);
         let (tx, rx) = channel();
         let progress = Arc::new(AtomicU32::new(0));
         let (job_state, job_path, job_progress, ctx) = (state.clone(), path.clone(), progress.clone(), ctx.clone());
@@ -577,11 +616,11 @@ impl WaveApp {
                 job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
                 ctx.request_repaint();
             };
-            let _ = tx.send(save_wav(&job_state, &job_path, ty, &mut report).map_err(|e| e.to_string()));
+            let _ = tx.send(save(&job_state, &job_path, format, ty, &mut report).map_err(|e| e.to_string()));
             ctx.request_repaint();
         });
         self.player.stop();
-        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close, doc_id: self.doc_id });
+        self.saving = Some(Saving { path, state, ty, format, result: rx, progress, then_close, doc_id: self.doc_id });
         Ok(())
     }
 
@@ -592,14 +631,14 @@ impl WaveApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err("the save stopped unexpectedly".to_string()),
         };
-        let Some(Saving { path, state, ty, then_close, doc_id, .. }) = self.saving.take() else { return };
+        let Some(Saving { path, state, ty, format, then_close, doc_id, .. }) = self.saving.take() else { return };
         match result {
             // Another file was opened while this one was being saved: the file on disk is
             // written, but the open document is not the one saved, so its path, saved mark and
             // close request stay as they are.
             Ok(()) if doc_id != self.doc_id => {
                 log::info!(target: "wavcraft", "a save of an earlier file finished after another was opened: {}", path.display());
-                self.notice = Some(format!("Saved {} ({} WAV), the file open before this one", path.display(), ty.describe()));
+                self.notice = Some(format!("Saved {} ({} {}), the file open before this one", path.display(), ty.describe(), format.name()));
             }
             Ok(()) => {
                 self.saved = Some(state);
@@ -608,7 +647,7 @@ impl WaveApp {
                     doc.path = path.clone();
                 }
                 self.error = None;
-                self.notice = Some(format!("Saved {} ({} WAV)", path.display(), ty.describe()));
+                self.notice = Some(format!("Saved {} ({} {})", path.display(), ty.describe(), format.name()));
                 if then_close {
                     self.allow_close = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -747,10 +786,16 @@ impl WaveApp {
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
             "SAVE" => {
-                let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
-                match self.save(ctx, to.is_some(), to, false) {
-                    Ok(()) => "OK".to_string(),
+                // `SAVE <path> [bits=16|24|32] [float=0|1]`: the options end the line.
+                match parse_save_args(rest) {
                     Err(e) => format!("ERR {e}"),
+                    Ok((path, ty)) => {
+                        let to = (!path.is_empty()).then(|| PathBuf::from(path));
+                        match self.save_with(ctx, to.is_some(), to, false, ty.or(self.save_type), ty.is_some()) {
+                            Ok(()) => "OK".to_string(),
+                            Err(e) => format!("ERR {e}"),
+                        }
+                    }
                 }
             }
             // A plain QUIT refuses with unsaved changes; `QUIT discard` closes anyway.
@@ -804,6 +849,13 @@ impl WaveApp {
                 {
                     self.error = Some(e);
                 }
+                ui.menu_button("Sample Type on Save", |ui| {
+                    ui.radio_value(&mut self.save_type, None, "Keep the file's own");
+                    for ty in [SampleType::Int16, SampleType::Int24, SampleType::Int32, SampleType::Float32] {
+                        ui.radio_value(&mut self.save_type, Some(ty), ty.describe());
+                    }
+                    ui.label("FLAC takes 16 or 24 bit; it uses 24 bit for the others.");
+                });
                 ui.separator();
                 let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
                 if ui.button("Session Folder…").on_hover_text(&now).clicked() {
@@ -1187,6 +1239,36 @@ fn palette() -> Vec<Color32> {
         .collect()
 }
 
+/// `SAVE`'s arguments: a path (may hold spaces) then `bits=<16|24|32>` and `float=<0|1>` in any
+/// order. Returns the path and the sample type they name, if any.
+fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>), String> {
+    let (mut path, mut bits, mut float) = (rest.trim(), None, None);
+    while let Some((head, last)) = path.rsplit_once(char::is_whitespace).or(if path.contains('=') { Some(("", path)) } else { None }) {
+        if let Some(v) = last.strip_prefix("bits=") {
+            bits = Some(v.parse::<u32>().map_err(|_| format!("bits=<16|24|32>, not {v}"))?);
+        } else if let Some(v) = last.strip_prefix("float=") {
+            float = Some(match v {
+                "0" => false,
+                "1" => true,
+                _ => return Err(format!("float=<0|1>, not {v}")),
+            });
+        } else {
+            break;
+        }
+        path = head.trim();
+    }
+    let ty = match (bits, float) {
+        (None, None) => None,
+        (Some(16), None | Some(false)) => Some(SampleType::Int16),
+        (Some(24), None | Some(false)) => Some(SampleType::Int24),
+        (Some(32), None | Some(false)) => Some(SampleType::Int32),
+        (None | Some(32), Some(true)) => Some(SampleType::Float32),
+        (None, Some(false)) => None,
+        (b, f) => return Err(format!("no sample type for bits={b:?} float={f:?}: 16, 24, 32 bit integer or float=1 (32 bit)")),
+    };
+    Ok((path, ty))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,5 +1306,18 @@ mod tests {
         assert_eq!(lane(area, 0, 2), Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 200.0)));
         assert_eq!(lane(area, 1, 2), Rect::from_min_max(pos2(0.0, 200.0), pos2(800.0, 300.0)));
         assert_eq!(lane(area, 0, 0), area);
+    }
+
+    #[test]
+    fn save_arguments_name_the_path_and_the_sample_type() {
+        assert_eq!(parse_save_args("/a b/c.wav"), Ok(("/a b/c.wav", None)));
+        assert_eq!(parse_save_args("/a b/c.wav bits=24 float=0"), Ok(("/a b/c.wav", Some(SampleType::Int24))));
+        assert_eq!(parse_save_args("x.aiff float=1"), Ok(("x.aiff", Some(SampleType::Float32))));
+        assert_eq!(parse_save_args("x.aiff bits=32 float=1"), Ok(("x.aiff", Some(SampleType::Float32))));
+        assert_eq!(parse_save_args("x.flac bits=16"), Ok(("x.flac", Some(SampleType::Int16))));
+        assert_eq!(parse_save_args(""), Ok(("", None)));
+        assert!(parse_save_args("x.wav bits=20").is_err());
+        assert!(parse_save_args("x.wav bits=24 float=1").is_err());
+        assert!(parse_save_args("x.wav float=2").is_err());
     }
 }
