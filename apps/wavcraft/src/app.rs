@@ -2086,13 +2086,13 @@ impl WaveApp {
     fn dock_zone(&mut self, ui: &mut egui::Ui, zone: DockSide) {
         let tabs: Vec<&'static str> = self.layout.visible(zone, &self.panels).into_iter().filter_map(|id| panels::by_id(id).map(|p| p.id)).collect();
         let Some(front) = self.layout.active_in(zone, &self.panels).and_then(panels::by_id).map(|p| p.id) else { return };
-        let size = self.layout.size(zone).unwrap_or(220.0);
+        let size = self.layout.effective_size(zone, &self.panels, self.window_size(ui.ctx()));
         let panel = match zone {
             DockSide::Left => egui::Panel::left("zone-left"),
             DockSide::Bottom => egui::Panel::bottom("zone-bottom"),
             _ => egui::Panel::right("zone-right"),
         };
-        let shown = panel.default_size(size).size_range(panels::ZONE_SIZE_RANGE.0..=panels::ZONE_SIZE_RANGE.1).show(ui, |ui| {
+        let shown = panel.resizable(false).exact_size(size).show(ui, |ui| {
             let mut wheel = 0.0f32;
             let strip = egui::ScrollArea::horizontal().id_salt(("tabs", zone.name())).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -2128,8 +2128,62 @@ impl WaveApp {
         if shown.response.contains_pointer() {
             self.hover_next = Some(front);
         }
-        let now = if zone == DockSide::Bottom { rect.height() } else { rect.width() };
-        if self.layout.set_size(zone, now) {
+    }
+
+    /// The window's (width, height) in points, for holding the zones inside it.
+    fn window_size(&self, ctx: &egui::Context) -> (f32, f32) {
+        let r = ctx.content_rect();
+        (r.width(), r.height())
+    }
+
+    /// The dividers between the docked zones and the editor: drag one to resize its zone, drag
+    /// where a side divider meets the bottom one to resize both, double-click to reset. Drawn
+    /// after the editor so they are on top of the panel edges.
+    fn dividers(&mut self, ui: &mut egui::Ui) {
+        const GRAB: f32 = 5.0;
+        let win = self.window_size(ui.ctx());
+        let rect_of = |zone: DockSide, rects: &[(DockSide, Rect)]| rects.iter().find(|(z, _)| *z == zone).map(|(_, r)| *r);
+        let rects = self.zone_rects.clone();
+        let mut changed = false;
+        for (zone, rect) in &rects {
+            let (strip, icon) = match zone {
+                DockSide::Left => {
+                    (Rect::from_x_y_ranges(rect.right() - GRAB..=rect.right() + GRAB, rect.y_range()), egui::CursorIcon::ResizeHorizontal)
+                }
+                DockSide::Right => {
+                    (Rect::from_x_y_ranges(rect.left() - GRAB..=rect.left() + GRAB, rect.y_range()), egui::CursorIcon::ResizeHorizontal)
+                }
+                _ => (Rect::from_x_y_ranges(rect.x_range(), rect.top() - GRAB..=rect.top() + GRAB), egui::CursorIcon::ResizeVertical),
+            };
+            let r = ui.interact(strip, egui::Id::new(("divider", zone.name())), Sense::click_and_drag());
+            if r.hovered() || r.dragged() {
+                ui.ctx().set_cursor_icon(icon);
+            }
+            if r.double_clicked() {
+                changed |= self.layout.reset_divider(*zone);
+            } else if r.dragged() {
+                let d = r.drag_delta();
+                changed |= self.layout.drag_divider(*zone, d.x, d.y, &self.panels, win);
+            }
+        }
+        if let Some(bottom) = rect_of(DockSide::Bottom, &rects) {
+            for side in [DockSide::Left, DockSide::Right] {
+                let Some(sr) = rect_of(side, &rects) else { continue };
+                let x = if side == DockSide::Left { sr.right() } else { sr.left() };
+                let spot = Rect::from_center_size(pos2(x, bottom.top()), egui::vec2(GRAB * 4.0, GRAB * 4.0));
+                let r = ui.interact(spot, egui::Id::new(("divider-corner", side.name())), Sense::click_and_drag());
+                if r.hovered() || r.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+                }
+                if r.double_clicked() {
+                    changed |= self.layout.reset_divider(side) | self.layout.reset_divider(DockSide::Bottom);
+                } else if r.dragged() {
+                    let d = r.drag_delta();
+                    changed |= self.layout.drag_corner(side, d.x, d.y, &self.panels, win);
+                }
+            }
+        }
+        if changed {
             self.layout_dirty = true;
         }
     }
@@ -4281,6 +4335,18 @@ impl WaveApp {
                 }
                 Err(e) => format!("ERR {e}"),
             },
+            // `DIVIDER drag <zone> <dx> <dy>`, `DIVIDER corner <dx> <dy> [left|right]`,
+            // `DIVIDER reset <zone>`: what dragging and double-clicking the dividers do.
+            "DIVIDER" => {
+                let win = self.window_size(ctx);
+                match self.layout.divider_command(&self.panels, win, rest) {
+                    Ok(()) => {
+                        self.save_panels();
+                        self.panels_report()
+                    }
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
             "GESTURE" => self.control_gesture(rest),
             // The step a ruler gesture calls, for scripted checks: `SNAP_FRAME <frame>`.
             "SNAP_FRAME" => match rest.trim().parse::<usize>() {
@@ -6273,6 +6339,7 @@ impl eframe::App for WaveApp {
                 self.dock_zone(ui, DockSide::Bottom);
             }
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
+            self.dividers(ui);
         }
         self.floating_windows(&ctx);
         self.insert_silence_dialog(&ctx);

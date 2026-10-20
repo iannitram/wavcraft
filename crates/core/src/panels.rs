@@ -148,6 +148,9 @@ impl PanelSet {
 pub const ZONE_SIZE_RANGE: (f32, f32) = (120.0, 1200.0);
 const DEFAULT_ZONE_SIZES: [f32; 3] = [220.0, 240.0, 180.0];
 
+/// The least the editor (centre) keeps when a zone grows, in points: width, then height.
+pub const EDITOR_MIN: (f32, f32) = (240.0, 200.0);
+
 fn zone_index(zone: DockSide) -> Option<usize> {
     ZONES.iter().position(|z| *z == zone)
 }
@@ -380,6 +383,109 @@ impl Layout {
         changed
     }
 
+    /// A zone's default size (what a double-click on its divider restores).
+    pub fn default_size(zone: DockSide) -> Option<f32> {
+        zone_index(zone).map(|i| DEFAULT_ZONE_SIZES[i])
+    }
+
+    /// The most a zone may measure in a window of `win` (width, height) points: what is left once
+    /// the editor keeps [`EDITOR_MIN`] and the other shown zones on the same axis keep their sizes.
+    /// Never below the zone minimum, never above [`ZONE_SIZE_RANGE`].
+    pub fn max_size(&self, zone: DockSide, set: &PanelSet, win: (f32, f32)) -> f32 {
+        let Some(i) = zone_index(zone) else { return ZONE_SIZE_RANGE.0 };
+        let (total, keep, peers): (f32, f32, &[usize]) =
+            if zone == DockSide::Bottom { (win.1, EDITOR_MIN.1, &[]) } else { (win.0, EDITOR_MIN.0, if i == 0 { &[1] } else { &[0] }) };
+        let others: f32 = peers.iter().filter(|j| self.zone_shown(ZONES[**j], set)).map(|j| self.sizes[*j]).sum();
+        (total - keep - others).max(ZONE_SIZE_RANGE.0).min(ZONE_SIZE_RANGE.1)
+    }
+
+    /// The size to draw a zone at: the stored size, held to what the window allows (the stored
+    /// size is kept, so a bigger window brings it back).
+    pub fn effective_size(&self, zone: DockSide, set: &PanelSet, win: (f32, f32)) -> f32 {
+        self.size(zone).unwrap_or(ZONE_SIZE_RANGE.0).min(self.max_size(zone, set, win))
+    }
+
+    fn zone_shown(&self, zone: DockSide, set: &PanelSet) -> bool {
+        !self.visible(zone, set).is_empty()
+    }
+
+    /// Drag the divider of `zone` by (`dx`, `dy`) points: the left zone grows with `dx`, the right
+    /// one shrinks with it, the bottom one shrinks with `dy` (dragging up grows it). Held to the
+    /// zone minimum and to the window. True when the size changed.
+    pub fn drag_divider(&mut self, zone: DockSide, dx: f32, dy: f32, set: &PanelSet, win: (f32, f32)) -> bool {
+        let Some(now) = self.size(zone) else { return false };
+        let delta = match zone {
+            DockSide::Left => dx,
+            DockSide::Right => -dx,
+            DockSide::Bottom => -dy,
+            DockSide::Center => return false,
+        };
+        if !delta.is_finite() {
+            return false;
+        }
+        let top = self.max_size(zone, set, win);
+        self.set_size(zone, (now + delta).clamp(ZONE_SIZE_RANGE.0, top))
+    }
+
+    /// Drag the corner where the divider of the side zone `side` (left or right) meets the
+    /// bottom zone's: both are resized at once. True when either changed.
+    pub fn drag_corner(&mut self, side: DockSide, dx: f32, dy: f32, set: &PanelSet, win: (f32, f32)) -> bool {
+        if !matches!(side, DockSide::Left | DockSide::Right) {
+            return false;
+        }
+        let a = self.drag_divider(side, dx, 0.0, set, win);
+        let b = self.drag_divider(DockSide::Bottom, 0.0, dy, set, win);
+        a || b
+    }
+
+    /// Put a zone back to its default size. True when it changed.
+    pub fn reset_divider(&mut self, zone: DockSide) -> bool {
+        match Layout::default_size(zone) {
+            Some(d) => self.set_size(zone, d),
+            None => false,
+        }
+    }
+
+    /// Carry out the words after the control verb `DIVIDER`: `drag <zone> <dx> <dy>`,
+    /// `corner <dx> <dy> [left|right]` (default: the side zone shown, left first) or
+    /// `reset <zone>`. `win` is the window's (width, height).
+    pub fn divider_command(&mut self, set: &PanelSet, win: (f32, f32), text: &str) -> Result<(), String> {
+        const USAGE: &str = "DIVIDER drag <zone> <dx> <dy> | corner <dx> <dy> [left|right] | reset <zone>";
+        let w: Vec<&str> = text.split_whitespace().collect();
+        let zone = |s: &str| match DockSide::parse(s) {
+            Some(z) if z != DockSide::Center => Ok(z),
+            _ => Err(format!("no zone named {s:?}; use left, right or bottom")),
+        };
+        let num = |s: &str| s.parse::<f32>().ok().filter(|n| n.is_finite()).ok_or_else(|| format!("{s:?} is not a number"));
+        match w.as_slice() {
+            ["drag", z, dx, dy] => {
+                let z = zone(z)?;
+                if !self.zone_shown(z, set) {
+                    return Err(format!("the {} zone has no shown panel, so no divider", z.name()));
+                }
+                self.drag_divider(z, num(dx)?, num(dy)?, set, win);
+                Ok(())
+            }
+            ["corner", dx, dy, rest @ ..] => {
+                let side = match rest {
+                    [] => [DockSide::Left, DockSide::Right].into_iter().find(|z| self.zone_shown(*z, set)).ok_or("no left or right zone is shown")?,
+                    [s] => zone(s)?,
+                    _ => return Err(USAGE.into()),
+                };
+                if side == DockSide::Bottom || !self.zone_shown(side, set) || !self.zone_shown(DockSide::Bottom, set) {
+                    return Err("a corner needs the bottom zone and a shown side zone".into());
+                }
+                self.drag_corner(side, num(dx)?, num(dy)?, set, win);
+                Ok(())
+            }
+            ["reset", z] => {
+                self.reset_divider(zone(z)?);
+                Ok(())
+            }
+            _ => Err(USAGE.into()),
+        }
+    }
+
     /// The two settings lines' values: `left:history*,selection;right:;bottom:` (a `*` marks the
     /// front tab) and `left:220,right:240,bottom:180`. Floating panels add a part to the first:
     /// `;float:history@120_120_320_260_left` (x, y, width, height, the zone it came from).
@@ -468,6 +574,9 @@ impl Layout {
             .iter()
             .map(|z| format!("zone.{}={}", z.name(), list(self.visible(*z, set))))
             .collect();
+        for z in ZONES {
+            out.push(format!("size.{}={}", z.name(), self.size(z).unwrap_or(0.0).round()));
+        }
         for z in ZONES {
             out.push(format!("front.{}={}", z.name(), self.active_in(z, set).unwrap_or("-")));
         }
@@ -710,7 +819,7 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         assert_eq!(
             l.report(&set),
-            "zone.left=- zone.right=history,selection zone.bottom=- zone.center=waveform,spectral front.left=- front.right=history front.bottom=- maximized=- floating=-"
+            "zone.left=- zone.right=history,selection zone.bottom=- zone.center=waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=- front.right=history front.bottom=- maximized=- floating=-"
         );
         l.apply_command(&mut set, "move selection left").unwrap();
         l.apply_command(&mut set, "maximize selection").unwrap();
@@ -793,5 +902,112 @@ mod tests {
         l.apply_command(&mut set, "dock selection").unwrap();
         assert_eq!(l.zone_of("selection"), Some(DockSide::Right));
         assert_eq!(l.float_group(DockSide::Bottom, &set), 1);
+    }
+    /// History on the left, selection at the bottom, the right zone empty.
+    fn docked() -> Layout {
+        let mut l = Layout::default();
+        l.move_to("history", DockSide::Left, None).unwrap();
+        l.move_to("selection", DockSide::Bottom, None).unwrap();
+        l
+    }
+
+    fn win() -> (f32, f32) {
+        (1200.0, 800.0)
+    }
+
+    #[test]
+    fn a_divider_drag_moves_one_zone_the_right_way() {
+        let (mut l, set) = (Layout::default(), all());
+        assert!(l.drag_divider(DockSide::Left, 30.0, 99.0, &set, win()));
+        assert_eq!(l.size(DockSide::Left), Some(250.0));
+        assert!(l.drag_divider(DockSide::Right, 40.0, 0.0, &set, win()), "dragging the right divider right shrinks it");
+        assert_eq!(l.size(DockSide::Right), Some(200.0));
+        assert!(l.drag_divider(DockSide::Bottom, 99.0, -50.0, &set, win()), "dragging up grows the bottom zone");
+        assert_eq!(l.size(DockSide::Bottom), Some(230.0));
+        assert!(!l.drag_divider(DockSide::Center, 5.0, 5.0, &set, win()));
+        assert!(!l.drag_divider(DockSide::Left, f32::NAN, 0.0, &set, win()));
+    }
+
+    #[test]
+    fn a_drag_stops_at_the_minimum_and_at_the_window() {
+        let (mut l, set) = (Layout::default(), all());
+        l.drag_divider(DockSide::Left, -1000.0, 0.0, &set, win());
+        assert_eq!(l.size(DockSide::Left), Some(ZONE_SIZE_RANGE.0));
+        // 1200 wide: the editor keeps 240 and the right zone 240, so the left may reach 720.
+        l.drag_divider(DockSide::Left, 5000.0, 0.0, &set, win());
+        assert_eq!(l.size(DockSide::Left), Some(720.0));
+        // 800 high: the bottom zone may reach 600.
+        l.drag_divider(DockSide::Bottom, 0.0, -5000.0, &set, win());
+        assert_eq!(l.size(DockSide::Bottom), Some(600.0));
+        // A tiny window never takes a zone below its minimum.
+        assert_eq!(l.max_size(DockSide::Left, &set, (100.0, 100.0)), ZONE_SIZE_RANGE.0);
+        // The stored size survives a small window; only the drawn size shrinks.
+        assert_eq!(l.effective_size(DockSide::Left, &set, (800.0, 800.0)), 320.0);
+        assert_eq!(l.size(DockSide::Left), Some(720.0));
+    }
+
+    #[test]
+    fn a_hidden_zone_gives_its_room_to_the_other() {
+        let (mut l, mut set) = (Layout::default(), all());
+        set.set("history", false);
+        set.set("selection", false);
+        l.drag_divider(DockSide::Left, 5000.0, 0.0, &set, win());
+        assert_eq!(l.size(DockSide::Left), Some(960.0), "no right zone: only the editor minimum is kept");
+        assert!(l.divider_command(&set, win(), "drag right 1 0").is_err(), "a zone with no panel has no divider");
+    }
+
+    #[test]
+    fn a_corner_drag_resizes_both_zones() {
+        let (mut l, set) = (Layout::default(), all());
+        assert!(l.drag_corner(DockSide::Left, 20.0, -60.0, &set, win()));
+        assert_eq!((l.size(DockSide::Left), l.size(DockSide::Bottom)), (Some(240.0), Some(240.0)));
+        assert!(l.drag_corner(DockSide::Right, 40.0, 30.0, &set, win()));
+        assert_eq!((l.size(DockSide::Right), l.size(DockSide::Bottom)), (Some(200.0), Some(210.0)));
+        // One axis at its limit still moves the other.
+        l.drag_corner(DockSide::Left, 5000.0, 10.0, &set, win());
+        assert_eq!(l.size(DockSide::Left), Some(760.0), "1200 - 240 editor - 200 right");
+        assert_eq!(l.size(DockSide::Bottom), Some(200.0));
+        assert!(!l.drag_corner(DockSide::Bottom, 5.0, 5.0, &set, win()));
+    }
+
+    #[test]
+    fn a_reset_restores_the_default_and_the_commands_check_their_words() {
+        let (mut l, set) = (docked(), all());
+        l.divider_command(&set, win(), "drag left 100 0").unwrap();
+        assert_eq!(l.size(DockSide::Left), Some(320.0));
+        l.divider_command(&set, win(), "reset left").unwrap();
+        assert_eq!(l.size(DockSide::Left), Some(220.0));
+        assert!(!l.reset_divider(DockSide::Left), "already the default");
+        l.divider_command(&set, win(), "corner -10 -20").unwrap();
+        assert_eq!((l.size(DockSide::Left), l.size(DockSide::Bottom)), (Some(210.0), Some(200.0)));
+        l.divider_command(&set, win(), "corner 5 5 left").unwrap();
+        assert_eq!((l.size(DockSide::Left), l.size(DockSide::Bottom)), (Some(215.0), Some(195.0)));
+        for bad in [
+            "",
+            "drag",
+            "drag moon 1 1",
+            "drag left x 1",
+            "drag center 1 1",
+            "drag right 1 1",
+            "corner 1 1 right",
+            "corner 1 1 bottom",
+            "corner 1",
+            "reset",
+            "reset center",
+            "spin left",
+        ] {
+            assert!(l.divider_command(&set, win(), bad).is_err(), "{bad:?}");
+        }
+        assert!(l.report(&set).contains("size.left=215 size.right=240 size.bottom=195"));
+    }
+
+    #[test]
+    fn sizes_dragged_come_back_from_the_settings_text() {
+        let (mut l, set) = (docked(), all());
+        l.divider_command(&set, win(), "drag left 55 0").unwrap();
+        l.divider_command(&set, win(), "drag bottom 0 -70").unwrap();
+        let (t, s) = l.encode();
+        let back = Layout::decode(&t, &s);
+        assert_eq!((back.size(DockSide::Left), back.size(DockSide::Bottom)), (Some(275.0), Some(250.0)));
     }
 }

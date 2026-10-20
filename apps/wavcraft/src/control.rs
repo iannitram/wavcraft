@@ -41,6 +41,7 @@
 //! - `KEYBOARD <mods>` (`none`, `Ctrl`, `Ctrl+Shift`…) → `OK mods=<mods> keys=<Key>=<command> …` (the visual keyboard's coloured keys)
 //! - `SNAP <frame> [frames_per_px]` → `OK frame=<snapped>` (the snap step selection gestures call, with the selection's edges as targets)
 //! - `MARKERS` → `OK count=<n> <id>,<start>,<end>,<name>;…` (the markers of the current state; a point has start = end)
+//! - `DIVIDER drag <left|right|bottom> <dx> <dy>` | `DIVIDER corner <dx> <dy> [left|right]` | `DIVIDER reset <zone>` → the same line as `PANELS` (which also carries `size.left=… size.right=… size.bottom=…`, in points); what dragging a divider, dragging a corner where two meet, and double-clicking a divider do; held to the zone minimum and the window; saved in the settings file
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
 //! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
