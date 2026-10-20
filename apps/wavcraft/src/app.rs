@@ -750,7 +750,7 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
-            "SESSION" | "TRACK" | "CLIP" | "VIEW" => self.mtv.control(cmd, rest, self.doc.as_ref()),
+            "SESSION" | "TRACK" | "CLIP" | "CLIPPROP" | "VIEW" => self.mtv.control(cmd, rest, self.doc.as_ref()),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -1113,6 +1113,7 @@ impl eframe::App for WaveApp {
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         self.mtv.dialog_ui(&ctx);
+        self.mtv.props_ui(&ctx);
         if self.mtv.show {
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
                 self.mtv.ui(ui, self.doc.as_ref());
