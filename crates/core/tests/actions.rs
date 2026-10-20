@@ -68,25 +68,13 @@ fn now(e: &Editor) -> Vec<Vec<f32>> {
 
 #[test]
 fn t1_every_action_has_unique_keys_and_a_unique_name() {
-    let mut keys = HashSet::new();
     let mut names = HashSet::new();
     for a in TABLE {
         assert!(names.insert(a.name), "name {} twice", a.name);
         assert_eq!(by_name(a.name).map(|b| b.id), Some(a.id));
         assert_eq!(action(a.id).name, a.name);
-        for k in a.keys {
-            assert!(keys.insert(*k), "{k:?} bound twice");
-        }
     }
-    // Audition's keys for the common ones (task 07's table).
-    let text = |id| action(id).keys.iter().map(|k| k.text(false)).collect::<Vec<_>>();
-    assert_eq!(text(ActionId::Undo), ["Ctrl+Z"]);
-    assert_eq!(text(ActionId::Redo), ["Ctrl+Shift+Z", "Ctrl+Y"]);
-    assert_eq!(text(ActionId::Delete), ["Delete", "Backspace"]);
-    assert_eq!(text(ActionId::Crop), ["Ctrl+T"]);
-    assert_eq!(text(ActionId::ClearTimeSelection), ["G"]);
-    assert!(action(ActionId::Silence).keys.is_empty(), "Audition has no key for Silence");
-    assert_eq!(action(ActionId::Undo).keys[0].text(true), "⌘Z");
+    // The keys are in `shortcuts` now, one test each (tests/shortcuts.rs).
 }
 
 #[test]
@@ -247,12 +235,6 @@ fn window_actions_are_left_to_the_window() {
         assert!(!out.doc_changed && out.selection == (5..9), "{id:?}: the editor leaves it alone");
     }
     assert_eq!(e.history.steps().len(), 1);
-    // Audition's keys for them.
-    let text = |id| action(id).keys.iter().map(|k| k.text(false)).collect::<Vec<_>>();
-    assert_eq!(text(ActionId::ZoomToSelection), ["Shift+S"]);
-    assert_eq!(text(ActionId::ZoomOutFull), ["Ctrl+\\"]);
-    assert_eq!(text(ActionId::SetIn), ["I"]);
-    assert_eq!(text(ActionId::ZoomIn), ["="]);
 }
 
 /// A 1 kHz sine at 48 kHz (48 frames a cycle), phase-shifted so no sample is exactly 0.
@@ -383,11 +365,5 @@ fn repeat_last_command_runs_silence_again_on_the_new_selection_but_never_delete(
     assert_eq!(e.history.undo_label(), Some("Silence"));
     // Repeat follows the repeated command's enabled rule: Silence needs a selection.
     assert!(!e.enabled(ActionId::RepeatLast, &(3..3)));
-    // Its keys: F3 and Shift+R; with the dialog F2 and Ctrl+R.
-    let text = |id| action(id).keys.iter().map(|k| k.text(false)).collect::<Vec<_>>();
-    assert_eq!(text(ActionId::RepeatLast), ["F3", "Shift+R"]);
-    assert_eq!(text(ActionId::RepeatLastDialog), ["F2", "Ctrl+R"]);
-    assert_eq!(text(ActionId::ZeroInward), ["Shift+I"]);
-    assert_eq!(text(ActionId::ZeroRightToRight), ["Shift+L"]);
     assert_eq!(by_name("edit.zeroCrossings.outward").map(|a| a.id), Some(ActionId::ZeroOutward));
 }

@@ -22,6 +22,7 @@ pub mod io;
 pub mod random;
 pub mod save;
 pub mod settings;
+pub mod shortcuts;
 pub mod space;
 pub mod spectrogram;
 pub mod store;
