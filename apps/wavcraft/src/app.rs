@@ -16,6 +16,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
+use crate::menus::{self, Cmd, Entry, Item, Menu, Tool};
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 
@@ -107,6 +108,12 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// The active tool (Tools panel and toolbar).
+    tool: Tool,
+    /// Window › Tools.
+    show_tools: bool,
+    /// Which context menu the last right-click in the editor's rectangle opened.
+    menu_area: Menu,
 }
 
 impl WaveApp {
@@ -161,6 +168,9 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            tool: Tool::default(),
+            show_tools: true,
+            menu_area: Menu::Editor,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -370,6 +380,161 @@ impl WaveApp {
         Ok(false)
     }
 
+    /// Whether a menu or toolbar entry can be used now (the same test the Edit and View menus use).
+    fn item_enabled(&self, item: &Item) -> bool {
+        let idle = self.saving.is_none();
+        match item.cmd {
+            Cmd::Action(id) => idle && self.editor.as_ref().is_some_and(|e| e.enabled(id, &self.selection_range())),
+            Cmd::Open => idle,
+            Cmd::Save | Cmd::PlayStop => idle && self.editor.is_some(),
+            Cmd::Tool(_) => true,
+        }
+    }
+
+    /// Run a menu or toolbar entry. `scripted`: from the control channel, where a file dialog
+    /// can't be answered. Returns whether the document changed.
+    fn run_item(&mut self, item: Item, ctx: &egui::Context, scripted: bool) -> Result<bool, String> {
+        if !self.item_enabled(&item) {
+            return Err(format!("{} is not available now", item.label));
+        }
+        match item.cmd {
+            Cmd::Action(id) => self.run_action(id, ctx),
+            Cmd::Open if scripted => Err("Open asks for a file in a dialog: use OPEN <path>".to_string()),
+            Cmd::Open => {
+                self.pick_file(ctx);
+                Ok(false)
+            }
+            Cmd::Save => self.save(ctx, false, None, false).map(|()| false),
+            Cmd::PlayStop => {
+                self.toggle_play();
+                Ok(false)
+            }
+            Cmd::Tool(t) => {
+                self.tool = t;
+                Ok(false)
+            }
+        }
+    }
+
+    /// Draw entries as menu rows (enabled state and the table's key text); the chosen one.
+    fn menu_rows(&self, ui: &mut egui::Ui, entries: &[Entry]) -> Option<Item> {
+        let mac = cfg!(target_os = "macos");
+        let mut chosen = None;
+        for e in entries {
+            match e {
+                Entry::Sep => {
+                    ui.separator();
+                }
+                Entry::Item(item) => {
+                    let label = match item.cmd {
+                        Cmd::Action(id) => self.editor.as_ref().map_or_else(|| item.label.to_string(), |ed| ed.label(id)),
+                        _ => item.label.to_string(),
+                    };
+                    let keys = match item.cmd {
+                        Cmd::Action(id) => actions::action(id).keys.first().map(|k| k.text(mac)).unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    if ui.add_enabled(self.item_enabled(item), egui::Button::new(label).shortcut_text(keys)).clicked() {
+                        chosen = Some(*item);
+                        ui.close();
+                    }
+                }
+            }
+        }
+        chosen
+    }
+
+    /// The toolbar docked under the menu bar: common commands, then the tool buttons.
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let mut chosen = None;
+        ui.horizontal(|ui| {
+            for e in menus::toolbar() {
+                match e {
+                    Entry::Sep => {
+                        ui.separator();
+                    }
+                    Entry::Item(item) => {
+                        let on = matches!(item.cmd, Cmd::Tool(t) if t == self.tool) || (item.cmd == Cmd::PlayStop && self.player.is_playing());
+                        let b = egui::Button::new(menus::glyph(&item)).selected(on);
+                        if ui.add_enabled(self.item_enabled(&item), b).on_hover_text(item.label).clicked() {
+                            chosen = Some(item);
+                        }
+                    }
+                }
+            }
+        });
+        if let Some(item) = chosen {
+            let _ = self.run_item(item, ui.ctx(), false);
+        }
+    }
+
+    /// Window › Tools: the tools by name, the active one selected; unbuilt ones greyed.
+    fn tools_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Tools");
+        for t in menus::TOOLS {
+            let on = t.tool.is_some_and(|x| x == self.tool);
+            if ui
+                .add_enabled(t.tool.is_some(), egui::Button::new(t.label).selected(on).min_size(vec2(ui.available_width(), 0.0)))
+                .on_hover_text(t.hint)
+                .clicked()
+                && let Some(tool) = t.tool
+            {
+                self.tool = tool;
+            }
+        }
+    }
+
+    /// `CONTEXTMENU <editor|ruler|history> list` and `... run <item>`.
+    fn control_contextmenu(&mut self, rest: &str, ctx: &egui::Context) -> String {
+        let mut it = rest.split_whitespace();
+        let (Some(menu), Some(verb)) = (it.next().and_then(Menu::by_name), it.next()) else {
+            return "ERR CONTEXTMENU editor|ruler|history list|run <item>".to_string();
+        };
+        match verb {
+            "list" => {
+                let items: Vec<String> = menu
+                    .entries()
+                    .iter()
+                    .filter_map(|e| if let Entry::Item(i) = e { Some(format!("{}:{}", i.name, u8::from(self.item_enabled(i)))) } else { None })
+                    .collect();
+                format!("OK items={}", items.join(","))
+            }
+            "run" => match it.next().and_then(|n| menus::menu_item(menu, n)) {
+                Some(item) => self.run_item_reply(item, ctx),
+                None => "ERR no such item in that menu (CONTEXTMENU <menu> list)".to_string(),
+            },
+            _ => "ERR CONTEXTMENU editor|ruler|history list|run <item>".to_string(),
+        }
+    }
+
+    /// `TOOLBAR list` (toolbar buttons and the Tools panel) and `TOOLBAR run <item>`.
+    fn control_toolbar(&mut self, rest: &str, ctx: &egui::Context) -> String {
+        let mut it = rest.split_whitespace();
+        match it.next() {
+            Some("list") => {
+                let items: Vec<String> = menus::toolbar()
+                    .iter()
+                    .filter_map(|e| if let Entry::Item(i) = e { Some(format!("{}:{}", i.name, u8::from(self.item_enabled(i)))) } else { None })
+                    .collect();
+                let tools: Vec<String> = menus::TOOLS.iter().map(|t| format!("{}:{}", t.name, u8::from(t.tool.is_some()))).collect();
+                let active = menus::TOOLS.iter().find(|t| t.tool == Some(self.tool)).map_or("-", |t| t.name);
+                format!("OK items={} tools={} active={active}", items.join(","), tools.join(","))
+            }
+            Some("run") => match it.next().and_then(menus::toolbar_item) {
+                Some(item) => self.run_item_reply(item, ctx),
+                None => "ERR no such toolbar item (TOOLBAR list)".to_string(),
+            },
+            _ => "ERR TOOLBAR list|run <item>".to_string(),
+        }
+    }
+
+    fn run_item_reply(&mut self, item: Item, ctx: &egui::Context) -> String {
+        match self.run_item(item, ctx, true) {
+            Ok(changed) => format!("OK selection={}-{} changed={}", self.selection.start(), self.selection.end(), u8::from(changed)),
+            Err(e) => format!("ERR {e}"),
+        }
+    }
+
     /// Insert › Silence…: a length in seconds, inserted at the cursor on every channel.
     fn insert_silence_dialog(&mut self, ctx: &egui::Context) {
         let Some(text) = self.insert_silence.as_mut() else { return };
@@ -430,6 +595,13 @@ impl WaveApp {
 
     /// Window › History: every step, the current one highlighted; click one to go to it.
     fn history_panel(&mut self, ui: &mut egui::Ui) {
+        let background = ui.interact(ui.max_rect(), ui.id().with("history-menu"), Sense::click());
+        let entries = Menu::History.entries();
+        let mut chosen = None;
+        background.context_menu(|ui| chosen = self.menu_rows(ui, &entries));
+        if let Some(item) = chosen {
+            let _ = self.run_item(item, ui.ctx(), false);
+        }
         ui.heading("History");
         let Some(editor) = self.editor.as_ref() else {
             ui.label("No file open.");
@@ -715,6 +887,8 @@ impl WaveApp {
                 None => format!("ERR no action named {rest:?}"),
             },
             // Minimise or restore the window (scripted checks of hidden-window behaviour).
+            "CONTEXTMENU" => self.control_contextmenu(rest, ctx),
+            "TOOLBAR" => self.control_toolbar(rest, ctx),
             "WINDOW" => match rest {
                 "minimize" => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -839,6 +1013,7 @@ impl WaveApp {
                 }
                 ui.separator();
                 ui.checkbox(&mut self.show_history, "History panel");
+                ui.checkbox(&mut self.show_tools, "Tools panel");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -904,6 +1079,18 @@ impl WaveApp {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
         painter.rect_filled(rect, 0.0, BACKGROUND);
+        if self.doc.is_some() && menus::editor_menu_on_right_click() {
+            if response.secondary_clicked() {
+                let in_ruler = response.interact_pointer_pos().is_some_and(|p| p.y < rect.top() + RULER_HEIGHT);
+                self.menu_area = if in_ruler { Menu::Ruler } else { Menu::Editor };
+            }
+            let mut chosen = None;
+            let entries = self.menu_area.entries();
+            response.context_menu(|ui| chosen = self.menu_rows(ui, &entries));
+            if let Some(item) = chosen {
+                let _ = self.run_item(item, ui.ctx(), false);
+            }
+        }
         let Some(doc) = &self.doc else { return };
         let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
         let width = rect.width().max(1.0);
@@ -939,7 +1126,18 @@ impl WaveApp {
 
         // Click places the cursor, drag selects.
         let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
-        if response.drag_started()
+        if self.tool == Tool::Hand {
+            if response.dragged_by(egui::PointerButton::Primary) {
+                self.view.scroll_by(-response.drag_delta().x, width, frames);
+            }
+        } else if self.tool == Tool::Zoom {
+            if response.clicked()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let factor = if ui.input(|i| i.modifiers.shift) { 0.5 } else { 2.0 };
+                self.view.zoom_at(factor, pos.x - rect.left(), width, frames);
+            }
+        } else if response.drag_started()
             && let Some(pos) = response.interact_pointer_pos()
         {
             // A drag is only reported once the pointer has moved a few pixels: anchor the
@@ -1092,6 +1290,10 @@ impl eframe::App for WaveApp {
         }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
+        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        if self.show_tools {
+            egui::Panel::left("tools").default_size(130.0).show(ui, |ui| self.tools_panel(ui));
+        }
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.show_history {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
