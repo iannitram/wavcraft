@@ -18,6 +18,10 @@ pub enum ActionId {
     Cut,
     Copy,
     Paste,
+    CopyToNew,
+    PasteToNew,
+    CloseAll,
+    SaveAll,
     Delete,
     Silence,
     Crop,
@@ -137,6 +141,12 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::Cut, "edit.cut", "Cut", &[cmd("X")]),
     edit(ActionId::Copy, "edit.copy", "Copy", &[cmd("C")]),
     edit(ActionId::Paste, "edit.paste", "Paste", &[cmd("V")]),
+    // New documents and the all-documents commands: the window carries them out (they add or
+    // close documents, ask questions, or start saves).
+    window(ActionId::CopyToNew, "edit.copy_to_new", "Copy to New", &[]),
+    window(ActionId::PasteToNew, "edit.paste_to_new", "Paste to New", &[]),
+    window(ActionId::CloseAll, "file.close_all", "Close All", &[]),
+    window(ActionId::SaveAll, "file.save_all", "Save All", &[]),
     edit(ActionId::Delete, "edit.delete", "Delete", &[key("Delete"), key("Backspace")]),
     edit(ActionId::Silence, "edit.silence", "Silence", &[]),
     // Insert › Silence… asks for a length (the window's dialog), then runs `Editor::insert_silence`.
@@ -282,7 +292,9 @@ impl Editor {
             ActionId::Redo => self.history.can_redo(),
             // With no selection, Cut and Copy take the whole file (Audition).
             ActionId::Cut | ActionId::Copy => self.len() > 0,
-            ActionId::Paste => self.clipboard.is_some(),
+            ActionId::Paste | ActionId::PasteToNew => self.clipboard.is_some(),
+            ActionId::CopyToNew => self.len() > 0,
+            ActionId::CloseAll | ActionId::SaveAll => true,
             ActionId::Delete | ActionId::Silence | ActionId::Crop => has_sel,
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
@@ -449,7 +461,11 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => return unchanged(sel.start..sel.start),
             ActionId::CursorToStart => return unchanged(0..0),
             ActionId::CursorToEnd => return unchanged(len..len),
-            ActionId::InsertSilence
+            ActionId::CopyToNew
+            | ActionId::PasteToNew
+            | ActionId::CloseAll
+            | ActionId::SaveAll
+            | ActionId::InsertSilence
             | ActionId::SetIn
             | ActionId::SetOut
             | ActionId::ZoomIn
