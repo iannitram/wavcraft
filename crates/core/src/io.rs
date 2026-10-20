@@ -30,6 +30,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 use crate::doc::{Channel, ChunkInfo, DocState, Piece, SourceFormat};
+use crate::markers::Markers;
 use crate::settings::HOW_TO_CHANGE;
 use crate::space::{FreeSpaceFn, format_bytes, frames_from_file_size, store_bytes};
 use crate::store::{BLOCK_FRAMES, Store, StoreOptions};
@@ -172,7 +173,8 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
     src.path = path.to_path_buf();
     let free_space = opts.free_space.unwrap_or(crate::space::free_space);
     let mut job = Job { file: &mut file, file_len, progress, cancel, free_space };
-    let built = if is_wav(&head) {
+    let is_wav_file = is_wav(&head);
+    let built = if is_wav_file {
         open_wav(&mut job, &store, &mut src)
     } else if is_aiff(&head) {
         open_aiff(&mut job, &store, &mut src)
@@ -194,7 +196,32 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
         log::warn!("{}: {w}", path.display());
     }
     let rate = src.sample_rate;
-    DocState::new(store, built.channels, rate, src).map_err(|e| malformed(e.to_string()))
+    let markers = if is_wav_file { read_wav_markers(&mut job, &src, built.channels.first().map_or(0, Channel::len)) } else { Markers::new() };
+    DocState::new(store, built.channels, rate, src)
+        .map(|d| if markers.is_empty() { d } else { d.with_markers(Arc::new(markers)) })
+        .map_err(|e| malformed(e.to_string()))
+}
+
+/// The markers a WAV file carries (A183): its `cue ` chunk and `LIST`/`adtl` chunks. A file
+/// without them, or with damaged ones, gives none; the audio opens either way.
+fn read_wav_markers(job: &mut Job<'_>, src: &SourceFormat, frames: u64) -> Markers {
+    const MAX_CHUNK: u64 = 16 << 20;
+    let file_len = job.file_len;
+    let fits = |c: &&ChunkInfo| c.size <= MAX_CHUNK && c.offset.saturating_add(8).saturating_add(c.size) <= file_len;
+    let wanted: Vec<(ChunkInfo, bool)> =
+        src.chunks.iter().filter(|c| &c.id == b"cue " || &c.id == b"LIST").filter(fits).map(|c| (c.clone(), &c.id == b"cue ")).collect();
+    let mut cue = Vec::new();
+    let mut lists = Vec::new();
+    for (c, is_cue) in wanted {
+        let Ok(body) = job.read_at(c.offset + 8, c.size) else { continue };
+        if is_cue && cue.is_empty() {
+            cue = body;
+        } else if !is_cue {
+            lists.push(body);
+        }
+    }
+    let lists: Vec<&[u8]> = lists.iter().map(Vec::as_slice).collect();
+    Markers::from_wav_chunks(&cue, &lists, frames)
 }
 
 struct Job<'a> {

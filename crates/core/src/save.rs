@@ -208,7 +208,9 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
     let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
-    let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames)?;
+    // Markers go after the audio as `cue ` and `LIST`/`adtl` chunks (A183).
+    let marker_chunks = doc.markers().to_wav_chunks();
+    let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames, marker_chunks.len() as u64)?;
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * channels * ty.bytes());
     let mut at = 0u64;
@@ -242,19 +244,20 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
     if data_len & 1 == 1 {
         out.write_all(&[0])?;
     }
+    out.write_all(&marker_chunks)?;
     let file = out.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
     Ok(file)
 }
 
 /// The RIFF (or, above 4 GiB, RF64) header and the `data` chunk's header; returns the data size.
-fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
+fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64, extra: u64) -> io::Result<u64> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(u64::from(channels)).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("WAV too long"))?;
     let float = ty == SampleType::Float32;
     let fmt_len: u32 = if float { 18 } else { 16 };
     let fact = if float { 12 } else { 0 };
-    let riff_len = 4 + (8 + u64::from(fmt_len)) + fact + 8 + data_len + (data_len & 1);
+    let riff_len = 4 + (8 + u64::from(fmt_len)) + fact + 8 + data_len + (data_len & 1) + extra;
     let rf64 = u32::try_from(riff_len).is_err();
     let block_align = channels.checked_mul(bytes as u16).ok_or_else(|| invalid("too many channels"))?;
     if rf64 {
