@@ -118,6 +118,11 @@ pub enum ActionId {
     SnapFrames,
     /// Snap to markers on or off (f59).
     SnapMarkersToggle,
+    /// Transport panel buttons (task f53): the playhead jumps, and playback carries on.
+    TransportPrevMarker,
+    TransportNextMarker,
+    TransportStart,
+    TransportEnd,
 }
 
 /// Which part of the program carries an action out.
@@ -251,6 +256,10 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeSmpte5994, "view.time_display.smpte_5994", "SMPTE 59.94 fps"),
     window(ActionId::SnapFrames, "view.snap_frames.toggle", "Snap to Frames"),
     edit(ActionId::SnapMarkersToggle, "view.snap.markers.toggle", "Snap to Markers"),
+    window(ActionId::TransportPrevMarker, "transport.prev_marker", "Previous Marker"),
+    window(ActionId::TransportNextMarker, "transport.next_marker", "Next Marker"),
+    window(ActionId::TransportStart, "transport.start", "Go to Start"),
+    window(ActionId::TransportEnd, "transport.end", "Go to End"),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -524,7 +533,11 @@ impl Editor {
             | ActionId::ToggleReturnOnStop
             | ActionId::ToggleAutoScroll
             | ActionId::FollowPage
-            | ActionId::FollowCenter => true,
+            | ActionId::FollowCenter
+            | ActionId::TransportPrevMarker
+            | ActionId::TransportNextMarker
+            | ActionId::TransportStart
+            | ActionId::TransportEnd => true,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -1007,6 +1020,10 @@ impl Editor {
             | ActionId::FollowCenter
             | ActionId::TimeSmpte5994
             | ActionId::SnapFrames
+            | ActionId::TransportPrevMarker
+            | ActionId::TransportNextMarker
+            | ActionId::TransportStart
+            | ActionId::TransportEnd
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::ConvertSampleType

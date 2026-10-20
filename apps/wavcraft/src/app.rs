@@ -2750,16 +2750,33 @@ impl WaveApp {
             return self.run_window_action(id, ctx);
         }
         let mut sel = self.selection_range();
-        // Markers go where play is, when it is playing (a point at the playhead).
-        if matches!(id, ActionId::MarkerAdd | ActionId::MarkerNext | ActionId::MarkerPrev) && self.player.is_playing() {
+        // Markers go where play is, when it is playing or paused (a point at the playhead).
+        let on_air = self.transport.mode != Mode::Stopped;
+        if matches!(id, ActionId::MarkerAdd | ActionId::MarkerNext | ActionId::MarkerPrev) && on_air {
             let at = self.player.position() as u64;
-            sel = at..at;
+            // Previous marker steps back past a marker the playhead has only just passed.
+            let from =
+                if id == ActionId::MarkerPrev { transport::prev_search_from(at, self.doc.as_ref().map_or(0, Document::sample_rate)) } else { at };
+            sel = from..from;
         }
         if id == ActionId::Paste {
             self.take_system_clipboard();
         }
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         match editor.run(id, sel) {
+            Ok(out) if on_air && matches!(id, ActionId::MarkerNext | ActionId::MarkerPrev) => {
+                // The playhead jumps and play carries on; the selection stays as it was.
+                if self.player.seek(out.selection.start as f64) {
+                    let frames = self.doc.as_ref().map_or(0, Document::frames);
+                    if self.transport.auto_scroll {
+                        let (follow, width) = (self.transport.follow, self.editor_width);
+                        transport::follow_view(follow, &mut self.view, out.selection.start as f64, width, frames);
+                    }
+                }
+                self.error = None;
+                self.notice = None;
+                Ok(false)
+            }
             Ok(mut out) => {
                 if matches!(id, ActionId::Copy | ActionId::Cut)
                     && let Some(clip) = editor.clipboard()
@@ -2910,6 +2927,10 @@ impl WaveApp {
                 Mode::Playing => {}
             },
             ActionId::Pause => self.pause_play(),
+            ActionId::TransportPrevMarker => return self.run_action(ActionId::MarkerPrev, ctx),
+            ActionId::TransportNextMarker => return self.run_action(ActionId::MarkerNext, ctx),
+            ActionId::TransportStart => return self.run_action(ActionId::CursorToStart, ctx),
+            ActionId::TransportEnd => return self.run_action(ActionId::CursorToEnd, ctx),
             ActionId::Stop => self.stop_play(),
             ActionId::ToggleLoop => {
                 self.transport.looping = !self.transport.looping;
@@ -5916,9 +5937,10 @@ impl WaveApp {
     }
 
     /// The Transport panel: Play, Pause, Stop, Loop, go to start / end, the marker buttons (off
-    /// until markers exist), the options and the current time.
+    /// when there is no marker that way), the options and the current time.
     fn transport_panel(&mut self, ui: &mut egui::Ui) {
         let mut chosen: Option<ActionId> = None;
+        let mut marker_chosen: Option<ActionId> = None;
         let rate = self.doc.as_ref().map_or(0, Document::sample_rate);
         let enabled = self.doc.is_some() && self.saving.is_none();
         let t = self.transport;
@@ -5929,13 +5951,24 @@ impl WaveApp {
                         chosen = Some(id);
                     }
                 };
-                button(ui, "|◀ Start", "Go to start (Home)", ActionId::CursorToStart, false);
-                ui.add_enabled(false, egui::Button::new("◀ Marker")).on_disabled_hover_text("Previous marker (no markers yet)");
+                button(ui, "|◀ Start", "Go to start (Home)", ActionId::TransportStart, false);
+                let at = if t.mode == Mode::Stopped { self.selection.start() } else { self.player.position() } as u64;
+                let (has_prev, has_next) = self.editor.as_ref().map_or((false, false), |e| {
+                    let m = e.history.current().markers();
+                    (transport::marker_jump(m, at, false).is_some(), transport::marker_jump(m, at, true).is_some())
+                });
+                let marker_button = |ui: &mut egui::Ui, label: &str, tip: &str, id: ActionId, on: bool| -> Option<ActionId> {
+                    let r = ui.add_enabled(on, egui::Button::new(label)).on_hover_text(tip).on_disabled_hover_text(tip);
+                    r.clicked().then_some(id)
+                };
+                marker_chosen =
+                    marker_chosen.or(marker_button(ui, "◀ Marker", "Previous marker (Ctrl+Alt+Left)", ActionId::TransportPrevMarker, has_prev));
                 button(ui, "▶ Play", "Play (Space)", ActionId::Play, t.mode == Mode::Playing);
                 button(ui, "❚❚ Pause", "Pause; again to resume", ActionId::Pause, t.mode == Mode::Paused);
                 button(ui, "■ Stop", "Stop", ActionId::Stop, false);
-                ui.add_enabled(false, egui::Button::new("Marker ▶")).on_disabled_hover_text("Next marker (no markers yet)");
-                button(ui, "End ▶|", "Go to end (End)", ActionId::CursorToEnd, false);
+                marker_chosen =
+                    marker_chosen.or(marker_button(ui, "Marker ▶", "Next marker (Ctrl+Alt+Right)", ActionId::TransportNextMarker, has_next));
+                button(ui, "End ▶|", "Go to end (End)", ActionId::TransportEnd, false);
                 ui.separator();
                 button(ui, "Loop", "Repeat the selection, or the view with nothing selected", ActionId::ToggleLoop, t.looping);
                 button(
@@ -5972,7 +6005,7 @@ impl WaveApp {
             ui.monospace(format_time(frame, rate.max(1)));
             ui.label(t.mode.name());
         });
-        if let Some(id) = chosen {
+        if let Some(id) = chosen.or(marker_chosen) {
             let _ = self.run_action(id, ui.ctx());
         }
     }
