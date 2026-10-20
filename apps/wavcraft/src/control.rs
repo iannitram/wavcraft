@@ -81,6 +81,7 @@
 //! - `SAVE_SELECTION <path>` → `OK` (File › Save Selection As: only the selected range of the enabled
 //!   channels, to a new WAV; the open document keeps its own path and unsaved mark)
 //! - `EXPORT <path>` → `OK` (File › Export › File: the whole document to another WAV, same promise)
+//! - `XMP get [<ns>:<prop>]` / `XMP set <ns>:<prop> <value>` → `OK status=<ok|none|malformed> props=<n> …` / `OK <value>` / `OK changed=<0|1>` (`<ns>` is a namespace URI or a prefix such as `dc`; one undo step "Edit Metadata" per set; an empty value removes the property)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

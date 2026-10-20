@@ -60,6 +60,7 @@ pub mod tools;
 pub mod transport;
 pub mod view;
 pub mod workspaces;
+pub mod xmp;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;

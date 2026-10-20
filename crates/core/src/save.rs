@@ -439,6 +439,10 @@ fn plan_chunks(doc: &DocState, ty: SampleType) -> (Vec<Item>, Option<File>) {
         Item::Fresh { id: *b"bext", body: b.to_bytes(b.time_reference.saturating_add(doc.start_shift()), &history) }
     });
     let info = (!meta.info.0.is_empty()).then(|| Item::Fresh { id: *b"LIST", body: meta.info.to_bytes() });
+    // The packet is always written from the model (it keeps the text it read, so an unedited one
+    // comes back byte for byte): the saved file may hold an edit that an undone step does not.
+    let mut xmp = if meta.xmp_problem.is_none() { meta.xmp.as_ref().map(|x| Item::Fresh { id: *b"_PMX", body: x.to_bytes() }) } else { None };
+    let (mut have_xmp, drop_xmp) = (false, meta.xmp.is_none() && meta.xmp_problem.is_none());
     let (mut bext, mut info) = (bext, info);
     let mut plan = Vec::new();
     let (mut have_data, mut have_info) = (false, false);
@@ -469,6 +473,12 @@ fn plan_chunks(doc: &DocState, ty: SampleType) -> (Vec<Item>, Option<File>) {
                 plan.push(Item::Copy(c.clone()));
             }
             have_info = true;
+        } else if c.id == *b"_PMX" && drop_xmp {
+            // The step has no packet (an earlier save added one): none is kept.
+        } else if c.id == *b"_PMX" && !have_xmp && xmp.is_some() {
+            // The packet takes the place of the first `_PMX`; a later one is copied through.
+            plan.extend(xmp.take());
+            have_xmp = true;
         } else if c.id == *b"LIST" && is_list(f, c, b"adtl") {
             // The marker code owns the labels with the cue list.
         } else {
@@ -484,6 +494,7 @@ fn plan_chunks(doc: &DocState, ty: SampleType) -> (Vec<Item>, Option<File>) {
     if !have_info {
         plan.extend(info.take());
     }
+    plan.extend(xmp.take());
     (plan, file)
 }
 
