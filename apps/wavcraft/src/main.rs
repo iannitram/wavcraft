@@ -14,6 +14,7 @@ mod convert_ui;
 mod doclist;
 mod effect_dialog;
 mod input;
+mod match_ui;
 mod meters_ui;
 mod mixpaste;
 mod oscb;
