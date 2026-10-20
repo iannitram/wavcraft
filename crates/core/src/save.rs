@@ -1,7 +1,9 @@
 //! Save (task 06; WAV, AIFF and FLAC). The document is streamed out 64 K frames at a time with
 //! [`DocState::read`], never flattened, so a three-hour file saves on an 8 GB machine. Integer
-//! samples are `round(x · 2^(bits−1))`, clamped, with no dither: the exact inverse of how they
-//! are read, so untouched audio saves bit for bit. Above 4 GiB a WAV is RF64; AIFF (32-bit sizes) is refused there.
+//! samples are `round(x · 2^(bits−1))`, clamped: the exact inverse of how they are read, so
+//! untouched audio saves bit for bit. Dither and noise shaping ([`crate::dither`]) are applied
+//! only when the document's [`SourceFormat::dither`] asks for them (Convert Sample Type), and
+//! only to the integer depths. Above 4 GiB the file is RF64.
 //!
 //! **A save never damages the target:** it writes a temporary file in the same folder, syncs it,
 //! and renames it over the target only when it is complete. Any failure removes that temporary
@@ -21,6 +23,7 @@ use std::time::{Duration, SystemTime};
 
 use soundcraft_audio_io::SampleFormat;
 
+use crate::dither::Ditherer;
 use crate::doc::{ChunkInfo, DocState, SourceFormat};
 use crate::meta::Bext;
 use crate::store::BLOCK_FRAMES;
@@ -529,6 +532,8 @@ fn write_samples(
 ) -> io::Result<()> {
     let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
+    // One quantiser per channel for the whole file: its noise and filter state carry across blocks.
+    let mut dithers: Vec<Ditherer> = (0..channels).map(|ch| Ditherer::new(&doc.source().dither, ch)).collect();
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * channels * ty.bytes());
     let mut at = 0u64;
     while at < frames {
@@ -543,15 +548,19 @@ fn write_samples(
             let bits = if ty == SampleType::Int16 { 16 } else { 24 };
             for start in (0..n).step_by(crate::flac_enc::BLOCK_SIZE) {
                 let end = (start + crate::flac_enc::BLOCK_SIZE).min(n);
-                let block: Vec<Vec<i64>> = bufs.iter().map(|b| b[start..end].iter().map(|&x| i64::from(quantize(x, bits))).collect()).collect();
+                let block: Vec<Vec<i64>> = bufs
+                    .iter()
+                    .zip(dithers.iter_mut())
+                    .map(|(b, d)| b[start..end].iter().map(|&x| i64::from(d.quantize(x, bits))).collect())
+                    .collect();
                 enc.write_block(&mut *out, &block)?;
             }
         } else {
             bytes.clear();
             let big = format == SaveFormat::Aiff;
             for i in 0..n {
-                for buf in &bufs {
-                    push_sample(&mut bytes, buf[i], ty, big);
+                for (buf, dither) in bufs.iter().zip(dithers.iter_mut()) {
+                    push_sample(&mut bytes, buf[i], ty, big, dither);
                 }
             }
             out.write_all(&bytes)?;
@@ -565,14 +574,14 @@ fn write_samples(
     Ok(())
 }
 
-fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool) {
+fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool, dither: &mut Ditherer) {
     match (ty, big) {
-        (SampleType::Int16, false) => bytes.extend_from_slice(&(quantize(x, 16) as i16).to_le_bytes()),
-        (SampleType::Int16, true) => bytes.extend_from_slice(&(quantize(x, 16) as i16).to_be_bytes()),
-        (SampleType::Int24, false) => bytes.extend_from_slice(&quantize(x, 24).to_le_bytes()[..3]),
-        (SampleType::Int24, true) => bytes.extend_from_slice(&quantize(x, 24).to_be_bytes()[1..]),
-        (SampleType::Int32, false) => bytes.extend_from_slice(&quantize(x, 32).to_le_bytes()),
-        (SampleType::Int32, true) => bytes.extend_from_slice(&quantize(x, 32).to_be_bytes()),
+        (SampleType::Int16, false) => bytes.extend_from_slice(&(dither.quantize(x, 16) as i16).to_le_bytes()),
+        (SampleType::Int16, true) => bytes.extend_from_slice(&(dither.quantize(x, 16) as i16).to_be_bytes()),
+        (SampleType::Int24, false) => bytes.extend_from_slice(&dither.quantize(x, 24).to_le_bytes()[..3]),
+        (SampleType::Int24, true) => bytes.extend_from_slice(&dither.quantize(x, 24).to_be_bytes()[1..]),
+        (SampleType::Int32, false) => bytes.extend_from_slice(&dither.quantize(x, 32).to_le_bytes()),
+        (SampleType::Int32, true) => bytes.extend_from_slice(&dither.quantize(x, 32).to_be_bytes()),
         (SampleType::Float32, false) => bytes.extend_from_slice(&x.to_le_bytes()),
         (SampleType::Float32, true) => bytes.extend_from_slice(&x.to_be_bytes()),
     }

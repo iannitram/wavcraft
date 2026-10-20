@@ -248,6 +248,9 @@ pub struct SourceFormat {
     pub origin: Arc<Vec<(BlockId, u64)>>,
     /// Where the chunks to copy through live now, after a save has rewritten the file.
     pub relocated: Relocated,
+    /// Dither and noise shaping a save applies when it reduces the depth (off unless Convert
+    /// Sample Type turned it on).
+    pub dither: crate::dither::DitherSettings,
 }
 
 /// The file the save copies unknown chunks from, when a save has replaced the opened one: its
@@ -290,6 +293,7 @@ impl SourceFormat {
             meta: Metadata::default(),
             origin: Arc::new(Vec::new()),
             relocated: Relocated::default(),
+            dither: crate::dither::DitherSettings::default(),
         }
     }
 

@@ -44,7 +44,7 @@
 //! - `HISTORY_KEY up|down` → `OK cursor=<i>` (the panel's arrow keys)
 //! - `AUTOSAVE` → `OK offered=<n> written=<n> failed=<n> pending=<0|1> scanned=<0|1> recoverable=<n>` (Auto Save's journal writer for the open file, and the sessions a crashed run left; poll until `scanned=1`)
 //! - `RECOVER [index]` → `OK` (recover that crashed session, 0 by default; poll `STATE` until `busy=0`); `DISCARD_RECOVERY [index]` → `OK`
-//! - `CONVERT rate=44100 channels=1 bits=16 quality=high mix=50,50` or `CONVERT preset=<name>` → `OK`
+//! - `CONVERT rate=44100 channels=1 bits=16 dither=tpdf shaping=light quality=high mix=50,50` or `CONVERT preset=<name>` → `OK`
 //!   (Convert Sample Type, in the background; poll `STATE` until `busy=0`; `ERR` for a bad setting)
 //! - `INTERPRET <hz>` → `OK` (Interpret Sample Rate: relabel the rate, no resampling)
 //! - `PRESET list` | `PRESET save <name> | <settings>` | `PRESET delete <name>` → `OK …` (conversion presets)

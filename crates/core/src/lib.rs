@@ -23,6 +23,7 @@ pub mod actions;
 pub mod autosave;
 pub mod clipboard;
 pub mod convert;
+pub mod dither;
 pub mod doc;
 pub mod document;
 pub mod effects;
