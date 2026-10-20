@@ -53,6 +53,39 @@ impl Viewport {
         self.clamp(width_px, total_frames);
     }
 
+    /// The Zoom tool's click: zoom in (or out, with `out`) by 2x around `frame`, which stays
+    /// where it is on screen.
+    pub fn zoom_click(&mut self, frame: f64, out: bool, width_px: f32, total_frames: usize) {
+        let anchor_x = self.x_of(frame).clamp(0.0, width_px.max(0.0));
+        let factor = if out { 0.5 } else { 2.0 };
+        self.zoom_at(factor, anchor_x, width_px, total_frames);
+    }
+
+    /// Fill the view with the range between frames `a` and `b` (either order), as the Zoom
+    /// tool's drag and a right-drag in the ruler do. A range too small to show at the closest
+    /// zoom is centred at that zoom; an empty or non-finite range changes nothing.
+    pub fn zoom_to_range(&mut self, a: f64, b: f64, width_px: f32, total_frames: usize) {
+        if !a.is_finite() || !b.is_finite() || a == b {
+            return;
+        }
+        let (lo, hi) = (a.min(b).max(0.0), a.max(b).min(total_frames as f64));
+        if hi <= lo {
+            return;
+        }
+        let width = f64::from(width_px.max(1.0));
+        let closest = 1.0 / MAX_PX_PER_FRAME;
+        let scale = ((hi - lo) / width).max(closest);
+        self.frames_per_px = scale;
+        self.start = (lo + hi) * 0.5 - scale * width * 0.5;
+        self.clamp(width_px, total_frames);
+    }
+
+    /// The Hand tool and middle-button drag: the picture follows the pointer, so dragging right
+    /// by `dx_px` shows earlier audio.
+    pub fn drag_by(&mut self, dx_px: f32, width_px: f32, total_frames: usize) {
+        self.scroll_by(-dx_px, width_px, total_frames);
+    }
+
     /// Scroll just enough to bring `frame` on screen, leaving a small margin.
     pub fn reveal(&mut self, frame: f64, width_px: f32, total_frames: usize) {
         let margin = self.frames_per_px * f64::from(width_px) * 0.1;
@@ -192,6 +225,51 @@ mod tests {
         assert!(v.start < 50_000.0 && v.end(1000.0) > 50_000.0);
         v.reveal(900_000.0, 1000.0, HOUR);
         assert!(v.start < 900_000.0 && v.end(1000.0) > 900_000.0);
+    }
+
+    #[test]
+    fn hand_drag_moves_the_picture_with_the_pointer() {
+        let mut v = Viewport { start: 100_000.0, frames_per_px: 100.0 };
+        v.drag_by(50.0, 1000.0, HOUR);
+        assert_eq!(v.start, 95_000.0, "drag right: earlier audio");
+        v.drag_by(-50.0, 1000.0, HOUR);
+        assert_eq!(v.start, 100_000.0);
+        v.drag_by(1e9, 1000.0, HOUR);
+        assert_eq!(v.start, 0.0, "stops at the start");
+        v.drag_by(-1e12, 1000.0, HOUR);
+        assert!((v.end(1000.0) - HOUR as f64).abs() < 1e-6, "stops at the end");
+    }
+
+    #[test]
+    fn zoom_click_keeps_the_clicked_frame_under_the_pointer() {
+        let mut v = Viewport::fit(HOUR, 1200.0);
+        let frame = 1_000_000.0;
+        let x = v.x_of(frame);
+        v.zoom_click(frame, false, 1200.0, HOUR);
+        assert!((v.x_of(frame) - x).abs() < 1e-3);
+        assert!((v.frames_per_px - Viewport::fit(HOUR, 1200.0).frames_per_px / 2.0).abs() < 1e-9);
+        v.zoom_click(frame, true, 1200.0, HOUR);
+        assert_eq!(v, Viewport::fit(HOUR, 1200.0), "out again is the whole file");
+    }
+
+    #[test]
+    fn zoom_to_range_fills_the_view() {
+        let mut v = Viewport::fit(HOUR, 1200.0);
+        v.zoom_to_range(480_000.0, 240_000.0, 1200.0, HOUR);
+        assert!((v.start - 240_000.0).abs() < 1e-6 && (v.end(1200.0) - 480_000.0).abs() < 1e-6);
+        // Past the file's ends it is clipped to the file.
+        v.zoom_to_range(-5_000.0, 96_000.0, 1200.0, HOUR);
+        assert_eq!(v.start, 0.0);
+        assert!((v.end(1200.0) - 96_000.0).abs() < 1e-6);
+        // Empty or bad ranges change nothing.
+        let before = v;
+        v.zoom_to_range(500.0, 500.0, 1200.0, HOUR);
+        v.zoom_to_range(f64::NAN, 10.0, 1200.0, HOUR);
+        assert_eq!(v, before);
+        // Tiny ranges stop at the closest zoom, centred on the range.
+        v.zoom_to_range(100_000.0, 100_002.0, 1200.0, HOUR);
+        assert_eq!(v.frames_per_px, 1.0 / 16.0);
+        assert!((v.frame_at(600.0) - 100_001.0).abs() < 1e-6);
     }
 
     #[test]

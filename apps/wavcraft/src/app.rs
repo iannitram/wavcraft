@@ -57,8 +57,33 @@ struct SpectrumCache {
     textures: Vec<TextureHandle>,
 }
 
+/// What a primary-button drag in the editor does (f64: a minimal switch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Tool {
+    /// Click places the cursor, drag selects.
+    #[default]
+    Select,
+    /// Drag scrolls the view.
+    Hand,
+    /// Click zooms in at the point (Alt: out), drag zooms to the range.
+    Zoom,
+}
+
+impl Tool {
+    fn name(self) -> &'static str {
+        match self {
+            Tool::Select => "select",
+            Tool::Hand => "hand",
+            Tool::Zoom => "zoom",
+        }
+    }
+}
+
 pub struct WaveApp {
     doc: Option<Document>,
+    tool: Tool,
+    /// Where the current drag began (set when a drag starts, for the Zoom tool and the ruler).
+    drag_origin: Option<Pos2>,
     /// Bumped on every open, so cached pictures of the previous file are dropped.
     generation: usize,
     view: Viewport,
@@ -134,6 +159,8 @@ impl WaveApp {
             doc: None,
             generation: 0,
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
+            tool: Tool::default(),
+            drag_origin: None,
             selection: Selection::default(),
             player: Player::new(),
             params: SpectrogramParams::default(),
@@ -336,6 +363,9 @@ impl WaveApp {
             ActionId::ZoomIn => self.view.zoom_at(2.0, width * 0.5, width, frames),
             ActionId::ZoomOut => self.view.zoom_at(0.5, width * 0.5, width, frames),
             ActionId::ZoomOutFull => self.fit_on_next_frame = true,
+            ActionId::ToolSelect => self.tool = Tool::Select,
+            ActionId::ToolHand => self.tool = Tool::Hand,
+            ActionId::ToolZoom => self.tool = Tool::Zoom,
             ActionId::ZoomToSelection if !self.selection.is_empty() => {
                 let (a, b) = (self.selection.start() as f64, self.selection.end() as f64);
                 self.view.frames_per_px = ((b - a) / f64::from(width)).max(1.0 / 64.0);
@@ -665,6 +695,25 @@ impl WaveApp {
         }
     }
 
+    /// `GESTURE hand_drag <dx_px>` | `zoom_click <frame> [out]` | `ruler_rdrag <start> <end>`: the
+    /// mouse gestures of the navigation tools, through the same code the pointer uses.
+    fn control_gesture(&mut self, rest: &str) -> String {
+        let frames = self.doc.as_ref().map_or(0, Document::frames);
+        if frames == 0 {
+            return "ERR no file is open".to_string();
+        }
+        let width = self.editor_width.max(1.0);
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let num = |i: usize| words.get(i).and_then(|w| w.parse::<f64>().ok()).filter(|n| n.is_finite());
+        match (words.first().copied(), num(1), num(2)) {
+            (Some("hand_drag"), Some(dx), _) => self.view.drag_by(dx as f32, width, frames),
+            (Some("zoom_click"), Some(frame), _) => self.view.zoom_click(frame, words.get(2) == Some(&"out"), width, frames),
+            (Some("ruler_rdrag"), Some(a), Some(b)) => self.view.zoom_to_range(a, b, width, frames),
+            _ => return "ERR GESTURE hand_drag <dx_px> | zoom_click <frame> [out] | ruler_rdrag <start> <end>".to_string(),
+        }
+        format!("OK view={:.0}-{:.0}", self.view.start, self.view.end(width))
+    }
+
     /// Answer one control-channel line (see `control.rs`).
     fn control_request(&mut self, line: &str, ctx: &egui::Context) -> String {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -673,11 +722,13 @@ impl WaveApp {
             "STATE" => {
                 let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
                 let unsaved = u8::from(self.unsaved());
+                let width = self.editor_width.max(1.0);
+                let view = format!("tool={} view={:.0}-{:.0}", self.tool.name(), self.view.start, self.view.end(width));
                 match &self.editor {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {view} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -689,7 +740,9 @@ impl WaveApp {
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => {
+                        format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {view} undo=- redo=-", u8::from(busy))
+                    }
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -726,6 +779,7 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
+            "GESTURE" => self.control_gesture(rest),
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
@@ -827,7 +881,7 @@ impl WaveApp {
                 ui.separator();
                 let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
                 let mut chosen = None;
-                for a in TABLE.iter().filter(|a| a.name.starts_with("view.")) {
+                for a in TABLE.iter().filter(|a| a.name.starts_with("view.") || a.name.starts_with("tool.")) {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
                     let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
                     if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
@@ -937,20 +991,51 @@ impl WaveApp {
         }
         self.view.clamp(width, frames);
 
-        // Click places the cursor, drag selects.
         let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
-        if response.drag_started()
+        let ruler_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
+        if response.drag_started() {
+            self.drag_origin = ui.input(|i| i.pointer.press_origin()).or_else(|| response.interact_pointer_pos());
+        }
+        let drag_dx = response.drag_delta().x;
+        // Middle-button drag scrolls whatever the tool (A084); the Hand tool does it with the
+        // primary button (A050).
+        if response.dragged_by(egui::PointerButton::Middle) || (self.tool == Tool::Hand && response.dragged_by(egui::PointerButton::Primary)) {
+            self.view.drag_by(drag_dx, width, frames);
+        }
+        // A range drag zooms to it: right-drag in the ruler (A091), or the Zoom tool's drag (A051).
+        let range_zoom = (response.drag_stopped_by(egui::PointerButton::Secondary) && self.drag_origin.is_some_and(|o| ruler_rect.contains(o)))
+            || (self.tool == Tool::Zoom && response.drag_stopped_by(egui::PointerButton::Primary));
+        if range_zoom
+            && let (Some(origin), Some(end)) = (self.drag_origin, ui.input(|i| i.pointer.latest_pos()).or_else(|| response.interact_pointer_pos()))
+        {
+            let (a, b) = (self.view.frame_at(origin.x - rect.left()), self.view.frame_at(end.x - rect.left()));
+            self.view.zoom_to_range(a, b, width, frames);
+        }
+        if self.tool == Tool::Zoom
+            && response.clicked_by(egui::PointerButton::Primary)
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let out = ui.input(|i| i.modifiers.alt);
+            self.view.zoom_click(self.view.frame_at(pos.x - rect.left()), out, width, frames);
+        }
+
+        // Select tool: click places the cursor, drag selects (primary button only).
+        let select = self.tool == Tool::Select;
+        if select
+            && response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             // A drag is only reported once the pointer has moved a few pixels: anchor the
             // selection where the button went down, not where the pointer has got to.
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
             self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
-        } else if response.dragged()
+        } else if select
+            && response.dragged_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             self.selection.head = frame_at(&self.view, pos);
-        } else if response.clicked()
+        } else if select
+            && response.clicked_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             self.selection = Selection::at(frame_at(&self.view, pos));
