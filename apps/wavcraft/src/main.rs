@@ -12,6 +12,7 @@ mod app;
 mod control;
 mod effect_dialog;
 mod player;
+mod rack_panel;
 mod selflog;
 mod spectrum;
 #[cfg(windows)]

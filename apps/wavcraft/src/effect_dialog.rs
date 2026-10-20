@@ -16,6 +16,9 @@ pub enum Answer {
 pub struct EffectDialog {
     pub index: u16,
     pub values: Vec<f64>,
+    /// Opened from the Effects Rack for this slot: OK stores the settings there instead of
+    /// running the effect (f31).
+    pub rack_slot: Option<usize>,
 }
 
 impl EffectDialog {
@@ -24,7 +27,7 @@ impl EffectDialog {
     pub fn new(index: u16, values: Option<Vec<f64>>) -> Option<EffectDialog> {
         let effect = effects::all().get(usize::from(index))?;
         let values = values.filter(|v| effects::validate(*effect, v).is_ok()).unwrap_or_else(|| effects::Params::defaults(*effect));
-        Some(EffectDialog { index, values })
+        Some(EffectDialog { index, values, rack_slot: None })
     }
 
     pub fn effect(&self) -> &'static dyn Effect {

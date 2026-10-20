@@ -20,6 +20,8 @@ pub mod doc;
 pub mod document;
 pub mod effects;
 pub mod io;
+pub mod presets;
+pub mod rack;
 pub mod random;
 pub mod save;
 pub mod settings;
