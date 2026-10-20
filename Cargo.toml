@@ -14,21 +14,16 @@ wavcraft-core = { path = "crates/core" }
 # Self-logging (SELF-LOGGING.md), the same crates the Craft forks carry, copied from PhotoCraft `ours`.
 craft-log = { path = "crates/craft-log" }
 
-# SoundCraft's engine crates, pinned to one commit of our fork (upstream v0.5.0 plus our merged
-# fixes: long-file handling, parallel WAV/AIFF decode). Bump deliberately; see README.
-# This commit is tagged `wavecraft-pin-2026-10-12` on iannitram/soundcraft. The tag keeps the
-# app's old name (WaveCraft, renamed WavCraft 2026-10-15) on purpose: it lives on another repo,
-# and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
-soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
-
-# f102 (C322): SoundCraft's session model (`SampleSource`, the disk-backed source trait) and its
-# time crate, pinned to the commit of the fork's feat/disk-backed-source branch. A separate pin from
-# soundcraft-audio-io above; it can move to the fork's `ours` once that branch is merged.
-# Licences MIT OR Apache-2.0.
+# SoundCraft's engine crates, all pinned to ONE commit of our fork: the head of its
+# feat/disk-backed-source branch (iannitram/soundcraft#34), which is the old pin
+# (dc253f2, tag `wavecraft-pin-2026-10-12`) plus upstream sync merges, the streaming
+# `FileEncoder`, and decode hardening for malformed files. One audio-io version in the tree, so
+# the model's `Source::format` and our decoder share one `FileFormat`. Bump deliberately; see
+# README. Once that branch is merged, move the pin to the fork's `ours`. Licences MIT OR Apache-2.0.
+soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
 soundcraft-model = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
 soundcraft-time = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
 
-serde_json = "1" # MIT OR Apache-2.0; already in Cargo.lock through the SoundCraft crates
 rustfft = "6"
 rayon = "1"
 log = "0.4"

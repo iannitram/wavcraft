@@ -144,9 +144,12 @@ screen is short. The overview does not depend on the frequency axis or the pictu
 ### The SoundCraft dependency
 
 `soundcraft-audio-io` is a git dependency pinned to one commit in the root `Cargo.toml`.
-Today that is our fork's merged build (upstream 0.6.1 plus long-file fixes and parallel decode),
-tagged `wavecraft-pin-2026-10-12` on the fork so the commit stays fetchable if its branch goes.
-(The tag keeps the app's old name, WaveCraft; it is on another repo, so it stays as it is.)
+Today that is the head of the fork's `feat/disk-backed-source` branch (iannitram/soundcraft#34):
+the earlier merged build (upstream 0.6.1 plus long-file fixes and parallel decode, tagged
+`wavecraft-pin-2026-10-12`) plus upstream syncs, hardened decoding of malformed files, and a
+streaming encoder. `soundcraft-model` and `soundcraft-time` use the same commit, so the tree
+holds one audio-io version. Tag the commit on the fork once that branch is merged so it stays
+fetchable. (The old tag keeps the app's old name, WaveCraft; it is on another repo.)
 To move it: tag the new commit on the fork, change `rev`, run
 `cargo update -p soundcraft-audio-io`, run the tests. Pin a commit or a tag, never a branch name.
 

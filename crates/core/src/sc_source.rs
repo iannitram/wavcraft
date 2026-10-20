@@ -64,13 +64,17 @@ pub fn session_with_document(state: &DocState, name: &str) -> Result<(Session, S
     let mut session = Session::new(name, rate);
     let track = session.add_track(TrackKind::Audio, format, Some("Document"));
     let source_id = SourceId(session.alloc());
-    // Built through serde: `Source::format` is the model's own copy of audio-io's `FileFormat`,
-    // a different crate version from the one pinned for decoding, so the type can't be named here.
-    let source: Source = serde_json::from_value(serde_json::json!({
-        "id": source_id.0, "name": name, "path": "", "channels": channels, "frames": frames,
-        "sample_rate": state.sample_rate(), "format": "Wav",
-    }))
-    .map_err(|e| format!("source record: {e}"))?;
+    let source = Source {
+        id: source_id,
+        name: name.to_string(),
+        path: String::new(),
+        channels: u16::try_from(channels).map_err(|_| "too many channels".to_string())?,
+        frames,
+        sample_rate: state.sample_rate(),
+        format: soundcraft_audio_io::FileFormat::Wav,
+        time_reference: 0,
+        unsaved: false,
+    };
     session.sources.push(source);
     session.pool.insert_stream(source_id, Arc::new(DocSource::new(state.clone())));
     let clip_id = session.new_clip_id();

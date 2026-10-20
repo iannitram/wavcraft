@@ -2720,17 +2720,6 @@ dependencies = [
 
 [[package]]
 name = "soundcraft-audio-io"
-version = "0.6.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a#dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a"
-dependencies = [
- "log",
- "serde",
- "symphonia",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "soundcraft-audio-io"
 version = "0.10.0"
 source = "git+https://github.com/iannitram/soundcraft?rev=e85de960b5bc410357e89f4a16a2c5190238c829#e85de960b5bc410357e89f4a16a2c5190238c829"
 dependencies = [
@@ -2756,7 +2745,7 @@ source = "git+https://github.com/iannitram/soundcraft?rev=e85de960b5bc410357e89f
 dependencies = [
  "serde",
  "serde_json",
- "soundcraft-audio-io 0.10.0",
+ "soundcraft-audio-io",
  "soundcraft-midi",
  "soundcraft-time",
  "thiserror 2.0.21",
@@ -3354,8 +3343,7 @@ dependencies = [
  "rayon",
  "rustfft",
  "rustix 1.1.5",
- "serde_json",
- "soundcraft-audio-io 0.6.1",
+ "soundcraft-audio-io",
  "soundcraft-model",
  "soundcraft-time",
  "symphonia",
@@ -3367,7 +3355,7 @@ name = "wavcraft-testkit"
 version = "0.1.0"
 dependencies = [
  "rayon",
- "soundcraft-audio-io 0.6.1",
+ "soundcraft-audio-io",
  "wavcraft-core",
  "windows-sys 0.61.2",
 ]
