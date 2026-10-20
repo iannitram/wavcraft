@@ -13,6 +13,7 @@
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `AUDIOINFO` → `OK host=<h> hosts=<a|b> buffer=<frames|default> buffer_range=<min-max|unknown> out_channels=<n> output_map=<1:3,2:4> input_map=<..> device=<name>`
+//! - `AUDIOPROFILE list` → `OK active=<key> count=<n> setups=<key=label;..>`; `AUDIOPROFILE simulate <devices...>` (`_` is a space) treats those as the devices on offer and restores that setup's hardware settings → `OK outcome=<..> active=<key>`; `AUDIOINFO` also reports `profile=<key>`
 //! - `CHANMAP out <file ch> <output ch|off>` / `CHANMAP in <input ch> <record ch|off>` / `CHANMAP reset` → `OK output_map=.. input_map=..` (channels count from 1)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`

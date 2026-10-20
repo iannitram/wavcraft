@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::chanmap::ChannelMap;
+use wavcraft_core::hwprofile::{Hardware, Outcome, ProfileStore};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
@@ -83,6 +84,8 @@ fn map_text_with(map: &ChannelMap, from: usize, to: Option<usize>, fill: usize) 
 }
 
 /// Frames at the start in which a held Shift means "reset the preferences".
+const HW_KEYS: [&str; 6] = ["audio_host", "output_device", "input_device", "buffer_frames", "output_map", "input_map"];
+
 const SHIFT_RESET_FRAMES: u32 = 30;
 
 /// A file being opened on a worker thread.
@@ -172,6 +175,11 @@ pub struct WaveApp {
     devices: Devices,
     /// The device list being read (the system can be slow to answer).
     devices_rx: Option<Receiver<Devices>>,
+    /// The audio hardware settings kept per device setup (f97), and its file.
+    profiles: ProfileStore,
+    profiles_path: Option<PathBuf>,
+    /// The system's devices being read, to pick the setup's profile (at launch).
+    profile_rx: Option<Receiver<Vec<String>>>,
     /// Frames still to look at for a held Shift (Shift at launch resets the preferences).
     shift_frames: u32,
 }
@@ -185,6 +193,7 @@ impl WaveApp {
         let settings_path = Settings::default_path();
         let reset_note = if reset_preferences { settings_path.as_deref().map(move_settings_aside) } else { None };
         let settings = settings_path.as_deref().map(Settings::load).unwrap_or_default();
+        let profiles_path = settings_path.as_deref().map(ProfileStore::default_path);
         let env = std::env::var_os(settings::ENV_SESSION_DIR);
         let sessions = settings::resolve_session_folder(session_dir, env, &settings, default_sessions_root(), settings::check_folder);
         // Folders left by runs that ended without closing their store (a crash, a kill, a
@@ -234,6 +243,9 @@ impl WaveApp {
             prefs: None,
             devices: Devices::default(),
             devices_rx: None,
+            profiles: profiles_path.as_deref().map(ProfileStore::load).unwrap_or_default(),
+            profiles_path,
+            profile_rx: Some(crate::player::list_device_names_in_background(None)),
             shift_frames: SHIFT_RESET_FRAMES,
             control: {
                 let ctx = cc.egui_ctx.clone();
@@ -276,6 +288,9 @@ impl WaveApp {
             return Ok(());
         }
         self.settings = next;
+        if HW_KEYS.contains(&key) {
+            self.remember_hardware();
+        }
         match key {
             "crossfade_cut_join_ms" | "crossfade_edge_ms" => self.apply_crossfades(),
             "output_device" | "buffer_frames" => self.player.set_output(output_choice(&self.settings)),
@@ -288,6 +303,36 @@ impl WaveApp {
             _ => {}
         }
         self.save_settings()
+    }
+
+    /// Keep the hardware settings as the active device setup's profile.
+    fn remember_hardware(&mut self) {
+        self.profiles.remember(&Hardware::of(&self.settings));
+        self.save_profiles();
+    }
+
+    fn save_profiles(&self) {
+        if let Some(p) = &self.profiles_path
+            && let Err(e) = self.profiles.save(p)
+        {
+            log::warn!("could not save the audio profiles to {}: {e}", p.display());
+        }
+    }
+
+    /// The device setup is now `outputs`/`inputs`: restore that setup's hardware settings (a
+    /// stored device that is not on offer falls back to the system default) and reopen the output.
+    fn activate_setup(&mut self, outputs: &[String], inputs: &[String]) -> Outcome {
+        let (outcome, hw) = self.profiles.activate(outputs, inputs, &Hardware::of(&self.settings));
+        if outcome != Outcome::Unchanged {
+            hw.apply(&mut self.settings);
+            self.player.set_output(output_choice(&self.settings));
+            self.player.set_map(self.settings.output_map.clone());
+            if let Err(e) = self.save_settings() {
+                log::warn!("{e}");
+            }
+        }
+        self.save_profiles();
+        outcome
     }
 
     /// Put every preference back to its default: the settings file is moved aside, not deleted.
@@ -1125,7 +1170,7 @@ impl WaveApp {
             "AUDIOINFO" => {
                 let p = &self.player;
                 format!(
-                    "OK host={} hosts={} buffer={} buffer_range={} out_channels={} output_map={} input_map={} device={}",
+                    "OK host={} hosts={} buffer={} buffer_range={} out_channels={} output_map={} input_map={} profile={} device={}",
                     if p.host.is_empty() { "none" } else { &p.host },
                     crate::player::host_names().join("|"),
                     p.buffer.map_or("default".to_string(), |n| n.to_string()),
@@ -1133,6 +1178,7 @@ impl WaveApp {
                     p.out_channels,
                     self.settings.output_map,
                     self.settings.input_map,
+                    self.profiles.active.as_deref().unwrap_or("none"),
                     p.device
                 )
             }
@@ -1158,6 +1204,26 @@ impl WaveApp {
                 match result {
                     Ok(()) => format!("OK output_map={} input_map={}", self.settings.output_map, self.settings.input_map),
                     Err(e) => format!("ERR {e}"),
+                }
+            }
+            // `AUDIOPROFILE list` / `AUDIOPROFILE simulate <devices...>` (treat these names as the
+            // devices on offer, as when an interface is plugged in or out).
+            "AUDIOPROFILE" => {
+                let words: Vec<String> = rest.split_whitespace().map(String::from).collect();
+                match words.first().map(String::as_str) {
+                    Some("list") => format!(
+                        "OK active={} count={} setups={}",
+                        self.profiles.active.as_deref().unwrap_or("none"),
+                        self.profiles.profiles.len(),
+                        self.profiles.profiles.iter().map(|p| format!("{}={}", p.key, p.label.replace(' ', "_"))).collect::<Vec<_>>().join(";")
+                    ),
+                    Some("simulate") if words.len() > 1 => {
+                        self.profile_rx = None;
+                        let names: Vec<String> = words[1..].iter().map(|w| w.replace('_', " ")).collect();
+                        let outcome = self.activate_setup(&names, &names);
+                        format!("OK outcome={outcome:?} active={}", self.profiles.active.as_deref().unwrap_or("none"))
+                    }
+                    _ => "ERR AUDIOPROFILE list | AUDIOPROFILE simulate <device names...> (_ stands for a space)".to_string(),
                 }
             }
             "DEVICES" => {
@@ -1465,6 +1531,17 @@ impl eframe::App for WaveApp {
     /// found the channel silent behind another window).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finish_opening();
+        if let Some(rx) = &self.profile_rx {
+            match rx.try_recv() {
+                Ok(names) => {
+                    self.profile_rx = None;
+                    let outcome = self.activate_setup(&names, &names);
+                    log::info!("audio setup: {outcome:?}");
+                }
+                Err(TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+                Err(TryRecvError::Disconnected) => self.profile_rx = None,
+            }
+        }
         self.finish_rebuild();
         self.finish_saving(ctx);
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {

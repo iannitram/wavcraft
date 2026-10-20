@@ -7,6 +7,7 @@
 //!   (pure functions from one state to the next), and [`doc::history`], undo with a disk cap.
 //! - [`io`]: streamed open into the store.
 //! - [`space`]: the store's size for a file and the free space on its disk.
+//! - [`hwprofile`]: audio hardware settings kept per device setup.
 //! - [`chanmap`]: output/input channel maps and the output buffer size choice.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
@@ -20,6 +21,7 @@ pub mod actions;
 pub mod chanmap;
 pub mod doc;
 pub mod document;
+pub mod hwprofile;
 pub mod io;
 pub mod random;
 pub mod save;

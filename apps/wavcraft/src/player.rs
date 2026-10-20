@@ -211,6 +211,18 @@ pub fn list_devices(host: Option<String>) -> Devices {
     list_devices_in_background(host).recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_default()
 }
 
+/// The names of every device the host knows (no device is asked whether it does output, which
+/// can block; none is opened), on a worker thread. This keys the audio hardware profile.
+pub fn list_device_names_in_background(host: Option<String>) -> std::sync::mpsc::Receiver<Vec<String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new().name("audio device names".into()).spawn(move || {
+        let host = host_for(host.as_deref());
+        let names: Vec<String> = host.devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+        let _ = tx.send(names);
+    });
+    rx
+}
+
 /// Which of `available` to open for the wanted name: its position, or `None` (take the system
 /// default) when nothing was asked for or the name isn't there (the device was unplugged).
 fn pick(wanted: Option<&str>, available: &[String]) -> Option<usize> {
