@@ -22,6 +22,8 @@ craft-log = { path = "crates/craft-log" }
 soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
 # B002: the same commit also gives the offline DSP (reverse, gain, fade curves, dB maths).
 # Meters and BS.1770 loudness (f26). Same fork and commit as audio-io; MIT OR Apache-2.0.
+# f27: the biquad filter designs (RBJ cookbook shelves, peaks, notch, high/low-pass), MIT OR Apache-2.0,
+# from the same pinned commit as soundcraft-audio-io.
 soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
 
 rustfft = "6"
