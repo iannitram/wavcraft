@@ -19,6 +19,7 @@ pub mod actions;
 pub mod doc;
 pub mod document;
 pub mod io;
+pub mod multitrack;
 pub mod random;
 pub mod save;
 pub mod settings;

@@ -21,6 +21,14 @@ craft-log = { path = "crates/craft-log" }
 # and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
 soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
 
+# Multitrack basics (f103): SoundCraft's session model (MIT OR Apache-2.0), pinned to the head of
+# `ours` on the same fork, SEPARATELY from the audio-io pin above (the model needs a newer audio-io).
+# The model's own audio-io is named `soundcraft-model-audio` here so the two never meet in a type.
+soundcraft-model = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
+soundcraft-model-audio = { package = "soundcraft-audio-io", git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
+# Session state for the control channel and tests (already in the tree through the model). MIT OR Apache-2.0.
+serde_json = "1"
+
 rustfft = "6"
 rayon = "1"
 log = "0.4"
