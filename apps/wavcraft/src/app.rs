@@ -769,6 +769,11 @@ impl WaveApp {
                 },
                 None => format!("ERR no action named {rest:?}"),
             },
+            // The session's noise print (f29): `NOISE_PRINT` → `OK frames=<averaged> channels=<n> rate=<hz>`, or `OK none`.
+            "NOISE_PRINT" => match wavcraft_core::noise::current() {
+                Some(p) => format!("OK frames={} channels={} rate={}", p.frames, p.density.len(), p.sample_rate),
+                None => "OK none".to_string(),
+            },
             // Minimise or restore the window (scripted checks of hidden-window behaviour).
             "WINDOW" => match rest {
                 "minimize" => {
@@ -892,6 +897,16 @@ impl WaveApp {
     fn effects_menu(&mut self, ui: &mut egui::Ui) {
         let sel = self.selection_range();
         let mut chosen = None;
+        {
+            // Capture Noise Print belongs with Noise Reduction: it learns what that effect removes.
+            let a = actions::action(ActionId::CaptureNoisePrint);
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
+            let keys = a.keys.first().map(|k| k.text(cfg!(target_os = "macos"))).unwrap_or_default();
+            if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
+                chosen = Some((a.id, false));
+            }
+            ui.separator();
+        }
         for a in actions::all_actions().filter(|a| a.name.starts_with("effect.")) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
             // An effect with settings opens its dialog (a "…" entry); one without runs at once.
