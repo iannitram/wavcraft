@@ -83,8 +83,11 @@ fn control(ui: &mut egui::Ui, desc: &ParamDesc, value: &mut f64) {
                 }
             });
         }
-        ParamKind::Db | ParamKind::Percent | ParamKind::Time => {
+        ParamKind::Db | ParamKind::Percent | ParamKind::Time | ParamKind::Frequency | ParamKind::Number => {
             let mut slider = egui::Slider::new(value, desc.min..=desc.max).clamping(egui::SliderClamping::Always);
+            if desc.kind == ParamKind::Frequency {
+                slider = slider.logarithmic(true);
+            }
             if !desc.unit.is_empty() {
                 slider = slider.suffix(format!(" {}", desc.unit));
             }
