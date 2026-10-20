@@ -17,6 +17,9 @@
 //! - `OSCLIP` → `OK ours=<0|1> path=<first file on the system clipboard or ->`; `OSCLIP set <path>` puts a file there as another program would
 //! - `MARKERS` → `OK count=<n> <id>,<start>,<end>,<name>;…` (the markers of the current state; a point has start = end)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
+//! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
+//! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
+//! - `EFFECT_DIALOG <name> [key=value ...]` opens the effect's dialog on those values; `EFFECT_DIALOG` → `OK open=<id|none> values=[..]`; `EFFECT_DIALOG OK|CANCEL` presses the button
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
