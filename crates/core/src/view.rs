@@ -1,5 +1,7 @@
 //! Zoom and scroll arithmetic, selections and time formatting. All positions are in frames.
 
+use crate::smpte::SmpteRate;
+
 /// The closest zoom: one frame spread over this many pixels.
 const MAX_PX_PER_FRAME: f64 = 16.0;
 
@@ -473,7 +475,7 @@ impl Selection {
     }
 }
 
-/// How times are written (View › Time Display). Roadmap A099; other SMPTE rates are a later row.
+/// How times are written (View › Time Display). Roadmap A099 and A098.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimeFormat {
     /// `m:ss.mmm` / `h:mm:ss.mmm` ([`format_time`]).
@@ -483,15 +485,52 @@ pub enum TimeFormat {
     Compact,
     /// The frame (sample) number.
     Samples,
-    /// `hh:mm:ss:ff` at 30 frames a second.
+    /// SMPTE `hh:mm:ss:ff` at 24 frames a second.
+    Smpte24,
+    /// SMPTE at 25 frames a second.
+    Smpte25,
+    /// SMPTE at 29.97 frames a second, drop-frame (`hh:mm:ss;ff`).
+    Smpte2997Df,
+    /// SMPTE at 29.97 frames a second, non-drop.
+    Smpte2997Ndf,
+    /// SMPTE at 30 frames a second.
     Smpte30,
+    /// SMPTE at 59.94 frames a second.
+    Smpte5994,
 }
 
-/// SMPTE frames per second (the only rate so far).
-pub const SMPTE_FPS: u64 = 30;
-
 impl TimeFormat {
-    pub const ALL: [TimeFormat; 4] = [TimeFormat::Decimal, TimeFormat::Compact, TimeFormat::Samples, TimeFormat::Smpte30];
+    pub const ALL: [TimeFormat; 9] = [
+        TimeFormat::Decimal,
+        TimeFormat::Compact,
+        TimeFormat::Samples,
+        TimeFormat::Smpte24,
+        TimeFormat::Smpte25,
+        TimeFormat::Smpte2997Df,
+        TimeFormat::Smpte2997Ndf,
+        TimeFormat::Smpte30,
+        TimeFormat::Smpte5994,
+    ];
+
+    /// The SMPTE rate, for the SMPTE formats.
+    pub fn smpte(self) -> Option<SmpteRate> {
+        match self {
+            TimeFormat::Smpte24 => Some(SmpteRate::Fps24),
+            TimeFormat::Smpte25 => Some(SmpteRate::Fps25),
+            TimeFormat::Smpte2997Df => Some(SmpteRate::Fps2997Df),
+            TimeFormat::Smpte2997Ndf => Some(SmpteRate::Fps2997Ndf),
+            TimeFormat::Smpte30 => Some(SmpteRate::Fps30),
+            TimeFormat::Smpte5994 => Some(SmpteRate::Fps5994),
+            _ => None,
+        }
+    }
+
+    /// Snap `frame` to the nearest frame boundary of this format (A128): only the SMPTE formats
+    /// have frames; any other format returns `frame` unchanged. Kept at or below `total`.
+    /// The snapping switch (`snap.rs`, PR #95) calls this when it is on and the display is SMPTE.
+    pub fn snap_to_frame(self, frame: usize, sample_rate: u32, total: usize) -> usize {
+        self.smpte().map_or(frame, |r| r.snap(frame, sample_rate, total))
+    }
 
     /// The name used in the settings file, the control channel and action names.
     pub fn name(self) -> &'static str {
@@ -499,7 +538,12 @@ impl TimeFormat {
             TimeFormat::Decimal => "decimal",
             TimeFormat::Compact => "compact",
             TimeFormat::Samples => "samples",
-            TimeFormat::Smpte30 => "smpte30",
+            TimeFormat::Smpte24 => "smpte_24",
+            TimeFormat::Smpte25 => "smpte_25",
+            TimeFormat::Smpte2997Df => "smpte_2997df",
+            TimeFormat::Smpte2997Ndf => "smpte_2997ndf",
+            TimeFormat::Smpte30 => "smpte_30",
+            TimeFormat::Smpte5994 => "smpte_5994",
         }
     }
 
@@ -509,12 +553,20 @@ impl TimeFormat {
             TimeFormat::Decimal => "Decimal (mm:ss.ddd)",
             TimeFormat::Compact => "Compact",
             TimeFormat::Samples => "Samples",
+            TimeFormat::Smpte24 => "SMPTE 24 fps",
+            TimeFormat::Smpte25 => "SMPTE 25 fps",
+            TimeFormat::Smpte2997Df => "SMPTE 29.97 fps drop",
+            TimeFormat::Smpte2997Ndf => "SMPTE 29.97 fps non-drop",
             TimeFormat::Smpte30 => "SMPTE 30 fps",
+            TimeFormat::Smpte5994 => "SMPTE 59.94 fps",
         }
     }
 
     pub fn from_name(name: &str) -> Option<TimeFormat> {
-        TimeFormat::ALL.into_iter().find(|f| f.name() == name.trim())
+        let name = name.trim();
+        // "smpte30" is how the 30 fps format was written before the other rates came.
+        let name = if name == "smpte30" { "smpte_30" } else { name };
+        TimeFormat::ALL.into_iter().find(|f| f.name() == name)
     }
 
     /// `frame` at `sample_rate` in this format.
@@ -523,14 +575,7 @@ impl TimeFormat {
             TimeFormat::Decimal => format_time(frame, sample_rate),
             TimeFormat::Compact => compact(frame, sample_rate),
             TimeFormat::Samples => frame.to_string(),
-            TimeFormat::Smpte30 => {
-                if sample_rate == 0 {
-                    return smpte(0);
-                }
-                let rate = u64::from(sample_rate);
-                let (secs, rest) = (frame as u64 / rate, frame as u64 % rate);
-                smpte(secs * SMPTE_FPS + rest * SMPTE_FPS / rate)
-            }
+            _ => self.smpte().map_or_else(String::new, |r| r.format(frame, sample_rate)),
         }
     }
 
@@ -541,7 +586,7 @@ impl TimeFormat {
             TimeFormat::Decimal => format_time((seconds * 1000.0).round() as usize, 1000),
             TimeFormat::Compact => compact((seconds * 1000.0).round() as usize, 1000),
             TimeFormat::Samples => ((seconds * f64::from(sample_rate)).round() as usize).to_string(),
-            TimeFormat::Smpte30 => smpte((seconds * SMPTE_FPS as f64).round() as u64),
+            _ => self.smpte().map_or_else(String::new, |r| r.format_seconds(seconds)),
         }
     }
 
@@ -570,16 +615,7 @@ impl TimeFormat {
                 // First frame at or after the instant (see the doc above).
                 secs.checked_mul(rate)?.checked_add((ms * rate).div_ceil(1000))?
             }
-            TimeFormat::Smpte30 => {
-                let parts: Vec<&str> = text.split([':', ';']).collect();
-                if parts.len() < 2 || parts.len() > 4 {
-                    return None;
-                }
-                let (ff, head) = parts.split_last()?;
-                let ff: u64 = ff.parse().ok().filter(|f| *f < SMPTE_FPS)?;
-                let secs = clock(&head.join(":"))?;
-                secs.checked_mul(rate)?.checked_add((ff * rate).div_ceil(SMPTE_FPS))?
-            }
+            _ => return self.smpte()?.parse(text, sample_rate),
         };
         usize::try_from(frames).ok()
     }
@@ -600,11 +636,6 @@ fn clock(text: &str) -> Option<u64> {
         secs = secs.checked_mul(60)?.checked_add(v)?;
     }
     Some(secs)
-}
-
-fn smpte(total_frames: u64) -> String {
-    let (ff, secs) = (total_frames % SMPTE_FPS, total_frames / SMPTE_FPS);
-    format!("{:02}:{:02}:{:02}:{ff:02}", secs / 3600, secs / 60 % 60, secs % 60)
 }
 
 fn compact(frame: usize, sample_rate: u32) -> String {
@@ -691,6 +722,16 @@ mod tests {
         assert_eq!(TimeFormat::Samples.format_tick(0.5, 44_100), "22050");
         assert_eq!(TimeFormat::Smpte30.format_tick(1.0 / 3.0, 44_100), "00:00:00:10");
         assert_eq!(TimeFormat::Smpte30.format_tick(2.0, 44_100), "00:00:02:00");
+    }
+
+    #[test]
+    fn the_smpte_formats_read_and_snap() {
+        let r = 48_000;
+        assert_eq!(TimeFormat::Smpte2997Df.format(1800 * 1001 * 48 / 30, r), "00:01:00;02");
+        assert_eq!(TimeFormat::Smpte2997Df.parse("00:00:59;29", r).map(|f| TimeFormat::Smpte2997Df.format(f, r)), Some("00:00:59;29".into()));
+        assert_eq!(TimeFormat::Smpte25.snap_to_frame(2900, r, 1_000_000), 3840);
+        assert_eq!(TimeFormat::Decimal.snap_to_frame(2900, r, 1_000_000), 2900, "only SMPTE has frames");
+        assert_eq!(TimeFormat::from_name("smpte30"), Some(TimeFormat::Smpte30), "the old settings spelling");
     }
 
     #[test]

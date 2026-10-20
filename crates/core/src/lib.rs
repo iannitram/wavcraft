@@ -15,6 +15,7 @@
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
 //! - [`snap`]: snapping a frame to the ruler, selection edges, the cursor and zero crossings.
 //! - [`transport`]: play modes, loop and skip arithmetic, and the view following the playhead.
+//! - [`smpte`]: SMPTE timecode at 24 to 59.94 fps (drop-frame too) and snapping to frames.
 //! - [`view`]: zoom and scroll arithmetic, selections and time formatting.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -44,6 +45,7 @@ pub mod record;
 pub mod save;
 pub mod settings;
 pub mod shortcuts;
+pub mod smpte;
 pub mod snap;
 pub mod space;
 pub mod spectrogram;
@@ -61,6 +63,7 @@ pub use doc::{Channel, DocState, Piece, SourceFormat};
 pub use markers::{Marker, MarkerPick, Markers};
 
 pub use document::{Document, OpenError};
+pub use smpte::SmpteRate;
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
 pub use tools::Tool;

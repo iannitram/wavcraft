@@ -90,6 +90,10 @@ pub enum ActionId {
     TimeDecimal,
     TimeCompact,
     TimeSamples,
+    TimeSmpte24,
+    TimeSmpte25,
+    TimeSmpte2997Df,
+    TimeSmpte2997Ndf,
     TimeSmpte30,
     MarkerDelete,
     MarkerToRange,
@@ -110,6 +114,8 @@ pub enum ActionId {
     StatsGotoPeak,
     StatsNextClip,
     StatsPrevClip,
+    TimeSmpte5994,
+    SnapFrames,
 }
 
 /// Which part of the program carries an action out.
@@ -216,7 +222,6 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeDecimal, "view.time_display.decimal", "Decimal (mm:ss.ddd)"),
     window(ActionId::TimeCompact, "view.time_display.compact", "Compact"),
     window(ActionId::TimeSamples, "view.time_display.samples", "Samples"),
-    window(ActionId::TimeSmpte30, "view.time_display.smpte30", "SMPTE 30 fps"),
     // Audition's single-key tool switch; Move and the spectral tools join when they exist.
     window(ActionId::ToolTimeSelection, "tool.time_selection", "Time Selection Tool"),
     window(ActionId::ZoomAmpIn, "view.zoom.ampIn", "Zoom In Vertically"),
@@ -236,6 +241,13 @@ pub const TABLE: &[Action] = &[
     window(ActionId::StatsGotoPeak, "stats.goto_peak", "Go to Peak"),
     window(ActionId::StatsNextClip, "stats.next_clip", "Next Possibly Clipped Run"),
     window(ActionId::StatsPrevClip, "stats.prev_clip", "Previous Possibly Clipped Run"),
+    window(ActionId::TimeSmpte24, "view.time_display.smpte_24", "SMPTE 24 fps"),
+    window(ActionId::TimeSmpte25, "view.time_display.smpte_25", "SMPTE 25 fps"),
+    window(ActionId::TimeSmpte2997Df, "view.time_display.smpte_2997df", "SMPTE 29.97 fps drop"),
+    window(ActionId::TimeSmpte2997Ndf, "view.time_display.smpte_2997ndf", "SMPTE 29.97 fps non-drop"),
+    window(ActionId::TimeSmpte30, "view.time_display.smpte_30", "SMPTE 30 fps"),
+    window(ActionId::TimeSmpte5994, "view.time_display.smpte_5994", "SMPTE 59.94 fps"),
+    window(ActionId::SnapFrames, "view.snap_frames.toggle", "Snap to Frames"),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -477,7 +489,17 @@ impl Editor {
             ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
             ActionId::MarkerPrev => self.history.current().markers().prev_before(selection.start).is_some(),
             ActionId::ConvertSampleType | ActionId::InterpretSampleRate => self.len() > 0,
-            ActionId::TimeDecimal | ActionId::TimeCompact | ActionId::TimeSamples | ActionId::TimeSmpte30 | ActionId::ToolTimeSelection => true,
+            ActionId::TimeDecimal
+            | ActionId::TimeCompact
+            | ActionId::TimeSamples
+            | ActionId::TimeSmpte24
+            | ActionId::TimeSmpte25
+            | ActionId::TimeSmpte2997Df
+            | ActionId::TimeSmpte2997Ndf
+            | ActionId::TimeSmpte30
+            | ActionId::TimeSmpte5994
+            | ActionId::SnapFrames
+            | ActionId::ToolTimeSelection => true,
             ActionId::MarkerDelete => !self.history.current().markers().touched(selection).is_empty(),
             ActionId::MarkerToRange => has_sel && !self.history.current().markers().touched_kind(selection, true).is_empty(),
             ActionId::MarkerToPoint => !self.history.current().markers().touched_kind(selection, false).is_empty(),
@@ -935,6 +957,10 @@ impl Editor {
             | ActionId::TimeDecimal
             | ActionId::TimeCompact
             | ActionId::TimeSamples
+            | ActionId::TimeSmpte24
+            | ActionId::TimeSmpte25
+            | ActionId::TimeSmpte2997Df
+            | ActionId::TimeSmpte2997Ndf
             | ActionId::TimeSmpte30
             | ActionId::ToolTimeSelection
             | ActionId::ZoomAmpIn
@@ -949,6 +975,8 @@ impl Editor {
             | ActionId::ToggleAutoScroll
             | ActionId::FollowPage
             | ActionId::FollowCenter
+            | ActionId::TimeSmpte5994
+            | ActionId::SnapFrames
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::ConvertSampleType

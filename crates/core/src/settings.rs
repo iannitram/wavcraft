@@ -251,7 +251,7 @@ impl Settings {
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
         out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\n");
         out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}\n", self.hidden_panels.join(",")));
-        out.push_str("# time_display: decimal, compact, samples or smpte30 (View > Time Display).\n");
+        out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30 or smpte_5994 (View > Time Display).\n");
         out.push_str(&format!("{KEY_TIME_DISPLAY} = {}\n", self.time_display.name()));
         out.push_str("# right_click: `extend` moves the nearest selection edge to the click, `menu` opens a context menu.\n");
         out.push_str(&format!("{KEY_RIGHT_CLICK} = {}\n", if self.right_click_menu { "menu" } else { "extend" }));
