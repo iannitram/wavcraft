@@ -21,12 +21,16 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_RIGHT_CLICK: &str = "right_click";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// Right-click in the waveform opens a context menu instead of extending the selection to
+    /// the click (Audition's preference; off is its default).
+    pub right_click_menu: bool,
 }
 
 impl Settings {
@@ -61,6 +65,8 @@ impl Settings {
             let value = value.trim();
             if key.trim() == KEY_SESSION_FOLDER {
                 s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            } else if key.trim() == KEY_RIGHT_CLICK {
+                s.right_click_menu = value.eq_ignore_ascii_case("menu");
             }
         }
         s
@@ -72,6 +78,8 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        out.push_str("# right_click: `extend` moves the nearest selection edge to the click, `menu` opens a context menu.\n");
+        out.push_str(&format!("{KEY_RIGHT_CLICK} = {}\n", if self.right_click_menu { "menu" } else { "extend" }));
         out
     }
 

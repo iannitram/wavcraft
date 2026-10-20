@@ -25,6 +25,7 @@ pub mod settings;
 pub mod space;
 pub mod spectrogram;
 pub mod store;
+pub mod tools;
 pub mod view;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
@@ -34,4 +35,5 @@ pub use doc::{Channel, DocState, Piece, SourceFormat};
 pub use document::{Document, OpenError};
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
+pub use tools::Tool;
 pub use view::{Selection, Viewport, format_time};

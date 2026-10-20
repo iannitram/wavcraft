@@ -13,7 +13,7 @@ use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Tool, Viewport, format_time};
 
 use crate::control;
 use crate::player::Player;
@@ -63,6 +63,8 @@ pub struct WaveApp {
     generation: usize,
     view: Viewport,
     selection: Selection,
+    /// The tool the pointer uses in the editor (Time Selection is the only one built).
+    tool: Tool,
     player: Player,
     params: SpectrogramParams,
     show_waveform: bool,
@@ -135,6 +137,7 @@ impl WaveApp {
             generation: 0,
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
             selection: Selection::default(),
+            tool: Tool::default(),
             player: Player::new(),
             params: SpectrogramParams::default(),
             show_waveform: true,
@@ -271,6 +274,25 @@ impl WaveApp {
         self.notice = Some(msg);
     }
 
+    /// Keep `settings` in the settings file; the error says why not.
+    fn save_settings(&self) -> Result<(), String> {
+        match &self.settings_path {
+            Some(file) => self.settings.save(file).map_err(|e| format!("could not save the setting to {}: {e}", file.display())),
+            None => Err("this system has no settings folder, so it lasts until WavCraft closes".to_string()),
+        }
+    }
+
+    /// Right-click in the waveform at `frame`: the nearest edge of the selection moves there
+    /// (Audition's default). With the "context menu" setting nothing moves; the menu is the
+    /// pointer's business. Returns whether the selection moved.
+    fn right_click_at(&mut self, frame: usize, total: usize) -> bool {
+        if self.settings.right_click_menu || self.tool != Tool::TimeSelection {
+            return false;
+        }
+        self.selection = self.selection.extend_to(frame, total);
+        true
+    }
+
     fn toggle_play(&mut self) {
         let Some(doc) = &self.doc else { return };
         if self.player.is_playing() {
@@ -325,6 +347,10 @@ impl WaveApp {
     /// The actions the window carries out itself: zoom, In/Out points at the playhead, and the
     /// Insert Silence dialog.
     fn run_window_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
+        if id == ActionId::ToolTimeSelection {
+            self.tool = Tool::TimeSelection;
+            return Ok(false);
+        }
         let frames = self.doc.as_ref().map_or(0, Document::frames);
         if frames == 0 && id != ActionId::InsertSilence {
             return Err("no file is open".to_string());
@@ -677,7 +703,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} tool={} right_click={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -685,11 +711,18 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            self.tool.name(),
+                            if self.settings.right_click_menu { "menu" } else { "extend" },
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 tool={} right_click={} undo=- redo=-",
+                        u8::from(busy),
+                        self.tool.name(),
+                        if self.settings.right_click_menu { "menu" } else { "extend" }
+                    ),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -714,6 +747,19 @@ impl WaveApp {
                 },
                 None => format!("ERR no action named {rest:?}"),
             },
+            // Pointer gestures without a pointer. Minimal: `right_click <frame>` only.
+            "GESTURE" => {
+                let mut it = rest.split_whitespace();
+                match (it.next(), it.next().map(str::parse::<usize>)) {
+                    (Some("right_click"), Some(Ok(frame))) if self.editor.is_some() => {
+                        let total = self.doc.as_ref().map_or(0, Document::frames);
+                        let moved = self.right_click_at(frame, total);
+                        format!("OK selection={} moved={}", sel(self), u8::from(moved))
+                    }
+                    (Some("right_click"), Some(Ok(_))) => "ERR no file is open".to_string(),
+                    _ => "ERR GESTURE right_click <frame>".to_string(),
+                }
+            }
             // Minimise or restore the window (scripted checks of hidden-window behaviour).
             "WINDOW" => match rest {
                 "minimize" => {
@@ -900,12 +946,43 @@ impl WaveApp {
         });
     }
 
+    /// The tools bar above the editor: the tools, the current one marked, and its options.
+    fn tools_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            for tool in wavcraft_core::tools::ALL {
+                let label = match tool.key() {
+                    Some(k) => format!("{} ({k})", tool.label()),
+                    None => tool.label().to_string(),
+                };
+                let button = ui.add_enabled(tool.enabled(), egui::Button::selectable(self.tool == *tool, label));
+                if button.clicked() && *tool == Tool::TimeSelection {
+                    self.tool = *tool;
+                }
+            }
+            ui.separator();
+            // The current tool's options.
+            if self.tool == Tool::TimeSelection {
+                let mut menu = self.settings.right_click_menu;
+                if ui
+                    .checkbox(&mut menu, "Right-click opens a menu")
+                    .on_hover_text("Off: right-click extends or shortens the selection to the click")
+                    .changed()
+                {
+                    self.settings.right_click_menu = menu;
+                    match self.save_settings() {
+                        Ok(()) => self.notice = None,
+                        Err(e) => self.notice = Some(e),
+                    }
+                }
+            }
+        });
+    }
+
     fn editor(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
         painter.rect_filled(rect, 0.0, BACKGROUND);
-        let Some(doc) = &self.doc else { return };
-        let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
+        let Some((frames, rate, channels)) = self.doc.as_ref().map(|d| (d.frames(), d.sample_rate(), d.channels().max(1))) else { return };
         let width = rect.width().max(1.0);
         self.editor_width = width;
         if self.fit_on_next_frame {
@@ -939,14 +1016,14 @@ impl WaveApp {
 
         // Click places the cursor, drag selects.
         let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
-        if response.drag_started()
+        if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             // A drag is only reported once the pointer has moved a few pixels: anchor the
             // selection where the button went down, not where the pointer has got to.
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
             self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
-        } else if response.dragged()
+        } else if response.dragged_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             self.selection.head = frame_at(&self.view, pos);
@@ -954,7 +1031,29 @@ impl WaveApp {
             && let Some(pos) = response.interact_pointer_pos()
         {
             self.selection = Selection::at(frame_at(&self.view, pos));
+        } else if response.secondary_clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            self.right_click_at(frame_at(&self.view, pos), frames);
         }
+        if self.settings.right_click_menu {
+            let sel = self.selection_range();
+            let on: Vec<(ActionId, bool)> =
+                MENU_ACTIONS.iter().map(|&id| (id, self.saving.is_none() && self.editor.as_ref().is_some_and(|e| e.enabled(id, &sel)))).collect();
+            let mut picked = None;
+            response.context_menu(|ui| {
+                for (id, enabled) in on {
+                    if ui.add_enabled(enabled, egui::Button::new(actions::action(id).menu)).clicked() {
+                        picked = Some(id);
+                        ui.close();
+                    }
+                }
+            });
+            if let Some(id) = picked {
+                let _ = self.run_action(id, ui.ctx());
+            }
+        }
+        let Some(doc) = &self.doc else { return };
 
         let (start, end) = (self.view.start, self.view.end(width));
         let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
@@ -1092,6 +1191,7 @@ impl eframe::App for WaveApp {
         }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
+        egui::Panel::top("tools").show(ui, |ui| self.tools_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.show_history {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
@@ -1101,6 +1201,9 @@ impl eframe::App for WaveApp {
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
     }
 }
+
+/// What the waveform's right-click menu offers (only with the "context menu" setting).
+const MENU_ACTIONS: [ActionId; 5] = [ActionId::Cut, ActionId::Copy, ActionId::Paste, ActionId::Delete, ActionId::SelectAll];
 
 /// The actions whose keys were pressed this frame. Keys with more modifiers are taken first, so
 /// Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).

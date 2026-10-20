@@ -103,6 +103,19 @@ impl Selection {
         self.anchor.max(self.head)
     }
 
+    /// Right-click in the waveform (Audition's default): the edge nearest `frame` moves there,
+    /// so the selection grows or shrinks to the click and the other edge stays. A cursor with no
+    /// selection becomes a selection from the cursor to `frame`. Equally near: the end moves.
+    /// `frame` is clamped to `total` frames.
+    pub fn extend_to(&self, frame: usize, total: usize) -> Selection {
+        let frame = frame.min(total);
+        let (start, end) = (self.start().min(total), self.end().min(total));
+        if start == end {
+            return Selection { anchor: start, head: frame };
+        }
+        if frame.abs_diff(start) < frame.abs_diff(end) { Selection { anchor: end, head: frame } } else { Selection { anchor: start, head: frame } }
+    }
+
     /// Number of frames selected.
     pub fn len(&self) -> usize {
         self.end() - self.start()
@@ -132,6 +145,39 @@ mod tests {
     use super::*;
 
     const HOUR: usize = 48_000 * 3600;
+
+    #[test]
+    fn right_click_moves_the_nearest_edge() {
+        let s = Selection { anchor: 100, head: 200 };
+        // Outside on the right: the end grows. Outside on the left: the start grows.
+        assert_eq!(s.extend_to(300, 1000), Selection { anchor: 100, head: 300 });
+        assert_eq!(s.extend_to(40, 1000), Selection { anchor: 200, head: 40 });
+        // Inside: the nearer edge shortens the selection.
+        assert_eq!(s.extend_to(130, 1000), Selection { anchor: 200, head: 130 });
+        assert_eq!(s.extend_to(170, 1000), Selection { anchor: 100, head: 170 });
+        // Equally near: the end moves.
+        assert_eq!(s.extend_to(150, 1000), Selection { anchor: 100, head: 150 });
+    }
+
+    #[test]
+    fn right_click_works_whichever_way_the_selection_was_dragged() {
+        let s = Selection { anchor: 200, head: 100 };
+        let e = s.extend_to(300, 1000);
+        assert_eq!((e.start(), e.end()), (100, 300));
+        let e = s.extend_to(20, 1000);
+        assert_eq!((e.start(), e.end()), (20, 200));
+    }
+
+    #[test]
+    fn right_click_on_a_cursor_selects_from_it_and_is_clamped() {
+        assert_eq!(Selection::at(500).extend_to(800, 1000), Selection { anchor: 500, head: 800 });
+        let e = Selection::at(500).extend_to(100, 1000);
+        assert_eq!((e.start(), e.end()), (100, 500));
+        assert_eq!(Selection::at(500).extend_to(5000, 1000).end(), 1000);
+        assert_eq!(Selection::at(0).extend_to(0, 0), Selection::at(0));
+        // A selection past the end (the file got shorter) is clamped too.
+        assert_eq!(Selection { anchor: 50, head: 900 }.extend_to(10, 100).end(), 100);
+    }
 
     #[test]
     fn fit_shows_the_whole_file() {
