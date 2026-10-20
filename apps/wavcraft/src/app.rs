@@ -80,6 +80,9 @@ pub struct WaveApp {
     zone_rects: Vec<(DockSide, Rect)>,
     /// The layout changed while the pointer was down (a zone being resized): save it on release.
     layout_dirty: bool,
+    /// How the last floating window was made: "os" (own operating-system window) or "embedded"
+    /// (an egui window inside the main one); reported by `PANELS`.
+    float_kind: Option<&'static str>,
     /// Saved workspaces (layout snapshots) and the one in use.
     workspaces: Workspaces,
     /// The name being typed in Window › Workspace › Save as New Workspace.
@@ -159,6 +162,7 @@ impl WaveApp {
             tab_rects: Vec::new(),
             zone_rects: Vec::new(),
             layout_dirty: false,
+            float_kind: None,
             workspaces: Workspaces::new(settings_path.as_deref().and_then(|p| p.parent()).map(|d| d.join("workspaces")), &settings.workspace),
             workspace_name: String::new(),
             spectrum: None,
@@ -361,7 +365,8 @@ impl WaveApp {
 
     /// The answer to `PANELS` and `PANEL …`: which panels are shown, then the zones.
     fn panels_report(&self) -> String {
-        format!("OK {} {}", self.panels.report(), self.layout.report(&self.panels))
+        let kind = self.float_kind.map_or(String::new(), |k| format!(" float_window={k}"));
+        format!("OK {} {}{kind}", self.panels.report(), self.layout.report(&self.panels))
     }
 
     /// The body of a docked panel.
@@ -452,6 +457,69 @@ impl WaveApp {
         }
     }
 
+    /// Every floating panel in a window of its own: an operating-system window where the backend
+    /// has more than one (the viewport), else egui's in-window floating window (the same call
+    /// falls back by itself). Closing the window docks the panel back where it came from.
+    fn floating_windows(&mut self, ctx: &egui::Context) {
+        let floats: Vec<panels::Float> = self.layout.floats(&self.panels).into_iter().cloned().collect();
+        let mut dock_back: Vec<String> = Vec::new();
+        for f in floats {
+            let title = panels::by_id(&f.id).map_or("Panel", |p| p.title);
+            let vid = egui::ViewportId::from_hash_of(("float", f.id.as_str()));
+            let builder = egui::ViewportBuilder::default()
+                .with_title(format!("WavCraft: {title}"))
+                .with_position(egui::pos2(f.pos[0], f.pos[1]))
+                .with_inner_size(vec2(f.size[0], f.size[1]))
+                .with_min_inner_size(vec2(160.0, 100.0));
+            let mut dock = false;
+            let mut kind = "os";
+            let mut rect: Option<([f32; 2], [f32; 2])> = None;
+            ctx.show_viewport_immediate(vid, builder, |ui, class| {
+                let mut body = |ui: &mut egui::Ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("Dock").on_hover_text("Put the panel back in a zone").clicked() {
+                            dock = true;
+                        }
+                    });
+                    ui.separator();
+                    self.panel_body(&f.id, ui);
+                };
+                if class == egui::ViewportClass::EmbeddedWindow {
+                    kind = "embedded";
+                    body(ui);
+                    // Embedded: the window is an egui area; its rect is in the main window.
+                    let area = ui.ctx().memory(|m| m.area_rect(egui::Id::new(vid)));
+                    rect = area.map(|r| ([r.min.x, r.min.y], [r.width(), r.height()]));
+                } else {
+                    egui::CentralPanel::default().show(ui, |ui| body(ui));
+                    let (outer, inner, close) =
+                        ui.ctx().input(|i| (i.viewport().outer_rect, i.viewport().inner_rect, i.viewport().close_requested()));
+                    if close {
+                        dock = true;
+                    }
+                    if let (Some(o), Some(i)) = (outer, inner) {
+                        rect = Some(([o.min.x, o.min.y], [i.width(), i.height()]));
+                    }
+                }
+            });
+            self.float_kind = Some(kind);
+            if dock {
+                dock_back.push(f.id.clone());
+            } else if let Some((pos, size)) = rect
+                && self.layout.set_float_rect(&f.id, pos, size)
+            {
+                self.layout_dirty = true;
+            }
+        }
+        if self.layout.floats(&self.panels).is_empty() {
+            self.float_kind = None;
+        }
+        for id in dock_back {
+            self.layout.dock(&id, None).ok();
+            self.save_panels();
+        }
+    }
+
     /// Window › Workspace: switch, save as new, reset to the saved layout, delete.
     fn workspace_menu(&mut self, ui: &mut egui::Ui) {
         let current = self.workspaces.current().to_string();
@@ -502,6 +570,20 @@ impl WaveApp {
         }
     }
 
+    /// Float a panel, or with `group` every tab of its zone, near the top left of the main window.
+    fn float_panel(&mut self, ctx: &egui::Context, id: &str, group: bool) {
+        let origin = ctx.input(|i| i.viewport().outer_rect).map_or([120.0, 120.0], |r| [r.min.x + 80.0, r.min.y + 100.0]);
+        let ids: Vec<String> = match (group, self.layout.zone_of(id)) {
+            (true, Some(z)) => self.layout.visible(z, &self.panels).into_iter().map(String::from).collect(),
+            _ => vec![id.to_string()],
+        };
+        for (n, id) in ids.iter().enumerate() {
+            let off = n as f32 * 28.0;
+            self.layout.float(id, Some(([origin[0] + off, origin[1] + off], [320.0, 260.0]))).ok();
+        }
+        self.save_panels();
+    }
+
     /// The right-click menu of a docked panel's tab.
     fn panel_menu(&mut self, ui: &mut egui::Ui, id: &str) {
         let here = self.layout.zone_of(id);
@@ -509,6 +591,22 @@ impl WaveApp {
             if Some(zone) != here && ui.button(format!("Move to {}", zone.name())).clicked() {
                 self.layout.move_to(id, zone, None).ok();
                 self.save_panels();
+                ui.close();
+            }
+        }
+        if self.layout.is_floating(id) {
+            if ui.button("Dock").clicked() {
+                self.layout.dock(id, None).ok();
+                self.save_panels();
+                ui.close();
+            }
+        } else {
+            if ui.button("Undock Panel (float)").clicked() {
+                self.float_panel(ui.ctx(), id, false);
+                ui.close();
+            }
+            if ui.button("Undock Frame (float all tabs)").clicked() {
+                self.float_panel(ui.ctx(), id, true);
                 ui.close();
             }
         }
@@ -1486,6 +1584,7 @@ impl eframe::App for WaveApp {
             }
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
         }
+        self.floating_windows(&ctx);
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         self.dock_drag(&ctx);
