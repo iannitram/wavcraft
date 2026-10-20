@@ -25,6 +25,7 @@ use wavcraft_core::{
 use crate::control;
 use crate::convert_ui::{self, ConvertDialog};
 use crate::effect_dialog::{Answer, EffectDialog};
+use crate::mixpaste;
 use crate::player::Player;
 use crate::recovery::{self, Choice, Recovery};
 use crate::spectrum::{Job, Renderer};
@@ -145,6 +146,8 @@ pub struct WaveApp {
     editor_width: f32,
     /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
     insert_silence: Option<String>,
+    /// Edit › Mix Paste…: the dialog's fields while it is up.
+    mix_paste: Option<mixpaste::Dialog>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
     /// Frames a selection drag snaps to besides the ruler: the edges of the selection that was
@@ -229,6 +232,7 @@ impl WaveApp {
             show_sel_view_panel: true,
             panel_edit: None,
             insert_silence: None,
+            mix_paste: None,
             confirm_clear_history: false,
             history_focus: false,
             history_refocus: None,
@@ -714,6 +718,46 @@ impl WaveApp {
             _ => return Err(format!("{} is not available now", actions::action(id).menu)),
         }
         Ok(false)
+    }
+
+    /// Edit › Mix Paste: paste the clipboard (or a file) at the cursor with the request's mode.
+    /// One History step, "Mix Paste".
+    fn run_mix_paste(&mut self, req: mixpaste::Request, ctx: &egui::Context) -> Result<(), String> {
+        let at = self.selection.start() as u64;
+        let source = match &req.file {
+            Some(path) => Some(mixpaste::clip_from_file(path, &self.sessions.path)?),
+            None => None,
+        };
+        let editor = self.editor.as_mut().ok_or("Mix Paste: no file is open")?;
+        let out = editor.mix_paste(at, source, &req.opts, &AtomicBool::new(false)).map_err(|e| format!("Mix Paste: {e}"))?;
+        self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+        self.notice = out.message;
+        self.error = None;
+        if out.doc_changed {
+            self.rebuild(ctx);
+        }
+        Ok(())
+    }
+
+    fn mix_paste_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.mix_paste.as_mut() else { return };
+        let mut choice = None;
+        egui::Window::new("Mix Paste").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+            choice = dialog.ui(ui);
+        });
+        match choice {
+            Some(true) => match dialog.request() {
+                Ok(req) => {
+                    self.mix_paste = None;
+                    if let Err(why) = self.run_mix_paste(req, ctx) {
+                        self.error = Some(why);
+                    }
+                }
+                Err(why) => self.error = Some(format!("Mix Paste: {why}")),
+            },
+            Some(false) => self.mix_paste = None,
+            None => {}
+        }
     }
 
     /// Insert › Silence…: a length in seconds, inserted at the cursor on every channel.
@@ -1634,6 +1678,12 @@ impl WaveApp {
                     }
                 }
             },
+            // Edit › Mix Paste (see `mixpaste::parse` for the settings).
+            "MIXPASTE" => match mixpaste::parse(rest) {
+                Ok(req) => match self.run_mix_paste(req, ctx) {
+                    Ok(()) => format!("OK selection={}", sel(self)),
+                },
+            },
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
@@ -1785,6 +1835,10 @@ impl WaveApp {
             if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
                 chosen = Some(a.id);
             }
+        }
+        if ui.add_enabled(self.editor.is_some() && self.saving.is_none(), egui::Button::new("Mix Paste…")).clicked() {
+            self.mix_paste = Some(mixpaste::Dialog::new());
+            ui.close();
         }
         if let Some(id) = chosen {
             let _ = self.run_action(id, ui.ctx());
@@ -2465,6 +2519,7 @@ impl eframe::App for WaveApp {
         self.insert_silence_dialog(&ctx);
         self.convert_dialogs(&ctx);
         self.effect_dialog_ui(&ctx);
+        self.mix_paste_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         match self.recovery.show(&ctx) {
             Some(Choice::Recover(i)) => {

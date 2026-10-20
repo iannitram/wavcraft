@@ -12,6 +12,7 @@ mod app;
 mod control;
 mod convert_ui;
 mod effect_dialog;
+mod mixpaste;
 mod oscb;
 mod player;
 mod recovery;

@@ -52,6 +52,8 @@ pub const CUT: &str = "Cut";
 pub const PASTE: &str = "Paste";
 /// The step Insert > Audio from File makes (Audition's wording was not seen; our choice).
 pub const INSERT_FILE: &str = "Insert Audio from File";
+/// Edit › Mix Paste (every mode).
+pub const MIX_PASTE: &str = "Mix Paste";
 pub const SILENCE: &str = "Silence";
 pub const INSERT_SILENCE: &str = "Insert Silence";
 pub const CROP: &str = "Crop";
@@ -593,6 +595,149 @@ where
     }
     let mask = active.iter().fold(ChannelMask::NONE, |m, &c| m.with(c));
     finish(doc, out, label, Change::SameLength { range, channels: mask }, Shift::None)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mix Paste (f22: A149-A151)
+
+/// How Mix Paste combines the pasted audio with what is there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixMode {
+    /// Insert at the cursor; the rest moves later (like Paste). With only some channels active it
+    /// overwrites in them instead, as [`paste`] does.
+    Insert,
+    /// Sum the pasted audio into the existing audio.
+    Overlap,
+    /// Replace the existing audio from the cursor for the pasted length.
+    Overwrite,
+    /// Multiply the existing audio by the pasted audio.
+    Modulate,
+}
+
+impl MixMode {
+    /// The mode named `s` (`insert`, `overlap`, `overwrite`, `modulate`; any case).
+    pub fn parse(s: &str) -> Option<MixMode> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "insert" => Some(MixMode::Insert),
+            "overlap" => Some(MixMode::Overlap),
+            "overwrite" => Some(MixMode::Overwrite),
+            "modulate" => Some(MixMode::Modulate),
+            _ => None,
+        }
+    }
+}
+
+/// The settings of one Mix Paste.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MixOptions {
+    pub mode: MixMode,
+    /// The volume of the pasted audio in percent, per channel (the last entry serves any further
+    /// channel; empty means 100).
+    pub copied_pct: Vec<f64>,
+    /// The volume of the existing audio in percent, per channel (as `copied_pct`). Used by
+    /// Overlap and Modulate.
+    pub existing_pct: Vec<f64>,
+    /// Flip the sign of the pasted audio.
+    pub invert: bool,
+    /// A crossfade of this length at both edges of the pasted audio (zero: none).
+    pub crossfade: Duration,
+    /// Paste the clip this many times in a row (0 counts as 1).
+    pub loops: u32,
+}
+
+impl MixOptions {
+    /// 100 % of both, not inverted, no crossfade, once.
+    pub fn new(mode: MixMode) -> MixOptions {
+        MixOptions { mode, copied_pct: Vec::new(), existing_pct: Vec::new(), invert: false, crossfade: Duration::ZERO, loops: 1 }
+    }
+
+    fn gains(pct: &[f64], ch: usize) -> f32 {
+        (pct.get(ch).or(pct.last()).copied().unwrap_or(100.0) / 100.0) as f32
+    }
+}
+
+/// How many frames a Mix Paste at `at` with `clip` would write: the clip's length times the loop
+/// count, cut at the end of the file for every mode but a whole-file Insert.
+pub fn mix_paste_frames(doc: &DocState, at: u64, clip: &Clip, channels: ChannelMask, opts: &MixOptions) -> u64 {
+    let total = clip.len_frames().saturating_mul(u64::from(opts.loops.max(1)));
+    let grows = opts.mode == MixMode::Insert && channels.within(doc.channel_count()).covers_all(doc.channel_count());
+    if grows { total } else { total.min(doc.len_frames().saturating_sub(at)) }
+}
+
+/// Edit › Mix Paste: paste `clip` at `at` with a mode, volumes, an optional inversion, edge
+/// crossfades and a loop count. One step labelled [`MIX_PASTE`].
+///
+/// The new audio is made chunk by chunk ([`BLOCK_FRAMES`] frames at a time, reading the clip
+/// and the document through the store), never a whole copy in memory, and spliced into the piece
+/// table; the rest of the document is shared. Overlap, Overwrite and Modulate stop at the end of
+/// the file (our choice, as one-channel [`paste`]); Insert grows it. Channels follow
+/// [`paste`]'s rules. Checks `cancel` before each chunk.
+pub fn mix_paste(doc: &DocState, at: u64, clip: &Clip, channels: ChannelMask, opts: &MixOptions, cancel: &AtomicBool) -> Result<Edit, EditError> {
+    check_range(doc, &(at..at))?;
+    if clip.sample_rate != doc.sample_rate() {
+        return Err(EditError::SampleRate { clip: clip.sample_rate, doc: doc.sample_rate() });
+    }
+    let n = doc.channel_count();
+    let mask = channels.within(n);
+    let clip_len = clip.len_frames();
+    let total = mix_paste_frames(doc, at, clip, mask, opts);
+    if total == 0 || clip_len == 0 || clip.channel_count() == 0 || mask == ChannelMask::NONE {
+        return Ok(Edit::noop(doc, MIX_PASTE));
+    }
+    let grows = opts.mode == MixMode::Insert && mask.covers_all(n);
+    let store = doc.store();
+    let len = doc.len_frames();
+    let edge = Crossfades::frames(opts.crossfade, doc.sample_rate());
+    let sign = if opts.invert { -1.0f32 } else { 1.0 };
+    let mut out: Vec<Arc<Channel>> = doc.channels().to_vec();
+    let mut clip_buf = vec![0.0f32; BLOCK_FRAMES];
+    let mut old_buf = vec![0.0f32; BLOCK_FRAMES];
+    for (c, src) in paste_sources(store, clip, n, &mask.active(n))? {
+        let Some(ch) = doc.channel(c) else { continue };
+        let (g_new, g_old) = (sign * MixOptions::gains(&opts.copied_pct, c), MixOptions::gains(&opts.existing_pct, c));
+        let mut made = Channel::new();
+        let mut done = 0u64;
+        while done < total {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(EditError::Cancelled);
+            }
+            let m = (total - done).min(BLOCK_FRAMES as u64) as usize;
+            // The clip's frames for output frames done..done+m, wrapping for the loops.
+            let mut filled = 0usize;
+            while filled < m {
+                let from = (done + filled as u64) % clip_len;
+                let take = (m - filled).min((clip_len - from) as usize);
+                if src.read(store, from, &mut clip_buf[filled..filled + take])? != take {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "clip shorter than its length").into());
+                }
+                filled += take;
+            }
+            let buf = &mut clip_buf[..m];
+            if matches!(opts.mode, MixMode::Overlap | MixMode::Modulate) {
+                let old = &mut old_buf[..m];
+                if doc.read(c, at + done, old)? != m {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "document shorter than its length").into());
+                }
+                for (b, o) in buf.iter_mut().zip(old.iter()) {
+                    *b = if opts.mode == MixMode::Overlap { *o * g_old + *b * g_new } else { (*o * g_old) * (*b * g_new) };
+                }
+            } else {
+                for b in buf.iter_mut() {
+                    *b *= g_new;
+                }
+            }
+            if let Some(p) = Piece::whole(store.append(buf)?) {
+                made.push(p);
+            }
+            done += m as u64;
+        }
+        let end = if grows { at } else { at + total };
+        let segs = [Seg::new(ch, 0, at, 0), Seg::new(&made, 0, total, edge), Seg::new(ch, end, len - end, edge)];
+        out[c] = Arc::new(build(store, &segs)?);
+    }
+    // A grown file has every channel rebuilt (Insert on all of them); otherwise only the active ones changed.
+    let change = if grows { Change::LengthFrom { frame: at } } else { Change::SameLength { range: at..at + total, channels: mask } };
+    finish(doc, out, MIX_PASTE, change)
 }
 
 // ---------------------------------------------------------------------------------------------
