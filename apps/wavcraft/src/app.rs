@@ -18,6 +18,7 @@ use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selectio
 use crate::control;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
+use crate::video::{VideoPanel, Waiters};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
 const WAVE: Color32 = Color32::from_rgb(64, 200, 140);
@@ -107,6 +108,11 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Video › Attach video file…: the picture of a video file at the playhead (f122).
+    video: Option<VideoPanel>,
+    show_video: bool,
+    /// Control-channel `VIDEO frame` requests waiting for their picture.
+    video_waiters: Waiters,
 }
 
 impl WaveApp {
@@ -161,6 +167,9 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            video: None,
+            show_video: true,
+            video_waiters: Waiters::default(),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -219,6 +228,7 @@ impl WaveApp {
                 self.doc_id += 1;
                 self.rebuilding = None;
                 self.doc = Some(doc);
+                self.video = None;
                 self.generation += 1;
                 self.selection = Selection::default();
                 self.spectrum = None;
@@ -238,6 +248,31 @@ impl WaveApp {
     }
 
     /// File › Session Folder…: pick a folder, check it, use it from the next open and save it.
+    /// Associate a video file with the open document (Video › Attach video file…).
+    fn attach_video(&mut self, path: PathBuf, ctx: &egui::Context) -> Result<(), String> {
+        if self.editor.is_none() {
+            return Err("open a file first: the video goes with the open document".to_string());
+        }
+        self.video = Some(VideoPanel::attach(path, ctx));
+        self.show_video = true;
+        Ok(())
+    }
+
+    fn pick_video(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new().add_filter("Video", &["mov", "mp4", "m4v"]).pick_file()
+            && let Err(e) = self.attach_video(path, ctx)
+        {
+            self.error = Some(e);
+        }
+    }
+
+    /// Where the playhead is (or the cursor when stopped), in seconds.
+    fn playhead_secs(&self) -> Option<f64> {
+        let rate = self.editor.as_ref()?.history.current().sample_rate();
+        let frame = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
+        (rate > 0).then(|| frame as f64 / f64::from(rate))
+    }
+
     fn pick_session_folder(&mut self) {
         let Some(path) = rfd::FileDialog::new().set_directory(&self.sessions.path).pick_folder() else { return };
         self.set_session_folder(Some(path));
@@ -746,6 +781,24 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
+            "VIDEO" => {
+                let (sub, arg) = rest.split_once(' ').unwrap_or((rest, ""));
+                match sub {
+                    "attach" if !arg.trim().is_empty() => match self.attach_video(PathBuf::from(arg.trim()), ctx) {
+                        Ok(()) => "OK".to_string(),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    "status" => match &self.video {
+                        Some(v) => format!("OK {}", v.status.text()),
+                        None => "ERR no video attached".to_string(),
+                    },
+                    "detach" => {
+                        self.video = None;
+                        "OK".to_string()
+                    }
+                    _ => "ERR VIDEO attach <path> | frame <seconds> | status | detach".to_string(),
+                }
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -839,6 +892,15 @@ impl WaveApp {
                 }
                 ui.separator();
                 ui.checkbox(&mut self.show_history, "History panel");
+            });
+            ui.menu_button("Video", |ui| {
+                if ui.add_enabled(self.editor.is_some(), egui::Button::new("Attach video file…")).clicked() {
+                    self.pick_video(ui.ctx());
+                }
+                if ui.add_enabled(self.video.is_some(), egui::Button::new("Detach video")).clicked() {
+                    self.video = None;
+                }
+                ui.checkbox(&mut self.show_video, "Video panel");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -1046,8 +1108,29 @@ impl eframe::App for WaveApp {
         self.finish_rebuild();
         self.finish_saving(ctx);
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            // `VIDEO frame` is answered when the worker has the picture, not before.
+            if let Some(arg) = req.line.strip_prefix("VIDEO frame") {
+                match (arg.trim().parse::<f64>(), self.video.as_mut()) {
+                    (Ok(secs), Some(v)) if secs.is_finite() => {
+                        let seq = v.request(secs, true);
+                        self.video_waiters.add(seq, req.reply);
+                    }
+                    (_, None) => {
+                        let _ = req.reply.send("ERR no video attached".to_string());
+                    }
+                    _ => {
+                        let _ = req.reply.send("ERR VIDEO frame <seconds>".to_string());
+                    }
+                }
+                continue;
+            }
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
+        }
+        if let Some(v) = self.video.as_mut() {
+            for (seq, text) in v.poll(ctx) {
+                self.video_waiters.answer(seq, text);
+            }
         }
     }
 
@@ -1093,6 +1176,15 @@ impl eframe::App for WaveApp {
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
+        if self.show_video && self.video.is_some() {
+            let secs = self.playhead_secs();
+            if let Some(v) = self.video.as_mut() {
+                if let Some(secs) = secs {
+                    v.follow(secs);
+                }
+                egui::Panel::right("video").default_size(360.0).show(ui, |ui| v.ui(ui));
+            }
+        }
         if self.show_history {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
