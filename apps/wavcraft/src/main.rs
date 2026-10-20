@@ -13,6 +13,7 @@ mod control;
 mod input;
 mod player;
 mod recording;
+mod recovery;
 mod selflog;
 mod spectrum;
 #[cfg(windows)]
