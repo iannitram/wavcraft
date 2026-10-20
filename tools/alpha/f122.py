@@ -23,7 +23,7 @@ def main():
     exe = ap.parse_args()
     keep = exe.keep
     exe = exe.exe
-    base = os.path.expanduser("~/dev/craft/_wt/scratch")
+    base = os.environ.get("F122_SCRATCH") or tempfile.gettempdir()
     os.makedirs(base, exist_ok=True)
     work = tempfile.mkdtemp(prefix="f122.", dir=base)
     for d in ("home", "logs", "sessions"):
