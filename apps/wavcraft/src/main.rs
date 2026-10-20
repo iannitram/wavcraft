@@ -11,6 +11,7 @@
 mod app;
 mod control;
 mod multitrack_ui;
+mod mixer;
 mod player;
 mod selflog;
 mod spectrum;

@@ -17,6 +17,7 @@ use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selectio
 
 use crate::control;
 use crate::multitrack_ui::MtView;
+use crate::mixer::MixerModel;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 
@@ -104,6 +105,9 @@ pub struct WaveApp {
     editor_width: f32,
     /// Window › History.
     show_history: bool,
+    /// Window › Mixer: the channel strips (C152).
+    show_mixer: bool,
+    mixer: MixerModel,
     /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
@@ -162,6 +166,8 @@ impl WaveApp {
             allow_close: false,
             editor_width: 800.0,
             show_history: true,
+            show_mixer: false,
+            mixer: MixerModel::demo(4),
             insert_silence: None,
             confirm_clear_history: false,
             mtv: MtView::default(),
@@ -751,6 +757,11 @@ impl WaveApp {
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
             "SESSION" | "TRACK" | "CLIP" | "VIEW" => self.mtv.control(cmd, rest, self.doc.as_ref()),
+            "MIXER" if matches!(rest.trim(), "show" | "hide") => {
+                self.show_mixer = rest.trim() == "show";
+                "OK".to_string()
+            }
+            "MIXER" => self.mixer.control(rest),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -853,6 +864,7 @@ impl WaveApp {
                 }
                 ui.separator();
                 ui.checkbox(&mut self.show_history, "History panel");
+                ui.checkbox(&mut self.show_mixer, "Mixer panel");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -1109,6 +1121,9 @@ impl eframe::App for WaveApp {
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.show_history {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
+        }
+        if self.show_mixer {
+            egui::Panel::bottom("mixer").resizable(true).default_size(260.0).show(ui, |ui| self.mixer.show(ui));
         }
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
