@@ -231,6 +231,9 @@ pub struct SourceFormat {
     pub sample_format: SampleFormat,
     pub sample_rate: u32,
     pub channels: u16,
+    /// The speaker mask of a WAV `WAVE_FORMAT_EXTENSIBLE` header (bit 0 front left, 1 front
+    /// right, 2 centre, 3 LFE…), when the file has one.
+    pub channel_mask: Option<u32>,
     /// The WAV header was RF64 / BW64.
     pub rf64: bool,
     pub bwf: Option<BwfInfo>,
@@ -249,6 +252,7 @@ impl SourceFormat {
             sample_format: SampleFormat::Float32,
             sample_rate,
             channels,
+            channel_mask: None,
             rf64: false,
             bwf: None,
             chunks: Vec::new(),

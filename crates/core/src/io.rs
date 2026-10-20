@@ -450,6 +450,8 @@ struct Fmt {
     sample_rate: u32,
     bits: u16,
     valid_bits: u16,
+    /// The speaker mask of an extensible header.
+    channel_mask: Option<u32>,
     /// Bytes a frame takes, as the header says (checked against the format before use).
     block_align: u16,
 }
@@ -462,6 +464,7 @@ fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
         sample_rate: le_u32(c, 4).ok_or_else(short)?,
         bits: le_u16(c, 14).unwrap_or(0),
         valid_bits: 0,
+        channel_mask: None,
         block_align: le_u16(c, 12).ok_or_else(short)?,
     };
     fmt.valid_bits = fmt.bits;
@@ -472,6 +475,7 @@ fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
                     fmt.valid_bits = valid;
                 }
                 fmt.tag = sub;
+                fmt.channel_mask = le_u32(c, 20).filter(|&m| m != 0);
             }
             _ => return Err(malformed("WAVE_FORMAT_EXTENSIBLE fmt chunk too short")),
         }
@@ -557,6 +561,7 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
     check_rate(fmt.sample_rate, "WAV")?;
     src.sample_rate = fmt.sample_rate;
     src.channels = fmt.channels;
+    src.channel_mask = fmt.channel_mask;
     let channels = usize::from(fmt.channels);
     let (kind, sample_format) = match (fmt.tag, fmt.bits) {
         (WAVE_FORMAT_PCM, bits @ 1..=32) => {

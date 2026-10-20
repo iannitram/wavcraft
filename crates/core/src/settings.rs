@@ -22,6 +22,7 @@ pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the 
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_AMP_SCALE: &str = "amp_scale";
+const KEY_CHANNEL_LAYOUT: &str = "channel_layout";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -30,6 +31,8 @@ pub struct Settings {
     pub session_folder: Option<PathBuf>,
     /// How the amplitude ruler labels its scale.
     pub amp_scale: crate::view::AmpScale,
+    /// Whether the waveform shows channels layered in one lane or stacked in lanes.
+    pub channel_layout: crate::channels::ChannelLayout,
 }
 
 impl Settings {
@@ -66,6 +69,8 @@ impl Settings {
                 s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
             } else if key.trim() == KEY_AMP_SCALE {
                 s.amp_scale = crate::view::AmpScale::parse(value).unwrap_or_default();
+            } else if key.trim() == KEY_CHANNEL_LAYOUT {
+                s.channel_layout = crate::channels::ChannelLayout::parse(value).unwrap_or_default();
             }
         }
         s
@@ -79,6 +84,8 @@ impl Settings {
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
         out.push_str("# amp_scale: the amplitude ruler's scale: db, percent, samples or normalized.\n");
         out.push_str(&format!("{KEY_AMP_SCALE} = {}\n", self.amp_scale.name()));
+        out.push_str("# channel_layout: the waveform's channels: stacked (one lane each) or layered (one lane, coloured).\n");
+        out.push_str(&format!("{KEY_CHANNEL_LAYOUT} = {}\n", self.channel_layout.name()));
         out
     }
 

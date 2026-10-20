@@ -404,3 +404,41 @@ fn f19_zoom_actions_answer_to_their_panel_names_and_amplitude_zoom_has_alt_keys(
     assert_eq!((amp_out.keys[0].alt, amp_out.keys[0].key), (true, "Minus"));
     assert_eq!(by_name("view.zoom.ampReset").map(|a| a.id), Some(ActionId::ZoomAmpReset));
 }
+
+#[test]
+fn f68_toggling_a_channel_enables_and_disables_it_for_edits() {
+    let dir = TempDir::new("f68-toggle");
+    let mut e = editor(&dir.0, &[vec![1.0; 1000], vec![2.0; 1000], vec![3.0; 1000]]);
+    assert_eq!(e.enabled_channels(), [0, 1, 2], "all on to start with");
+    e.toggle_channel(1).unwrap();
+    assert_eq!(e.enabled_channels(), [0, 2]);
+    // Silence now acts on channels 0 and 2 only.
+    e.run(ActionId::Silence, 100..200).unwrap();
+    let c = now(&e);
+    assert_eq!((c[0][150], c[1][150], c[2][150]), (0.0, 2.0, 0.0));
+    e.toggle_channel(1).unwrap();
+    assert_eq!(e.enabled_channels(), [0, 1, 2]);
+    assert_eq!(e.channels, wavcraft_core::ChannelMask::ALL, "all on is the plain 'every channel' mask again");
+}
+
+#[test]
+fn f68_the_last_enabled_channel_cannot_be_turned_off_and_a_missing_channel_is_refused() {
+    let dir = TempDir::new("f68-last");
+    let mut e = editor(&dir.0, &stereo(100));
+    e.toggle_channel(0).unwrap();
+    assert!(e.toggle_channel(1).is_err());
+    assert_eq!(e.enabled_channels(), [1]);
+    assert!(e.toggle_channel(2).is_err());
+}
+
+#[test]
+fn f68_the_layout_actions_are_in_the_table_and_run_without_changing_the_document() {
+    let dir = TempDir::new("f68-actions");
+    let mut e = editor(&dir.0, &stereo(100));
+    for name in ["view.channels.layered", "view.channels.stacked"] {
+        let a = by_name(name).unwrap();
+        assert!(e.enabled(a.id, &(0..0)));
+        let out = e.run(a.id, 10..20).unwrap();
+        assert!(!out.doc_changed);
+    }
+}

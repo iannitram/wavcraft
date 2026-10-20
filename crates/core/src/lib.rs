@@ -16,6 +16,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod actions;
+pub mod channels;
 pub mod doc;
 pub mod document;
 pub mod io;
@@ -27,6 +28,7 @@ pub mod spectrogram;
 pub mod store;
 pub mod view;
 
+pub use channels::{ChannelLayout, channel_color, channel_labels};
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;
 pub use doc::{Channel, DocState, Piece, SourceFormat};

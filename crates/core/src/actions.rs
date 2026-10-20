@@ -38,6 +38,8 @@ pub enum ActionId {
     ZoomAmpIn,
     ZoomAmpOut,
     ZoomAmpReset,
+    ChannelsLayered,
+    ChannelsStacked,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -170,6 +172,8 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomAmpIn, "view.zoom.ampIn", "Zoom In Vertically", &[alt("Equals")]),
     window(ActionId::ZoomAmpOut, "view.zoom.ampOut", "Zoom Out Vertically", &[alt("Minus")]),
     window(ActionId::ZoomAmpReset, "view.zoom.ampReset", "Reset Vertical Zoom", &[]),
+    window(ActionId::ChannelsLayered, "view.channels.layered", "Layer Channels", &[]),
+    window(ActionId::ChannelsStacked, "view.channels.stacked", "Stack Channels", &[]),
 ];
 
 /// The table row for `id`.
@@ -291,6 +295,27 @@ impl Editor {
         self.history.current().channel_count()
     }
 
+    /// The channels edits act on now, in order (the enable buttons' state).
+    pub fn enabled_channels(&self) -> Vec<usize> {
+        self.channels.active(self.channel_count())
+    }
+
+    /// Turn channel `ch` (0-based) on or off for edits. The last enabled channel stays on, so an
+    /// edit always has somewhere to act. All on is stored as [`ChannelMask::ALL`].
+    pub fn toggle_channel(&mut self, ch: usize) -> Result<(), String> {
+        let count = self.channel_count();
+        if ch >= count {
+            return Err(format!("no channel {ch}: the file has {count}"));
+        }
+        let now = self.channels.within(count);
+        let next = if now.contains(ch) { now.without(ch) } else { now.with(ch) };
+        if next.active(count).is_empty() {
+            return Err("at least one channel must stay enabled".to_string());
+        }
+        self.channels = if next.covers_all(count) { ChannelMask::ALL } else { next };
+        Ok(())
+    }
+
     /// Whether `id` can run with `selection` (the menu greys it out otherwise).
     pub fn enabled(&self, id: ActionId, selection: &Range<u64>) -> bool {
         let has_sel = selection.start < selection.end;
@@ -312,7 +337,9 @@ impl Editor {
             | ActionId::ZoomOutFull
             | ActionId::ZoomAmpIn
             | ActionId::ZoomAmpOut
-            | ActionId::ZoomAmpReset => self.len() > 0,
+            | ActionId::ZoomAmpReset
+            | ActionId::ChannelsLayered
+            | ActionId::ChannelsStacked => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
@@ -483,6 +510,8 @@ impl Editor {
             | ActionId::ZoomAmpIn
             | ActionId::ZoomAmpOut
             | ActionId::ZoomAmpReset
+            | ActionId::ChannelsLayered
+            | ActionId::ChannelsStacked
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast

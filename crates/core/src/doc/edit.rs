@@ -80,6 +80,11 @@ impl ChannelMask {
         ChannelMask(self.0 | ChannelMask::only(ch).0)
     }
 
+    /// This mask without channel `ch`.
+    pub fn without(self, ch: usize) -> ChannelMask {
+        ChannelMask(self.0 & !ChannelMask::only(ch).0)
+    }
+
     pub fn contains(self, ch: usize) -> bool {
         ch < 64 && self.0 & (1 << ch) != 0
     }

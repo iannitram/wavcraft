@@ -101,3 +101,15 @@ fn check_folder_makes_a_missing_folder_and_leaves_no_probe_behind() {
     assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
     assert!(check_folder(Path::new("")).is_err());
 }
+
+#[test]
+fn f68_the_channel_layout_is_kept_in_the_settings_file() {
+    use wavcraft_core::ChannelLayout;
+    assert_eq!(Settings::default().channel_layout, ChannelLayout::Stacked);
+    let dir = TempDir::new("f68-layout");
+    let file = dir.0.join("settings.txt");
+    let s = Settings { channel_layout: ChannelLayout::Layered, ..Settings::default() };
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file).channel_layout, ChannelLayout::Layered);
+    assert_eq!(Settings::parse("channel_layout = nonsense").channel_layout, ChannelLayout::Stacked);
+}

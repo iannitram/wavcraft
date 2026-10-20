@@ -15,7 +15,8 @@ use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::view::nav_hit;
 use wavcraft_core::{
-    AmpScale, AmpZoom, DocState, Document, FileFormat, History, NavPart, OpenError, Selection, SpectrogramParams, Viewport, format_time,
+    AmpScale, AmpZoom, ChannelLayout, DocState, Document, FileFormat, History, NavPart, OpenError, Selection, SpectrogramParams, Viewport,
+    channel_color, channel_labels, format_time,
 };
 
 use crate::control;
@@ -23,7 +24,6 @@ use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
-const WAVE: Color32 = Color32::from_rgb(64, 200, 140);
 const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
 const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
@@ -305,11 +305,35 @@ impl WaveApp {
     /// Use `scale` on the amplitude ruler and keep it in the settings file.
     fn set_amp_scale(&mut self, scale: AmpScale) {
         self.settings.amp_scale = scale;
+        self.save_settings("the ruler scale");
+    }
+
+    /// Show the waveform's channels layered or stacked, and keep the choice in the settings file.
+    fn set_channel_layout(&mut self, layout: ChannelLayout) {
+        self.settings.channel_layout = layout;
+        self.save_settings("the channel layout");
+    }
+
+    fn save_settings(&self, what: &str) {
         if let Some(file) = &self.settings_path
             && let Err(e) = self.settings.save(file)
         {
-            log::warn!(target: "wavcraft", "could not save the ruler scale to {}: {e}", file.display());
+            log::warn!(target: "wavcraft", "could not save {what} to {}: {e}", file.display());
         }
+    }
+
+    /// The open file's channel names (L, R… from its speaker mask when it has one).
+    fn channel_names(&self) -> Vec<String> {
+        self.editor.as_ref().map_or_else(Vec::new, |e| {
+            let doc = e.history.current();
+            channel_labels(doc.channel_count(), doc.source().channel_mask)
+        })
+    }
+
+    /// The enable buttons' state as `0,1` (channels edits act on), `-` with no file.
+    fn enabled_text(&self) -> String {
+        let list = self.editor.as_ref().map(Editor::enabled_channels).unwrap_or_default();
+        if list.is_empty() { "-".to_string() } else { list.iter().map(usize::to_string).collect::<Vec<_>>().join(",") }
     }
 
     fn selection_range(&self) -> Range<u64> {
@@ -368,6 +392,8 @@ impl WaveApp {
             ActionId::ZoomAmpIn => self.amp_zoom.by(2.0),
             ActionId::ZoomAmpOut => self.amp_zoom.by(0.5),
             ActionId::ZoomAmpReset => self.amp_zoom = AmpZoom::full(),
+            ActionId::ChannelsLayered => self.set_channel_layout(ChannelLayout::Layered),
+            ActionId::ChannelsStacked => self.set_channel_layout(ChannelLayout::Stacked),
             ActionId::ZoomToSelection if !self.selection.is_empty() => {
                 let (a, b) = (self.selection.start() as f64, self.selection.end() as f64);
                 self.view.frames_per_px = ((b - a) / f64::from(width)).max(1.0 / 64.0);
@@ -709,7 +735,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} view={} vzoom={:.2} ampscale={} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} view={} vzoom={:.2} ampscale={} layout={} channelnames={} enabled={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -720,14 +746,18 @@ impl WaveApp {
                             self.view_text(),
                             self.amp_zoom.get(),
                             self.settings.amp_scale.name(),
+                            self.settings.channel_layout.name(),
+                            self.channel_names().join(","),
+                            self.enabled_text(),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 view=0-0 vzoom=1.00 ampscale={} undo=- redo=-",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 view=0-0 vzoom=1.00 ampscale={} layout={} channelnames=- enabled=- undo=- redo=-",
                         u8::from(busy),
-                        self.settings.amp_scale.name()
+                        self.settings.amp_scale.name(),
+                        self.settings.channel_layout.name()
                     ),
                 }
             }
@@ -765,6 +795,18 @@ impl WaveApp {
                     format!("OK ampscale={}", scale.name())
                 }
                 None => "ERR AMPSCALE db|percent|samples|normalized".to_string(),
+            },
+            // Turn a channel on or off for edits (the amplitude ruler's buttons), 0-based.
+            "CHANNEL" => match rest.split_once(' ') {
+                Some(("toggle", n)) => match (n.trim().parse::<usize>(), self.editor.as_mut()) {
+                    (Ok(ch), Some(e)) => match e.toggle_channel(ch) {
+                        Ok(()) => format!("OK enabled={}", self.enabled_text()),
+                        Err(why) => format!("ERR {why}"),
+                    },
+                    (Err(_), _) => "ERR CHANNEL toggle <n>, n counted from 0".to_string(),
+                    (_, None) => "ERR no file is open".to_string(),
+                },
+                _ => "ERR CHANNEL toggle <n>".to_string(),
             },
             "ACTION" => match actions::by_name(rest) {
                 Some(a) => match self.run_action(a.id, ctx) {
@@ -1070,6 +1112,7 @@ impl WaveApp {
         let rect = Rect::from_min_max(pos2(amp_col.right(), full.top()), full.max);
         let ruler_resp = ui.interact(amp_col, ui.id().with("amp-ruler"), Sense::click());
         let mut chosen_scale = None;
+        let mut toggled = None;
         let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
         let width = rect.width().max(1.0);
         self.editor_width = width;
@@ -1146,22 +1189,57 @@ impl WaveApp {
             let cols = area.width().round().max(1.0) as usize;
             let zoom = self.amp_zoom.get();
             let scale = self.settings.amp_scale;
-            for ch in 0..channels {
-                let lane = lane(area, ch, channels);
+            let layered = self.settings.channel_layout == ChannelLayout::Layered;
+            let names = channel_labels(channels, doc.state.as_ref().and_then(|s| s.source().channel_mask));
+            let enabled = self.editor.as_ref().map_or_else(|| (0..channels).collect(), Editor::enabled_channels);
+            // Layered: one lane holds every channel (and one ruler); stacked: a lane each.
+            let lanes = if layered { 1 } else { channels };
+            for lane_index in 0..lanes {
+                let lane = lane(area, lane_index, lanes);
                 let mid = lane.center().y;
                 painter.line_segment([pos2(lane.left(), mid), pos2(lane.right(), mid)], Stroke::new(1.0, Color32::from_gray(50)));
                 let half = lane.height() * 0.5 - 2.0;
-                for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
-                    let x = lane.left() + i as f32 + 0.5;
-                    let (top, bottom) = (mid - (hi * zoom).clamp(-1.0, 1.0) * half, mid - (lo * zoom).clamp(-1.0, 1.0) * half);
-                    painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, WAVE));
+                let first = if layered { 0 } else { lane_index };
+                let last = if layered { channels } else { lane_index + 1 };
+                for ch in first..last {
+                    let [r, g, b] = channel_color(ch);
+                    // A channel turned off for edits is drawn faint; layered channels are see-through.
+                    let alpha = match (enabled.contains(&ch), layered) {
+                        (true, true) => 190,
+                        (true, false) => 255,
+                        (false, _) => 70,
+                    };
+                    let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(r, g, b, alpha));
+                    for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
+                        let x = lane.left() + i as f32 + 0.5;
+                        let (top, bottom) = (mid - (hi * zoom).clamp(-1.0, 1.0) * half, mid - (lo * zoom).clamp(-1.0, 1.0) * half);
+                        painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], stroke);
+                    }
                 }
-                draw_amp_ruler(
-                    &painter,
-                    Rect::from_min_max(pos2(amp_col.left(), lane.top()), pos2(amp_col.right(), lane.bottom())),
-                    scale,
-                    self.amp_zoom,
-                );
+                let ruler_lane = Rect::from_min_max(pos2(amp_col.left(), lane.top()), pos2(amp_col.right(), lane.bottom()));
+                draw_amp_ruler(&painter, ruler_lane, scale, self.amp_zoom);
+                // The channel buttons: the channel's name, in its colour when on for edits.
+                for (ch, name) in names.iter().enumerate().take(last).skip(first) {
+                    let row = (ch - first) as f32;
+                    let button = Rect::from_min_size(pos2(ruler_lane.left() + 2.0, ruler_lane.top() + 2.0 + row * 18.0), vec2(26.0, 16.0));
+                    if button.bottom() > ruler_lane.bottom() {
+                        continue;
+                    }
+                    let on = enabled.contains(&ch);
+                    let resp = ui.interact(button, ui.id().with(("channel-button", ch)), Sense::click());
+                    let [r, g, b] = channel_color(ch);
+                    painter.rect_filled(button, 3.0, if on { Color32::from_rgb(r, g, b) } else { Color32::from_gray(48) });
+                    painter.text(
+                        button.center(),
+                        egui::Align2::CENTER_CENTER,
+                        name,
+                        egui::FontId::monospace(10.0),
+                        if on { Color32::BLACK } else { Color32::from_gray(150) },
+                    );
+                    if resp.on_hover_text(format!("Channel {name}: {} for edits (click to toggle)", if on { "on" } else { "off" })).clicked() {
+                        toggled = Some(ch);
+                    }
+                }
             }
         }
         painter.rect_filled(Rect::from_min_max(amp_col.min, pos2(amp_col.right(), amp_col.top() + RULER_HEIGHT)), 0.0, Color32::from_gray(32));
@@ -1224,6 +1302,12 @@ impl WaveApp {
         }
         if let Some(scale) = chosen_scale {
             self.set_amp_scale(scale);
+        }
+        if let Some(ch) = toggled
+            && let Some(e) = self.editor.as_mut()
+            && let Err(why) = e.toggle_channel(ch)
+        {
+            self.error = Some(why);
         }
     }
 }
