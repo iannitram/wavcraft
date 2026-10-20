@@ -35,6 +35,10 @@
 //!   `SHORTCUT reset` (the defaults). Each saves the user's key file.
 //! - `SELECT_TIME <start> <end>` (each in the chosen time format, no spaces inside) → `OK selection=<a>-<b>`; `STATE` also reports `time_display`, `selection_text` and `snap_frames`
 //! - `SNAP_FRAME <frame>` → `OK frame=<snapped>` (what a ruler click or drag calls: SMPTE display and Snap to Frames on)
+//! - `SHORTCUTSETS` → `OK active=<name|default> sets=<name>|<name>…` (the saved sets; the built-in `default` is not listed)
+//! - `SHORTCUTSET save|switch|delete <name>` → `OK …` or `ERR …`: save the current keys as a named set (it becomes
+//!   the active one), switch to a set (`default` is the shipped table), delete a set (not `default`). The active set applies at start.
+//! - `KEYBOARD <mods>` (`none`, `Ctrl`, `Ctrl+Shift`…) → `OK mods=<mods> keys=<Key>=<command> …` (the visual keyboard's coloured keys)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
 //! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
