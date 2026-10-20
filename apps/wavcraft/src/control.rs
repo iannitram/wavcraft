@@ -15,6 +15,10 @@
 //! - `SHORTCUT set <command> <chord> [reassign]` → `OK …`, or `ERR conflict: <chord> is already <command>`
 //!   (with `reassign` the chord is taken from that command); `SHORTCUT clear <command>`;
 //!   `SHORTCUT reset` (the defaults). Each saves the user's key file.
+//! - `SHORTCUTSETS` → `OK active=<name|default> sets=<name>|<name>…` (the saved sets; the built-in `default` is not listed)
+//! - `SHORTCUTSET save|switch|delete <name>` → `OK …` or `ERR …`: save the current keys as a named set (it becomes
+//!   the active one), switch to a set (`default` is the shipped table), delete a set (not `default`). The active set applies at start.
+//! - `KEYBOARD <mods>` (`none`, `Ctrl`, `Ctrl+Shift`…) → `OK mods=<mods> keys=<Key>=<command> …` (the visual keyboard's coloured keys)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)

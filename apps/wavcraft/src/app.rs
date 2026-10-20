@@ -9,8 +9,10 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
+use wavcraft_core::keyboard::Mods;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
+use wavcraft_core::shortcut_sets::{DEFAULT_SET, SetStore};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
@@ -113,6 +115,8 @@ pub struct WaveApp {
     keymap: Keymap,
     /// Where the key file is (`None`: the system has no config folder).
     shortcuts_path: Option<PathBuf>,
+    /// The saved shortcut sets (A293), in the config folder.
+    shortcut_sets: Option<SetStore>,
     /// Edit › Keyboard Shortcuts…, while it is open.
     shortcut_dialog: Option<ShortcutDialog>,
 }
@@ -141,6 +145,15 @@ impl WaveApp {
         let shortcuts_path = wavcraft_core::shortcuts::default_path();
         let (keymap, shortcuts_warning) = shortcuts_path.as_deref().map(wavcraft_core::shortcuts::load).unwrap_or_default();
         if let Some(w) = shortcuts_warning {
+            log::warn!(target: "wavcraft", "{w}");
+        }
+        // The active shortcut set, when there is one, is what the app starts with.
+        let shortcut_sets = SetStore::default_store();
+        let (keymap, set_warning) = match &shortcut_sets {
+            Some(store) => store.startup(keymap),
+            None => (keymap, None),
+        };
+        if let Some(w) = set_warning {
             log::warn!(target: "wavcraft", "{w}");
         }
         if let Err(e) = keymap.check() {
@@ -179,6 +192,7 @@ impl WaveApp {
             confirm_clear_history: false,
             keymap,
             shortcuts_path,
+            shortcut_sets,
             shortcut_dialog: None,
             control: {
                 let ctx = cc.egui_ctx.clone();
@@ -761,6 +775,7 @@ impl WaveApp {
                 Err(e) => format!("ERR {e}"),
             },
             "SHORTCUTS" | "SHORTCUT" => self.shortcut_request(cmd, rest),
+            "SHORTCUTSETS" | "SHORTCUTSET" | "KEYBOARD" => self.shortcut_set_request(cmd, rest),
             // Minimise or restore the window (scripted checks of hidden-window behaviour).
             "WINDOW" => match rest {
                 "minimize" => {
@@ -839,6 +854,7 @@ impl WaveApp {
     /// Apply a shortcut change and save the key file. `Err` says what went wrong (a conflict, or
     /// the file not saved: the change still holds until the app closes).
     fn change_shortcuts(&mut self, change: Change) -> Result<String, String> {
+        let edits_keys = matches!(change, Change::Assign { .. } | Change::Clear(_));
         let outcome = match change {
             Change::Assign { command, chord, reassign: false } => self
                 .keymap
@@ -855,9 +871,42 @@ impl WaveApp {
             }
             Change::Reset => {
                 self.keymap.reset();
+                self.set_active_set(None);
                 "default shortcuts restored".to_string()
             }
+            Change::SaveSet(name) => {
+                let store = self.shortcut_sets.as_ref().ok_or("no config folder to keep sets in")?;
+                let name = store.save(&name, &self.keymap)?;
+                self.set_active_set(Some(&name));
+                format!("saved the shortcut set {name}")
+            }
+            Change::SwitchSet(name) => {
+                let store = self.shortcut_sets.as_ref().ok_or("no config folder to keep sets in")?;
+                let map = store.load(&name)?;
+                self.keymap = map;
+                let active = (!name.eq_ignore_ascii_case(DEFAULT_SET)).then_some(name.as_str());
+                self.set_active_set(active);
+                format!("switched to the shortcut set {}", if active.is_some() { name.as_str() } else { DEFAULT_SET })
+            }
+            Change::DeleteSet(name) => {
+                let store = self.shortcut_sets.as_ref().ok_or("no config folder to keep sets in")?;
+                let was_active = store.active().as_deref() == Some(name.as_str());
+                store.delete(&name)?;
+                if was_active {
+                    // The set in use is gone: back to the shipped table.
+                    self.keymap.reset();
+                    self.set_active_set(None);
+                }
+                format!("deleted the shortcut set {name}")
+            }
         };
+        // Edits to the set in use are kept in it.
+        if edits_keys
+            && let (Some(store), Some(active)) = (&self.shortcut_sets, self.shortcut_sets.as_ref().and_then(SetStore::active))
+            && let Err(e) = store.save(&active, &self.keymap)
+        {
+            log::warn!(target: "wavcraft", "{e}");
+        }
         if let Err(e) = self.keymap.check() {
             log::error!(target: "wavcraft", "keyboard shortcuts conflict: {e}");
         }
@@ -867,6 +916,47 @@ impl WaveApp {
             return Err(format!("changed, but the key file {} could not be saved: {e}", path.display()));
         }
         Ok(outcome)
+    }
+
+    /// Remember which set is in use (`None`: the default). A failure is logged, not fatal.
+    fn set_active_set(&self, name: Option<&str>) {
+        if let Some(store) = &self.shortcut_sets
+            && let Err(e) = store.set_active(name)
+        {
+            log::warn!(target: "wavcraft", "could not remember the active shortcut set: {e}");
+        }
+    }
+
+    /// `SHORTCUTSETS`, `SHORTCUTSET save|switch|delete <name>` and `KEYBOARD <mods>` on the
+    /// control channel (see `control.rs`).
+    fn shortcut_set_request(&mut self, verb: &str, rest: &str) -> String {
+        match verb {
+            "SHORTCUTSETS" => {
+                let Some(store) = &self.shortcut_sets else { return "ERR no config folder to keep sets in".to_string() };
+                let active = store.active().unwrap_or_else(|| DEFAULT_SET.to_string());
+                format!("OK active={active} sets={}", store.list().join("|"))
+            }
+            "KEYBOARD" => match Mods::parse(rest) {
+                Ok(mods) => {
+                    let keys: Vec<String> = self.keymap.keys_with(mods).iter().map(|(k, c)| format!("{k}={}", c.name())).collect();
+                    format!("OK mods={} keys={}", mods.text(), keys.join(" "))
+                }
+                Err(e) => format!("ERR {e}"),
+            },
+            _ => {
+                let (action, name) = rest.split_once(char::is_whitespace).map(|(a, n)| (a, n.trim())).unwrap_or((rest.trim(), ""));
+                let change = match action {
+                    "save" => Ok(Change::SaveSet(name.to_string())),
+                    "switch" => Ok(Change::SwitchSet(name.to_string())),
+                    "delete" => Ok(Change::DeleteSet(name.to_string())),
+                    _ => Err("SHORTCUTSET save|switch|delete <name>".to_string()),
+                };
+                match change.and_then(|c| self.change_shortcuts(c)) {
+                    Ok(m) => format!("OK {m}"),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+        }
     }
 
     /// `SHORTCUTS` and `SHORTCUT set|clear|reset` on the control channel (see `control.rs`).
@@ -1197,7 +1287,9 @@ impl eframe::App for WaveApp {
         }
         self.insert_silence_dialog(&ctx);
         if let Some(mut dialog) = self.shortcut_dialog.take() {
-            let (open, change) = dialog.show(&ctx, &self.keymap, cfg!(target_os = "macos"));
+            let sets = self.shortcut_sets.as_ref().map(SetStore::list).unwrap_or_default();
+            let active = self.shortcut_sets.as_ref().and_then(SetStore::active);
+            let (open, change) = dialog.show(&ctx, &self.keymap, cfg!(target_os = "macos"), &sets, active.as_deref());
             if let Some(change) = change
                 && let Err(e) = self.change_shortcuts(change)
             {
