@@ -5,8 +5,9 @@
 //! by `WAVCRAFT_CONTROL_TOKEN_FILE` (made owner-only with a CSPRNG token when missing; an
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
-//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
+//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label> band=<lo-hi|none>` (`band=` is last; a parser must not assume `redo=` is)
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
+//! - `GESTURE marquee <frame0> <frame1> <hz0> <hz1>` / `GESTURE marquee_move <dframes> <dhz>` → `OK selection=<a>-<b> band=<lo-hi>`
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)

@@ -1,7 +1,11 @@
 //! B135 / A052 / B141 / A115: the time + frequency selection, its feather mask, its move, and
 //! the Marquee tool's place in the tool model. No window: the maths the Marquee tool draws with.
 
-use wavcraft_core::actions::{ActionId, TABLE, by_name};
+use wavcraft_core::actions::{ActionId, Editor, TABLE, by_name};
+use wavcraft_core::doc::edit::Crossfades;
+use wavcraft_core::doc::history::History;
+use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
+use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 use wavcraft_core::view::{Band, SpectralSelection, fraction_of_hz, hz_at_fraction};
 use wavcraft_core::{Selection, Tool, Viewport};
 
@@ -120,4 +124,35 @@ fn the_marquee_tool_is_enabled_on_e_and_the_key_is_free() {
     assert_eq!(a.id, ActionId::ToolMarquee);
     let e_rows = TABLE.iter().filter(|r| r.keys.iter().any(|k| k.key == "E" && !k.cmd && !k.shift && !k.alt)).count();
     assert_eq!(e_rows, 1, "no other action uses a bare E");
+}
+
+/// The selection operations a time-only selection (no band) has always had give the same results:
+/// the band is a separate value that none of them reads or writes.
+#[test]
+fn every_existing_selection_operation_on_a_time_only_selection_is_unchanged() {
+    // Selection arithmetic (the same cases as the model's own tests).
+    let s = Selection { anchor: 100, head: 200 };
+    assert_eq!((s.start(), s.end(), s.len(), s.is_empty()), (100, 200, 100, false));
+    assert_eq!(s.extend_to(300, 1000), Selection { anchor: 100, head: 300 });
+    assert_eq!(s.extend_to(40, 1000), Selection { anchor: 200, head: 40 });
+    assert_eq!(Selection::at(500).extend_to(5000, 1000).end(), 1000);
+    assert!(Selection::at(42).is_empty());
+    // The editor's selection actions, run on the selection a marquee left behind.
+    let dir = std::env::temp_dir().join(format!("wavcraft-spectral-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::create_with(&dir, StoreOptions { cache_bytes: 64 << 20, ..StoreOptions::default() }).unwrap();
+    let data: Vec<f32> = (0..777).map(|k| k as f32).collect();
+    let chans = vec![Channel::from_pieces(data.chunks(BLOCK_FRAMES).map(|b| Piece::whole(store.append(b).unwrap()).unwrap()))];
+    let doc = DocState::new(store.clone(), chans, RATE, SourceFormat::synthetic(RATE, 1)).unwrap();
+    let mut e = Editor::new(History::new(doc, u64::MAX));
+    e.crossfades = Crossfades::NONE;
+    let band: Option<Band> = None;
+    assert_eq!(e.run(ActionId::SelectAll, 3..3).unwrap().selection, 0..777);
+    assert_eq!(e.run(ActionId::DeselectAll, 10..50).unwrap().selection, 10..10);
+    assert_eq!(e.run(ActionId::ClearTimeSelection, 10..50).unwrap().selection, 10..10);
+    assert_eq!(e.run(ActionId::CursorToStart, 10..50).unwrap().selection, 0..0);
+    assert_eq!(e.run(ActionId::CursorToEnd, 10..50).unwrap().selection, 777..777);
+    assert_eq!(band, None, "none of them made a band");
+    let _ = std::fs::remove_dir_all(&dir);
 }

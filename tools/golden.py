@@ -75,7 +75,12 @@ class Control:
             head, _, labels = answer.partition(" undo=")
             fields = dict(kv.split("=", 1) for kv in head.split()[1:])
             undo, _, redo = labels.partition(" redo=")
-            fields.update(undo=undo, redo=redo)
+            # Keys appended after redo (band=) are not part of the label: a label is free text, so
+            # split off the last " band=" token.
+            redo, sep, band = redo.rpartition(" band=")
+            if not sep:
+                redo, band = band, ""
+            fields.update(undo=undo, redo=redo, band=band)
             if not wait or fields.get("busy") == "0" or time.time() - t0 > timeout:
                 return fields
             time.sleep(0.2)
@@ -112,6 +117,12 @@ def edits(c, checks, saved_path=None):
     c.ask("WINDOW restore")
     time.sleep(1.0)
     check("the control channel answers while the window is minimised", hidden_ok, f"{time.time() - t0:.2f} s; {st}")
+    # A marquee sets a band; any other change of the time selection clears it.
+    m = c.ask(f"GESTURE marquee 0 {sec} 1000 4000")
+    st = c.state(wait=False)
+    c.ask(f"SELECT 0 {sec // 2}")
+    st2 = c.state(wait=False)
+    check("a marquee sets the band and a plain SELECT clears it", m.endswith("band=1000-4000") and st["band"] == "1000-4000" and st2["band"] == "none", f"{m}; {st['band']} -> {st2['band']}")
     c.ask(f"SELECT {60 * sec} {70 * sec}")
     a = c.ask("ACTION edit.delete")
     st = c.state()

@@ -34,8 +34,8 @@ const BAND_OUTLINE: Color32 = Color32::from_rgb(240, 220, 90);
 /// A Marquee drag in progress: drawing a new rectangle, or moving the existing one.
 #[derive(Clone, Copy)]
 enum MarqueeDrag {
-    Draw { frame0: usize, hz0: f32 },
-    Move { from: SpectralSelection, frame0: usize, hz0: f32 },
+    Draw { frame0: usize, hz0: f32, ch: usize },
+    Move { from: SpectralSelection, frame0: usize, hz0: f32, ch: usize },
 }
 
 /// A file being opened on a worker thread.
@@ -313,6 +313,7 @@ impl WaveApp {
         if self.settings.right_click_menu || self.tool != Tool::TimeSelection {
             return false;
         }
+        self.band = None;
         self.selection = self.selection.extend_to(frame, total);
         true
     }
@@ -395,6 +396,7 @@ impl WaveApp {
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         match editor.run(id, sel) {
             Ok(out) => {
+                self.band = None;
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
                 if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd) {
                     self.player.stop();
@@ -447,10 +449,12 @@ impl WaveApp {
             }
             ActionId::SetIn => {
                 let end = self.selection.end().max(playhead);
+                self.band = None;
                 self.selection = Selection { anchor: playhead, head: end };
             }
             ActionId::SetOut => {
                 let start = self.selection.start().min(playhead);
+                self.band = None;
                 self.selection = Selection { anchor: start, head: playhead };
             }
             ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
@@ -515,6 +519,7 @@ impl WaveApp {
         let frames = (secs * f64::from(editor.history.current().sample_rate())).round() as u64;
         match editor.insert_silence(at, frames) {
             Ok(out) => {
+                self.band = None;
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
                 self.notice = out.message;
                 self.error = None;
@@ -564,6 +569,7 @@ impl WaveApp {
             && editor.history.go_to(i).is_some()
         {
             let len = editor.history.current().len_frames() as usize;
+            self.band = None;
             self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
             self.rebuild(ui.ctx());
         }
@@ -813,6 +819,7 @@ impl WaveApp {
                 match (it.next(), it.next()) {
                     (Some(Ok(a)), Some(Ok(b))) => {
                         let len = self.editor.as_ref().map_or(0, |e| e.history.current().len_frames() as usize);
+                        self.band = None;
                         self.selection = Selection { anchor: a.min(len), head: b.min(len) };
                         format!("OK selection={}", sel(self))
                     }
@@ -866,6 +873,7 @@ impl WaveApp {
                 (Ok(i), Some(e)) if self.saving.is_none() => match e.history.go_to(i) {
                     Some(_) => {
                         let len = e.history.current().len_frames() as usize;
+                        self.band = None;
                         self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
                         self.rebuild(ctx);
                         "OK".to_string()
@@ -1111,7 +1119,7 @@ impl WaveApp {
         }
         self.view.clamp(width, frames);
 
-        if ui.input(|i| i.key_pressed(Key::Escape)) {
+        if ui.input(|i| i.key_pressed(Key::Escape)) && !ui.ctx().egui_wants_keyboard_input() {
             self.band = None;
             self.marquee = None;
         }
@@ -1120,10 +1128,15 @@ impl WaveApp {
         let spectrum_hit = split_areas(rect, self.show_waveform, self.show_spectrum).3.filter(|_| self.tool == Tool::Marquee);
         let (axis_lo, axis_hi) = self.params.range_hz(rate);
         let log = self.params.log_freq;
-        let hz_at = |pos: Pos2| -> f32 {
-            let Some(area) = spectrum_hit else { return axis_lo };
+        // The channel whose lane the pointer is over.
+        let lane_of = |pos: Pos2| -> usize {
+            let Some(area) = spectrum_hit else { return 0 };
             let h = area.height() / channels as f32;
-            let ch = (((pos.y - area.top()) / h.max(1.0)).floor().max(0.0) as usize).min(channels - 1);
+            (((pos.y - area.top()) / h.max(1.0)).floor().max(0.0) as usize).min(channels - 1)
+        };
+        // The frequency at `pos` on lane `ch`'s axis (a drag keeps the lane it began in).
+        let hz_at = |pos: Pos2, ch: usize| -> f32 {
+            let Some(area) = spectrum_hit else { return axis_lo };
             let l = lane(area, ch, channels).shrink2(vec2(0.0, 1.0));
             hz_at_fraction(axis_lo, axis_hi, log, 1.0 - (pos.y - l.top()) / l.height().max(1.0))
         };
@@ -1134,25 +1147,28 @@ impl WaveApp {
             && area.contains(ui.input(|i| i.pointer.press_origin()).unwrap_or(pos))
         {
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
-            let (frame0, hz0) = (frame_at(&self.view, origin), hz_at(origin));
+            let (ch, frame0) = (lane_of(origin), frame_at(&self.view, origin));
+            let hz0 = hz_at(origin, ch);
             let inside =
                 self.spectral().filter(|s| (s.time.start()..=s.time.end()).contains(&frame0) && (s.band.lo_hz..=s.band.hi_hz).contains(&hz0));
             self.marquee = Some(match inside {
-                Some(from) => MarqueeDrag::Move { from, frame0, hz0 },
-                None => MarqueeDrag::Draw { frame0, hz0 },
+                Some(from) => MarqueeDrag::Move { from, frame0, hz0, ch },
+                None => MarqueeDrag::Draw { frame0, hz0, ch },
             });
         }
         if let Some(drag) = self.marquee {
             if response.dragged_by(egui::PointerButton::Primary)
                 && let Some(pos) = response.interact_pointer_pos()
             {
-                let (frame, hz) = (frame_at(&self.view, pos), hz_at(pos));
+                let frame = frame_at(&self.view, pos);
                 match drag {
-                    MarqueeDrag::Draw { frame0, hz0 } => {
+                    MarqueeDrag::Draw { frame0, hz0, ch } => {
+                        let hz = hz_at(pos, ch);
                         self.selection = Selection { anchor: frame0, head: frame };
                         self.band = Some(Band { feather_hz: self.feather_hz, feather_ms: self.feather_ms, ..Band::new(hz0, hz, nyquist) });
                     }
-                    MarqueeDrag::Move { from, frame0, hz0 } => {
+                    MarqueeDrag::Move { from, frame0, hz0, ch } => {
+                        let hz = hz_at(pos, ch);
                         let moved = from.moved(frame as i64 - frame0 as i64, hz - hz0, frames, nyquist);
                         self.selection = moved.time;
                         self.band = Some(moved.band);
@@ -1179,9 +1195,9 @@ impl WaveApp {
         {
             let frame = frame_at(&self.view, pos);
             let on_band = spectrum_hit.is_some_and(|a| a.contains(pos))
-                && self
-                    .spectral()
-                    .is_some_and(|s| (s.time.start()..=s.time.end()).contains(&frame) && (s.band.lo_hz..=s.band.hi_hz).contains(&hz_at(pos)));
+                && self.spectral().is_some_and(|s| {
+                    (s.time.start()..=s.time.end()).contains(&frame) && (s.band.lo_hz..=s.band.hi_hz).contains(&hz_at(pos, lane_of(pos)))
+                });
             if !on_band {
                 self.band = None;
                 self.selection = Selection::at(frame);
