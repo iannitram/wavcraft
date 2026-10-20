@@ -8,6 +8,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
+use wavcraft_core::doc::span::EditSpan;
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
@@ -504,7 +505,7 @@ impl WaveApp {
             let _ = tx.send(Document::from_state(path, state));
             ctx.request_repaint();
         });
-        self.player.stop();
+        // Playback goes on with the old audio until the new is ready (f48: edit while playing).
         self.rebuilding = Some(rx);
     }
 
@@ -518,7 +519,12 @@ impl WaveApp {
         self.rebuilding = None;
         match result {
             Ok(doc) => {
-                self.player.set_audio(Some(doc.audio.clone()));
+                // Hand the edited audio to the player without stopping it: the playhead keeps its
+                // place in the music across the edit (EditSpan between the two states).
+                match (self.doc.as_ref().and_then(|d| d.state.as_ref()), doc.state.as_ref()) {
+                    (Some(old), Some(new)) => self.player.replace_audio(Some(doc.audio.clone()), &EditSpan::between(old, new)),
+                    _ => self.player.set_audio(Some(doc.audio.clone())),
+                }
                 self.doc = Some(doc);
                 self.generation += 1;
                 self.spectrum = None;
@@ -677,7 +683,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} playing={} position={} device={} reopens={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -685,15 +691,48 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            u8::from(self.player.is_playing()),
+                            self.player.position_exact().max(0.0) as u64,
+                            self.player.device.replace(' ', "_"),
+                            self.player.reopens(),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 playing={} position={} device={} reopens={} undo=- redo=-",
+                        u8::from(busy),
+                        u8::from(self.player.is_playing()),
+                        self.player.position_exact().max(0.0) as u64,
+                        self.player.device.replace(' ', "_"),
+                        self.player.reopens()
+                    ),
                 }
             }
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
+                "OK".to_string()
+            }
+            // Start playing from <from> to <to> (frames), or from the selection (to its end, or the
+            // file's end for a cursor), as Space does when stopped.
+            "PLAY" => {
+                let frames = self.editor.as_ref().map_or(0, |e| e.history.current().len_frames() as usize);
+                let nums: Vec<_> = rest.split_whitespace().map(str::parse::<usize>).collect();
+                let (from, to) = match nums.as_slice() {
+                    [] if self.selection.is_empty() => (self.selection.start(), frames),
+                    [] => (self.selection.start(), self.selection.end()),
+                    [Ok(a), Ok(b)] => (*a, *b),
+                    _ => return "ERR PLAY [<from> <to>], in frames".to_string(),
+                };
+                if frames == 0 || self.doc.is_none() {
+                    return "ERR no file is open".to_string();
+                }
+                self.player.play(from.min(frames), to.min(frames));
+                format!("OK playing={}", u8::from(self.player.is_playing()))
+            }
+            // Simulate the system's default output device changing (the next frame reopens it).
+            "DEVICE_CHANGED" => {
+                self.player.simulate_device_change();
                 "OK".to_string()
             }
             "SELECT" => {
@@ -1045,6 +1084,12 @@ impl eframe::App for WaveApp {
         self.finish_opening();
         self.finish_rebuild();
         self.finish_saving(ctx);
+        // Follow a change of the default output device (reopen, same position); while playing,
+        // look again soon even if the window is hidden and nothing else asks for a frame.
+        self.player.maintain();
+        if self.player.is_playing() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
