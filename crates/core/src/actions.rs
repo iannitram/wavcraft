@@ -43,6 +43,12 @@ pub enum ActionId {
     ZeroRightToRight,
     RepeatLast,
     RepeatLastDialog,
+    /// Window › Amplitude Statistics: show the panel.
+    StatsShow,
+    /// The panel's navigation: cursor to the peak, to the next / previous possibly clipped run.
+    StatsGotoPeak,
+    StatsNextClip,
+    StatsPrevClip,
 }
 
 /// Which part of the program carries an action out.
@@ -160,6 +166,10 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomIn, "view.zoomIn", "Zoom In", &[key("Equals")]),
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
+    window(ActionId::StatsShow, "stats.show", "Amplitude Statistics", &[]),
+    window(ActionId::StatsGotoPeak, "stats.goto_peak", "Go to Peak", &[]),
+    window(ActionId::StatsNextClip, "stats.next_clip", "Next Possibly Clipped Run", &[]),
+    window(ActionId::StatsPrevClip, "stats.prev_clip", "Previous Possibly Clipped Run", &[]),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
 ];
 
@@ -288,6 +298,7 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::StatsShow | ActionId::StatsGotoPeak | ActionId::StatsNextClip | ActionId::StatsPrevClip => self.len() > 0,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -459,6 +470,10 @@ impl Editor {
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast
+            | ActionId::StatsShow
+            | ActionId::StatsGotoPeak
+            | ActionId::StatsNextClip
+            | ActionId::StatsPrevClip
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft

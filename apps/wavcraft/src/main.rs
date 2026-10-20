@@ -13,6 +13,7 @@ mod control;
 mod player;
 mod selflog;
 mod spectrum;
+mod statspanel;
 #[cfg(windows)]
 mod win_acl;
 
