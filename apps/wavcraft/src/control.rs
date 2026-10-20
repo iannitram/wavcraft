@@ -103,7 +103,7 @@ fn check_private(_path: &Path, meta: &std::fs::Metadata) -> std::io::Result<()> 
 
 /// Windows: an existing token file is used only when its DACL is protected (nothing inherited)
 /// and every allow entry is this process's user (by SID). Anything else is refused, as on Unix;
-/// it is never repaired, since others may already have read it (Hyperion's check of wavcraft#8).
+/// it is never repaired, since others may already have read it (the Windows dev machine's check of wavcraft#8).
 #[cfg(not(unix))]
 fn check_private(path: &Path, _meta: &std::fs::Metadata) -> std::io::Result<()> {
     match crate::win_acl::others_can_read(path)? {
@@ -213,7 +213,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Hyperion's check of wavcraft#8 (2026-10-19): on Windows an existing token file whose ACL
+    /// The Windows dev machine's check of wavcraft#8 (2026-10-19): on Windows an existing token file whose ACL
     /// lets others read it (inherited entries, or the Users group) is refused, not repaired.
     #[cfg(windows)]
     #[test]

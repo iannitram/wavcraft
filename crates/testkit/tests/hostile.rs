@@ -1,4 +1,4 @@
-//! The Legion Go review's W8 (`verification-by-legiongo.md`, 2026-10-16): a session folder that
+//! The Linux handheld review's W8 (2026-10-16): a session folder that
 //! can't be written is named as such (not as an unreadable file), and hostile WAV headers are
 //! refused or opened with a warning, never a panic.
 

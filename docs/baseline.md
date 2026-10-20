@@ -1,6 +1,6 @@
 # Baseline numbers
 
-*Measured 2026-10-15 on Hyperion (Windows 11, 24 rayon threads, 32 GB), release build, by task 02
+*Measured 2026-10-15 on the Windows dev machine (Windows 11, 24 rayon threads, 32 GB), release build, by task 02
 (`plan/tasks/02-code-map-test-kit-baseline.md` in the vault). Code: commit `4176652` (the binaries
 were built from `50e8dfe`; `4176652` only reformats the source). Tool: `wavcraft-bench FILE`
 (`crates/testkit`), run through the build gate in the default slot. Files from
@@ -49,7 +49,7 @@ samples made in memory):
 To repeat: `wavcraft-testkit B:/dev/craft/wavcraft-testkit-out --long`, then
 `wavcraft-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav`, both through the gate.
 
-## Task 03: the store and streamed open (2026-10-15, Hyperion)
+## Task 03: the store and streamed open (2026-10-15, the Windows dev machine)
 
 *Release build, `wavcraft-store-bench FILE` (`crates/testkit`), run through the build gate in the
 default slot, branch `feat/03-store-and-document`. Session store on C: (Samsung SSD 970 EVO Plus
@@ -61,20 +61,19 @@ and disk. Three runs on the 3-hour file; the range is given.*
 
 | Measure | `long-3h-48k-stereo-16.wav` (2.07 GB, 518,400,000 frames) | Task 02 (whole-file decode) | Target |
 |---|---|---|---|
-| Streamed open: time | Hyperion, source from the OS file cache: 1.75 / 1.85 / 1.92 s, once 3.46 s. The Legion Go (see below): 3.0-4.1 s (store written: 4.147 GB of f32, 7,911 blocks per channel; 1.2-2.4 GB/s) | 1.55 s | under 10 s |
+| Streamed open: time | the Windows dev machine, source from the OS file cache: 1.75 / 1.85 / 1.92 s, once 3.46 s. The Linux handheld (see below): 3.0-4.1 s (store written: 4.147 GB of f32, 7,911 blocks per channel; 1.2-2.4 GB/s) | 1.55 s | under 10 s |
 | Streamed open: peak memory above the process at rest | **5.3 MB** (peak working set 13-14 MB) | 6.58 GB peak | ≤ 300 MB |
 | Sequential read of the whole document, 64 K frames at a time, block cache cleared first | 1,292-1,443 ms (2.9-3.2 GB/s of f32); again: 1,539-1,673 ms | 598 ms (from RAM) | record |
 | 10,000 random 4,096-frame reads, 512 MB cache (12 % of the document; 86 % of reads miss) | median **50.8-52.2 µs**, p90 108-125 µs, p99 222-258 µs, worst 405-632 µs (first run, before reusing evicted buffers: median 60.7 µs) | n/a | median under 50 µs |
 | Closing (session folder deleted) | 468 ms | n/a | |
 
 **Open time depends on the machine and the cache (2026-10-16).** The figures under 2 s above are
-Hyperion's, with the source file in the OS file cache; they are not a general claim. The Legion
-Go's verifier (`verification-by-legiongo.md` W2) opened a 3-hour stereo 48 kHz 24-bit WAV
+the Windows dev machine's, with the source file in the OS file cache; they are not a general claim. A Linux handheld's verifier (the Linux handheld review's W2) opened a 3-hour stereo 48 kHz 24-bit WAV
 (3.11 GB, ext4) with `io::open` in 4.05 s with the file's pages evicted (fadvise) and 3.05 to
 3.68 s warm; `wavcraft-store-bench` gave 3.65 s. The target stays under 10 s, which both machines
 meet.
 
-**Cold disk:** the OS file cache could not be emptied (Windows has no per-file drop and Hyperion has
+**Cold disk:** the OS file cache could not be emptied (Windows has no per-file drop and the Windows dev machine has
 32 GB), so the "cleared" runs above are cold for WavCraft's block cache only; the packs were still
 in the OS cache. A real cold read from this NVMe would be slower. Not measured.
 
@@ -93,7 +92,7 @@ To repeat: `wavcraft-testkit B:/dev/craft/wavcraft-testkit-out --long --huge`, t
 `wavcraft-store-bench B:/dev/craft/wavcraft-testkit-out/huge-4h10m-48k-stereo-24-rf64.wav --huge`,
 all through the gate.
 
-## Task 04: edits and undo history (2026-10-15, Hyperion)
+## Task 04: edits and undo history (2026-10-15, the Windows dev machine)
 
 *Release build, `wavcraft-edit-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav`
 (block cache 512 MB, as on an 8 GB Mac) and test 10 (`cargo test --release -p wavcraft-testkit
