@@ -10,8 +10,9 @@ use std::time::{Duration, Instant, SystemTime};
 use wavcraft_core::actions::Editor;
 use wavcraft_core::autosave::{Autosaver, Recoverable, Snapshot, recoverable_sessions};
 
-/// The most often a journal is handed to the writer. Edits in between are in the next one.
-const INTERVAL: Duration = Duration::from_secs(2);
+/// The default for how often a journal is handed to the writer (the Auto Save preference
+/// overrides it). Edits in between are in the next one.
+const INTERVAL: Duration = Duration::from_secs(wavcraft_core::settings::DEFAULT_INTERVAL_SECS);
 
 /// What the owner chose in the recovery window.
 pub enum Choice {
@@ -33,6 +34,9 @@ pub struct Recovery {
     saver: Option<(PathBuf, Autosaver)>,
     last_sig: Option<(usize, usize, usize, usize, usize)>,
     last_offer: Option<Instant>,
+    /// Auto Save preferences: on or off, and the most often a journal is handed over.
+    enabled: bool,
+    interval: Duration,
 }
 
 impl Recovery {
@@ -59,7 +63,16 @@ impl Recovery {
             saver: None,
             last_sig: None,
             last_offer: None,
+            enabled: true,
+            interval: INTERVAL,
         }
+    }
+
+    /// Apply the Auto Save preferences (called every frame; cheap). Turning Auto Save off stops
+    /// new journals; the one already on disk stays, as it is the newest durable state.
+    pub fn configure(&mut self, enabled: bool, interval_secs: u64) {
+        self.enabled = enabled;
+        self.interval = Duration::from_secs(interval_secs.max(1));
     }
 
     /// Take the scan's answer when it arrives.
@@ -87,6 +100,9 @@ impl Recovery {
     /// then loses nothing); once there is one, it follows every change, undo included.
     pub fn track(&mut self, editor: Option<&Editor>, unsaved: bool, ctx: &egui::Context) {
         let Some(editor) = editor else { return };
+        if !self.enabled {
+            return;
+        }
         let dir = editor.history.current().store().dir().to_path_buf();
         if self.saver.as_ref().is_none_or(|(d, _)| *d != dir) {
             // A new document: the old writer goes first (so its store can close), then the new one.
@@ -109,7 +125,7 @@ impl Recovery {
         if Some(sig) == self.last_sig || !(unsaved || saver.stats().written > 0 || saver.stats().offered > 0) {
             return;
         }
-        if let Some(wait) = self.last_offer.and_then(|t| INTERVAL.checked_sub(t.elapsed())) {
+        if let Some(wait) = self.last_offer.and_then(|t| self.interval.checked_sub(t.elapsed())) {
             ctx.request_repaint_after(wait);
             return;
         }

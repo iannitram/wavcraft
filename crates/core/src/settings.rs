@@ -10,6 +10,12 @@
 //! [`ENV_SESSION_DIR`] environment variable, the settings file, the default
 //! ([`default_sessions_root`](crate::store::default_sessions_root)). A folder that can't be made
 //! or written falls back to the default, with a message saying why.
+//!
+//! Preferences (A278, A281; older files without these keys keep working, each key missing gives
+//! its default): `autosave_enabled` (default on), `autosave_interval_secs` (how often the journal
+//! may be written, default 2), `autosave_keep_days` (how many days "Clean up old sessions" keeps
+//! a session, default 30), and `cache_mb` (the block cache's RAM budget; empty: the default,
+//! [`default_cache_bytes`](crate::store::default_cache_bytes)).
 
 use std::ffi::OsString;
 use std::io;
@@ -21,12 +27,58 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_AUTOSAVE: &str = "autosave_enabled";
+const KEY_INTERVAL: &str = "autosave_interval_secs";
+const KEY_KEEP_DAYS: &str = "autosave_keep_days";
+const KEY_CACHE_MB: &str = "cache_mb";
+
+/// The journal is written at most this often by default (seconds).
+pub const DEFAULT_INTERVAL_SECS: u64 = 2;
+/// Allowed journal intervals, seconds.
+pub const INTERVAL_RANGE: std::ops::RangeInclusive<u64> = 1..=3600;
+/// The default age, in days, at which "Clean up old sessions" may remove a session.
+pub const DEFAULT_KEEP_DAYS: u32 = 30;
+/// Allowed values for the keep-days setting.
+pub const KEEP_DAYS_RANGE: std::ops::RangeInclusive<u32> = 1..=3650;
+/// Allowed block cache budgets, megabytes.
+pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// What the settings file holds.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// Auto Save writes a journal while the document has unsaved work.
+    pub autosave_enabled: bool,
+    /// The most often a journal is written, in seconds.
+    pub autosave_interval_secs: u64,
+    /// "Clean up old sessions" removes a session only when it is older than this many days.
+    pub autosave_keep_days: u32,
+    /// The block cache's RAM budget in megabytes (`None`: the default).
+    pub cache_mb: Option<u64>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            session_folder: None,
+            autosave_enabled: true,
+            autosave_interval_secs: DEFAULT_INTERVAL_SECS,
+            autosave_keep_days: DEFAULT_KEEP_DAYS,
+            cache_mb: None,
+        }
+    }
+}
+
+/// The names `PREF get|set` knows.
+pub const PREF_NAMES: [&str; 4] = [KEY_AUTOSAVE, KEY_INTERVAL, KEY_KEEP_DAYS, KEY_CACHE_MB];
+
+fn parse_bool(v: &str) -> Option<bool> {
+    match v.to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" => Some(true),
+        "0" | "false" | "off" | "no" => Some(false),
+        _ => None,
+    }
 }
 
 impl Settings {
@@ -59,11 +111,57 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
-            if key.trim() == KEY_SESSION_FOLDER {
-                s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            match key.trim() {
+                KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+                // A value that is missing, unreadable or out of range is not used: the default stays.
+                k if PREF_NAMES.contains(&k) => {
+                    let _ = s.set_pref(k, value);
+                }
+                _ => {}
             }
         }
         s
+    }
+
+    /// The block cache budget in bytes: the setting, else the default.
+    pub fn cache_bytes(&self) -> u64 {
+        self.cache_mb.map_or_else(crate::store::default_cache_bytes, |mb| mb << 20)
+    }
+
+    /// One preference as text (`on`/`off`, a number, `default` for an unset cache size), or
+    /// `None` for a name this does not know.
+    pub fn get_pref(&self, name: &str) -> Option<String> {
+        Some(match name {
+            KEY_AUTOSAVE => (if self.autosave_enabled { "on" } else { "off" }).to_string(),
+            KEY_INTERVAL => self.autosave_interval_secs.to_string(),
+            KEY_KEEP_DAYS => self.autosave_keep_days.to_string(),
+            KEY_CACHE_MB => self.cache_mb.map_or_else(|| "default".to_string(), |m| m.to_string()),
+            _ => return None,
+        })
+    }
+
+    /// Set one preference from text; an unknown name, an unreadable value or one out of range is
+    /// an error saying so and changes nothing.
+    pub fn set_pref(&mut self, name: &str, value: &str) -> Result<(), String> {
+        let value = value.trim();
+        fn num<T: std::str::FromStr + PartialOrd + std::fmt::Display + Copy>(
+            name: &str,
+            v: &str,
+            range: &std::ops::RangeInclusive<T>,
+        ) -> Result<T, String> {
+            let n: T = v.parse().map_err(|_| format!("{name} wants a whole number, not {v:?}"))?;
+            if range.contains(&n) { Ok(n) } else { Err(format!("{name} must be from {} to {}", range.start(), range.end())) }
+        }
+        match name {
+            KEY_AUTOSAVE => self.autosave_enabled = parse_bool(value).ok_or_else(|| format!("{name} wants on or off, not {value:?}"))?,
+            KEY_INTERVAL => self.autosave_interval_secs = num(name, value, &INTERVAL_RANGE)?,
+            KEY_KEEP_DAYS => self.autosave_keep_days = num(name, value, &KEEP_DAYS_RANGE)?,
+            KEY_CACHE_MB => {
+                self.cache_mb = if value.is_empty() || value == "default" { None } else { Some(num(name, value, &CACHE_MB_RANGE)?) };
+            }
+            _ => return Err(format!("no preference named {name:?}")),
+        }
+        Ok(())
     }
 
     /// The file's text for these settings.
@@ -72,6 +170,13 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        out.push_str("# autosave_enabled: on or off. autosave_interval_secs: the most often the journal is written.\n");
+        out.push_str("# autosave_keep_days: Clean up old sessions keeps a session this many days.\n");
+        out.push_str("# cache_mb: the block cache's RAM budget in megabytes (empty: the default).\n");
+        for k in PREF_NAMES {
+            let v = self.get_pref(k).unwrap_or_default();
+            out.push_str(&format!("{k} = {}\n", if v == "default" { "" } else { &v }));
+        }
         out
     }
 

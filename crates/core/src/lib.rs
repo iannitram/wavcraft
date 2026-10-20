@@ -23,6 +23,7 @@ pub mod document;
 pub mod io;
 pub mod random;
 pub mod save;
+pub mod sessions;
 pub mod settings;
 pub mod space;
 pub mod spectrogram;
