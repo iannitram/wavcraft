@@ -38,15 +38,123 @@ pub struct SpectrogramParams {
     pub floor_db: f32,
     /// Level drawn as 255, in dBFS. A full-scale sine reads 0 dBFS.
     pub ceil_db: f32,
+    /// The window each FFT is taken through.
+    pub window: WindowKind,
 }
 
 impl Default for SpectrogramParams {
     fn default() -> Self {
-        SpectrogramParams { fft_size: 2048, min_hz: 40.0, max_hz: 24_000.0, log_freq: true, floor_db: -100.0, ceil_db: 0.0 }
+        SpectrogramParams { fft_size: 2048, min_hz: 40.0, max_hz: 24_000.0, log_freq: true, floor_db: -100.0, ceil_db: 0.0, window: WindowKind::Hann }
     }
 }
 
+/// The window function an FFT is taken through: it trades how sharp a tone looks against how
+/// far the leakage from loud tones spreads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowKind {
+    #[default]
+    Hann,
+    Hamming,
+    Blackman,
+    BlackmanHarris,
+    /// No shaping: the sharpest peaks and the most leakage.
+    Rectangular,
+}
+
+impl WindowKind {
+    /// Every window, in the order a menu lists them.
+    pub const ALL: [WindowKind; 5] =
+        [WindowKind::Hann, WindowKind::Hamming, WindowKind::Blackman, WindowKind::BlackmanHarris, WindowKind::Rectangular];
+
+    /// The lower-case name used in settings and on the control channel.
+    pub fn name(self) -> &'static str {
+        match self {
+            WindowKind::Hann => "hann",
+            WindowKind::Hamming => "hamming",
+            WindowKind::Blackman => "blackman",
+            WindowKind::BlackmanHarris => "blackman-harris",
+            WindowKind::Rectangular => "rectangular",
+        }
+    }
+
+    /// The name as a person reads it.
+    pub fn label(self) -> &'static str {
+        match self {
+            WindowKind::Hann => "Hann",
+            WindowKind::Hamming => "Hamming",
+            WindowKind::Blackman => "Blackman",
+            WindowKind::BlackmanHarris => "Blackman-Harris",
+            WindowKind::Rectangular => "Rectangular",
+        }
+    }
+
+    /// The window called `text` (case and `-`/`_`/space ignored; `rect` and `boxcar` too).
+    pub fn parse(text: &str) -> Option<WindowKind> {
+        let key: String = text.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_lowercase()).collect();
+        Some(match key.as_str() {
+            "hann" | "hanning" => WindowKind::Hann,
+            "hamming" => WindowKind::Hamming,
+            "blackman" => WindowKind::Blackman,
+            "blackmanharris" => WindowKind::BlackmanHarris,
+            "rectangular" | "rect" | "boxcar" | "none" => WindowKind::Rectangular,
+            _ => return None,
+        })
+    }
+
+    /// The `n` coefficients (periodic form, the one for spectral analysis): a sum of cosines,
+    /// `w[i] = a0 - a1 cos(2πi/n) + a2 cos(4πi/n) - a3 cos(6πi/n)`.
+    pub fn coefficients(self, n: usize) -> Vec<f32> {
+        let a: &[f32] = match self {
+            WindowKind::Hann => &[0.5, 0.5],
+            WindowKind::Hamming => &[0.54, 0.46],
+            WindowKind::Blackman => &[0.42, 0.5, 0.08],
+            WindowKind::BlackmanHarris => &[0.35875, 0.48829, 0.14128, 0.01168],
+            WindowKind::Rectangular => &[1.0],
+        };
+        (0..n)
+            .map(|i| {
+                let phase = std::f32::consts::TAU * i as f32 / n as f32;
+                a.iter().enumerate().map(|(k, c)| if k % 2 == 0 { *c } else { -*c } * (phase * k as f32).cos()).sum()
+            })
+            .collect()
+    }
+}
+
+/// The FFT lengths the display steps through (the clamp in [`SpectrogramParams`] allows these).
+pub const FFT_SIZES: [usize; 9] = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16_384];
+/// The decibel range (loudest minus quietest level drawn) the display allows.
+pub const MIN_RANGE_DB: f32 = 20.0;
+pub const MAX_RANGE_DB: f32 = 200.0;
+
+/// `size` moved `steps` places along [`FFT_SIZES`] (negative: fewer, finer in time), stopping at
+/// the ends. A size that is not on the list counts as the nearest one at or above it.
+pub fn step_fft_size(size: usize, steps: i32) -> usize {
+    let at = FFT_SIZES.iter().position(|s| *s >= size).unwrap_or(FFT_SIZES.len() - 1) as i64;
+    FFT_SIZES[(at + i64::from(steps)).clamp(0, FFT_SIZES.len() as i64 - 1) as usize]
+}
+
+/// The level (0..=255) a decibel value is drawn as: `floor_db` is 0, `ceil_db` is 255, linear
+/// between, clamped. Not a number draws 0.
+pub fn db_to_level(db: f32, floor_db: f32, ceil_db: f32) -> u8 {
+    let span = (ceil_db - floor_db).max(1e-3);
+    (((db - floor_db) / span).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 impl SpectrogramParams {
+    /// The decibel range drawn: `ceil_db - floor_db`.
+    pub fn range_db(&self) -> f32 {
+        self.ceil_db - self.floor_db
+    }
+
+    /// These with the loudest level kept and the quietest moved so `range` dB are drawn
+    /// (clamped to [`MIN_RANGE_DB`]..=[`MAX_RANGE_DB`]; not a number changes nothing).
+    pub fn with_range_db(self, range: f32) -> SpectrogramParams {
+        if !range.is_finite() {
+            return self;
+        }
+        SpectrogramParams { floor_db: self.ceil_db - range.clamp(MIN_RANGE_DB, MAX_RANGE_DB), ..self }
+    }
+
     fn fft_len(&self) -> usize {
         self.fft_size.clamp(64, 16_384).next_power_of_two().min(16_384)
     }
@@ -103,7 +211,7 @@ impl Columns {
 /// What every FFT of one set of parameters shares: the transform, its window and the dB scale.
 struct Analysis {
     fft: Arc<dyn Fft<f32>>,
-    /// Hann window, as long as the FFT.
+    /// The window, as long as the FFT.
     window: Vec<f32>,
     /// `steps[k]` is the smallest squared magnitude drawn as level `k + 1`; not a number where no
     /// magnitude reaches that level.
@@ -113,14 +221,10 @@ struct Analysis {
 impl Analysis {
     fn new(p: &SpectrogramParams) -> Analysis {
         let n = p.fft_len();
-        let window: Vec<f32> = (0..n).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()).collect();
+        let window = p.window.coefficients(n);
         // Scaled so a full-scale sine reads 0 dBFS.
         let gain = 2.0 / window.iter().sum::<f32>().max(f32::MIN_POSITIVE);
-        let span = (p.ceil_db - p.floor_db).max(1e-3);
-        let scale = |peak: f32| {
-            let db = 10.0 * (peak * gain * gain).max(1e-20).log10();
-            (((db - p.floor_db) / span).clamp(0.0, 1.0) * 255.0).round() as u8
-        };
+        let scale = |peak: f32| db_to_level(10.0 * (peak * gain * gain).max(1e-20).log10(), p.floor_db, p.ceil_db);
         // The scale as a table of steps, found by bisection over the bit patterns of the positive
         // floats (which sort like the floats). A table cannot put a louder sound below a quieter
         // one, whatever `log10` does in its last bit, and that is what lets the loudest level of
@@ -177,13 +281,14 @@ pub const BLOCK_HOPS: usize = 16;
 /// analysing all the audio on screen again.
 ///
 /// It holds, for each block of [`BLOCK_HOPS`] FFTs of the zoomed-out grid, the level of the
-/// loudest of them in every frequency bin. It depends on the FFT length and the dB scale it was
+/// loudest of them in every frequency bin. It depends on the FFT length, the window and the dB scale it was
 /// built for, not on the frequency axis or the picture's size.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Overview {
     fft_len: usize,
     floor_db: f32,
     ceil_db: f32,
+    window: WindowKind,
     /// Length of the audio it was built from, in frames.
     frames: usize,
     /// Frequency bins per block: 0 Hz to Nyquist.
@@ -214,7 +319,7 @@ impl Overview {
                 }
             },
         );
-        Overview { fft_len: p.fft_len(), floor_db: p.floor_db, ceil_db: p.ceil_db, frames: samples.len(), bins, levels }
+        Overview { fft_len: p.fft_len(), floor_db: p.floor_db, ceil_db: p.ceil_db, window: p.window, frames: samples.len(), bins, levels }
     }
 
     /// Memory held, in bytes.
@@ -224,7 +329,7 @@ impl Overview {
 
     /// Whether this overview can stand in for FFTs of `frames` frames of audio analysed with `p`.
     fn serves(&self, frames: usize, p: &SpectrogramParams) -> bool {
-        self.frames == frames && self.fft_len == p.fft_len() && self.floor_db == p.floor_db && self.ceil_db == p.ceil_db
+        self.frames == frames && self.fft_len == p.fft_len() && self.floor_db == p.floor_db && self.ceil_db == p.ceil_db && self.window == p.window
     }
 
     /// Raise `into` (one level per bin) to the loudest of the whole blocks inside the grid range
@@ -565,8 +670,12 @@ mod tests {
         let near = Columns { start: 0.0, end: frames as f64 / 10.0, cols: 40 };
         assert!(render_columns(&silence, rate, near, rows, &p, Some(&loud)).iter().all(|v| *v == 0), "half a block a column: analysed");
         // Built for another FFT length, dB scale or file length, it is not used at all.
-        for other in [SpectrogramParams { fft_size: 512, ..p }, SpectrogramParams { floor_db: -90.0, ..p }, SpectrogramParams { ceil_db: -6.0, ..p }]
-        {
+        for other in [
+            SpectrogramParams { fft_size: 512, ..p },
+            SpectrogramParams { floor_db: -90.0, ..p },
+            SpectrogramParams { ceil_db: -6.0, ..p },
+            SpectrogramParams { window: WindowKind::Blackman, ..p },
+        ] {
             assert!(render_columns(&silence, rate, far, rows, &other, Some(&loud)).iter().all(|v| *v == 0), "{other:?}");
         }
         assert!(render_columns(&silence[..frames - 1], rate, far, rows, &p, Some(&loud)).iter().all(|v| *v == 0));
@@ -653,7 +762,15 @@ mod tests {
         assert_eq!(render(&x, 48_000, 1e9, 1e9 + 100.0, 4, 4, &p), vec![0; 16]);
         assert_eq!(render(&x, 48_000, -1e9, -1e9 + 100.0, 4, 4, &p), vec![0; 16]);
         // NaN samples, absurd parameters and oversized requests are clamped, not trusted.
-        let wild = SpectrogramParams { fft_size: usize::MAX, min_hz: f32::NAN, max_hz: f32::INFINITY, floor_db: 0.0, ceil_db: 0.0, log_freq: true };
+        let wild = SpectrogramParams {
+            fft_size: usize::MAX,
+            min_hz: f32::NAN,
+            max_hz: f32::INFINITY,
+            floor_db: 0.0,
+            ceil_db: 0.0,
+            log_freq: true,
+            window: WindowKind::Hann,
+        };
         let nan = vec![f32::NAN; 4_800];
         assert_eq!(render(&nan, 48_000, 0.0, 4_800.0, 4, 4, &wild), vec![0; 16]);
         assert_eq!(render(&x, 48_000, 0.0, 4_800.0, usize::MAX, 2, &p).len(), MAX_SIDE * 2);
@@ -668,5 +785,107 @@ mod tests {
         assert!((p.row_edge_hz(100, 100, 48_000) - 40.0).abs() < 0.01);
         let edges: Vec<f32> = (0..=100).map(|r| p.row_edge_hz(r, 100, 48_000)).collect();
         assert!(edges.windows(2).all(|w| w[0] > w[1]));
+    }
+
+    #[test]
+    fn windows_have_their_known_coefficients() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+        // Periodic form, n = 8: the start is a0 - a1 + a2 - a3, the middle (i = 4) the sum with
+        // alternating signs flipped, and i = 2 sits at a quarter turn where only even terms stay.
+        let hann = WindowKind::Hann.coefficients(8);
+        assert!(close(hann[0], 0.0) && close(hann[4], 1.0) && close(hann[2], 0.5) && close(hann[1], 0.146_446_6));
+        let hamming = WindowKind::Hamming.coefficients(8);
+        assert!(close(hamming[0], 0.08) && close(hamming[4], 1.0) && close(hamming[2], 0.54));
+        let blackman = WindowKind::Blackman.coefficients(8);
+        assert!(close(blackman[0], 0.0) && close(blackman[4], 1.0) && close(blackman[2], 0.34), "{blackman:?}");
+        let bh = WindowKind::BlackmanHarris.coefficients(8);
+        assert!(close(bh[0], 0.000_06) && close(bh[4], 1.0) && close(bh[2], 0.217_47), "{bh:?}");
+        assert!(WindowKind::Rectangular.coefficients(8).iter().all(|w| *w == 1.0));
+        // Symmetric about the middle (w[i] == w[n - i]) and empty for n = 0.
+        for kind in WindowKind::ALL {
+            let w = kind.coefficients(64);
+            assert!((1..64).all(|i| close(w[i], w[64 - i])), "{kind:?}");
+            assert!(kind.coefficients(0).is_empty());
+        }
+        // Hann is exactly what the display drew before windows were a choice.
+        let old: Vec<f32> = (0..16).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / 16.0).cos()).collect();
+        assert_eq!(WindowKind::Hann.coefficients(16), old);
+    }
+
+    #[test]
+    fn window_names_round_trip() {
+        for kind in WindowKind::ALL {
+            assert_eq!(WindowKind::parse(kind.name()), Some(kind));
+            assert_eq!(WindowKind::parse(&kind.label().to_uppercase()), Some(kind));
+        }
+        assert_eq!(WindowKind::parse("Blackman Harris"), Some(WindowKind::BlackmanHarris));
+        assert_eq!(WindowKind::parse("rect"), Some(WindowKind::Rectangular));
+        assert_eq!(WindowKind::parse("kaiser"), None);
+        assert_eq!(WindowKind::parse(""), None);
+    }
+
+    #[test]
+    fn decibels_map_onto_levels() {
+        assert_eq!(db_to_level(-100.0, -100.0, 0.0), 0);
+        assert_eq!(db_to_level(0.0, -100.0, 0.0), 255);
+        assert_eq!(db_to_level(-50.0, -100.0, 0.0), 128);
+        assert_eq!(db_to_level(-200.0, -100.0, 0.0), 0, "below the floor");
+        assert_eq!(db_to_level(12.0, -100.0, 0.0), 255, "above the ceiling");
+        assert_eq!(db_to_level(f32::NAN, -100.0, 0.0), 0);
+        // A narrower range makes the same level louder: -30 dB of a 60 dB range is half scale.
+        assert_eq!(db_to_level(-30.0, -60.0, 0.0), 128);
+        assert_eq!(db_to_level(-30.0, -120.0, 0.0), 191);
+        assert_eq!(db_to_level(-9.0, -9.0, -9.0), 0, "an empty range does not divide by zero");
+    }
+
+    #[test]
+    fn the_decibel_range_is_kept_in_bounds() {
+        let p = SpectrogramParams::default();
+        assert_eq!(p.range_db(), 100.0);
+        let wide = p.with_range_db(180.0);
+        assert_eq!((wide.floor_db, wide.ceil_db, wide.range_db()), (-180.0, 0.0, 180.0));
+        assert_eq!(p.with_range_db(60.0).floor_db, -60.0);
+        assert_eq!(p.with_range_db(5.0).range_db(), MIN_RANGE_DB);
+        assert_eq!(p.with_range_db(1e9).range_db(), MAX_RANGE_DB);
+        assert_eq!(p.with_range_db(f32::NAN), p);
+    }
+
+    #[test]
+    fn resolution_steps_stop_at_the_ends() {
+        assert_eq!(step_fft_size(2048, 1), 4096);
+        assert_eq!(step_fft_size(2048, -1), 1024);
+        assert_eq!(step_fft_size(16_384, 1), 16_384);
+        assert_eq!(step_fft_size(64, -1), 64);
+        assert_eq!(step_fft_size(2048, 100), 16_384);
+        assert_eq!(step_fft_size(2048, -100), 64);
+        assert_eq!(step_fft_size(3000, 0), 4096, "off the list: the next size up");
+        assert_eq!(step_fft_size(usize::MAX, -1), 8192);
+    }
+
+    #[test]
+    fn the_window_changes_the_picture_and_the_range_the_levels() {
+        let rate = 8_000;
+        // Between two bins (31.25 Hz apart): a tone exactly on a bin does not leak in any window.
+        let x = sine(1_015.0, 0.5, 8_000, rate);
+        let leak = |window| {
+            let p = SpectrogramParams { fft_size: 256, window, min_hz: 40.0, log_freq: false, ..SpectrogramParams::default() };
+            let image = render(&x, rate, 4_000.0, 4_001.0, 1, 64, &p);
+            image.iter().filter(|l| **l > 40).count()
+        };
+        // The rectangular window spreads a tone over more of the spectrum than a Blackman-Harris one.
+        assert!(
+            leak(WindowKind::Rectangular) > leak(WindowKind::BlackmanHarris),
+            "{} {}",
+            leak(WindowKind::Rectangular),
+            leak(WindowKind::BlackmanHarris)
+        );
+        // A quiet tone (about -50 dBFS) is below a 20 dB range, dim in 60 and bright in 180.
+        let quiet = sine(1_000.0, 0.003, 8_000, rate);
+        let loudest = |range| {
+            let p = SpectrogramParams { fft_size: 256, ..SpectrogramParams::default() }.with_range_db(range);
+            render(&quiet, rate, 4_000.0, 4_001.0, 1, 64, &p).into_iter().max().unwrap_or(0)
+        };
+        assert_eq!(loudest(20.0), 0);
+        assert!(loudest(60.0) > 0 && loudest(180.0) > loudest(60.0), "{} {}", loudest(60.0), loudest(180.0));
     }
 }

@@ -27,6 +27,24 @@ const KEY_SESSION_FOLDER: &str = "session_folder";
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// The spectral display's options (`None`: the defaults).
+    pub spectral: SpectralSettings,
+}
+
+/// How the spectral display is set up. Each is `None` until the person changes it; the app
+/// clamps whatever is read (a hand-edited file can hold anything).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpectralSettings {
+    /// Whether the spectral display is shown (`spectral_show = 1|0`).
+    pub show: Option<bool>,
+    /// FFT length in frames (`spectral_fft`).
+    pub fft: Option<usize>,
+    /// The window's name (`spectral_window`, see `spectrogram::WindowKind::parse`).
+    pub window: Option<String>,
+    /// Decibel range drawn (`spectral_range_db`).
+    pub range_db: Option<u32>,
+    /// Share of the height the waveform keeps when both are shown, in percent (`spectral_split`).
+    pub split_pct: Option<u32>,
 }
 
 impl Settings {
@@ -59,8 +77,20 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
-            if key.trim() == KEY_SESSION_FOLDER {
-                s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            match key.trim() {
+                KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+                "spectral_show" => {
+                    s.spectral.show = match value {
+                        "1" | "true" | "yes" => Some(true),
+                        "0" | "false" | "no" => Some(false),
+                        _ => None,
+                    }
+                }
+                "spectral_fft" => s.spectral.fft = value.parse().ok(),
+                "spectral_window" => s.spectral.window = (!value.is_empty()).then(|| value.to_string()),
+                "spectral_range_db" => s.spectral.range_db = value.parse().ok(),
+                "spectral_split" => s.spectral.split_pct = value.parse().ok(),
+                _ => {}
             }
         }
         s
@@ -72,6 +102,22 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        let sp = &self.spectral;
+        if let Some(v) = sp.show {
+            out.push_str(&format!("spectral_show = {}\n", u8::from(v)));
+        }
+        if let Some(v) = sp.fft {
+            out.push_str(&format!("spectral_fft = {v}\n"));
+        }
+        if let Some(v) = &sp.window {
+            out.push_str(&format!("spectral_window = {v}\n"));
+        }
+        if let Some(v) = sp.range_db {
+            out.push_str(&format!("spectral_range_db = {v}\n"));
+        }
+        if let Some(v) = sp.split_pct {
+            out.push_str(&format!("spectral_split = {v}\n"));
+        }
         out
     }
 

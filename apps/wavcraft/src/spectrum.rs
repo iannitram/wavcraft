@@ -38,7 +38,7 @@ pub struct Renderer {
     asked: Option<Job>,
 }
 
-/// One overview per channel of one file, for one FFT length and dB scale.
+/// One overview per channel of one file, for one FFT length, window and dB scale.
 struct Overviews {
     generation: usize,
     params: SpectrogramParams,
@@ -49,7 +49,7 @@ impl Overviews {
     /// Whether these were built from `job`'s file with its analysis. The frequency axis may differ.
     fn serve(&self, job: &Job) -> bool {
         // Compared as bits, so a scale that is not a number is built for once, not for every picture.
-        let analysis = |p: &SpectrogramParams| (p.fft_size, p.floor_db.to_bits(), p.ceil_db.to_bits());
+        let analysis = |p: &SpectrogramParams| (p.fft_size, p.window, p.floor_db.to_bits(), p.ceil_db.to_bits());
         self.generation == job.generation && analysis(&self.params) == analysis(&job.params)
     }
 }

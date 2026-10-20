@@ -15,6 +15,8 @@ use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
+mod spectral;
+
 use crate::control;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
@@ -67,6 +69,10 @@ pub struct WaveApp {
     params: SpectrogramParams,
     show_waveform: bool,
     show_spectrum: bool,
+    /// Percent of the height the waveform keeps when the spectral display shows too (the divider).
+    spectral_split_pct: u32,
+    /// The divider moved and is not saved yet (saved when the drag ends).
+    spectral_dirty: bool,
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
@@ -139,6 +145,8 @@ impl WaveApp {
             params: SpectrogramParams::default(),
             show_waveform: true,
             show_spectrum: true,
+            spectral_split_pct: spectral::DEFAULT_SPLIT_PCT,
+            spectral_dirty: false,
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
@@ -166,6 +174,8 @@ impl WaveApp {
                 control::start_from_env(move || ctx.request_repaint())
             },
         };
+        let saved = app.settings.spectral.clone();
+        app.apply_spectral_settings(&saved);
         if let Some(path) = file {
             app.open(path, &cc.egui_ctx);
         }
@@ -677,7 +687,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -685,11 +695,16 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            self.spectral_state(),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {} undo=- redo=-",
+                        u8::from(busy),
+                        self.spectral_state()
+                    ),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -746,6 +761,7 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
+            "SPECTRAL" => self.control_spectral(rest),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -820,7 +836,10 @@ impl WaveApp {
             ui.menu_button("Edit", |ui| self.edit_menu(ui));
             ui.menu_button("View", |ui| {
                 ui.checkbox(&mut self.show_waveform, "Waveform");
-                ui.checkbox(&mut self.show_spectrum, "Spectral frequency display");
+                if ui.checkbox(&mut self.show_spectrum, "Spectral frequency display").changed() {
+                    self.save_spectral_settings();
+                }
+                self.spectral_menu(ui);
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
                     self.spectrum = None;
                 }
@@ -961,9 +980,11 @@ impl WaveApp {
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate);
 
+        let divider = spectral::divider(ui, body, self.show_waveform, &mut self.show_spectrum, &mut self.spectral_split_pct);
+        self.spectral_dirty |= divider.changed;
+        let split = divider.y;
         let (wave_area, spectrum_area) = match (self.show_waveform, self.show_spectrum) {
             (true, true) => {
-                let split = body.top() + body.height() * 0.5;
                 (Some(Rect::from_min_max(body.min, pos2(body.right(), split))), Some(Rect::from_min_max(pos2(body.left(), split), body.max)))
             }
             (true, false) => (Some(body), None),
@@ -1017,6 +1038,8 @@ impl WaveApp {
             }
         }
 
+        divider.draw(&painter, body, self.show_waveform);
+
         // Selection, cursor and playhead over everything.
         if !self.selection.is_empty() {
             let (a, b) = (rect.left() + self.view.x_of(self.selection.start() as f64), rect.left() + self.view.x_of(self.selection.end() as f64));
@@ -1063,6 +1086,7 @@ impl eframe::App for WaveApp {
         {
             self.error = Some(e);
         }
+        self.spectral_keys(&ctx);
         for id in pressed_actions(&ctx) {
             let _ = self.run_action(id, &ctx);
         }
@@ -1099,6 +1123,10 @@ impl eframe::App for WaveApp {
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
+        // The divider or the display toggle changed: save once the pointer is up.
+        if self.spectral_dirty && !ctx.input(|i| i.pointer.any_down()) {
+            self.save_spectral_settings();
+        }
     }
 }
 
