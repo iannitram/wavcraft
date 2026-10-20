@@ -572,7 +572,11 @@ fn check_range(doc: &DocState, range: &Range<u64>) -> Result<(), EditError> {
 }
 
 fn finish(doc: &DocState, channels: Vec<Arc<Channel>>, label: &str, change: Change) -> Result<Edit, EditError> {
-    let state = DocState::from_shared(doc.store().clone(), channels, doc.sample_rate(), doc.source().clone())?;
+    let mut state = DocState::from_shared(doc.store().clone(), channels, doc.sample_rate(), doc.source().clone())?;
+    // Markers ride along; moving them with the edit is a later row (A182), so for now they are
+    // only held inside the new length.
+    let markers = doc.markers().clamped(state.len_frames()).map_or_else(|| doc.markers().clone(), std::sync::Arc::new);
+    state = state.with_markers(markers);
     Ok(Edit { state, label: label.to_string(), change })
 }
 

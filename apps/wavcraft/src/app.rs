@@ -372,12 +372,31 @@ impl WaveApp {
         if actions::action(id).kind == Kind::Window {
             return self.run_window_action(id, ctx);
         }
-        let sel = self.selection_range();
+        let mut sel = self.selection_range();
+        // Markers go where play is, when it is playing or paused (a point at the playhead).
+        let on_air = self.transport.mode != Mode::Stopped;
+        if matches!(id, ActionId::MarkerAdd | ActionId::MarkerNext | ActionId::MarkerPrev) && on_air {
+            let at = self.player.position() as u64;
+            sel = at..at;
+        }
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         match editor.run(id, sel) {
+            Ok(out) if on_air && matches!(id, ActionId::MarkerNext | ActionId::MarkerPrev) => {
+                // The playhead jumps and play carries on; the selection stays as it was.
+                if self.player.seek(out.selection.start as f64) {
+                    let frames = self.doc.as_ref().map_or(0, Document::frames);
+                    if self.transport.auto_scroll {
+                        let (follow, width) = (self.transport.follow, self.editor_width);
+                        transport::follow_view(follow, &mut self.view, out.selection.start as f64, width, frames);
+                    }
+                }
+                self.error = None;
+                self.notice = None;
+                Ok(false)
+            }
             Ok(out) => {
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
-                if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd) {
+                if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::MarkerNext | ActionId::MarkerPrev) {
                     self.halt_play();
                     let frames = self.doc.as_ref().map_or(0, Document::frames);
                     self.view.reveal(self.selection.start() as f64, self.editor_width, frames);
@@ -432,6 +451,10 @@ impl WaveApp {
                 Mode::Playing => {}
             },
             ActionId::Pause => self.pause_play(),
+            ActionId::TransportPrevMarker => return self.run_action(ActionId::MarkerPrev, ctx),
+            ActionId::TransportNextMarker => return self.run_action(ActionId::MarkerNext, ctx),
+            ActionId::TransportStart => return self.run_action(ActionId::CursorToStart, ctx),
+            ActionId::TransportEnd => return self.run_action(ActionId::CursorToEnd, ctx),
             ActionId::Stop => self.stop_play(),
             ActionId::ToggleLoop => {
                 self.transport.looping = !self.transport.looping;
@@ -809,6 +832,13 @@ impl WaveApp {
                     ),
                 }
             }
+            // The markers of the current state, in order: `OK count=<n> <id>,<start>,<end>,<name>;…`.
+            "MARKERS" => {
+                let list: Vec<String> = self.editor.as_ref().map_or_else(Vec::new, |e| {
+                    e.history.current().markers().iter().map(|m| format!("{},{},{},{}", m.id, m.start, m.end, m.name)).collect()
+                });
+                format!("OK count={} {}", list.len(), list.join(";"))
+            }
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -894,6 +924,14 @@ impl WaveApp {
             let enabled = enabled && self.saving.is_none();
             let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
             if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
+                chosen = Some(a.id);
+            }
+        }
+        ui.separator();
+        for a in TABLE.iter().filter(|a| a.name.starts_with("marker.")) {
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
+            let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
+            if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
                 chosen = Some(a.id);
             }
         }
@@ -1081,6 +1119,9 @@ impl WaveApp {
         let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate);
+        if let Some(e) = &self.editor {
+            draw_markers(&painter, ruler, &self.view, e.history.current().markers());
+        }
 
         let (wave_area, spectrum_area) = match (self.show_waveform, self.show_spectrum) {
             (true, true) => {
@@ -1170,7 +1211,7 @@ impl WaveApp {
     }
 
     /// The Transport panel: Play, Pause, Stop, Loop, go to start / end, the marker buttons (off
-    /// until markers exist), the options and the current time.
+    /// when there is no marker that way), the options and the current time.
     fn transport_panel(&mut self, ui: &mut egui::Ui) {
         let mut chosen: Option<ActionId> = None;
         let rate = self.doc.as_ref().map_or(0, Document::sample_rate);
@@ -1183,13 +1224,23 @@ impl WaveApp {
                         chosen = Some(id);
                     }
                 };
-                button(ui, "|◀ Start", "Go to start (Home)", ActionId::CursorToStart, false);
-                ui.add_enabled(false, egui::Button::new("◀ Marker")).on_disabled_hover_text("Previous marker (no markers yet)");
+                button(ui, "|◀ Start", "Go to start (Home)", ActionId::TransportStart, false);
+                let at = if t.mode == Mode::Stopped { self.selection.start() } else { self.player.position() } as u64;
+                let (has_prev, has_next) = self.editor.as_ref().map_or((false, false), |e| {
+                    let m = e.history.current().markers();
+                    (transport::marker_jump(m, at, false).is_some(), transport::marker_jump(m, at, true).is_some())
+                });
+                let marker_button = |ui: &mut egui::Ui, label: &str, tip: &str, id: ActionId, on: bool, chosen: &mut Option<ActionId>| {
+                    if ui.add_enabled(on, egui::Button::new(label)).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+                        *chosen = Some(id);
+                    }
+                };
+                marker_button(ui, "◀ Marker", "Previous marker (Ctrl+Alt+Left)", ActionId::TransportPrevMarker, has_prev, &mut chosen);
                 button(ui, "▶ Play", "Play (Space)", ActionId::Play, t.mode == Mode::Playing);
                 button(ui, "❚❚ Pause", "Pause; again to resume", ActionId::Pause, t.mode == Mode::Paused);
                 button(ui, "■ Stop", "Stop", ActionId::Stop, false);
-                ui.add_enabled(false, egui::Button::new("Marker ▶")).on_disabled_hover_text("Next marker (no markers yet)");
-                button(ui, "End ▶|", "Go to end (End)", ActionId::CursorToEnd, false);
+                marker_button(ui, "Marker ▶", "Next marker (Ctrl+Alt+Right)", ActionId::TransportNextMarker, has_next, &mut chosen);
+                button(ui, "End ▶|", "Go to end (End)", ActionId::TransportEnd, false);
                 ui.separator();
                 button(ui, "Loop", "Repeat the selection, or the view with nothing selected", ActionId::ToggleLoop, t.looping);
                 button(
@@ -1348,6 +1399,34 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32) {
         }
         painter.line_segment([pos2(x, rect.bottom() - 6.0), pos2(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(140)));
         painter.text(pos2(x + 3.0, rect.top() + 3.0), egui::Align2::LEFT_TOP, tick_label(t), egui::FontId::monospace(11.0), Color32::from_gray(190));
+    }
+}
+
+/// Markers on the ruler: a point is a small flag with its name, a range a band with a flag at
+/// each end of the name.
+fn draw_markers(painter: &egui::Painter, rect: Rect, view: &Viewport, markers: &wavcraft_core::Markers) {
+    let color = Color32::from_rgb(240, 190, 60);
+    let painter = painter.with_clip_rect(rect);
+    for m in markers.iter() {
+        let x0 = rect.left() + view.x_of(m.start as f64);
+        let x1 = rect.left() + view.x_of(m.end.max(m.start) as f64);
+        if x1 < rect.left() - 200.0 || x0 > rect.right() {
+            continue;
+        }
+        if !m.is_point() {
+            painter.rect_filled(
+                Rect::from_min_max(pos2(x0, rect.bottom() - 5.0), pos2(x1.max(x0 + 1.0), rect.bottom())),
+                0.0,
+                color.gamma_multiply(0.6),
+            );
+        }
+        painter.line_segment([pos2(x0, rect.top()), pos2(x0, rect.bottom())], Stroke::new(1.0, color));
+        painter.add(egui::Shape::convex_polygon(
+            vec![pos2(x0, rect.top()), pos2(x0 + 8.0, rect.top()), pos2(x0, rect.top() + 8.0)],
+            color,
+            Stroke::NONE,
+        ));
+        painter.text(pos2(x0 + 10.0, rect.bottom() - 3.0), egui::Align2::LEFT_BOTTOM, &m.name, egui::FontId::proportional(10.0), color);
     }
 }
 

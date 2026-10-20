@@ -168,6 +168,18 @@ impl Player {
         true
     }
 
+    /// Move the playhead to `frame` (as the plan allows) without stopping or pausing. False when
+    /// the plan has no such place (past its end), and nothing moves.
+    pub fn seek(&mut self, frame: f64) -> bool {
+        self.tick();
+        let Some(to) = wavcraft_core::transport::seek_target(&self.shared.plan(), frame) else { return false };
+        self.shared.pos.store(to.to_bits(), Ordering::Relaxed);
+        if self.sim_last.is_some() {
+            self.sim_last = Some(Instant::now());
+        }
+        true
+    }
+
     pub fn stop(&mut self) {
         self.shared.playing.store(false, Ordering::Relaxed);
         self.sim_last = None;

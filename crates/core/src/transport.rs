@@ -143,6 +143,20 @@ impl Plan {
     }
 }
 
+/// Where the playhead lands when a marker jump (or any seek) asks for `target` during playback:
+/// the same place the player would be at after reaching it (a skipped part moves to its end, a
+/// target before the plan starts at its start). `None` when the target is past the end of a
+/// plan that does not loop, so the caller leaves playback as it is.
+pub fn seek_target(plan: &Plan, target: f64) -> Option<f64> {
+    plan.normalize(target)
+}
+
+/// The marker a jump from `playhead` goes to: the first after it forward, the last before it
+/// backward (see [`crate::Markers`]).
+pub fn marker_jump(markers: &crate::Markers, playhead: u64, forward: bool) -> Option<u64> {
+    if forward { markers.next_after(playhead) } else { markers.prev_before(playhead) }
+}
+
 /// What Play is asked to play.
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -250,6 +264,37 @@ mod tests {
 
     fn skipping(start: f64, end: f64, a: f64, b: f64) -> Plan {
         Plan { skip_start: a, skip_end: b, ..Plan::new(start, end) }
+    }
+
+    #[test]
+    fn a_seek_inside_the_plan_lands_there() {
+        assert_eq!(seek_target(&Plan::new(10.0, 100.0), 40.0), Some(40.0));
+    }
+
+    #[test]
+    fn a_seek_before_the_plan_lands_at_its_start() {
+        assert_eq!(seek_target(&Plan::new(10.0, 100.0), 3.0), Some(10.0));
+    }
+
+    #[test]
+    fn a_seek_past_the_end_is_refused_unless_looping() {
+        assert_eq!(seek_target(&Plan::new(10.0, 100.0), 150.0), None);
+        assert_eq!(seek_target(&looped(10.0, 100.0), 105.0), Some(15.0));
+    }
+
+    #[test]
+    fn a_seek_into_the_skipped_part_lands_after_it() {
+        assert_eq!(seek_target(&skipping(0.0, 100.0, 40.0, 60.0), 50.0), Some(60.0));
+    }
+
+    #[test]
+    fn marker_jumps_find_the_neighbour_in_each_direction() {
+        let m = crate::Markers::default().with_added(100..100, None).unwrap().with_added(300..300, None).unwrap();
+        assert_eq!(marker_jump(&m, 0, true), Some(100));
+        assert_eq!(marker_jump(&m, 100, true), Some(300));
+        assert_eq!(marker_jump(&m, 300, true), None);
+        assert_eq!(marker_jump(&m, 300, false), Some(100));
+        assert_eq!(marker_jump(&m, 100, false), None);
     }
 
     #[test]
