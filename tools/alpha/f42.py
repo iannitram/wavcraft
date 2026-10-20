@@ -94,6 +94,10 @@ def main():
         check("drag in the bottom strip selects the right channel", a.endswith("selch=R"), a)
         a = c.ask("GESTURE channel_drag 0.5 1000 5000")
         check("drag in the middle selects both", a.endswith("selch=LR"), a)
+        c.ask("GESTURE channel_drag 0.95 1000 5000")
+        a = c.ask("GESTURE channel_drag -0.1 1000 5000")
+        check("a drag starting on the ruler keeps the mask", a.endswith("selch=R"), a)
+        c.ask("GESTURE channel_drag 0.5 1000 5000")
 
         # An edit respects the mask: silence the left channel only over 1 s..2 s.
         c.ask(f"GESTURE channel_drag 0.1 {RATE} {2 * RATE}")

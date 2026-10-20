@@ -135,6 +135,12 @@ pub fn channels_for_drag(y_fraction: f32, channels: usize, context: bool) -> Cha
     }
 }
 
+/// The mask after a drag that starts at `y_fraction`. A negative fraction means the drag began
+/// above the waveform area (on the time ruler): that keeps the `current` mask unchanged.
+pub fn mask_after_drag(y_fraction: f32, channels: usize, context: bool, current: ChannelMask) -> ChannelMask {
+    if y_fraction < 0.0 { current } else { channels_for_drag(y_fraction, channels, context) }
+}
+
 /// How tall the top and bottom channel strips are, as a fraction of the editor's height.
 pub const CHANNEL_STRIP: f32 = 0.25;
 
@@ -184,6 +190,14 @@ pub fn format_time(frame: usize, sample_rate: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruler_origin_drag_keeps_the_channel_mask() {
+        assert_eq!(mask_after_drag(-0.1, 2, true, ChannelMask::ALL), ChannelMask::ALL);
+        assert_eq!(mask_after_drag(-0.1, 2, true, ChannelMask::only(1)), ChannelMask::only(1));
+        assert_eq!(mask_after_drag(0.05, 2, true, ChannelMask::ALL), ChannelMask::only(0));
+        assert_eq!(mask_after_drag(0.0, 2, true, ChannelMask::ALL), ChannelMask::only(0), "the lane top is in the lane");
+    }
 
     #[test]
     fn stereo_drags_pick_a_channel_by_height() {

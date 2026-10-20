@@ -726,7 +726,7 @@ impl WaveApp {
                     (Some("channel_drag"), Some(Ok(y)), Some(Ok(a)), Some(Ok(b)), Some(editor)) => {
                         let len = editor.history.current().len_frames() as usize;
                         if self.settings.context_channels {
-                            editor.channels = view::channels_for_drag(y, editor.history.current().channel_count(), true);
+                            editor.channels = view::mask_after_drag(y, editor.history.current().channel_count(), true, editor.channels);
                         }
                         let selch = view::channels_text(editor.channels, editor.history.current().channel_count());
                         self.selection = Selection { anchor: a.min(len), head: b.min(len) };
@@ -1030,7 +1030,7 @@ impl WaveApp {
             {
                 let top = rect.top() + RULER_HEIGHT;
                 let y = (origin.y - top) / (rect.bottom() - top).max(1.0);
-                editor.channels = view::channels_for_drag(y, channels, true);
+                editor.channels = view::mask_after_drag(y, channels, true, editor.channels);
             }
         } else if response.dragged()
             && let Some(pos) = response.interact_pointer_pos()
