@@ -11,6 +11,7 @@
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
 //!   and its waveform peaks.
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
+//! - [`smpte`]: SMPTE timecode at 24 to 59.94 fps (drop-frame too) and snapping to frames.
 //! - [`view`]: zoom and scroll arithmetic, selections and time formatting.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -22,6 +23,7 @@ pub mod io;
 pub mod random;
 pub mod save;
 pub mod settings;
+pub mod smpte;
 pub mod space;
 pub mod spectrogram;
 pub mod store;
@@ -32,6 +34,7 @@ pub use doc::history::History;
 pub use doc::{Channel, DocState, Piece, SourceFormat};
 
 pub use document::{Document, OpenError};
+pub use smpte::SmpteRate;
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
 pub use view::{Selection, TimeFormat, Viewport, format_time};

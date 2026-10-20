@@ -16,7 +16,7 @@ CASES = [  # (action name, start text, end text, expected selection text)
     ("decimal", "0:01.000", "0:02.500", "0:01.000-0:02.500"),
     ("compact", "0:01", "0:02.5", "0:01-0:02.5"),
     ("samples", "44100", "110250", "44100-110250"),
-    ("smpte30", "00:00:01:00", "00:00:02:15", "00:00:01:00-00:00:02:15"),
+    ("smpte_30", "00:00:01:00", "00:00:02:15", "00:00:01:00-00:00:02:15"),
 ]
 
 
@@ -110,12 +110,12 @@ def main():
     # The choice is in the settings file, and a second start uses it.
     found = [os.path.join(d, f) for d, _, fs in os.walk(home) for f in fs if f == "settings.txt"]
     text = open(found[0]).read() if found else ""
-    check("the settings file holds time_display = smpte30", "time_display = smpte30" in text, found or "no settings.txt")
+    check("the settings file holds time_display = smpte_30", "time_display = smpte_30" in text, found or "no settings.txt")
     proc = start(exe, env, wav)
     try:
         c = Control(PORT, token)
         st = c.state()
-        check("a second start comes up in SMPTE", st.get("time_display") == "smpte30", st.get("time_display"))
+        check("a second start comes up in SMPTE", st.get("time_display") == "smpte_30", st.get("time_display"))
         c.ask("SELECT_TIME 00:00:00:00 00:00:01:00")
         check("and SELECT_TIME reads SMPTE there", c.state().get("selection") == f"0-{RATE}")
         c.ask("QUIT")
