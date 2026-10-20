@@ -17,12 +17,7 @@ edits and the undo history (task 04: delete, cut, copy, paste, silence, insert s
 the streamed `replace_range` effects will use, with Audition's edit crossfades), not yet wired to
 the app's menus (tasks 05 and 07).
 
-| Phase | Goal | State |
-|---|---|---|
-| 1. Viewer | Open, waveform + spectral display, zoom, play | first version |
-| 2. Editor | Selection edits (cut, copy, paste, delete, silence), undo history, save | under way: store, document model and core edits with undo done |
-| 3. Repair | Effects rack, noise reduction from a noise print, match loudness | not started |
-| 4. Feel | Audition-style layout and shortcuts | not started |
+**Roadmap:** the ranked plan to Audition parity, with what is built and what is next, is in [docs/roadmap-audition-parity.md](docs/roadmap-audition-parity.md).
 
 ## Run it
 
