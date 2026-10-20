@@ -13,6 +13,7 @@ use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
+use wavcraft_core::view;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
@@ -341,6 +342,10 @@ impl WaveApp {
                 self.view.frames_per_px = ((b - a) / f64::from(width)).max(1.0 / 64.0);
                 self.view.start = a;
                 self.view.clamp(width, frames);
+            }
+            ActionId::SelectCurrentView => {
+                let r = view::select_current_view(&self.view, width, frames);
+                self.selection = Selection { anchor: r.start as usize, head: r.end as usize };
             }
             ActionId::SetIn => {
                 let end = self.selection.end().max(playhead);
@@ -677,11 +682,12 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} selch={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
                             sel(self),
+                            view::channels_text(e.channels, doc.channel_count()),
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
@@ -689,7 +695,10 @@ impl WaveApp {
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-",
+                        u8::from(busy)
+                    ),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -705,6 +714,25 @@ impl WaveApp {
                         format!("OK selection={}", sel(self))
                     }
                     _ => "ERR SELECT <start> <end>, in frames".to_string(),
+                }
+            }
+            // GESTURE channel_drag <y_fraction> <start> <end>: a drag from the given height
+            // (0 top, 1 bottom of the waveform area) over the given frames, as the mouse would.
+            "GESTURE" => {
+                let mut it = rest.split_whitespace();
+                let (kind, y, a, b) =
+                    (it.next(), it.next().map(str::parse::<f32>), it.next().map(str::parse::<usize>), it.next().map(str::parse::<usize>));
+                match (kind, y, a, b, self.editor.as_mut()) {
+                    (Some("channel_drag"), Some(Ok(y)), Some(Ok(a)), Some(Ok(b)), Some(editor)) => {
+                        let len = editor.history.current().len_frames() as usize;
+                        if self.settings.context_channels {
+                            editor.channels = view::channels_for_drag(y, editor.history.current().channel_count(), true);
+                        }
+                        let selch = view::channels_text(editor.channels, editor.history.current().channel_count());
+                        self.selection = Selection { anchor: a.min(len), head: b.min(len) };
+                        format!("OK selection={} selch={selch}", sel(self))
+                    }
+                    _ => "ERR GESTURE channel_drag <y_fraction> <start> <end>, with a file open".to_string(),
                 }
             }
             "ACTION" => match actions::by_name(rest) {
@@ -769,8 +797,20 @@ impl WaveApp {
         let sel = self.selection_range();
         let mac = cfg!(target_os = "macos");
         let mut chosen = None;
-        for a in TABLE.iter().filter(|a| a.name.starts_with("edit.")) {
-            if matches!(a.id, ActionId::Cut | ActionId::Delete | ActionId::Crop | ActionId::ZeroInward | ActionId::SetIn | ActionId::LeftChannel) {
+        // The Select and Enable Channels groups are submenus; the rest stays flat.
+        let grouped = |id: ActionId| {
+            matches!(
+                id,
+                ActionId::SelectAll
+                    | ActionId::DeselectAll
+                    | ActionId::ClearTimeSelection
+                    | ActionId::LeftChannel
+                    | ActionId::RightChannel
+                    | ActionId::BothChannels
+            )
+        };
+        for a in TABLE.iter().filter(|a| a.name.starts_with("edit.") && !grouped(a.id)) {
+            if matches!(a.id, ActionId::Cut | ActionId::Delete | ActionId::Crop | ActionId::ZeroInward | ActionId::SetIn) {
                 ui.separator();
             }
             let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
@@ -780,6 +820,44 @@ impl WaveApp {
                 chosen = Some(a.id);
             }
         }
+        ui.separator();
+        let enabled_for = |s: &Self, id: ActionId| s.saving.is_none() && s.editor.as_ref().is_some_and(|e| e.enabled(id, &sel));
+        let item = |s: &Self, ui: &mut egui::Ui, id: ActionId, chosen: &mut Option<ActionId>| {
+            let a = actions::action(id);
+            let label = s.editor.as_ref().map_or_else(|| a.menu.to_string(), |e| e.label(id));
+            let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
+            if ui.add_enabled(enabled_for(s, id), egui::Button::new(label).shortcut_text(keys)).clicked() {
+                *chosen = Some(id);
+                ui.close();
+            }
+        };
+        ui.menu_button("Select", |ui| {
+            for id in [
+                ActionId::SelectAll,
+                ActionId::SelectCurrentView,
+                ActionId::DeselectAll,
+                ActionId::ClearTimeSelection,
+                ActionId::SelectToStart,
+                ActionId::SelectToEnd,
+            ] {
+                item(self, ui, id, &mut chosen);
+            }
+        });
+        ui.menu_button("Enable Channels", |ui| {
+            for id in [ActionId::LeftChannel, ActionId::RightChannel, ActionId::BothChannels] {
+                item(self, ui, id, &mut chosen);
+            }
+            ui.separator();
+            let mut on = self.settings.context_channels;
+            if ui.checkbox(&mut on, "Select Channel by Drag Position").changed() {
+                self.settings.context_channels = on;
+                if let Some(file) = &self.settings_path
+                    && let Err(e) = self.settings.save(file)
+                {
+                    log::warn!(target: "wavcraft", "could not save the settings to {}: {e}", file.display());
+                }
+            }
+        });
         if let Some(id) = chosen {
             let _ = self.run_action(id, ui.ctx());
         }
@@ -946,6 +1024,14 @@ impl WaveApp {
             // selection where the button went down, not where the pointer has got to.
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
             self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
+            // Context-sensitive channel editing: where the drag began picks the channel(s).
+            if self.settings.context_channels
+                && let Some(editor) = self.editor.as_mut()
+            {
+                let top = rect.top() + RULER_HEIGHT;
+                let y = (origin.y - top) / (rect.bottom() - top).max(1.0);
+                editor.channels = view::channels_for_drag(y, channels, true);
+            }
         } else if response.dragged()
             && let Some(pos) = response.interact_pointer_pos()
         {
@@ -1020,7 +1106,19 @@ impl WaveApp {
         // Selection, cursor and playhead over everything.
         if !self.selection.is_empty() {
             let (a, b) = (rect.left() + self.view.x_of(self.selection.start() as f64), rect.left() + self.view.x_of(self.selection.end() as f64));
-            painter.rect_filled(Rect::from_min_max(pos2(a.max(rect.left()), body.top()), pos2(b.min(rect.right()), body.bottom())), 0.0, SELECTION);
+            let (x0, x1) = (a.max(rect.left()), b.min(rect.right()));
+            let mask = self.editor.as_ref().map_or(wavcraft_core::ChannelMask::ALL, |e| e.channels);
+            if mask.covers_all(channels) {
+                painter.rect_filled(Rect::from_min_max(pos2(x0, body.top()), pos2(x1, body.bottom())), 0.0, SELECTION);
+            } else {
+                // Only the selected channels' lanes are tinted.
+                for area in [wave_area, spectrum_area].into_iter().flatten() {
+                    for ch in mask.active(channels) {
+                        let l = lane(area, ch, channels);
+                        painter.rect_filled(Rect::from_min_max(pos2(x0, l.top()), pos2(x1, l.bottom())), 0.0, SELECTION);
+                    }
+                }
+            }
         }
         let line = |frame: usize, color: Color32| {
             let x = rect.left() + self.view.x_of(frame as f64);

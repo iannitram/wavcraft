@@ -26,6 +26,10 @@ pub enum ActionId {
     ClearTimeSelection,
     LeftChannel,
     RightChannel,
+    BothChannels,
+    SelectCurrentView,
+    SelectToStart,
+    SelectToEnd,
     InsertSilence,
     CursorToStart,
     CursorToEnd,
@@ -155,6 +159,11 @@ pub const TABLE: &[Action] = &[
     window(ActionId::SetOut, "edit.setOut", "Set Out Point to Playhead", &[key("O")]),
     edit(ActionId::LeftChannel, "edit.leftChannel", "Left Channel Only", &[key("ArrowUp")]),
     edit(ActionId::RightChannel, "edit.rightChannel", "Right Channel Only", &[key("ArrowDown")]),
+    edit(ActionId::BothChannels, "edit.bothChannels", "Both Channels", &[]),
+    // The Select submenu's own entries (Select All and Deselect All are the rows above).
+    window(ActionId::SelectCurrentView, "select.currentView", "Select Current View", &[]),
+    edit(ActionId::SelectToStart, "select.toStart", "Select from Cursor to Start of File", &[]),
+    edit(ActionId::SelectToEnd, "select.toEnd", "Select from Cursor to End of File", &[]),
     edit(ActionId::CursorToStart, "view.cursorToStart", "Playhead to Start", &[key("Home")]),
     edit(ActionId::CursorToEnd, "view.cursorToEnd", "Playhead to End", &[key("End")]),
     window(ActionId::ZoomIn, "view.zoomIn", "Zoom In", &[key("Equals")]),
@@ -170,6 +179,12 @@ pub fn action(id: ActionId) -> &'static Action {
 
 /// The action the control channel calls `name`.
 pub fn by_name(name: &str) -> Option<&'static Action> {
+    // `select.*` also names the two rows that live in the Edit group.
+    let name = match name {
+        "select.all" => "edit.selectAll",
+        "select.none" => "edit.deselectAll",
+        n => n,
+    };
     TABLE.iter().find(|a| a.name == name)
 }
 
@@ -286,7 +301,10 @@ impl Editor {
             ActionId::Delete | ActionId::Silence | ActionId::Crop => has_sel,
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
-            ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
+            ActionId::LeftChannel | ActionId::RightChannel | ActionId::BothChannels => self.channel_count() >= 2,
+            ActionId::SelectCurrentView => self.len() > 0,
+            ActionId::SelectToStart => self.len() > 0 && selection.start > 0,
+            ActionId::SelectToEnd => self.len() > 0 && selection.end < self.len(),
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
@@ -446,10 +464,17 @@ impl Editor {
                 (e, at)
             }
             ActionId::SelectAll => return unchanged(0..len),
+            ActionId::SelectToStart => return unchanged(crate::view::select_to_start(&sel, len)),
+            ActionId::SelectToEnd => return unchanged(crate::view::select_to_end(&sel, len)),
+            ActionId::BothChannels => {
+                self.channels = ChannelMask::ALL;
+                return Ok(Outcome { doc_changed: false, selection: sel, message: Some("Editing both channels".to_string()) });
+            }
             ActionId::DeselectAll | ActionId::ClearTimeSelection => return unchanged(sel.start..sel.start),
             ActionId::CursorToStart => return unchanged(0..0),
             ActionId::CursorToEnd => return unchanged(len..len),
             ActionId::InsertSilence
+            | ActionId::SelectCurrentView
             | ActionId::SetIn
             | ActionId::SetOut
             | ActionId::ZoomIn

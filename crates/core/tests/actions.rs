@@ -391,3 +391,47 @@ fn repeat_last_command_runs_silence_again_on_the_new_selection_but_never_delete(
     assert_eq!(text(ActionId::ZeroRightToRight), ["Shift+L"]);
     assert_eq!(by_name("edit.zeroCrossings.outward").map(|a| a.id), Some(ActionId::ZeroOutward));
 }
+
+#[test]
+fn f42_select_actions_and_their_control_names() {
+    let t = TempDir::new("f42select");
+    let mut e = editor(&t.0, &stereo(1000));
+    let sel = |e: &mut Editor, id, from| e.run(id, from).unwrap().selection;
+    assert_eq!(sel(&mut e, by_name("select.all").unwrap().id, 10..20), 0..1000);
+    assert_eq!(sel(&mut e, by_name("select.none").unwrap().id, 10..20), 10..10);
+    assert_eq!(sel(&mut e, by_name("select.toStart").unwrap().id, 400..900), 0..400);
+    assert_eq!(sel(&mut e, by_name("select.toEnd").unwrap().id, 400..900), 900..1000);
+    assert!(!e.enabled(ActionId::SelectToStart, &(0..0)), "nothing before the start");
+    assert!(!e.enabled(ActionId::SelectToEnd, &(1000..1000)), "nothing after the end");
+    // Select Current View is the window's; the editor leaves the selection alone.
+    assert_eq!(action(ActionId::SelectCurrentView).kind, wavcraft_core::actions::Kind::Window);
+    assert_eq!(sel(&mut e, ActionId::SelectCurrentView, 5..9), 5..9);
+    assert_eq!(e.history.steps().len(), 1, "selecting records no step");
+}
+
+#[test]
+fn f42_a_channel_mask_from_a_drag_limits_edits_and_both_channels_undoes_it() {
+    use wavcraft_core::ChannelMask;
+    use wavcraft_core::view::channels_for_drag;
+    let t = TempDir::new("f42dragmask");
+    let data = stereo(1000);
+    let mut e = editor(&t.0, &data);
+    // A drag in the bottom strip selects the right channel only; the app hands that to the editor.
+    e.channels = channels_for_drag(0.9, 2, true);
+    assert_eq!(e.channels, ChannelMask::only(1));
+    e.run(ActionId::Silence, 100..200).unwrap();
+    let c = now(&e);
+    assert_eq!(c[0], data[0], "left untouched");
+    assert!(c[1][100..200].iter().all(|x| *x == 0.0));
+    // Enable Channels > Both, then the same edit hits the left too.
+    assert_eq!(e.label(ActionId::BothChannels), "Both Channels");
+    e.run(ActionId::BothChannels, 100..200).unwrap();
+    assert_eq!(e.channels, ChannelMask::ALL);
+    e.run(ActionId::Silence, 300..400).unwrap();
+    let c = now(&e);
+    assert!(c[0][300..400].iter().all(|x| *x == 0.0) && c[1][300..400].iter().all(|x| *x == 0.0));
+    // A top-strip drag: left only, and Delete silences in place.
+    e.channels = channels_for_drag(0.1, 2, true);
+    e.run(ActionId::Delete, 500..600).unwrap();
+    assert_eq!(now(&e)[0].len(), 1000);
+}
