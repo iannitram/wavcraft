@@ -14,6 +14,7 @@ const ROW_H: f32 = 64.0;
 const RULER_H: f32 = 20.0;
 const RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
+const MARKER_COLOUR: Color32 = Color32::from_rgb(240, 190, 70);
 
 /// File › New › Multitrack Session…: the fields being typed.
 pub struct NewDialog {
@@ -35,6 +36,10 @@ pub struct MtView {
     px_per_sec: f32,
     import_at: f64,
     sessions_made: u32,
+    /// Marker being renamed (1-based position) and its text.
+    marker_rename: Option<(usize, String)>,
+    /// The ruler drag in progress: the time it started at.
+    ruler_drag: Option<f64>,
 }
 
 impl Default for MtView {
@@ -49,6 +54,8 @@ impl Default for MtView {
             px_per_sec: 60.0,
             import_at: 0.0,
             sessions_made: 0,
+            marker_rename: None,
+            ruler_drag: None,
         }
     }
 }
@@ -161,7 +168,72 @@ impl MtView {
             ui.separator();
             ui.label("Zoom");
             ui.add(egui::Slider::new(&mut self.px_per_sec, 5.0..=400.0).logarithmic(true).show_value(false));
+            ui.separator();
+            if ui.button("Add Marker").on_hover_text("at the playhead (click the ruler to place it)").clicked() {
+                note(&mut failure, mt.add_marker_at_playhead().map(|_| ()));
+            }
+            if ui.button("Add Range").on_hover_text("from the time selection (drag on the ruler to make one)").clicked() {
+                note(&mut failure, mt.add_marker_from_selection().map(|_| ()));
+            }
+            if ui.button("<").on_hover_text("Previous marker").clicked() {
+                note(&mut failure, mt.prev_marker().map(|_| ()));
+            }
+            if ui.button(">").on_hover_text("Next marker").clicked() {
+                note(&mut failure, mt.next_marker().map(|_| ()));
+            }
         });
+        // The marker list: each marker's name (double-click to rename), jump and delete.
+        if mt.marker_count() > 0 {
+            let mut jump = None;
+            let mut delete = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.weak("Markers:");
+                for m in mt.markers_json() {
+                    let i = m["index"].as_u64().unwrap_or(0) as usize;
+                    if let Some((ri, text)) = self.marker_rename.as_mut().filter(|(ri, _)| *ri == i) {
+                        let resp = ui.add(egui::TextEdit::singleline(text).desired_width(90.0));
+                        resp.request_focus();
+                        let (enter, esc) = ui.input(|k| (k.key_pressed(egui::Key::Enter), k.key_pressed(egui::Key::Escape)));
+                        if enter {
+                            let to = text.clone();
+                            note(&mut failure, mt.rename_marker(*ri, &to));
+                            self.marker_rename = None;
+                        } else if esc {
+                            self.marker_rename = None;
+                        }
+                    } else {
+                        let name = m["name"].as_str().unwrap_or("").to_string();
+                        let l = ui.add(egui::Label::new(egui::RichText::new(format!("{i}. {name}")).color(MARKER_COLOUR)).sense(Sense::click()));
+                        if l.clicked() {
+                            jump = m["start"].as_f64();
+                        }
+                        if l.double_clicked() {
+                            self.marker_rename = Some((i, name));
+                        }
+                        l.context_menu(|ui| {
+                            if ui.button("Rename").clicked() {
+                                self.marker_rename = Some((i, m["name"].as_str().unwrap_or("").to_string()));
+                                ui.close();
+                            }
+                            if ui.button("Delete").clicked() {
+                                delete = Some(i);
+                                ui.close();
+                            }
+                        });
+                        if ui.small_button("x").on_hover_text("Delete this marker").clicked() {
+                            delete = Some(i);
+                        }
+                    }
+                }
+            });
+            if let Some(t) = jump {
+                note(&mut failure, mt.set_playhead(t));
+            }
+            if let Some(i) = delete {
+                self.marker_rename = None;
+                note(&mut failure, mt.delete_marker(i));
+            }
+        }
         if let Some(m) = &self.message {
             ui.colored_label(Color32::from_rgb(235, 80, 70), m);
         }
@@ -172,8 +244,25 @@ impl MtView {
         egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
             // The time ruler, offset by the header column.
-            let (rr, _) = ui.allocate_exact_size(vec2(HEADER_W + width, RULER_H), Sense::hover());
+            let (rr, ruler_resp) = ui.allocate_exact_size(vec2(HEADER_W + width, RULER_H), Sense::click_and_drag());
             let painter = ui.painter_at(rr);
+            // Click sets the playhead; a drag makes the time selection (the "Add Range" source).
+            let time_at = |x: f32| f64::from(((x - rr.left() - HEADER_W) / self.px_per_sec).max(0.0));
+            if let Some(p) = ruler_resp.interact_pointer_pos().filter(|p| p.x >= rr.left() + HEADER_W) {
+                if ruler_resp.drag_started() {
+                    self.ruler_drag = Some(time_at(p.x));
+                }
+                if let (true, Some(a)) = (ruler_resp.dragged(), self.ruler_drag) {
+                    let _ = mt.set_selection(a, time_at(p.x));
+                }
+                if ruler_resp.clicked() {
+                    let t = time_at(p.x);
+                    let _ = (mt.set_playhead(t), mt.set_selection(t, t));
+                }
+            }
+            if ruler_resp.drag_stopped() {
+                self.ruler_drag = None;
+            }
             let step = ruler_step(60.0 / self.px_per_sec);
             let mut s = 0.0_f64;
             while (s as f32) * self.px_per_sec < width {
@@ -182,6 +271,30 @@ impl MtView {
                 painter.text(pos2(x + 3.0, rr.top()), egui::Align2::LEFT_TOP, format!("{s}s"), egui::FontId::monospace(10.0), Color32::GRAY);
                 s += step;
             }
+            // Session markers and ranges on the ruler, then the selection and the playhead.
+            let rate_hz = f64::from(mt.rate());
+            let xs = |samples: i64| rr.left() + HEADER_W + (samples as f64 / rate_hz) as f32 * self.px_per_sec;
+            for m in &mt.session.markers {
+                let (x0, x1) = (xs(m.start), xs(m.end));
+                if m.end > m.start {
+                    painter.rect_filled(
+                        Rect::from_min_max(pos2(x0, rr.bottom() - 10.0), pos2(x1.max(x0 + 2.0), rr.bottom())),
+                        0.0,
+                        MARKER_COLOUR.gamma_multiply(0.45),
+                    );
+                }
+                painter.line_segment([pos2(x0, rr.top()), pos2(x0, rr.bottom())], Stroke::new(1.5, MARKER_COLOUR));
+                painter.text(pos2(x0 + 3.0, rr.top() + 10.0), egui::Align2::LEFT_TOP, &m.name, egui::FontId::proportional(11.0), MARKER_COLOUR);
+            }
+            if let Some((a, b)) = mt.selection_seconds() {
+                let r = Rect::from_min_max(
+                    pos2(rr.left() + HEADER_W + a as f32 * self.px_per_sec, rr.top()),
+                    pos2(rr.left() + HEADER_W + b as f32 * self.px_per_sec, rr.bottom()),
+                );
+                painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(120, 160, 255, 50));
+            }
+            let px = xs(mt.session.edit.playhead);
+            painter.line_segment([pos2(px, rr.top()), pos2(px, rr.bottom())], Stroke::new(1.0, Color32::from_rgb(255, 255, 255)));
             for id in ids {
                 let Some(t) = mt.session.track(id) else { continue };
                 let (name, chans, clips, [r, g, b]) = (t.name.clone(), t.channels(), t.clips().to_vec(), t.color);
@@ -277,7 +390,39 @@ impl MtView {
         }
     }
 
+    /// `SMARKER add <t> [end]` | `rename <i> <name>` | `delete <i>` | `next` | `prev` | `playhead <t>`
+    /// | `select <a> <b>` | `addhere` | `addsel` | `state` (session markers, f110; `<i>` counts from 1).
+    fn smarker(&mut self, w: &[String]) -> Result<String, MtError> {
+        let word = |i: usize| w.get(i).map(String::as_str).unwrap_or("");
+        let usage = || {
+            Err(MtError("usage: SMARKER add <t> [end] | rename <i> <name> | delete <i> | next | prev | playhead <t> | select <a> <b> | addhere | addsel | state".into()))
+        };
+        let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+        let num = |i: usize| word(i).parse::<f64>().map_err(|_| MtError(format!("{:?} is not a number of seconds", word(i))));
+        let pos = |i: usize| word(i).parse::<usize>().map_err(|_| MtError(format!("{:?} is not a marker number", word(i))));
+        match (word(0), w.len()) {
+            ("add", 2 | 3) => {
+                let end = if w.len() == 3 { Some(num(2)?) } else { None };
+                let i = mt.add_marker(None, num(1)?, end)?;
+                Ok(format!("OK index={i} markers={}", mt.marker_count()))
+            }
+            ("addhere", 1) => Ok(format!("OK index={} markers={}", mt.add_marker_at_playhead()?, mt.marker_count())),
+            ("addsel", 1) => Ok(format!("OK index={} markers={}", mt.add_marker_from_selection()?, mt.marker_count())),
+            ("rename", 3) => mt.rename_marker(pos(1)?, word(2)).map(|()| "OK".into()),
+            ("delete", 2) => mt.delete_marker(pos(1)?).map(|()| format!("OK markers={}", mt.marker_count())),
+            ("next", 1) => Ok(format!("OK index={} playhead={}", mt.next_marker()?, mt.playhead_seconds())),
+            ("prev", 1) => Ok(format!("OK index={} playhead={}", mt.prev_marker()?, mt.playhead_seconds())),
+            ("playhead", 2) => mt.set_playhead(num(1)?).map(|()| "OK".into()),
+            ("select", 3) => mt.set_selection(num(1)?, num(2)?).map(|()| "OK".into()),
+            ("state", 1) => Ok(format!("OK {}", mt.markers_state_json())),
+            _ => usage(),
+        }
+    }
+
     fn control_inner(&mut self, cmd: &str, w: &[String], doc: Option<&Document>) -> Result<String, MtError> {
+        if cmd == "SMARKER" {
+            return self.smarker(w);
+        }
         let word = |i: usize| w.get(i).map(String::as_str).unwrap_or("");
         let usage = |u: &str| Err(MtError(format!("usage: {u}")));
         match (cmd, word(0)) {
@@ -439,5 +584,24 @@ mod tests {
         assert!(v.control("SESSION", "new X rate=3", None).starts_with("ERR"));
         assert_eq!(v.control("VIEW", "waveform", None), "OK view=waveform");
         assert!(v.control("CLIP", "add 1 /nonexistent/x.wav 0", None).starts_with("ERR cannot read"));
+    }
+
+    #[test]
+    fn smarker_verbs_add_rename_navigate_and_delete() {
+        let mut v = MtView::default();
+        assert!(v.control("SMARKER", "add 1", None).starts_with("ERR no session"));
+        v.control("SESSION", "new Demo", None);
+        assert_eq!(v.control("SMARKER", "add 4", None), "OK index=1 markers=1");
+        assert_eq!(v.control("SMARKER", "add 1 2.5", None), "OK index=1 markers=2");
+        assert_eq!(v.control("SMARKER", "rename 2 \"Last one\"", None), "OK");
+        assert!(v.control("SMARKER", "state", None).contains(r#""name":"Last one""#));
+        assert_eq!(v.control("SMARKER", "next", None), "OK index=1 playhead=1");
+        assert_eq!(v.control("SMARKER", "next", None), "OK index=2 playhead=4");
+        assert!(v.control("SMARKER", "next", None).starts_with("ERR"));
+        assert_eq!(v.control("SMARKER", "prev", None), "OK index=1 playhead=1");
+        assert_eq!(v.control("SMARKER", "delete 1", None), "OK markers=1");
+        assert!(v.control("SMARKER", "delete 5", None).starts_with("ERR"));
+        assert!(v.control("SMARKER", "add x", None).starts_with("ERR"));
+        assert!(v.control("SMARKER", "bogus", None).starts_with("ERR usage"));
     }
 }
