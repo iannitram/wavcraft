@@ -258,6 +258,9 @@ fn plan_chunks(doc: &DocState, ty: SampleType) -> (Vec<Item>, Option<File>) {
         Item::Fresh { id: *b"bext", body: b.to_bytes(b.time_reference.saturating_add(doc.start_shift()), &history) }
     });
     let info = (!meta.info.0.is_empty()).then(|| Item::Fresh { id: *b"LIST", body: meta.info.to_bytes() });
+    let has_ixml_chunk = chunks.iter().any(|c| c.id == *b"iXML");
+    let mut ixml = (meta.chnames_edited && (meta.ixml.is_some() || !has_ixml_chunk))
+        .then(|| Item::Fresh { id: *b"iXML", body: crate::meta::ixml_with_names(meta.ixml.as_deref(), &meta.chnames) });
     let (mut bext, mut info) = (bext, info);
     let mut plan = Vec::new();
     let (mut have_data, mut have_info) = (false, false);
@@ -279,6 +282,12 @@ fn plan_chunks(doc: &DocState, ty: SampleType) -> (Vec<Item>, Option<File>) {
         }
         if c.id == *b"bext" && meta.bext.is_some() {
             plan.extend(bext.take());
+        } else if c.id == *b"iXML" && meta.ixml.is_some() {
+            if meta.chnames_edited {
+                plan.extend(ixml.take());
+            } else {
+                plan.push(Item::Copy(c.clone()));
+            }
         } else if c.id == *b"LIST" && is_list(f, c, b"INFO") {
             if meta.info_edited {
                 if !have_info {
@@ -303,6 +312,7 @@ fn plan_chunks(doc: &DocState, ty: SampleType) -> (Vec<Item>, Option<File>) {
     if !have_info {
         plan.extend(info.take());
     }
+    plan.extend(ixml.take());
     (plan, file)
 }
 

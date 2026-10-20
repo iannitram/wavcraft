@@ -257,3 +257,110 @@ fn a_source_that_changed_loses_chunks_with_a_warning_but_the_save_succeeds() {
     assert!(ids(&b).contains(&"data".to_string()));
     assert!(read_chunks(&b).len() >= 2);
 }
+
+const IXML_TRACKS: &[u8] = b"<BWFXML>\n<PROJECT>demo &#39;x&#39;</PROJECT>\n<TRACK_LIST><TRACK_COUNT>2</TRACK_COUNT>\n<TRACK><CHANNEL_INDEX>1</CHANNEL_INDEX><INTERLEAVE_INDEX>1</INTERLEAVE_INDEX><NAME>Boom</NAME></TRACK>\n<TRACK><CHANNEL_INDEX>2</CHANNEL_INDEX><INTERLEAVE_INDEX>2</INTERLEAVE_INDEX><NAME>Lav &amp; Co</NAME></TRACK>\n</TRACK_LIST>\n<UNKNOWN_TAG>kept  as is</UNKNOWN_TAG>\n</BWFXML>\n\0\0";
+
+#[test]
+fn channel_names_come_from_ixml_are_edited_and_rewritten_keeping_the_rest() {
+    let t = TempDir::new("chnames");
+    let f = t.0.join("a.wav");
+    std::fs::write(&f, riff(&[fmt16(), chunk(b"iXML", IXML_TRACKS), chunk(b"junk", ODD), pcm(3_000)])).unwrap();
+    let doc = open_doc(&f, &t.0.join("s"));
+    assert_eq!(doc.source().meta.chnames, ["Boom", "Lav & Co"]);
+    // Unedited: the chunk is copied through exactly.
+    let same = t.0.join("same.wav");
+    save_wav(&doc, &same, SampleType::Int16, &mut |_| {}).unwrap();
+    assert_eq!(body(&std::fs::read(&same).unwrap(), b"iXML"), IXML_TRACKS);
+    // One undoable edit.
+    let mut hist = History::new(doc, u64::MAX);
+    let mut meta = hist.current().source().meta.clone();
+    meta.set("chname.2", "Plant <mic>").unwrap();
+    assert!(meta.set("chname.3", "x").is_err());
+    let next = hist.current().with_metadata(meta);
+    hist.push_metadata("Edit Metadata", next);
+    let out = t.0.join("out.wav");
+    save_wav(hist.current(), &out, SampleType::Int16, &mut |_| {}).unwrap();
+    let b = std::fs::read(&out).unwrap();
+    assert_eq!(ids(&b), ["fmt ", "iXML", "junk", "data"]);
+    let want = String::from_utf8_lossy(IXML_TRACKS).replace("Lav &amp; Co", "Plant &lt;mic&gt;");
+    assert_eq!(String::from_utf8(body(&b, b"iXML").to_vec()).unwrap(), want, "only the NAME text changed");
+    assert_eq!(body(&b, b"junk"), ODD);
+    let reopened = open_doc(&out, &t.0.join("s2"));
+    assert_eq!(reopened.source().meta.chnames, ["Boom", "Plant <mic>"]);
+    hist.undo();
+    assert_eq!(hist.current().source().meta.chnames, ["Boom", "Lav & Co"]);
+}
+
+#[test]
+fn channel_names_fall_back_to_the_channel_mask_and_a_plain_file_gets_an_ixml() {
+    let t = TempDir::new("chmask");
+    let f = t.0.join("ext.wav");
+    // WAVE_FORMAT_EXTENSIBLE stereo, mask front left + front right.
+    let mut b = Vec::new();
+    b.extend_from_slice(&0xFFFEu16.to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&48_000u32.to_le_bytes());
+    b.extend_from_slice(&(48_000u32 * 4).to_le_bytes());
+    b.extend_from_slice(&4u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(&22u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(&3u32.to_le_bytes());
+    b.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]);
+    std::fs::write(&f, riff(&[chunk(b"fmt ", &b), pcm(500)])).unwrap();
+    let doc = open_doc(&f, &t.0.join("s"));
+    assert_eq!(doc.source().meta.chnames, ["L", "R"]);
+    let mut meta = doc.source().meta.clone();
+    meta.set("chname.1", "Dialog").unwrap();
+    let doc = doc.with_metadata(meta);
+    let out = t.0.join("o.wav");
+    save_wav(&doc, &out, SampleType::Int16, &mut |_| {}).unwrap();
+    let bytes = std::fs::read(&out).unwrap();
+    assert!(ids(&bytes).contains(&"iXML".to_string()));
+    let re = open_doc(&out, &t.0.join("s2"));
+    assert_eq!(re.source().meta.chnames, ["Dialog", "R"]);
+}
+
+#[test]
+fn info_tags_edit_as_one_step_and_round_trip_with_unknown_tags() {
+    let t = TempDir::new("info");
+    let f = t.0.join("a.wav");
+    std::fs::write(&f, rich_file(2_000)).unwrap();
+    let doc = open_doc(&f, &t.0.join("s"));
+    let mut hist = History::new(doc, u64::MAX);
+    let mut meta = hist.current().source().meta.clone();
+    for (k, v) in [
+        ("INFO.INAM", "A title"),
+        ("INFO.IART", "An artist"),
+        ("INFO.ICMT", "a note"),
+        ("INFO.ICRD", "2026-10-20"),
+        ("INFO.IGNR", "Ambient"),
+        ("INFO.ICOP", "(c) test"),
+        ("INFO.ISFT", "WavCraft"),
+        ("INFO.IKEY", "kept"),
+    ] {
+        meta.set(k, v).unwrap();
+    }
+    let next = hist.current().with_metadata(meta);
+    hist.push_metadata("Edit Metadata", next);
+    assert_eq!(hist.steps().len(), 2, "one undo step");
+    let out = t.0.join("o.wav");
+    save_wav(hist.current(), &out, SampleType::Int16, &mut |_| {}).unwrap();
+    let re = open_doc(&out, &t.0.join("s2"));
+    let m = &re.source().meta;
+    for (k, v) in [
+        ("title", "A title"),
+        ("artist", "An artist"),
+        ("comment", "a note"),
+        ("date", "2026-10-20"),
+        ("genre", "Ambient"),
+        ("copyright", "(c) test"),
+        ("software", "WavCraft"),
+        ("INFO.IKEY", "kept"),
+    ] {
+        assert_eq!(m.get(k).as_deref(), Some(v), "{k}");
+    }
+    assert_eq!(body(&std::fs::read(&out).unwrap(), b"iXML"), IXML, "an INFO edit leaves the iXML alone");
+    hist.undo();
+    assert_eq!(hist.current().source().meta.get("title").unwrap(), "Old title");
+}

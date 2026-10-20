@@ -507,14 +507,18 @@ impl WaveApp {
             return;
         };
         let src = editor.history.current().source().clone();
-        if self.meta_for.as_ref().is_none_or(|a| !Arc::ptr_eq(a, &src)) || self.meta_draft.len() != meta::FIELDS.len() {
-            self.meta_draft = meta::FIELDS.iter().map(|f| src.meta.get(f).unwrap_or_default()).collect();
+        let keys = src.meta.keys();
+        if self.meta_for.as_ref().is_none_or(|a| !Arc::ptr_eq(a, &src)) || self.meta_draft.len() != keys.len() {
+            self.meta_draft = keys.iter().map(|f| src.meta.get(f).unwrap_or_default()).collect();
             self.meta_for = Some(src.clone());
         }
         let mut apply = false;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (field, text) in meta::FIELDS.iter().zip(self.meta_draft.iter_mut()) {
-                ui.label(field.replace('_', " "));
+            for (field, text) in keys.iter().zip(self.meta_draft.iter_mut()) {
+                match field.strip_prefix("chname.") {
+                    Some(n) => ui.label(format!("channel {n} name")),
+                    None => ui.label(field.replace('_', " ")),
+                };
                 if *field == "coding_history" {
                     ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY));
                 } else {
@@ -525,7 +529,7 @@ impl WaveApp {
             apply = ui.button("Apply").clicked();
         });
         if apply {
-            let changes: Vec<(String, String)> = meta::FIELDS.iter().map(|f| f.to_string()).zip(self.meta_draft.iter().cloned()).collect();
+            let changes: Vec<(String, String)> = keys.iter().cloned().zip(self.meta_draft.iter().cloned()).collect();
             match self.apply_metadata(&changes) {
                 Ok(_) => self.meta_for = None,
                 Err(e) => self.error = Some(format!("Metadata: {e}")),
@@ -834,6 +838,37 @@ impl WaveApp {
                     _ => "ERR META get [field] | META set <field> <value>".to_string(),
                 }
             }
+            // CHNAME get | CHNAME set <ch> <name>: channel names (<ch> counts from 1); one undo step.
+            "CHNAME" => {
+                let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
+                match verb {
+                    "get" => format!(
+                        "OK {}",
+                        editor
+                            .history
+                            .current()
+                            .source()
+                            .meta
+                            .chnames
+                            .iter()
+                            .map(|n| meta::escape_lines(n).replace(' ', "_"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ),
+                    "set" => {
+                        let (ch, name) = rest.trim_start().split_once(' ').unwrap_or((rest.trim(), ""));
+                        match ch.parse::<usize>() {
+                            Ok(n) => match self.apply_metadata(&[(format!("chname.{n}"), name.to_string())]) {
+                                Ok(changed) => format!("OK changed={}", u8::from(changed)),
+                                Err(e) => format!("ERR {e}"),
+                            },
+                            Err(_) => "ERR CHNAME set <channel from 1> <name>".to_string(),
+                        }
+                    }
+                    _ => "ERR CHNAME get | CHNAME set <channel from 1> <name>".to_string(),
+                }
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -995,6 +1030,7 @@ impl WaveApp {
         painter.rect_filled(rect, 0.0, BACKGROUND);
         let Some(doc) = &self.doc else { return };
         let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
+        let chnames: Vec<String> = self.editor.as_ref().map(|e| e.history.current().source().meta.chnames.clone()).unwrap_or_default();
         let width = rect.width().max(1.0);
         self.editor_width = width;
         if self.fit_on_next_frame {
@@ -1067,6 +1103,15 @@ impl WaveApp {
                 let mid = lane.center().y;
                 painter.line_segment([pos2(lane.left(), mid), pos2(lane.right(), mid)], Stroke::new(1.0, Color32::from_gray(50)));
                 let half = lane.height() * 0.5 - 2.0;
+                if let Some(name) = chnames.get(ch).filter(|n| !n.is_empty()) {
+                    painter.text(
+                        pos2(lane.left() + 4.0, lane.top() + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        name,
+                        egui::FontId::proportional(12.0),
+                        Color32::from_gray(170),
+                    );
+                }
                 for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
                     let x = lane.left() + i as f32 + 0.5;
                     let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);

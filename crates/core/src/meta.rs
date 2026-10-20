@@ -51,10 +51,17 @@ pub struct Metadata {
     /// An INFO tag was changed: the save writes the `LIST`/`INFO` chunk fresh; until then it is
     /// copied through byte for byte.
     pub info_edited: bool,
+    /// The `iXML` chunk body as the file had it (trailing zeros included), if any.
+    pub ixml: Option<Vec<u8>>,
+    /// One name per channel (empty = none): from iXML `TRACK_LIST`, else the channel-mask labels.
+    pub chnames: Vec<String>,
+    /// A channel name was changed: the save rewrites the names in the iXML (the rest of it
+    /// byte for byte); until then the chunk is copied through.
+    pub chnames_edited: bool,
 }
 
 /// The fields `META get|set` and the panel know, in the panel's order.
-pub const FIELDS: [&str; 10] = [
+pub const FIELDS: [&str; 14] = [
     "description",
     "originator",
     "originator_reference",
@@ -65,15 +72,159 @@ pub const FIELDS: [&str; 10] = [
     "title",
     "artist",
     "comment",
+    "date",
+    "genre",
+    "copyright",
+    "software",
 ];
 
+/// The RIFF INFO tag a field name stands for: the friendly names above, or `INFO.XXXX` for any
+/// four-character tag.
 fn info_id(field: &str) -> Option<[u8; 4]> {
     match field {
         "title" => Some(*b"INAM"),
         "artist" => Some(*b"IART"),
         "comment" => Some(*b"ICMT"),
-        _ => None,
+        "date" => Some(*b"ICRD"),
+        "genre" => Some(*b"IGNR"),
+        "copyright" => Some(*b"ICOP"),
+        "software" => Some(*b"ISFT"),
+        _ => {
+            let id: [u8; 4] = field.strip_prefix("INFO.")?.as_bytes().try_into().ok()?;
+            id.iter().all(|c| c.is_ascii_alphanumeric() || *c == b' ').then_some(id)
+        }
     }
+}
+
+/// `chname.N` (N counts from 1) to a channel index.
+fn chname_index(field: &str) -> Option<usize> {
+    field.strip_prefix("chname.")?.parse::<usize>().ok()?.checked_sub(1)
+}
+
+/// Speaker labels of a `WAVE_FORMAT_EXTENSIBLE` channel mask, in bit order.
+const MASK_LABELS: [&str; 18] = ["L", "R", "C", "LFE", "BL", "BR", "FLC", "FRC", "BC", "SL", "SR", "TC", "TFL", "TFC", "TFR", "TBL", "TBC", "TBR"];
+
+/// The labels of the set bits of `mask`, one per channel (empty strings where the mask has fewer
+/// speakers than channels, or no mask).
+pub fn mask_names(mask: u32, channels: usize) -> Vec<String> {
+    let mut out: Vec<String> = (0..MASK_LABELS.len()).filter(|b| mask >> b & 1 == 1).map(|b| MASK_LABELS[b].to_string()).collect();
+    out.resize(channels, String::new());
+    out.truncate(channels);
+    out
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+}
+
+/// The text between `<tag>` and `</tag>` in `s`, as byte offsets of the inside.
+fn element(s: &str, tag: &str) -> Option<(usize, usize)> {
+    let open = format!("<{tag}>");
+    let start = s.find(&open)? + open.len();
+    let end = start + s[start..].find(&format!("</{tag}>"))?;
+    Some((start, end))
+}
+
+/// The `TRACK` elements of the iXML `TRACK_LIST`: (inside start, inside end, channel index).
+fn ixml_tracks(s: &str) -> Vec<(usize, usize, usize)> {
+    let Some((ls, le)) = element(s, "TRACK_LIST") else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut at = ls;
+    while let Some(o) = s[at..le].find("<TRACK>") {
+        let start = at + o + 7;
+        let Some(c) = s[start..le].find("</TRACK>") else { break };
+        let end = start + c;
+        let inner = &s[start..end];
+        let idx = element(inner, "INTERLEAVE_INDEX").and_then(|(a, b)| inner[a..b].trim().parse::<usize>().ok()).and_then(|i| i.checked_sub(1));
+        out.push((start, end, idx.unwrap_or(out.len())));
+        at = end;
+    }
+    out
+}
+
+/// The body without its trailing zero bytes as text, and those zeros.
+fn ixml_text(raw: &[u8]) -> Option<(&str, &[u8])> {
+    let n = raw.iter().rposition(|&b| b != 0).map_or(0, |p| p + 1);
+    Some((std::str::from_utf8(&raw[..n]).ok()?, &raw[n..]))
+}
+
+/// The channel names an iXML body holds (index = channel; empty where none).
+pub fn ixml_names(raw: &[u8], channels: usize) -> Vec<String> {
+    let mut names = vec![String::new(); channels];
+    let Some((s, _)) = ixml_text(raw) else { return names };
+    for (a, b, ch) in ixml_tracks(s) {
+        if let (Some(slot), Some((x, y))) = (names.get_mut(ch), element(&s[a..b], "NAME")) {
+            *slot = xml_unescape(s[a + x..a + y].trim());
+        }
+    }
+    names
+}
+
+fn track_xml(i: usize, name: &str) -> String {
+    format!(
+        "<TRACK>\n<CHANNEL_INDEX>{0}</CHANNEL_INDEX>\n<INTERLEAVE_INDEX>{0}</INTERLEAVE_INDEX>\n<NAME>{1}</NAME>\n</TRACK>\n",
+        i + 1,
+        xml_escape(name)
+    )
+}
+
+/// `raw` (the iXML a file had, if any) with the channel names set to `names`: only the `NAME`
+/// elements (and what a missing track needs) change; every other byte stays. A name that
+/// already reads the same is not touched. An iXML that is not UTF-8 is returned as it was.
+pub fn ixml_with_names(raw: Option<&[u8]>, names: &[String]) -> Vec<u8> {
+    let Some(raw) = raw else {
+        let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<BWFXML>\n<IXML_VERSION>1.5</IXML_VERSION>\n<TRACK_LIST>\n");
+        s.push_str(&format!("<TRACK_COUNT>{}</TRACK_COUNT>\n", names.len()));
+        for (i, n) in names.iter().enumerate() {
+            s.push_str(&track_xml(i, n));
+        }
+        s.push_str("</TRACK_LIST>\n</BWFXML>\n");
+        return s.into_bytes();
+    };
+    let Some((s, zeros)) = ixml_text(raw) else { return raw.to_vec() };
+    let tracks = ixml_tracks(s);
+    // (position, replaced length, new text), applied from the end so offsets stay true.
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let mut seen = vec![false; names.len()];
+    for &(a, b, ch) in &tracks {
+        let Some(want) = names.get(ch) else { continue };
+        seen[ch] = true;
+        let inner = &s[a..b];
+        match element(inner, "NAME") {
+            Some((x, y)) => {
+                if xml_unescape(inner[x..y].trim()) != *want {
+                    edits.push((a + x, y - x, xml_escape(want)));
+                }
+            }
+            None if !want.is_empty() => edits.push((b, 0, format!("<NAME>{}</NAME>\n", xml_escape(want)))),
+            None => {}
+        }
+    }
+    let missing: String = names.iter().enumerate().filter(|(i, n)| !seen[*i] && !n.is_empty()).map(|(i, n)| track_xml(i, n)).collect();
+    if !missing.is_empty() {
+        if let Some((_, le)) = element(s, "TRACK_LIST") {
+            edits.push((le, 0, missing));
+            if let Some((a, b)) = element(s, "TRACK_COUNT") {
+                let count = names.len().max(tracks.iter().map(|t| t.2 + 1).max().unwrap_or(0));
+                edits.push((a, b - a, count.to_string()));
+            }
+        } else {
+            let block = format!("<TRACK_LIST>\n<TRACK_COUNT>{}</TRACK_COUNT>\n{missing}</TRACK_LIST>\n", names.len());
+            edits.push((s.rfind("</BWFXML>").unwrap_or(s.len()), 0, block));
+        }
+    }
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut out = s.to_string();
+    for (at, len, text) in edits {
+        out.replace_range(at..at + len, &text);
+    }
+    let mut bytes = out.into_bytes();
+    bytes.extend_from_slice(zeros);
+    bytes
 }
 
 fn le_u32(b: &[u8], at: usize) -> Option<u32> {
@@ -238,6 +389,9 @@ impl Metadata {
     /// The value of `field` (see [`FIELDS`]); empty when the file has none. `None` for a name
     /// that is not a field.
     pub fn get(&self, field: &str) -> Option<String> {
+        if let Some(ch) = chname_index(field) {
+            return self.chnames.get(ch).cloned();
+        }
         if let Some(id) = info_id(field) {
             return Some(self.info.get(id).unwrap_or_default());
         }
@@ -260,6 +414,16 @@ impl Metadata {
     /// Set `field` to `value`. Setting a `bext` field on a file without one gives it a `bext`.
     /// Errors name what is wrong; nothing changes then.
     pub fn set(&mut self, field: &str, value: &str) -> Result<(), String> {
+        if let Some(ch) = chname_index(field) {
+            if value.contains(['\0', '\r', '\n']) {
+                return Err("a channel name is one line".to_string());
+            }
+            let n = self.chnames.len();
+            let slot = self.chnames.get_mut(ch).ok_or_else(|| format!("no channel {} (the file has {n})", ch + 1))?;
+            *slot = value.trim().to_string();
+            self.chnames_edited = true;
+            return Ok(());
+        }
         if let Some(id) = info_id(field) {
             if value.contains('\0') {
                 return Err(format!("{field} cannot hold a zero byte"));
@@ -318,11 +482,16 @@ impl Metadata {
         Ok(())
     }
 
+    /// The field names the panel shows: [`FIELDS`], then `chname.N` for each channel.
+    pub fn keys(&self) -> Vec<String> {
+        FIELDS.iter().map(|f| f.to_string()).chain((1..=self.chnames.len()).map(|n| format!("chname.{n}"))).collect()
+    }
+
     /// `name=value` lines for every field, for the control channel's `META get`.
     pub fn summary(&self) -> String {
         let mut s = String::new();
-        for f in FIELDS {
-            let _ = write!(s, "{}{f}={}", if s.is_empty() { "" } else { " " }, escape_lines(&self.get(f).unwrap_or_default()).replace(' ', "_"));
+        for f in self.keys() {
+            let _ = write!(s, "{}{f}={}", if s.is_empty() { "" } else { " " }, escape_lines(&self.get(&f).unwrap_or_default()).replace(' ', "_"));
         }
         s
     }
@@ -388,6 +557,45 @@ mod tests {
         assert_eq!(m.bext.as_ref().unwrap().time_reference, 96_000);
         m.set("title", "T").unwrap();
         assert!(m.info_edited);
+    }
+
+    #[test]
+    fn info_fields_and_generic_ids() {
+        let mut m = Metadata::default();
+        for (f, id) in [("date", *b"ICRD"), ("genre", *b"IGNR"), ("copyright", *b"ICOP"), ("software", *b"ISFT"), ("INFO.IKEY", *b"IKEY")] {
+            m.set(f, "v").unwrap();
+            assert_eq!(m.info.get(id).as_deref(), Some("v"), "{f}");
+            assert_eq!(m.get(f).as_deref(), Some("v"));
+        }
+        assert!(m.set("INFO.TOOLONG", "x").is_err());
+    }
+
+    #[test]
+    fn channel_names_from_ixml_and_mask() {
+        let x = b"<BWFXML><TRACK_LIST><TRACK_COUNT>2</TRACK_COUNT><TRACK><INTERLEAVE_INDEX>2</INTERLEAVE_INDEX><NAME>Boom &amp; Lav</NAME></TRACK><TRACK><INTERLEAVE_INDEX>1</INTERLEAVE_INDEX><NAME>Mix</NAME></TRACK></TRACK_LIST></BWFXML>\0\0";
+        assert_eq!(ixml_names(x, 3), ["Mix", "Boom & Lav", ""]);
+        assert_eq!(mask_names(0x3, 2), ["L", "R"]);
+        assert_eq!(mask_names(0x4, 2), ["C", ""]);
+    }
+
+    #[test]
+    fn ixml_rewrite_changes_only_the_names() {
+        let x = b"<?xml version=\"1.0\"?>\n<BWFXML>\n <UNKNOWN a=\"1\">keep &#39; me</UNKNOWN>\n<TRACK_LIST><TRACK_COUNT>2</TRACK_COUNT><TRACK><INTERLEAVE_INDEX>1</INTERLEAVE_INDEX><NAME>Mix</NAME></TRACK><TRACK><INTERLEAVE_INDEX>2</INTERLEAVE_INDEX></TRACK></TRACK_LIST>\n</BWFXML>\n\0";
+        let same = ixml_with_names(Some(x), &["Mix".into(), String::new()]);
+        assert_eq!(same, x, "unchanged names leave every byte");
+        let out = ixml_with_names(Some(x), &["Mix".into(), "B<2>".into()]);
+        let want = String::from_utf8_lossy(x).replace("</INTERLEAVE_INDEX></TRACK>", "</INTERLEAVE_INDEX><NAME>B&lt;2&gt;</NAME>\n</TRACK>");
+        assert_eq!(String::from_utf8(out).unwrap(), want);
+        let three = ixml_with_names(Some(x), &["Mix".into(), String::new(), "Z".into()]);
+        let t = String::from_utf8(three).unwrap();
+        assert!(t.contains("<TRACK_COUNT>3</TRACK_COUNT>") && t.contains("<NAME>Z</NAME>") && t.contains("keep &#39; me"));
+        assert_eq!(ixml_names(t.as_bytes(), 3), ["Mix", "", "Z"]);
+        let none = ixml_with_names(None, &["A".into(), "B".into()]);
+        assert_eq!(ixml_names(&none, 2), ["A", "B"]);
+        let no_list = ixml_with_names(Some(b"<BWFXML><X>1</X></BWFXML>"), &["A".into()]);
+        let t = String::from_utf8(no_list).unwrap();
+        assert!(t.starts_with("<BWFXML><X>1</X><TRACK_LIST>") && t.ends_with("</TRACK_LIST>\n</BWFXML>"));
+        assert_eq!(ixml_with_names(Some(&[0xff, 0xfe]), &["A".into()]), [0xff, 0xfe]);
     }
 
     #[test]
