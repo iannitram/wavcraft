@@ -112,8 +112,9 @@ def main():
             s = c.state()
             check("recording and the backing plays (overdub)", s.get("recording") is True and s.get("playing") is True and s["position"] > 1.2,
                   (s.get("recording"), s.get("playing"), s.get("position")))
+            check("SESSION new while recording is refused", c.ask("SESSION new Other").startswith("ERR recording: stop it first"))
             check("a second SREC start is refused", c.ask("SREC start 1.0").startswith("ERR already recording"))
-            time.sleep(0.8)
+            time.sleep(0.8 if n == 1 else 1.0)  # take 2 outlasts take 1, so it covers it fully
             check(f"SREC stop (take {n})", c.ask("SREC stop") == "OK takes=1")
         s = c.state()
         takes = s["takes"]
