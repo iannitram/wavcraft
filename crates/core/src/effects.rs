@@ -15,7 +15,9 @@ use std::sync::atomic::AtomicBool;
 use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
+mod eq;
 mod gain;
+pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
 
 /// What a setting means, so a dialog can pick the right control and units.
@@ -27,6 +29,10 @@ pub enum ParamKind {
     Percent,
     /// A duration in `unit` (`ms` or `s`).
     Time,
+    /// A frequency in Hz (a dialog may draw it on a log scale).
+    Frequency,
+    /// A plain number (a filter's Q, say); `unit` may be empty.
+    Number,
     /// One of [`ParamDesc::choices`]; the value is the index.
     Choice,
 }
@@ -57,6 +63,12 @@ impl ParamDesc {
     }
     pub const fn time(id: &'static str, label: &'static str, min: f64, max: f64, default: f64, unit: &'static str) -> ParamDesc {
         ParamDesc { id, label, kind: ParamKind::Time, min, max, default, unit, choices: &[] }
+    }
+    pub const fn frequency(id: &'static str, label: &'static str, min: f64, max: f64, default: f64) -> ParamDesc {
+        ParamDesc { id, label, kind: ParamKind::Frequency, min, max, default, unit: "Hz", choices: &[] }
+    }
+    pub const fn number(id: &'static str, label: &'static str, min: f64, max: f64, default: f64) -> ParamDesc {
+        ParamDesc { id, label, kind: ParamKind::Number, min, max, default, unit: "", choices: &[] }
     }
     pub const fn choice(id: &'static str, label: &'static str, choices: &'static [&'static str], default: usize) -> ParamDesc {
         ParamDesc { id, label, kind: ParamKind::Choice, min: 0.0, max: (choices.len() - 1) as f64, default: default as f64, unit: "", choices }
@@ -140,10 +152,35 @@ pub trait Effect: Sync {
     fn parameters(&self) -> &'static [ParamDesc] {
         &[]
     }
-    /// Process one chunk. `first_frame` is the chunk's first frame within the document; `input`
+    /// Start a run over `ctx`. An effect that needs memory between chunks (a filter), the sample
+    /// rate or a measurement of the range (a mean) returns its [`Run`] here; then [`apply`]
+    /// calls the run instead of [`Effect::process`]. The default is no run.
+    fn begin(&self, _params: &[f64], _ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
+        Ok(None)
+    }
+    /// Process one chunk on its own (the stateless path, used when [`Effect::begin`] gives no run).
+    /// `first_frame` is the chunk's first frame within the document; `input`
     /// and `output` hold one slice per active channel, all the same length. The output has the
     /// same length as the input (the effect seam is length-preserving).
     fn process(&self, params: &[f64], first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()>;
+}
+
+/// What a stateful effect is told when a run starts (see [`Effect::begin`]).
+pub struct RunContext<'a> {
+    /// The document being processed (its state before the edit).
+    pub doc: &'a DocState,
+    /// The frames to process.
+    pub range: Range<u64>,
+    /// The document channels being processed, in the order the chunks present them.
+    pub channels: Vec<usize>,
+    pub sample_rate: u32,
+}
+
+/// One run of a stateful effect: it sees the chunks of a range in order, so a filter can carry
+/// its memory from one 64 K-frame chunk into the next (no click at the join).
+pub trait Run {
+    /// Same contract as [`Effect::process`]; `first_frame` is within the document.
+    fn process(&mut self, first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()>;
 }
 
 /// Polarity inversion: every sample times -1. The reference effect.
@@ -167,7 +204,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
@@ -193,7 +230,10 @@ pub fn apply(
 ) -> Result<Edit, EditError> {
     validate(effect, params).map_err(|why| EditError::Io(io::Error::new(io::ErrorKind::InvalidInput, why)))?;
     let range = if range.start < range.end { range } else { 0..doc.len_frames() };
-    edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, input, output| {
-        effect.process(params, range.start + at, input, output)
+    let ctx = RunContext { doc, range: range.clone(), channels: channels.active(doc.channel_count()), sample_rate: doc.sample_rate() };
+    let mut run = effect.begin(params, &ctx).map_err(EditError::Io)?;
+    edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, input, output| match run.as_mut() {
+        Some(run) => run.process(range.start + at, input, output),
+        None => effect.process(params, range.start + at, input, output),
     })
 }
