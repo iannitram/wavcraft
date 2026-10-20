@@ -35,6 +35,9 @@ pub enum ActionId {
     ZoomOut,
     ZoomToSelection,
     ZoomOutFull,
+    ViewSyncSelection,
+    ViewSyncZoom,
+    ViewSyncPlayhead,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -161,6 +164,10 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
+    // Toggles (View menu checkboxes): what follows the owner when switching between documents.
+    window(ActionId::ViewSyncSelection, "view.sync.selection", "Synchronise Selection Across Files", &[]),
+    window(ActionId::ViewSyncZoom, "view.sync.zoom", "Synchronise Zoom and Scroll Across Files", &[]),
+    window(ActionId::ViewSyncPlayhead, "view.sync.playhead", "Synchronise Playhead Across Files", &[]),
 ];
 
 /// The table row for `id`.
@@ -288,6 +295,7 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::ViewSyncSelection | ActionId::ViewSyncZoom | ActionId::ViewSyncPlayhead => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -456,6 +464,9 @@ impl Editor {
             | ActionId::ZoomOut
             | ActionId::ZoomToSelection
             | ActionId::ZoomOutFull
+            | ActionId::ViewSyncSelection
+            | ActionId::ViewSyncZoom
+            | ActionId::ViewSyncPlayhead
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast

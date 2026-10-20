@@ -13,7 +13,7 @@ use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::{DocState, DocView, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
 use crate::doclist::{DocList, Where};
@@ -283,6 +283,45 @@ impl WaveApp {
         }
     }
 
+    /// What the current document shows (for carrying it over to another).
+    fn doc_view(&self) -> Option<DocView> {
+        let doc = self.editor.as_ref()?.history.current();
+        Some(DocView { view: self.view, selection: self.selection, sample_rate: doc.sample_rate(), frames: doc.len_frames() as usize })
+    }
+
+    /// After a switch: the new current document takes over what the View options ask for
+    /// (selection, zoom and scroll, cursor) from the one just left, by time.
+    fn carry_view_over(&mut self, from: Option<DocView>) {
+        let sync = self.settings.sync;
+        let (Some(from), Some(to)) = (from, self.doc_view()) else { return };
+        if sync.any() {
+            (self.view, self.selection) = wavcraft_core::carry_over(&from, &to, sync, self.editor_width.max(1.0));
+        }
+    }
+
+    /// The sync options that are on, for `STATE` (`selection,zoom,playhead` or `-`).
+    fn sync_text(&self) -> String {
+        let s = self.settings.sync;
+        let on: Vec<&str> =
+            [(s.selection, "selection"), (s.zoom, "zoom"), (s.playhead, "playhead")].iter().filter(|(b, _)| *b).map(|(_, n)| *n).collect();
+        if on.is_empty() { "-".to_string() } else { on.join(",") }
+    }
+
+    /// Toggle a View › Synchronise option and keep it in the settings file.
+    fn toggle_sync(&mut self, id: ActionId) {
+        let sync = &mut self.settings.sync;
+        match id {
+            ActionId::ViewSyncSelection => sync.selection = !sync.selection,
+            ActionId::ViewSyncZoom => sync.zoom = !sync.zoom,
+            _ => sync.playhead = !sync.playhead,
+        }
+        if let Some(file) = &self.settings_path
+            && let Err(e) = self.settings.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not save the setting to {}: {e}", file.display());
+        }
+    }
+
     /// Make a parked document the current one.
     fn put_slot(&mut self, s: DocSlot) {
         self.player.stop();
@@ -306,9 +345,11 @@ impl WaveApp {
         }
         // One clipboard for all documents: a clip copied here can be pasted there.
         let clip = self.editor.as_mut().and_then(|e| e.clipboard.take());
+        let from = self.doc_view();
         let old = self.take_slot();
         let next = self.docs.switch(i, old).unwrap_or_else(|old| old);
         self.put_slot(next);
+        self.carry_view_over(from);
         if let (Some(clip), Some(e)) = (clip, self.editor.as_mut()) {
             e.clipboard = Some(clip);
         }
@@ -475,6 +516,10 @@ impl WaveApp {
     /// The actions the window carries out itself: zoom, In/Out points at the playhead, and the
     /// Insert Silence dialog.
     fn run_window_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
+        if matches!(id, ActionId::ViewSyncSelection | ActionId::ViewSyncZoom | ActionId::ViewSyncPlayhead) {
+            self.toggle_sync(id);
+            return Ok(false);
+        }
         let frames = self.doc.as_ref().map_or(0, Document::frames);
         if frames == 0 && id != ActionId::InsertSilence {
             return Err("no file is open".to_string());
@@ -854,19 +899,26 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} view={:.3}+{:.6} sync={} busy={} unsaved={unsaved} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
                             sel(self),
                             e.history.steps().len(),
                             e.history.cursor(),
+                            self.view.start,
+                            self.view.frames_per_px,
+                            self.sync_text(),
                             u8::from(busy),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 view=0.000+1.000000 sync={} busy={} unsaved=0 undo=- redo=-",
+                        self.sync_text(),
+                        u8::from(busy)
+                    ),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -882,6 +934,17 @@ impl WaveApp {
                         format!("OK selection={}", sel(self))
                     }
                     _ => "ERR SELECT <start> <end>, in frames".to_string(),
+                }
+            }
+            "VIEW" => {
+                let mut it = rest.split_whitespace().map(str::parse::<f64>);
+                match (it.next(), it.next(), self.doc.as_ref().map(Document::frames)) {
+                    (Some(Ok(start)), Some(Ok(fpp)), Some(frames)) if start.is_finite() && fpp.is_finite() && fpp > 0.0 => {
+                        self.view = Viewport { start, frames_per_px: fpp };
+                        self.view.clamp(self.editor_width.max(1.0), frames);
+                        format!("OK view={:.3}+{:.6}", self.view.start, self.view.frames_per_px)
+                    }
+                    _ => "ERR VIEW <start frame> <frames per pixel>, with a file open".to_string(),
                 }
             }
             "ACTION" => match actions::by_name(rest) {
@@ -1031,7 +1094,7 @@ impl WaveApp {
                 ui.separator();
                 let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
                 let mut chosen = None;
-                for a in TABLE.iter().filter(|a| a.name.starts_with("view.")) {
+                for a in TABLE.iter().filter(|a| a.name.starts_with("view.") && !a.name.starts_with("view.sync.")) {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
                     let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
                     if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
@@ -1040,6 +1103,18 @@ impl WaveApp {
                 }
                 if let Some(id) = chosen {
                     let _ = self.run_action(id, ui.ctx());
+                }
+                ui.separator();
+                for a in TABLE.iter().filter(|a| a.name.starts_with("view.sync.")) {
+                    let s = self.settings.sync;
+                    let mut on = match a.id {
+                        ActionId::ViewSyncSelection => s.selection,
+                        ActionId::ViewSyncZoom => s.zoom,
+                        _ => s.playhead,
+                    };
+                    if ui.checkbox(&mut on, a.menu).changed() {
+                        self.toggle_sync(a.id);
+                    }
                 }
                 ui.separator();
                 ui.checkbox(&mut self.show_history, "History panel");

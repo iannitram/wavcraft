@@ -34,4 +34,4 @@ pub use doc::{Channel, DocState, Piece, SourceFormat};
 pub use document::{Document, OpenError};
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
-pub use view::{Selection, Viewport, format_time};
+pub use view::{DocView, Selection, SyncOptions, Viewport, carry_over, convert_frame, format_time};
