@@ -15,7 +15,9 @@ use std::sync::atomic::AtomicBool;
 use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
+mod dereverb;
 mod gain;
+pub use dereverb::DeReverb;
 pub use gain::Gain;
 
 /// What a setting means, so a dialog can pick the right control and units.
@@ -202,7 +204,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &DeReverb];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
