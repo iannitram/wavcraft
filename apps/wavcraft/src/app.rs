@@ -1234,6 +1234,22 @@ impl WaveApp {
         }
     }
 
+    /// The Effects menu: one entry per registered effect, run on the selection (the whole file
+    /// when nothing is selected) and the enabled channels.
+    fn effects_menu(&mut self, ui: &mut egui::Ui) {
+        let sel = self.selection_range();
+        let mut chosen = None;
+        for a in actions::all_actions().filter(|a| a.name.starts_with("effect.")) {
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
+            if ui.add_enabled(enabled, egui::Button::new(a.menu)).clicked() {
+                chosen = Some(a.id);
+            }
+        }
+        if let Some(id) = chosen {
+            let _ = self.run_action(id, ui.ctx());
+        }
+    }
+
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -1275,6 +1291,7 @@ impl WaveApp {
                     }
                 }
             });
+            ui.menu_button("Effects", |ui| self.effects_menu(ui));
             ui.menu_button("View", |ui| {
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
                     self.spectrum = None;
