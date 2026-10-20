@@ -20,6 +20,15 @@ craft-log = { path = "crates/craft-log" }
 # app's old name (WaveCraft, renamed WavCraft 2026-10-15) on purpose: it lives on another repo,
 # and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
 soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
+# f104 (Mixer panel): the session model (strip state, fader taper), the pan law and the mix engine
+# (its metering), at the head of our fork's `ours` branch. All MIT OR Apache-2.0. The mix crate pulls
+# in SoundCraft's plugin hosts (CLAP, VST3, AU), which only compile into the build; none is loaded.
+soundcraft-model = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
+soundcraft-mix = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
+# The mix crates' own audio-io (same rev), kept apart from the older audio-io pin above so the file
+# decoding does not change with this feature; only the panel's synthetic tones use it.
+mix-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b", package = "soundcraft-audio-io" }
+soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
 
 rustfft = "6"
 rayon = "1"

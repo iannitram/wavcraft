@@ -25,6 +25,7 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | | `app.rs` | `WaveApp`: menu (File › Session Folder… / Use the Default Session Folder since item 03b), status bar, the editor painter (ruler, waveform lanes, spectral lanes, selection, cursor, playhead), input (wheel zoom, drag select, Space, Home, `\`, Ctrl+O, drop), opening on a worker thread; the status bar shows the open's first warning (all of them on hover) since W8b |
 | | `player.rs` | `Player`: cpal output stream, play/stop, playhead position |
 | | `spectrum.rs` | `Renderer`: the spectrogram worker thread and its overview cache |
+| | `mixer.rs` (f104, C152) | The Mixer panel (Window › Mixer panel): `MixerModel` holds a `soundcraft_model::Session` (a demo of four tone tracks and a master, made in code until the multitrack session lands) and a `soundcraft_mix::MixEngine` that meters it; fader in dB through the model's taper (`fader_pos_to_db`/`fader_db_to_pos`), pan through `soundcraft_dsp::pan` (constant power, -3 dB centre), mute and solo by the engine's rule (a solo mutes the others); the strip meter is the engine's, post-fader and before the pan. Control: `MIXER show\|hide`, `MIXER state`, `MIXER set <n\|master> vol= pan= mute= solo=`. Scripted run: `tools/alpha/f104.sh` |
 
 Workspace: `Cargo.toml` at the root; `unsafe_code = "forbid"` for every crate that inherits the
 workspace lints. Tests: 21 in the core, 9 in the app (before task 02).

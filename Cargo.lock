@@ -372,6 +372,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a76abbdb2907f6fd97fb6bc0b7be96b77d328f2dd9669d1075cc03369ed22154"
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -399,6 +405,12 @@ checksum = "2ec7c5eb7a16992b1904d76c517d170ab353b0e0b3d5a0c81a8a0cd1037893cf"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "com-scrape-types"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ce183b975b8fc736a20919c4002717255fbd867df575c792aeefa9a56a73ad0"
 
 [[package]]
 name = "combine"
@@ -1223,6 +1235,12 @@ checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
 dependencies = [
  "either",
 ]
+
+[[package]]
+name = "itoa"
+version = "1.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jni"
@@ -2569,6 +2587,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_json"
+version = "1.0.154"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
+dependencies = [
+ "itoa",
+ "memchr",
+ "serde",
+ "serde_core",
+ "zmij",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2700,6 +2731,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-au-host"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "log",
+ "serde",
+ "soundcraft-dsp",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "soundcraft-audio-io"
 version = "0.6.1"
 source = "git+https://github.com/iannitram/soundcraft?rev=dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a#dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a"
@@ -2708,6 +2750,106 @@ dependencies = [
  "serde",
  "symphonia",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "soundcraft-audio-io"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "log",
+ "serde",
+ "symphonia",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "soundcraft-clap-host"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "clap-sys",
+ "libloading",
+ "log",
+ "serde",
+ "soundcraft-dsp",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "soundcraft-dsp"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "log",
+ "rustfft",
+ "serde",
+]
+
+[[package]]
+name = "soundcraft-midi"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "soundcraft-mix"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "log",
+ "rayon",
+ "soundcraft-au-host",
+ "soundcraft-audio-io 0.10.0",
+ "soundcraft-clap-host",
+ "soundcraft-dsp",
+ "soundcraft-midi",
+ "soundcraft-model",
+ "soundcraft-time",
+ "soundcraft-vst3-host",
+]
+
+[[package]]
+name = "soundcraft-model"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "serde",
+ "serde_json",
+ "soundcraft-audio-io 0.10.0",
+ "soundcraft-midi",
+ "soundcraft-time",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "soundcraft-time"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "soundcraft-vst3-host"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "libloading",
+ "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "serde",
+ "soundcraft-dsp",
+ "thiserror 2.0.21",
+ "vst3",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3183,6 +3325,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vst3"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31e3fe7a6f028ded8c5a9984cf283319e6dc63572c9b71da1d4ee9d71d3b6bf"
+dependencies = [
+ "com-scrape-types",
+]
+
+[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3277,6 +3428,10 @@ dependencies = [
  "egui",
  "log",
  "rfd",
+ "soundcraft-audio-io 0.10.0",
+ "soundcraft-dsp",
+ "soundcraft-mix",
+ "soundcraft-model",
  "wavcraft-core",
  "windows-sys 0.61.2",
 ]
@@ -3293,7 +3448,7 @@ dependencies = [
  "rayon",
  "rustfft",
  "rustix 1.1.5",
- "soundcraft-audio-io",
+ "soundcraft-audio-io 0.6.1",
  "symphonia",
  "sysinfo",
 ]
@@ -3303,7 +3458,7 @@ name = "wavcraft-testkit"
 version = "0.1.0"
 dependencies = [
  "rayon",
- "soundcraft-audio-io",
+ "soundcraft-audio-io 0.6.1",
  "wavcraft-core",
  "windows-sys 0.61.2",
 ]
@@ -4296,6 +4451,12 @@ name = "zlib-rs"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
+
+[[package]]
+name = "zmij"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zune-core"
