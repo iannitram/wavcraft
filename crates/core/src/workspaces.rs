@@ -149,6 +149,12 @@ impl Workspaces {
         saved
     }
 
+    /// The `n`th workspace (1 is `Default`) in the order [`Workspaces::names`] lists them: what the
+    /// keys `workspace.switch.<n>` switch to.
+    pub fn nth(&self, n: usize) -> Option<String> {
+        n.checked_sub(1).and_then(|i| self.names().into_iter().nth(i))
+    }
+
     /// What the named workspace holds.
     pub fn snapshot_of(&self, name: &str) -> Result<Snapshot, String> {
         if same(name.trim(), DEFAULT) {

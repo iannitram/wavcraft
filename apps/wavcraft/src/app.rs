@@ -2257,8 +2257,14 @@ impl WaveApp {
         let modified = self.workspaces.is_modified(&self.snapshot());
         let mut result: Result<(), String> = Ok(());
         let mut done = false;
-        for name in self.workspaces.names() {
-            let label = if name == current && modified { format!("{name} (changed)") } else { name.clone() };
+        for (i, name) in self.workspaces.names().into_iter().enumerate() {
+            let mut label = if name == current && modified { format!("{name} (changed)") } else { name.clone() };
+            if i < 9 {
+                let keys = self.keymap.menu_text(Command::Workspace(i as u8 + 1), cfg!(target_os = "macos"));
+                if !keys.is_empty() {
+                    label = format!("{label}    {keys}");
+                }
+            }
             if ui.radio(name == current, label).clicked() && name != current {
                 result = self.workspace_command(&format!("switch {name}"));
                 done = true;
@@ -2781,6 +2787,10 @@ impl WaveApp {
             Command::Open => {
                 self.pick_file(ctx);
                 Ok(false)
+            }
+            Command::Workspace(n) => {
+                let name = self.workspaces.nth(usize::from(n)).ok_or_else(|| format!("there is no workspace {n}"))?;
+                self.workspace_command(&format!("switch {name}")).map(|()| false)
             }
         }
     }

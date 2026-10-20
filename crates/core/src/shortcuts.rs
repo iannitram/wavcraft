@@ -42,6 +42,9 @@ const fn cmd(key: &'static str) -> Shortcut {
 const fn cmd_shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: true, shift: true, alt: false, key }
 }
+const fn alt_shift(key: &'static str) -> Shortcut {
+    Shortcut { cmd: false, shift: true, alt: true, key }
+}
 const fn shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: false, shift: true, alt: false, key }
 }
@@ -252,7 +255,33 @@ pub enum Command {
     SaveAs,
     /// Start or stop playback.
     PlayStop,
+    /// Window › Workspace: switch to the `n`th workspace, 1 to 9, in the order the menu lists them.
+    Workspace(u8),
 }
+
+/// Names and menu text of `Command::Workspace(1..=9)`.
+const WORKSPACE_NAMES: [&str; 9] = [
+    "workspace.switch.1",
+    "workspace.switch.2",
+    "workspace.switch.3",
+    "workspace.switch.4",
+    "workspace.switch.5",
+    "workspace.switch.6",
+    "workspace.switch.7",
+    "workspace.switch.8",
+    "workspace.switch.9",
+];
+const WORKSPACE_LABELS: [&str; 9] = [
+    "Switch to Workspace 1",
+    "Switch to Workspace 2",
+    "Switch to Workspace 3",
+    "Switch to Workspace 4",
+    "Switch to Workspace 5",
+    "Switch to Workspace 6",
+    "Switch to Workspace 7",
+    "Switch to Workspace 8",
+    "Switch to Workspace 9",
+];
 
 impl Command {
     /// The control channel's name for it: the action's own name, or `file.open` and so on.
@@ -263,6 +292,7 @@ impl Command {
             Command::Save => "file.save",
             Command::SaveAs => "file.saveAs",
             Command::PlayStop => "transport.playStop",
+            Command::Workspace(n) => WORKSPACE_NAMES[usize::from(n.clamp(1, 9)) - 1],
         }
     }
 }
@@ -271,6 +301,7 @@ impl Command {
     /// Every command that can have a chord: the window commands, then the action table.
     pub fn all() -> Vec<Command> {
         let mut v = vec![Command::Open, Command::Save, Command::SaveAs, Command::PlayStop];
+        v.extend((1..=9).map(Command::Workspace));
         v.extend(actions::TABLE.iter().map(|a| Command::Action(a.id)));
         v
     }
@@ -288,6 +319,7 @@ impl Command {
             Command::Save => "Save",
             Command::SaveAs => "Save As…",
             Command::PlayStop => "Play/Stop",
+            Command::Workspace(n) => WORKSPACE_LABELS[usize::from(n.clamp(1, 9)) - 1],
         }
     }
 }
@@ -376,6 +408,16 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::ToggleChannel(5), alt("6")),
     act(ActionId::ToggleChannel(6), alt("7")),
     act(ActionId::ToggleChannel(7), alt("8")),
+    // Workspaces: Alt+Shift+1..9 switch to the first nine, in menu order.
+    bind(Command::Workspace(1), alt_shift("1")),
+    bind(Command::Workspace(2), alt_shift("2")),
+    bind(Command::Workspace(3), alt_shift("3")),
+    bind(Command::Workspace(4), alt_shift("4")),
+    bind(Command::Workspace(5), alt_shift("5")),
+    bind(Command::Workspace(6), alt_shift("6")),
+    bind(Command::Workspace(7), alt_shift("7")),
+    bind(Command::Workspace(8), alt_shift("8")),
+    bind(Command::Workspace(9), alt_shift("9")),
 ];
 
 /// Chords bound to more than one command in `bindings`, as `(chord, first, second)`.

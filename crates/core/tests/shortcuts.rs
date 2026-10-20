@@ -22,7 +22,7 @@ macro_rules! shortcuts {
     };
 }
 
-use Command::{Action as A, Open, PlayStop, Save, SaveAs};
+use Command::{Action as A, Open, PlayStop, Save, SaveAs, Workspace as W};
 
 shortcuts! {
     open_ctrl_o: "Ctrl+O" => Open;
@@ -85,6 +85,15 @@ shortcuts! {
     main_toggle_channel_5_alt_6: "Alt+6" => A(ActionId::ToggleChannel(5));
     main_toggle_channel_6_alt_7: "Alt+7" => A(ActionId::ToggleChannel(6));
     main_toggle_channel_7_alt_8: "Alt+8" => A(ActionId::ToggleChannel(7));
+    workspace_alt_shift_1: "Alt+Shift+1" => W(1);
+    workspace_alt_shift_2: "Alt+Shift+2" => W(2);
+    workspace_alt_shift_3: "Alt+Shift+3" => W(3);
+    workspace_alt_shift_4: "Alt+Shift+4" => W(4);
+    workspace_alt_shift_5: "Alt+Shift+5" => W(5);
+    workspace_alt_shift_6: "Alt+Shift+6" => W(6);
+    workspace_alt_shift_7: "Alt+Shift+7" => W(7);
+    workspace_alt_shift_8: "Alt+Shift+8" => W(8);
+    workspace_alt_shift_9: "Alt+Shift+9" => W(9);
 }
 
 #[test]
