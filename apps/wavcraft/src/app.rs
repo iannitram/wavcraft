@@ -16,7 +16,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport, tempo::Tempo};
 
 use crate::control;
-use crate::player::Player;
+use crate::player::{Metronome, Player};
 use crate::spectrum::{Job, Renderer};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
@@ -234,6 +234,7 @@ impl WaveApp {
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
                 self.tempo = self.settings.tempo_for(&self.doc_path);
+                self.player.set_metronome(self.player.metronome(), self.tempo);
                 self.doc_id += 1;
                 self.rebuilding = None;
                 self.doc = Some(doc);
@@ -304,6 +305,7 @@ impl WaveApp {
     /// Keep `tempo` for the open document (View › Edit Tempo…, `PREF set tempo`), in the settings.
     fn set_tempo(&mut self, tempo: Tempo) {
         self.tempo = tempo;
+        self.player.set_metronome(self.player.metronome(), tempo);
         if self.doc_path.as_os_str().is_empty() {
             return;
         }
@@ -858,6 +860,64 @@ impl WaveApp {
         }
     }
 
+    /// Set the metronome (View toolbar and the control channel).
+    fn set_metronome(&mut self, m: Metronome) {
+        self.player.set_metronome(m, self.tempo);
+    }
+
+    /// `METRONOME ...` on the control channel (roadmap C201).
+    fn control_metronome(&mut self, rest: &str) -> String {
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let mut m = self.player.metronome();
+        let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
+        let status = |m: &Metronome| format!("OK metronome={} countin={} volume={}", u8::from(m.on), m.count_in_bars, m.volume);
+        match words.as_slice() {
+            [] => status(&m),
+            ["on"] | ["off"] => {
+                m.on = words[0] == "on";
+                self.set_metronome(m);
+                status(&m)
+            }
+            ["countin", bars] => match bars.parse::<u32>() {
+                Ok(b) if b <= 16 => {
+                    m.count_in_bars = b;
+                    self.set_metronome(m);
+                    status(&m)
+                }
+                _ => "ERR METRONOME countin <bars>, 0 to 16".to_string(),
+            },
+            ["volume", v] => match v.parse::<f32>() {
+                Ok(v) if (0.0..=1.0).contains(&v) => {
+                    m.volume = v;
+                    self.set_metronome(m);
+                    status(&m)
+                }
+                _ => "ERR METRONOME volume <0 to 1>".to_string(),
+            },
+            [verb @ ("clicks" | "render"), a, b] => {
+                let (Ok(a), Ok(b)) = (a.parse::<f64>(), b.parse::<f64>()) else {
+                    return format!("ERR METRONOME {verb} <start_s> <end_s>, in seconds");
+                };
+                if rate == 0 || !a.is_finite() || !b.is_finite() || b < a {
+                    return format!("ERR METRONOME {verb} <start_s> <end_s>: needs an open file and start <= end");
+                }
+                let track = wavcraft_core::metronome::ClickTrack::new(self.tempo, rate);
+                let join = |v: Vec<u64>| v.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+                if *verb == "clicks" {
+                    let clicks = track.clicks_between(a, b);
+                    let accents: Vec<String> = clicks.iter().map(|c| u8::from(c.accent).to_string()).collect();
+                    format!("OK n={} frames={} accents={}", clicks.len(), join(clicks.iter().map(|c| c.frame).collect()), accents.join(","))
+                } else {
+                    // The frames where the player's own mixer puts a click, over silence (no sound device needed).
+                    let to_frame = |s: f64| (s.max(0.0) * f64::from(rate)).round() as usize;
+                    let onsets = self.player.render_clicks(to_frame(a), to_frame(b));
+                    format!("OK n={} frames={}", onsets.len(), join(onsets.into_iter().map(|f| f as u64).collect()))
+                }
+            }
+            _ => "ERR METRONOME on|off | countin <bars> | volume <0 to 1> | clicks <start_s> <end_s> | render <start_s> <end_s>".to_string(),
+        }
+    }
+
     /// Answer one control-channel line (see `control.rs`).
     fn control_request(&mut self, line: &str, ctx: &egui::Context) -> String {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -870,7 +930,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} time_display={} tempo={} meter={} selection_text={} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -882,16 +942,20 @@ impl WaveApp {
                             self.tempo.bpm_text(),
                             self.tempo.meter_text(),
                             self.selection_text(),
+                            u8::from(self.player.metronome().on),
+                            self.player.metronome().count_in_bars,
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 time_display={} tempo={} meter={} selection_text=- undo=- redo=-",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 time_display={} tempo={} meter={} selection_text=- metronome={} countin={} undo=- redo=-",
                         u8::from(busy),
                         self.time_format.name(),
                         self.tempo.bpm_text(),
-                        self.tempo.meter_text()
+                        self.tempo.meter_text(),
+                        u8::from(self.player.metronome().on),
+                        self.player.metronome().count_in_bars
                     ),
                 }
             }
@@ -918,6 +982,8 @@ impl WaveApp {
                     _ => "ERR PREF set|get tempo|meter [value]".to_string(),
                 }
             }
+            // METRONOME on|off | countin <bars> | volume <0..1> | clicks <start_s> <end_s> | render <start_s> <end_s>
+            "METRONOME" => self.control_metronome(rest),
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -1096,6 +1162,16 @@ impl WaveApp {
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
                 self.toggle_play();
+            }
+            let mut m = self.player.metronome();
+            let mut changed =
+                ui.checkbox(&mut m.on, "Metronome").on_hover_text("A click on each beat of the document's tempo, in the playback only").changed();
+            if m.on {
+                changed |= ui.add(egui::DragValue::new(&mut m.volume).range(0.0..=1.0).speed(0.01).fixed_decimals(2).prefix("vol ")).changed();
+                changed |= ui.add(egui::DragValue::new(&mut m.count_in_bars).range(0..=16).suffix(" bar count-in")).changed();
+            }
+            if changed {
+                self.set_metronome(m);
             }
         });
     }
