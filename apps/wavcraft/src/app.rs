@@ -16,6 +16,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
+use crate::display;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 
@@ -107,6 +108,12 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Edit › Convert Sample Type… (also the status bar's sample-type field, double-clicked):
+    /// the placeholder dialog is up. The conversion dialog (PR #105) replaces it; its hook is
+    /// the `ActionId::ConvertSampleType` arm of `run_window_action`.
+    convert_placeholder: bool,
+    /// The saved window rectangle: restored and kept on a connected monitor.
+    keeper: display::WindowKeeper,
 }
 
 impl WaveApp {
@@ -161,6 +168,8 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            convert_placeholder: false,
+            keeper: display::WindowKeeper::new(display::WindowKeeper::default_path()),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -351,6 +360,7 @@ impl WaveApp {
                 self.selection = Selection { anchor: start, head: playhead };
             }
             ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
+            ActionId::ConvertSampleType if self.editor.is_some() => self.convert_placeholder = true,
             // Repeat Last Command with its dialog: Insert Silence opens its dialog with the last
             // length; the other repeatable commands have no dialog and simply run again.
             ActionId::RepeatLastDialog => {
@@ -371,6 +381,32 @@ impl WaveApp {
     }
 
     /// Insert › Silence…: a length in seconds, inserted at the cursor on every channel.
+    /// Stands in for the Convert Sample Type dialog until it lands (PR #105): shows the current
+    /// format and says so. Replace the call in `ui` and the `run_window_action` arm.
+    fn convert_placeholder_dialog(&mut self, ctx: &egui::Context) {
+        if !self.convert_placeholder {
+            return;
+        }
+        let what =
+            self.doc.as_ref().map(|d| format!("{:?} {:?} · {} Hz · {} ch", d.info.format, d.info.sample_format, d.sample_rate(), d.channels()));
+        let mut open = true;
+        egui::Window::new("Convert Sample Type")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Current: {}", what.as_deref().unwrap_or("no file open")));
+                ui.label("Converting the sample type arrives with the Convert Sample Type work (#105).");
+                if ui.button("Close").clicked() {
+                    self.convert_placeholder = false;
+                }
+            });
+        if !open {
+            self.convert_placeholder = false;
+        }
+    }
+
     fn insert_silence_dialog(&mut self, ctx: &egui::Context) {
         let Some(text) = self.insert_silence.as_mut() else { return };
         let mut choice = None;
@@ -673,11 +709,12 @@ impl WaveApp {
             "STATE" => {
                 let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
                 let unsaved = u8::from(self.unsaved());
+                let win = self.window_state(ctx);
                 match &self.editor {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {win} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -689,7 +726,9 @@ impl WaveApp {
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => {
+                        format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {win} undo=- redo=-", u8::from(busy))
+                    }
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -762,6 +801,21 @@ impl WaveApp {
             }
             _ => format!("ERR unknown request {cmd:?}"),
         }
+    }
+
+    /// The `STATE` fields for the screen: scale, the window rectangle and the primary monitor in
+    /// physical pixels, and how start-up placed the window.
+    fn window_state(&self, ctx: &egui::Context) -> String {
+        let r = |r: Option<display::PxRect>| r.map_or_else(|| "-".to_string(), |r| r.to_text());
+        format!(
+            "pixels_per_point={:.3} window={} primary={} monitors={} startup={} convert_placeholder={}",
+            ctx.pixels_per_point(),
+            r(self.keeper.info.rect),
+            r(self.keeper.info.primary),
+            self.keeper.info.monitors,
+            self.keeper.startup.name(),
+            u8::from(self.convert_placeholder)
+        )
     }
 
     /// The Edit menu, built from the action table: labels that name the step, Audition's keys.
@@ -847,7 +901,8 @@ impl WaveApp {
         });
     }
 
-    fn status(&self, ui: &mut egui::Ui) {
+    fn status(&mut self, ui: &mut egui::Ui) {
+        let mut convert = false;
         ui.horizontal(|ui| {
             if let Some(o) = &self.opening {
                 ui.spinner();
@@ -867,14 +922,13 @@ impl WaveApp {
                 let rate = doc.sample_rate();
                 ui.label(doc.name());
                 ui.separator();
-                ui.label(format!(
-                    "{:?} {:?} · {} Hz · {} ch · {}",
-                    doc.info.format,
-                    doc.info.sample_format,
-                    rate,
-                    doc.channels(),
-                    format_time(doc.frames(), rate)
-                ));
+                // The sample type: double-click opens Convert Sample Type.
+                let ty = ui
+                    .add(egui::Label::new(format!("{:?} {:?}", doc.info.format, doc.info.sample_format)).sense(Sense::click()))
+                    .on_hover_text("Double-click to convert the sample type")
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                convert = ty.double_clicked();
+                ui.label(format!("· {} Hz · {} ch · {}", rate, doc.channels(), format_time(doc.frames(), rate)));
                 // What was wrong with the file that still opened: the first in the bar, all of
                 // them on hover.
                 if let Some(first) = doc.warnings().first() {
@@ -898,6 +952,10 @@ impl WaveApp {
                 ui.label("File › Open, or drop an audio file here.");
             }
         });
+        if convert {
+            let ctx = ui.ctx().clone();
+            let _ = self.run_action(ActionId::ConvertSampleType, &ctx);
+        }
     }
 
     fn editor(&mut self, ui: &mut egui::Ui) {
@@ -971,17 +1029,20 @@ impl WaveApp {
             (false, false) => (None, None),
         };
 
+        // High-DPI: one column per physical pixel, each one pixel wide (see display.rs).
+        let ppp = ui.ctx().pixels_per_point();
+        let hair = display::hairline(ppp);
         if let Some(area) = wave_area {
-            let cols = area.width().round().max(1.0) as usize;
+            let cols = display::physical_columns(area.width(), ppp);
             for ch in 0..channels {
                 let lane = lane(area, ch, channels);
                 let mid = lane.center().y;
-                painter.line_segment([pos2(lane.left(), mid), pos2(lane.right(), mid)], Stroke::new(1.0, Color32::from_gray(50)));
+                painter.line_segment([pos2(lane.left(), mid), pos2(lane.right(), mid)], Stroke::new(hair, Color32::from_gray(50)));
                 let half = lane.height() * 0.5 - 2.0;
                 for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
-                    let x = lane.left() + i as f32 + 0.5;
+                    let x = display::column_x(lane.left(), i, ppp);
                     let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);
-                    painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, WAVE));
+                    painter.line_segment([pos2(x, top.min(bottom - hair)), pos2(x, bottom)], Stroke::new(hair, WAVE));
                 }
             }
         }
@@ -989,8 +1050,9 @@ impl WaveApp {
         if let Some(area) = spectrum_area {
             // Half resolution across, capped rows: plenty for the eye. The columns sit on a grid
             // fixed to the file, so scrolling moves the picture without changing it.
-            let cols = (area.width() * 0.5).round().clamp(1.0, 2048.0);
-            let rows = (area.height() / channels as f32).round().clamp(1.0, 384.0) as usize;
+            // Counted in physical pixels, so a Retina display gets twice the columns and rows.
+            let cols = (area.width() * display::sane_scale(ppp) * 0.5).round().clamp(1.0, 2048.0);
+            let rows = (area.height() * display::sane_scale(ppp) / channels as f32).round().clamp(1.0, 768.0) as usize;
             let columns = Columns::covering(start, end, self.view.frames_per_px * f64::from(area.width() / cols), &self.params);
             self.renderer.ask(Job { generation: self.generation, columns, rows, params: self.params }, &doc.audio);
             if let Some(picture) = self.renderer.take()
@@ -1041,7 +1103,8 @@ impl eframe::App for WaveApp {
     /// skips `ui` then, but still calls this on `request_repaint`): the workers' results and the
     /// control channel must not wait for the window to be shown (the 2026-10-19 by-eye check
     /// found the channel silent behind another window).
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.keeper.tick(ctx, frame);
         self.finish_opening();
         self.finish_rebuild();
         self.finish_saving(ctx);
@@ -1049,6 +1112,10 @@ impl eframe::App for WaveApp {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
         }
+    }
+
+    fn on_exit(&mut self) {
+        self.keeper.save_now();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1097,6 +1164,7 @@ impl eframe::App for WaveApp {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
         self.insert_silence_dialog(&ctx);
+        self.convert_placeholder_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
     }

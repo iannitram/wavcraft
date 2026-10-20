@@ -27,6 +27,7 @@ pub enum ActionId {
     LeftChannel,
     RightChannel,
     InsertSilence,
+    ConvertSampleType,
     CursorToStart,
     CursorToEnd,
     SetIn,
@@ -141,6 +142,9 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::Silence, "edit.silence", "Silence", &[]),
     // Insert › Silence… asks for a length (the window's dialog), then runs `Editor::insert_silence`.
     window(ActionId::InsertSilence, "edit.insertSilence", "Insert Silence…", &[]),
+    // Opens the Convert Sample Type dialog (the window's); the status bar's sample-type field
+    // double-clicks to it. Until the conversion itself lands the window shows a placeholder.
+    window(ActionId::ConvertSampleType, "edit.convertSampleType", "Convert Sample Type…", &[shift("T")]),
     edit(ActionId::Crop, "edit.crop", "Crop", &[cmd("T")]),
     edit(ActionId::SelectAll, "edit.selectAll", "Select All", &[cmd("A")]),
     edit(ActionId::DeselectAll, "edit.deselectAll", "Deselect All", &[cmd_shift("A"), cmd("D")]),
@@ -288,6 +292,7 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::ConvertSampleType => self.len() > 0,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -450,6 +455,7 @@ impl Editor {
             ActionId::CursorToStart => return unchanged(0..0),
             ActionId::CursorToEnd => return unchanged(len..len),
             ActionId::InsertSilence
+            | ActionId::ConvertSampleType
             | ActionId::SetIn
             | ActionId::SetOut
             | ActionId::ZoomIn

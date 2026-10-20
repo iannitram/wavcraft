@@ -23,6 +23,7 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | | `examples/spectrogram_cost.rs` | Measures overview build and far-view render times on a synthetic 3-hour mono file |
 | `apps/wavcraft` (`wavcraft`, binary, egui/eframe 0.36, wgpu DX12 on Windows) | `main.rs` | Window options, DX12-only wgpu on Windows, `parse_args` (`[--session-dir DIR] [FILE]`), runs `WaveApp` |
 | | `app.rs` | `WaveApp`: menu (File › Session Folder… / Use the Default Session Folder since item 03b), status bar, the editor painter (ruler, waveform lanes, spectral lanes, selection, cursor, playhead), input (wheel zoom, drag select, Space, Home, `\`, Ctrl+O, drop), opening on a worker thread; the status bar shows the open's first warning (all of them on hover) since W8b |
+| | `display.rs` (f76) | High-DPI and window maths: `physical_columns`/`column_x`/`hairline` (a waveform column per physical pixel, one-pixel lines), `PxRect`, `clamp_to_monitors` (a window off every monitor goes back, centred, onto the primary), and `WindowKeeper` (restores and saves `window.txt` in the config folder; `STATE` shows `pixels_per_point`, `window`, `primary`, `startup`). The status bar's sample-type field double-clicks to `ActionId::ConvertSampleType` (a placeholder dialog until PR #105) |
 | | `player.rs` | `Player`: cpal output stream, play/stop, playhead position |
 | | `spectrum.rs` | `Renderer`: the spectrogram worker thread and its overview cache |
 

@@ -10,6 +10,7 @@
 
 mod app;
 mod control;
+mod display;
 mod player;
 mod selflog;
 mod spectrum;
