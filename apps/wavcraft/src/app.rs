@@ -14,6 +14,7 @@ use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
+use wavcraft_core::workspaces::{self, Snapshot, Workspaces};
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
@@ -79,6 +80,10 @@ pub struct WaveApp {
     zone_rects: Vec<(DockSide, Rect)>,
     /// The layout changed while the pointer was down (a zone being resized): save it on release.
     layout_dirty: bool,
+    /// Saved workspaces (layout snapshots) and the one in use.
+    workspaces: Workspaces,
+    /// The name being typed in Window › Workspace › Save as New Workspace.
+    workspace_name: String,
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
@@ -154,6 +159,8 @@ impl WaveApp {
             tab_rects: Vec::new(),
             zone_rects: Vec::new(),
             layout_dirty: false,
+            workspaces: Workspaces::new(settings_path.as_deref().and_then(|p| p.parent()).map(|d| d.join("workspaces")), &settings.workspace),
+            workspace_name: String::new(),
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
@@ -297,12 +304,53 @@ impl WaveApp {
     fn save_panels(&mut self) {
         self.settings.hidden_panels = self.panels.hidden_ids();
         (self.settings.panel_layout, self.settings.zone_sizes) = self.layout.encode();
+        self.settings.workspace = self.workspaces.current().to_string();
         self.layout_dirty = false;
         if let Some(file) = &self.settings_path
             && let Err(e) = self.settings.save(file)
         {
             log::warn!(target: "wavcraft", "could not save the panel layout to {}: {e}", file.display());
         }
+    }
+
+    /// The layout as a workspace would keep it.
+    fn snapshot(&self) -> Snapshot {
+        Snapshot::capture(&self.panels, &self.layout)
+    }
+
+    /// Put a workspace's panels and layout on screen and keep them in the settings file.
+    fn apply_snapshot(&mut self, snap: &Snapshot) {
+        (self.panels, self.layout) = snap.restore();
+        self.save_panels();
+    }
+
+    /// `WORKSPACE save|switch|reset|delete <name>` (also the Window › Workspace menu). Returns
+    /// the reason it was refused.
+    fn workspace_command(&mut self, text: &str) -> Result<(), String> {
+        let (verb, name) = text.trim().split_once(char::is_whitespace).map_or((text.trim(), ""), |(v, n)| (v, n.trim()));
+        match verb {
+            "save" => {
+                let snap = self.snapshot();
+                self.workspaces.save(name, &snap)?;
+                self.save_panels();
+            }
+            "switch" => {
+                let snap = self.workspaces.switch(name)?;
+                self.apply_snapshot(&snap);
+            }
+            "reset" => {
+                let snap = self.workspaces.reset(Some(name))?;
+                self.apply_snapshot(&snap);
+            }
+            "delete" => self.workspaces.delete(name)?,
+            _ => return Err("WORKSPACE save <name> | switch <name> | reset [name] | delete <name>".into()),
+        }
+        Ok(())
+    }
+
+    /// The answer to `WORKSPACES` and `WORKSPACE …`.
+    fn workspaces_report(&self) -> String {
+        format!("OK {}", self.workspaces.report(&self.snapshot()))
     }
 
     /// Close a panel (hide it in the registry; the Window menu brings it back).
@@ -401,6 +449,56 @@ impl WaveApp {
         let now = if zone == DockSide::Bottom { rect.height() } else { rect.width() };
         if self.layout.set_size(zone, now) {
             self.layout_dirty = true;
+        }
+    }
+
+    /// Window › Workspace: switch, save as new, reset to the saved layout, delete.
+    fn workspace_menu(&mut self, ui: &mut egui::Ui) {
+        let current = self.workspaces.current().to_string();
+        let modified = self.workspaces.is_modified(&self.snapshot());
+        let mut result: Result<(), String> = Ok(());
+        let mut done = false;
+        for name in self.workspaces.names() {
+            let label = if name == current && modified { format!("{name} (changed)") } else { name.clone() };
+            if ui.radio(name == current, label).clicked() && name != current {
+                result = self.workspace_command(&format!("switch {name}"));
+                done = true;
+            }
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            let edit = ui.add(egui::TextEdit::singleline(&mut self.workspace_name).hint_text("Name").desired_width(120.0));
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.button("Save as New Workspace").clicked() || enter) && !self.workspace_name.trim().is_empty() {
+                result = self.workspace_command(&format!("save {}", self.workspace_name));
+                if result.is_ok() {
+                    self.workspace_name.clear();
+                }
+                done = true;
+            }
+        });
+        if ui.add_enabled(modified, egui::Button::new("Reset to Saved Layout")).clicked() {
+            result = self.workspace_command(&format!("reset {current}"));
+            done = true;
+        }
+        ui.menu_button("Delete Workspace", |ui| {
+            let others: Vec<String> = self.workspaces.names().into_iter().filter(|n| *n != current && n != workspaces::DEFAULT).collect();
+            if others.is_empty() {
+                ui.add_enabled(false, egui::Label::new("No other saved workspaces"));
+            }
+            for name in others {
+                if ui.button(&name).clicked() {
+                    result = self.workspace_command(&format!("delete {name}"));
+                    done = true;
+                    ui.close();
+                }
+            }
+        });
+        if let Err(e) = result {
+            self.error = Some(e);
+        }
+        if done {
+            ui.close();
         }
     }
 
@@ -917,6 +1015,12 @@ impl WaveApp {
             }
             // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
             "PANELS" => self.panels_report(),
+            // `WORKSPACES` lists them; `WORKSPACE save|switch|reset|delete <name>`.
+            "WORKSPACES" => self.workspaces_report(),
+            "WORKSPACE" => match self.workspace_command(rest) {
+                Ok(()) => self.workspaces_report(),
+                Err(e) => format!("ERR {e}"),
+            },
             // `PANEL move <id> <left|right|bottom>`, `PANEL maximize <id>` (again to restore),
             // `PANEL close <id>`, `PANEL activate <id>`.
             "PANEL" => match self.layout.apply_command(&mut self.panels, rest) {
@@ -1045,6 +1149,7 @@ impl WaveApp {
                     }
                 }
                 ui.separator();
+                ui.menu_button("Workspace", |ui| self.workspace_menu(ui));
                 if ui.button("Reset Panel Layout").clicked() {
                     self.layout = Layout::default();
                     self.save_panels();

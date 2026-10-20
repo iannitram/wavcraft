@@ -14,6 +14,8 @@
 //! - `PANEL move <id> <left|right|bottom>` | `PANEL maximize <id>` (again restores) | `PANEL close <id>` | `PANEL activate <id>` → the same line as `PANELS`; the layout is saved in the settings file
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
+//! - `WORKSPACES` → `OK current=<name> modified=<0|1> workspaces=<a>|<b>…` (spaces in names shown as `_`; `Default` is built in; `modified` is 1 when the layout differs from the saved state of the workspace in use)
+//! - `WORKSPACE save <name>` (keeps the layout under the name and makes it the one in use) | `switch <name>` | `reset [name]` (back to the saved layout) | `delete <name>` (not Default, not the one in use) → the same line as `WORKSPACES`; the one in use is kept in the settings file
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
