@@ -12,6 +12,7 @@ mod app;
 mod control;
 mod markers_panel;
 mod player;
+mod playlist_panel;
 mod selflog;
 mod spectrum;
 #[cfg(windows)]

@@ -18,6 +18,7 @@ use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selectio
 use crate::control;
 use crate::markers_panel::MarkersUi;
 use crate::player::Player;
+use crate::playlist_panel::PlaylistUi;
 use crate::spectrum::{Job, Renderer};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
@@ -110,6 +111,8 @@ pub struct WaveApp {
     confirm_clear_history: bool,
     /// Window › Markers: the panel, the picked markers, a handle being dragged.
     markers_ui: MarkersUi,
+    /// The Playlist panel's list and its runner (session only).
+    playlist_ui: PlaylistUi,
 }
 
 impl WaveApp {
@@ -165,6 +168,7 @@ impl WaveApp {
             insert_silence: None,
             confirm_clear_history: false,
             markers_ui: MarkersUi::new(),
+            playlist_ui: PlaylistUi::default(),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -221,6 +225,7 @@ impl WaveApp {
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
                 self.doc_id += 1;
+                self.playlist_ui.reset();
                 self.rebuilding = None;
                 self.doc = Some(doc);
                 self.generation += 1;
@@ -496,6 +501,22 @@ impl WaveApp {
         }
     }
 
+    fn playlist_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(editor) = self.editor.as_ref() else { return };
+        let doc = editor.history.current();
+        let (markers, rate) = (doc.markers().clone(), doc.sample_rate());
+        let out = self.playlist_ui.panel(ui, &markers, rate);
+        if out.stop {
+            self.playlist_ui.cancel();
+            self.player.stop();
+        }
+        if out.play
+            && let Err(e) = self.play_playlist()
+        {
+            self.notice = Some(e);
+        }
+    }
+
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
         if !self.confirm_clear_history {
             return;
@@ -535,6 +556,7 @@ impl WaveApp {
             ctx.request_repaint();
         });
         self.player.stop();
+        self.playlist_ui.cancel();
         self.rebuilding = Some(rx);
     }
 
@@ -738,6 +760,8 @@ impl WaveApp {
             // `MARKER rename <i> <name>`, `MARKER move <i> <frame>`, `MARKER select <i> [add]`: <i> is the
             // position in the MARKERS list (from 0).
             "MARKER" => self.control_marker(rest),
+            // `PLAYLIST add <marker> [loops=<n>] | move <i> <j> | remove <i> | loops <i> <n> | play | stop | clear | state | sequence`.
+            "PLAYLIST" => self.control_playlist(rest),
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -808,6 +832,28 @@ impl WaveApp {
             }
             _ => format!("ERR unknown request {cmd:?}"),
         }
+    }
+
+    /// Start the playlist from its first item (panel button or control channel).
+    fn play_playlist(&mut self) -> Result<(), String> {
+        let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
+        let doc = editor.history.current();
+        self.player.stop();
+        if self.playlist_ui.start(doc.markers(), doc.len_frames()) { Ok(()) } else { Err("the playlist has no range to play".to_string()) }
+    }
+
+    /// The `PLAYLIST` control verb (see `control_request`).
+    fn control_playlist(&mut self, rest: &str) -> String {
+        let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
+        if rest.trim() == "play" {
+            return match self.play_playlist() {
+                Ok(()) => "OK".to_string(),
+                Err(e) => format!("ERR {e}"),
+            };
+        }
+        let doc = editor.history.current();
+        let (markers, frames) = (doc.markers().clone(), doc.len_frames());
+        self.playlist_ui.control(rest, &markers, frames)
     }
 
     /// The `MARKER` control verb (see `control_request`).
@@ -1164,6 +1210,10 @@ impl eframe::App for WaveApp {
         self.finish_opening();
         self.finish_rebuild();
         self.finish_saving(ctx);
+        self.playlist_ui.tick(&mut self.player);
+        if self.playlist_ui.running() {
+            ctx.request_repaint();
+        }
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
@@ -1217,6 +1267,9 @@ impl eframe::App for WaveApp {
         }
         if self.markers_ui.show {
             egui::Panel::right("markers").default_size(380.0).show(ui, |ui| self.markers_panel(ui));
+        }
+        if self.markers_ui.show && self.editor.is_some() {
+            egui::Panel::right("playlist").default_size(300.0).show(ui, |ui| self.playlist_panel(ui));
         }
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
