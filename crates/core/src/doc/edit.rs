@@ -191,6 +191,8 @@ pub enum EditError {
     },
     /// The cancel flag was set. Blocks already written die with the pieces that held them.
     Cancelled,
+    /// A conversion that can't be made (a setting out of range, a channel layout with no mapping).
+    Unsupported(String),
     Io(io::Error),
     Doc(DocError),
 }
@@ -204,6 +206,7 @@ impl fmt::Display for EditError {
             }
             EditError::Channels { clip, doc } => write!(f, "a {clip}-channel clip can't be pasted into a {doc}-channel document"),
             EditError::Cancelled => write!(f, "cancelled"),
+            EditError::Unsupported(why) => write!(f, "{why}"),
             EditError::Io(e) => write!(f, "{e}"),
             EditError::Doc(e) => write!(f, "{e}"),
         }

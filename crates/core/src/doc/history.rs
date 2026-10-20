@@ -192,7 +192,13 @@ impl History {
 
     fn push_with_change(&mut self, label: String, state: DocState, change: Change) -> usize {
         let cur = self.current();
-        if cur.channel_count() == state.channel_count() && cur.channels().iter().zip(state.channels()).all(|(a, b)| Arc::ptr_eq(a, b)) {
+        // The same channels, rate and source: nothing changed. (A rate or bit-depth relabel keeps
+        // every channel but is a step: it differs in rate or source.)
+        if cur.channel_count() == state.channel_count()
+            && cur.sample_rate() == state.sample_rate()
+            && Arc::ptr_eq(cur.source(), state.source())
+            && cur.channels().iter().zip(state.channels()).all(|(a, b)| Arc::ptr_eq(a, b))
+        {
             return 0;
         }
         while self.steps.len() > self.cursor + 1 {
