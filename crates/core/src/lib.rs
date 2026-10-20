@@ -9,6 +9,7 @@
 //! - [`io`]: streamed open into the store.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`record`]: recording a take: the ring buffer, the crash-safe WAV writer, the fake input.
+//! - [`take_recovery`]: finding and repairing takes a crash left unfinished.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
 //!   and its waveform peaks.
@@ -54,6 +55,7 @@ pub mod spectrogram;
 pub mod stats;
 pub mod stft;
 pub mod store;
+pub mod take_recovery;
 pub mod tools;
 pub mod transport;
 pub mod view;

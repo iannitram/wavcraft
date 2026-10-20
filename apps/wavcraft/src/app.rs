@@ -416,7 +416,7 @@ impl WaveApp {
         let roots = recovery::roots(&sessions.path, &default_sessions_root());
         let recovery = {
             let ctx = cc.egui_ctx.clone();
-            Recovery::new(roots, move || ctx.request_repaint())
+            Recovery::new(roots, crate::recording::record_dir().ok(), move || ctx.request_repaint())
         };
         let shortcuts_path = wavcraft_core::shortcuts::default_path();
         let (keymap, shortcuts_warning) = shortcuts_path.as_deref().map(wavcraft_core::shortcuts::load).unwrap_or_default();
@@ -838,6 +838,36 @@ impl WaveApp {
         self.notice = Some("Recovered the unsaved work (File › Save keeps it)".to_string());
         log::info!(target: "wavcraft", "recovery: restored the session in {}", dir.display());
         self.rebuild(ctx);
+        Ok(())
+    }
+
+    /// Repair the `index`th unfinished take a crash left and open it as a document (C032).
+    fn recover_take(&mut self, index: usize, ctx: &egui::Context) -> Result<(), String> {
+        if self.rec.is_active() {
+            return Err("Stop recording before recovering a take".to_string());
+        }
+        if self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() {
+            return Err("Wait for the current job to finish before recovering".to_string());
+        }
+        if self.unsaved() {
+            return Err("Save or close the open file before recovering".to_string());
+        }
+        let take = self.recovery.takes.get(index).cloned().ok_or_else(|| format!("no recoverable take {index}"))?;
+        let frames =
+            wavcraft_core::take_recovery::repair_take(&take).map_err(|e| format!("Could not recover the take (it is kept as it is): {e}"))?;
+        self.recovery.remove_take(index);
+        log::info!(target: "wavcraft", "recovery: repaired take {} ({frames} frames), opening it", take.path.display());
+        self.open(take.path, ctx);
+        self.notice = Some("Recovered the interrupted take".to_string());
+        Ok(())
+    }
+
+    /// Delete an unfinished take the owner chose to discard (after the window's second question).
+    fn discard_take(&mut self, index: usize) -> Result<(), String> {
+        let take = self.recovery.takes.get(index).cloned().ok_or_else(|| format!("no recoverable take {index}"))?;
+        wavcraft_core::take_recovery::discard_take(&take).map_err(|e| format!("Could not discard: {e}"))?;
+        log::info!(target: "wavcraft", "recovery: discarded take {} at the owner's request", take.path.display());
+        self.recovery.remove_take(index);
         Ok(())
     }
 
@@ -4089,12 +4119,21 @@ impl WaveApp {
             "AUTOSAVE" => {
                 let (offered, written, failed, pending) = self.recovery.stats();
                 format!(
-                    "OK offered={offered} written={written} failed={failed} pending={} scanned={} recoverable={}",
+                    "OK offered={offered} written={written} failed={failed} pending={} scanned={} recoverable={} takes={}",
                     u8::from(pending),
                     u8::from(self.recovery.scanned),
-                    self.recovery.offers.len()
+                    self.recovery.offers.len(),
+                    self.recovery.takes.len()
                 )
             }
+            // C032: unfinished takes. RECOVERTAKE [index] repairs and opens; DISCARDTAKE deletes.
+            "RECOVERTAKE" | "DISCARDTAKE" => match rest.trim().parse::<usize>().or_else(|_| if rest.trim().is_empty() { Ok(0) } else { Err(()) }) {
+                Ok(i) => {
+                    let r = if cmd == "RECOVERTAKE" { self.recover_take(i, ctx) } else { self.discard_take(i) };
+                    r.map_or_else(|e| format!("ERR {e}"), |()| "OK".to_string())
+                }
+                Err(()) => format!("ERR {cmd} [index]"),
+            },
             "RECOVER" | "DISCARD_RECOVERY" => match rest.trim().parse::<usize>().or_else(|_| if rest.trim().is_empty() { Ok(0) } else { Err(()) }) {
                 Ok(i) => {
                     let r = if cmd == "RECOVER" { self.recover_session(i, ctx) } else { self.discard_recovery(i) };
@@ -5762,6 +5801,16 @@ impl eframe::App for WaveApp {
             }
             Some(Choice::Discard(i)) => {
                 if let Err(e) = self.discard_recovery(i) {
+                    self.error = Some(e);
+                }
+            }
+            Some(Choice::RecoverTake(i)) => {
+                if let Err(e) = self.recover_take(i, &ctx) {
+                    self.error = Some(e);
+                }
+            }
+            Some(Choice::DiscardTake(i)) => {
+                if let Err(e) = self.discard_take(i) {
                     self.error = Some(e);
                 }
             }
