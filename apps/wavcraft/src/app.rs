@@ -798,6 +798,7 @@ impl WaveApp {
             title: imp.info.title.clone(),
             size: imp.info.file_bytes,
             imported: true,
+            mask: u64::MAX,
         });
         (0..open)
             .filter_map(|i| {
@@ -824,6 +825,7 @@ impl WaveApp {
                     title: meta.title,
                     size: meta.size,
                     imported: false,
+                    mask: editor.as_ref()?.channels.within(state.channel_count()).bits(),
                 })
             })
             .chain(imported)
@@ -850,6 +852,19 @@ impl WaveApp {
             .get(i)
             .map(|r| r.doc)
             .ok_or_else(|| format!("no row {i} (the table shows {} rows)", self.files.arrange(&rows).len()))
+    }
+
+    /// Make only channel `ch` of open document `doc` the one edits act on (the document is made current).
+    fn select_channel(&mut self, doc: usize, ch: usize) -> Result<(), String> {
+        let channels = self.file_rows().into_iter().find(|r| r.doc == doc && !r.imported).map(|r| r.channels).ok_or("open the file first")?;
+        if ch >= channels {
+            return Err(format!("the file has {channels} channels, not a channel {ch}"));
+        }
+        self.switch_doc(doc)?;
+        if let Some(e) = self.editor.as_mut() {
+            e.channels = wavcraft_core::ChannelMask::only(ch);
+        }
+        Ok(())
     }
 
     /// Reveal a document's file in the system file manager (Linux: its folder).
@@ -950,13 +965,23 @@ impl WaveApp {
         });
         self.refresh_meta();
         let rows = self.file_rows();
-        let shown: Vec<files::Row> = self.files.arrange(&rows).into_iter().cloned().collect();
+        let shown: Vec<(files::Row, Option<usize>)> = self
+            .files
+            .lines(&rows)
+            .into_iter()
+            .map(|l| match l {
+                files::Line::File(r) => (r.clone(), None),
+                files::Line::Channel { row, ch } => (row.clone(), Some(ch)),
+            })
+            .collect();
+        let (mut toggle, mut pick_channel) = (None, None);
         let cur = self.docs.current();
         let busy = self.saving.is_some() || self.making.is_some() || self.save_all.is_some();
         let (mut go, mut open, mut close, mut reveal, mut import, mut unlist) = (None, false, false, false, false, None);
         let columns = self.files.columns.clone();
         egui::ScrollArea::both().max_height((ui.available_height() - 40.0).max(60.0)).show(ui, |ui| {
             egui::Grid::new("files_grid").striped(true).show(ui, |ui| {
+                ui.label("");
                 for &col in &columns {
                     let arrow = match self.files.sort {
                         Some((c, true)) if c == col => " ▲",
@@ -968,8 +993,33 @@ impl WaveApp {
                     }
                 }
                 ui.end_row();
-                for r in &shown {
+                for (r, channel) in &shown {
+                    if let Some(ch) = *channel {
+                        // A channel line: its name under the Name column, a mark if edits act on it.
+                        ui.label("");
+                        for k in 0..columns.len() {
+                            let text = if k == 0 {
+                                format!(
+                                    "    {} {}",
+                                    if r.channel_active(ch) && r.doc == cur { "●" } else { "○" },
+                                    files::channel_label(r.channels, ch)
+                                )
+                            } else {
+                                String::new()
+                            };
+                            if ui.selectable_label(false, text).on_hover_text("Edit only this channel").clicked() {
+                                pick_channel = Some((r.doc, ch));
+                            }
+                        }
+                        ui.end_row();
+                        continue;
+                    }
                     let on = !r.imported && r.doc == cur;
+                    if r.imported {
+                        ui.label("");
+                    } else if ui.small_button(if self.files.is_expanded(r) { "▾" } else { "▸" }).on_hover_text("Show the channels").clicked() {
+                        toggle = Some(r.clone());
+                    }
                     for &col in &columns {
                         // An imported row is dimmed: it is listed, not open.
                         let text = egui::RichText::new(r.cell(col));
@@ -1036,6 +1086,15 @@ impl WaveApp {
         // Clicking a row makes it current; Open, Close and Reveal then act on the current document.
         if let Some(i) = go
             && let Err(e) = self.activate_row(i)
+        {
+            self.error = Some(e);
+        }
+        if let Some(r) = toggle {
+            let on = !self.files.is_expanded(&r);
+            let _ = self.files.set_expanded(&r, on);
+        }
+        if let Some((doc, ch)) = pick_channel
+            && let Err(e) = self.select_channel(doc, ch)
         {
             self.error = Some(e);
         }
@@ -1114,9 +1173,23 @@ impl WaveApp {
                     self.files.filter.trim(),
                     files::columns_text(&self.files.columns)
                 );
-                for (i, r) in shown.iter().enumerate() {
+                let mut i = 0;
+                for line in self.files.lines(&rows) {
+                    let r = match line {
+                        files::Line::File(r) => r,
+                        files::Line::Channel { row, ch } => {
+                            // Under its file: `<file row>.<channel>`, channels counted from 0.
+                            out.push_str(&format!(
+                                " | {}.{ch} channel label={} active={}",
+                                i - 1,
+                                files::channel_label(row.channels, ch),
+                                u8::from(row.channel_active(ch))
+                            ));
+                            continue;
+                        }
+                    };
                     out.push_str(&format!(
-                        " | {i} doc={} current={} unsaved={} frames={} rate={} ch={} bits={} format={} imported={} size={} name={} path={}",
+                        " | {i} doc={} current={} unsaved={} frames={} rate={} ch={} bits={} format={} imported={} expanded={} size={} name={} path={}",
                         r.doc,
                         u8::from(!r.imported && r.doc == self.docs.current()),
                         u8::from(r.unsaved),
@@ -1126,6 +1199,7 @@ impl WaveApp {
                         r.bits,
                         r.format,
                         u8::from(r.imported),
+                        u8::from(self.files.is_expanded(r)),
                         r.size,
                         r.name,
                         r.path
@@ -1134,6 +1208,7 @@ impl WaveApp {
                     if !r.title.is_empty() {
                         out.push_str(&format!(" title={}", r.title));
                     }
+                    i += 1;
                 }
                 out
             }
@@ -1166,6 +1241,17 @@ impl WaveApp {
                 format!("OK columns={}", files::columns_text(&self.files.columns))
             }
             // Making an imported row current starts opening its file: poll STATE until busy=0.
+            Some("select") if words.clone().next().is_some_and(|w| w.contains('.')) => {
+                let w = words.next().unwrap_or_default();
+                let (row, ch) = w.split_once('.').unwrap_or_default();
+                match (row.parse::<usize>(), ch.parse::<usize>()) {
+                    (Ok(i), Ok(ch)) => match self.file_row_doc(i).and_then(|d| self.select_channel(d, ch)) {
+                        Ok(()) => format!("OK current={} channel={ch}", self.docs.current()),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    _ => "ERR FILES select <row>.<channel>, channels counted from 0".to_string(),
+                }
+            }
             Some("select") => match words.next().and_then(|w| w.parse::<usize>().ok()) {
                 Some(i) => match self.file_row_doc(i).and_then(|d| self.activate_row(d)) {
                     Ok(Some(d)) => format!("OK current={d}"),
@@ -1173,6 +1259,23 @@ impl WaveApp {
                     Err(e) => format!("ERR {e}"),
                 },
                 None => "ERR FILES select <row>, from FILES".to_string(),
+            },
+            Some(verb @ ("expand" | "collapse")) => match words.next().and_then(|w| w.parse::<usize>().ok()) {
+                Some(i) => {
+                    let rows = self.file_rows();
+                    let shown = self.files.arrange(&rows);
+                    match shown.get(i) {
+                        Some(r) => {
+                            let r = (*r).clone();
+                            match self.files.set_expanded(&r, verb == "expand") {
+                                Ok(()) => format!("OK expanded={}", u8::from(self.files.is_expanded(&r))),
+                                Err(e) => format!("ERR {e}"),
+                            }
+                        }
+                        None => format!("ERR no row {i} (the table shows {} rows)", shown.len()),
+                    }
+                }
+                None => format!("ERR FILES {verb} <row>, from FILES"),
             },
             // What Reveal would run for row <i> (the current document without one). It is not run from here.
             Some("reveal") => {
@@ -1187,7 +1290,7 @@ impl WaveApp {
                     Err(e) => format!("ERR {e}"),
                 }
             }
-            _ => "ERR FILES [sort <col> asc|desc | filter <text> | columns [<list>] | select <row> | reveal [row]]".to_string(),
+            _ => "ERR FILES [sort <col> asc|desc | filter <text> | columns [<list>] | select <row>[.<channel>] | expand <row> | collapse <row> | reveal [row]]".to_string(),
         }
     }
 

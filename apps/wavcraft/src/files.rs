@@ -30,6 +30,42 @@ pub struct Row {
     /// Added by File › Import: listed, but not open. `doc` then counts on past the open
     /// documents, and making the row current opens the file.
     pub imported: bool,
+    /// The channels edits act on, as `ChannelMask` bits (all set when every channel is).
+    pub mask: u64,
+}
+
+/// One line of the table: a file, or (under an expanded file) one of its channels.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Line<'a> {
+    File(&'a Row),
+    /// Channel `ch` (0-based) of `row`.
+    Channel {
+        row: &'a Row,
+        ch: usize,
+    },
+}
+
+/// A channel's name: from the layout when it is a standard one (mono, stereo), else its
+/// number (1..N). No channel-name metadata is read yet.
+pub fn channel_label(channels: usize, ch: usize) -> String {
+    match (channels, ch) {
+        (1, _) => "Mono".to_string(),
+        (2, 0) => "Left".to_string(),
+        (2, _) => "Right".to_string(),
+        _ => format!("Ch {}", ch + 1),
+    }
+}
+
+impl Row {
+    /// Whether channel `ch` is one edits act on.
+    pub fn channel_active(&self, ch: usize) -> bool {
+        ch < 64 && self.mask & (1 << ch) != 0
+    }
+
+    /// What expanded state is remembered by: the file's path, else its name (untitled documents).
+    pub fn key(&self) -> String {
+        if self.path.is_empty() { format!("untitled:{}", self.name) } else { self.path.clone() }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,11 +214,13 @@ pub struct View {
     pub filter: String,
     /// The columns shown, left to right.
     pub columns: Vec<Col>,
+    /// Files shown with a row per channel, by `Row::key`. Kept for the session.
+    pub expanded: std::collections::BTreeSet<String>,
 }
 
 impl Default for View {
     fn default() -> Self {
-        View { sort: None, filter: String::new(), columns: Col::DEFAULT.to_vec() }
+        View { sort: None, filter: String::new(), columns: Col::DEFAULT.to_vec(), expanded: Default::default() }
     }
 }
 
@@ -209,6 +247,35 @@ impl View {
                 let o = col.compare(a, b);
                 (if asc { o } else { o.reverse() }).then(a.doc.cmp(&b.doc))
             });
+        }
+        out
+    }
+
+    pub fn is_expanded(&self, row: &Row) -> bool {
+        !row.imported && self.expanded.contains(&row.key())
+    }
+
+    /// Expand or collapse a file. An imported file (not open) cannot be expanded.
+    pub fn set_expanded(&mut self, row: &Row, on: bool) -> Result<(), String> {
+        if row.imported {
+            return Err("open the file first: only an open file shows its channels".to_string());
+        }
+        if on {
+            self.expanded.insert(row.key());
+        } else {
+            self.expanded.remove(&row.key());
+        }
+        Ok(())
+    }
+
+    /// `arrange`, with a channel line under each expanded file.
+    pub fn lines<'a>(&self, rows: &'a [Row]) -> Vec<Line<'a>> {
+        let mut out = Vec::new();
+        for r in self.arrange(rows) {
+            out.push(Line::File(r));
+            if self.is_expanded(r) {
+                out.extend((0..r.channels).map(|ch| Line::Channel { row: r, ch }));
+            }
         }
         out
     }
@@ -262,6 +329,7 @@ mod tests {
             title: String::new(),
             size: 0,
             imported: false,
+            mask: u64::MAX,
         }
     }
 
@@ -389,5 +457,60 @@ mod tests {
         assert_eq!(reveal_command("windows", "C:\\a\\b.wav"), Some(("explorer".into(), vec!["/select,C:\\a\\b.wav".into()])));
         assert_eq!(reveal_command("linux", "/a/b.wav"), Some(("xdg-open".into(), vec!["/a".into()])));
         assert_eq!(reveal_command("macos", ""), None);
+    }
+
+    #[test]
+    fn channel_labels() {
+        assert_eq!(channel_label(1, 0), "Mono");
+        assert_eq!((channel_label(2, 0), channel_label(2, 1)), ("Left".to_string(), "Right".to_string()));
+        assert_eq!(channel_label(6, 5), "Ch 6");
+    }
+
+    #[test]
+    fn an_expanded_file_gets_a_line_per_channel_after_it() {
+        let rows = three();
+        let mut v = View::default();
+        assert_eq!(v.lines(&rows).len(), 3);
+        v.set_expanded(&rows[0], true).unwrap();
+        let lines = v.lines(&rows);
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], Line::File(&rows[0]));
+        assert_eq!(lines[1], Line::Channel { row: &rows[0], ch: 0 });
+        assert_eq!(lines[2], Line::Channel { row: &rows[0], ch: 1 });
+        assert_eq!(lines[3], Line::File(&rows[1]));
+        v.set_expanded(&rows[1], true).unwrap();
+        assert_eq!(v.lines(&rows).len(), 6, "the mono file gets one line");
+        v.set_expanded(&rows[0], false).unwrap();
+        assert_eq!(v.lines(&rows).len(), 4);
+    }
+
+    #[test]
+    fn expanded_state_follows_the_file_through_a_sort_and_a_filter() {
+        let rows = three();
+        let mut v = View::default();
+        v.set_expanded(&rows[2], true).unwrap();
+        v.sort = Some((Col::Name, false));
+        let lines = v.lines(&rows);
+        assert_eq!(lines[0], Line::File(&rows[2]));
+        assert_eq!(lines[1], Line::Channel { row: &rows[2], ch: 0 });
+        v.filter = "b.wav".into();
+        assert_eq!(v.lines(&rows).len(), 1, "a filtered-out file shows no channels");
+    }
+
+    #[test]
+    fn an_imported_file_cannot_be_expanded() {
+        let mut rows = three();
+        rows[0].imported = true;
+        let mut v = View::default();
+        assert!(v.set_expanded(&rows[0], true).is_err());
+        assert_eq!(v.lines(&rows).len(), 3);
+    }
+
+    #[test]
+    fn active_channels_come_from_the_mask() {
+        let mut r = row(0, "a.wav", 1, 48_000, 2, "/a.wav");
+        assert!(r.channel_active(0) && r.channel_active(1));
+        r.mask = 0b10;
+        assert!(!r.channel_active(0) && r.channel_active(1));
     }
 }
