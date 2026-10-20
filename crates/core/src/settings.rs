@@ -21,12 +21,67 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_MARKER_COLUMNS: &str = "marker_columns";
+
+/// Which columns the Markers panel shows besides the name (A181).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkerColumns {
+    pub start: bool,
+    pub end: bool,
+    pub duration: bool,
+    pub kind: bool,
+    pub description: bool,
+}
+
+impl MarkerColumns {
+    /// The columns' settings names, in display order.
+    pub const NAMES: [&'static str; 5] = ["start", "end", "duration", "type", "description"];
+
+    pub fn get(&self, i: usize) -> bool {
+        [self.start, self.end, self.duration, self.kind, self.description].get(i).copied().unwrap_or(false)
+    }
+
+    pub fn set(&mut self, i: usize, on: bool) {
+        match i {
+            0 => self.start = on,
+            1 => self.end = on,
+            2 => self.duration = on,
+            3 => self.kind = on,
+            4 => self.description = on,
+            _ => {}
+        }
+    }
+
+    /// `start,end,duration,type` style list of the columns that are on.
+    pub fn to_list(&self) -> String {
+        (0..Self::NAMES.len()).filter(|&i| self.get(i)).map(|i| Self::NAMES[i]).collect::<Vec<_>>().join(",")
+    }
+
+    /// The columns named in `list` (unknown names are ignored).
+    pub fn from_list(list: &str) -> MarkerColumns {
+        let mut c = MarkerColumns { start: false, end: false, duration: false, kind: false, description: false };
+        for name in list.split(',').map(str::trim) {
+            if let Some(i) = Self::NAMES.iter().position(|n| *n == name) {
+                c.set(i, true);
+            }
+        }
+        c
+    }
+}
+
+impl Default for MarkerColumns {
+    fn default() -> Self {
+        MarkerColumns { start: true, end: true, duration: true, kind: true, description: false }
+    }
+}
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// The Markers panel's columns.
+    pub marker_columns: MarkerColumns,
 }
 
 impl Settings {
@@ -59,8 +114,10 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
-            if key.trim() == KEY_SESSION_FOLDER {
-                s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            match key.trim() {
+                KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+                KEY_MARKER_COLUMNS => s.marker_columns = MarkerColumns::from_list(value),
+                _ => {}
             }
         }
         s
@@ -72,6 +129,8 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        out.push_str("# marker_columns: the Markers panel's columns (start, end, duration, type, description).\n");
+        out.push_str(&format!("{KEY_MARKER_COLUMNS} = {}\n", self.marker_columns.to_list()));
         out
     }
 

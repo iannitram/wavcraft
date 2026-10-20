@@ -16,6 +16,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
+use crate::markers_panel::MarkersUi;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 
@@ -107,6 +108,8 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Window › Markers: the panel, the picked markers, a handle being dragged.
+    markers_ui: MarkersUi,
 }
 
 impl WaveApp {
@@ -161,6 +164,7 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            markers_ui: MarkersUi::new(),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -471,6 +475,27 @@ impl WaveApp {
         }
     }
 
+    fn markers_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(editor) = self.editor.as_mut() else {
+            ui.heading("Markers");
+            ui.label("No file open.");
+            return;
+        };
+        let out = self.markers_ui.panel(ui, editor, &mut self.settings);
+        if let Some(span) = out.select {
+            self.selection = Selection { anchor: span.start as usize, head: span.end as usize };
+            self.player.stop();
+            let frames = self.doc.as_ref().map_or(0, Document::frames);
+            self.view.reveal(span.start as f64, self.editor_width, frames);
+        }
+        if out.columns_changed
+            && let Some(path) = &self.settings_path
+            && let Err(e) = self.settings.save(path)
+        {
+            log::warn!(target: "wavcraft", "could not save the settings: {e}");
+        }
+    }
+
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
         if !self.confirm_clear_history {
             return;
@@ -682,7 +707,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} msel={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -690,11 +715,17 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            {
+                                let picked: Vec<String> = self.markers_ui.pick.indices(doc.markers()).iter().map(usize::to_string).collect();
+                                if picked.is_empty() { "-".to_string() } else { picked.join(",") }
+                            },
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => {
+                        format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 msel=- undo=- redo=-", u8::from(busy))
+                    }
                 }
             }
             // The markers of the current state, in order: `OK count=<n> <id>,<start>,<end>,<name>;…`.
@@ -704,6 +735,9 @@ impl WaveApp {
                 });
                 format!("OK count={} {}", list.len(), list.join(";"))
             }
+            // `MARKER rename <i> <name>`, `MARKER move <i> <frame>`, `MARKER select <i> [add]`: <i> is the
+            // position in the MARKERS list (from 0).
+            "MARKER" => self.control_marker(rest),
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -773,6 +807,41 @@ impl WaveApp {
                 "OK".to_string()
             }
             _ => format!("ERR unknown request {cmd:?}"),
+        }
+    }
+
+    /// The `MARKER` control verb (see `control_request`).
+    fn control_marker(&mut self, rest: &str) -> String {
+        const USAGE: &str = "ERR MARKER rename <i> <name> | move <i> <frame> | select <i> [add]";
+        if self.saving.is_some() {
+            return "ERR wait for the save to finish".to_string();
+        }
+        let mut it = rest.splitn(3, ' ');
+        let (verb, index, arg) = (it.next().unwrap_or(""), it.next().and_then(|i| i.parse::<usize>().ok()), it.next().unwrap_or("").trim());
+        let Some(editor) = self.editor.as_mut() else { return "ERR no file is open".to_string() };
+        let markers = editor.history.current().markers().clone();
+        let Some(index) = index else { return USAGE.to_string() };
+        let Some(id) = markers.id_at(index) else { return format!("ERR no marker {index} (there are {})", markers.len()) };
+        match verb {
+            "rename" if !arg.is_empty() => {
+                if editor.rename_marker(id, arg) {
+                    "OK".to_string()
+                } else {
+                    "ERR the name is empty or unchanged".to_string()
+                }
+            }
+            "move" => match arg.parse::<u64>() {
+                Ok(frame) if editor.move_marker(id, frame) => "OK".to_string(),
+                Ok(_) => "ERR the marker would not move (same place, or another marker is there)".to_string(),
+                Err(_) => USAGE.to_string(),
+            },
+            "select" if arg.is_empty() || arg == "add" => {
+                if let Some(span) = self.markers_ui.click(&markers, index, false, arg == "add") {
+                    self.selection = Selection { anchor: span.start as usize, head: span.end as usize };
+                }
+                format!("OK selection={}-{}", self.selection.start(), self.selection.end())
+            }
+            _ => USAGE.to_string(),
         }
     }
 
@@ -859,6 +928,7 @@ impl WaveApp {
                 }
                 ui.separator();
                 ui.checkbox(&mut self.show_history, "History panel");
+                ui.checkbox(&mut self.markers_ui.show, "Markers panel");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -959,7 +1029,29 @@ impl WaveApp {
 
         // Click places the cursor, drag selects.
         let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
+        let ruler_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
         if response.drag_started()
+            && let Some(e) = &self.editor
+            && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+            && let markers = e.history.current().markers()
+            && let Some(id) = self.markers_ui.handle_at(markers, &self.view, ruler_rect, origin)
+        {
+            // A marker's flag was grabbed: the drag moves it (one step, when released).
+            let grabbed = frame_at(&self.view, origin) as u64;
+            self.markers_ui.start_drag(markers, id, grabbed);
+        }
+        if self.markers_ui.drag.is_some() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                self.markers_ui.drag_to(frame_at(&self.view, pos) as u64);
+            }
+            if response.drag_stopped()
+                && let (Some(d), Some(e)) = (self.markers_ui.drag.take(), self.editor.as_mut())
+                && e.move_marker(d.id, d.start)
+                && let Some(i) = e.history.current().markers().index_of(d.id)
+            {
+                self.markers_ui.pick.click(e.history.current().markers(), i, false, false);
+            }
+        } else if response.drag_started()
             && let Some(pos) = response.interact_pointer_pos()
         {
             // A drag is only reported once the pointer has moved a few pixels: anchor the
@@ -981,7 +1073,11 @@ impl WaveApp {
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate);
         if let Some(e) = &self.editor {
-            draw_markers(&painter, ruler, &self.view, e.history.current().markers());
+            let shown = self.markers_ui.shown(e.history.current().markers(), frames as u64);
+            draw_markers(&painter, ruler, &self.view, &shown, &self.markers_ui.pick.ids);
+            if response.hover_pos().is_some_and(|p| self.markers_ui.handle_at(&shown, &self.view, ruler, p).is_some()) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
         }
 
         let (wave_area, spectrum_area) = match (self.show_waveform, self.show_spectrum) {
@@ -1119,6 +1215,9 @@ impl eframe::App for WaveApp {
         if self.show_history {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
+        if self.markers_ui.show {
+            egui::Panel::right("markers").default_size(380.0).show(ui, |ui| self.markers_panel(ui));
+        }
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
@@ -1178,10 +1277,10 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32) {
 
 /// Markers on the ruler: a point is a small flag with its name, a range a band with a flag at
 /// each end of the name.
-fn draw_markers(painter: &egui::Painter, rect: Rect, view: &Viewport, markers: &wavcraft_core::Markers) {
-    let color = Color32::from_rgb(240, 190, 60);
+fn draw_markers(painter: &egui::Painter, rect: Rect, view: &Viewport, markers: &wavcraft_core::Markers, picked: &[u64]) {
     let painter = painter.with_clip_rect(rect);
     for m in markers.iter() {
+        let color = if picked.contains(&m.id) { Color32::from_rgb(255, 255, 255) } else { Color32::from_rgb(240, 190, 60) };
         let x0 = rect.left() + view.x_of(m.start as f64);
         let x1 = rect.left() + view.x_of(m.end.max(m.start) as f64);
         if x1 < rect.left() - 200.0 || x0 > rect.right() {

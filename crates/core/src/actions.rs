@@ -407,6 +407,21 @@ impl Editor {
         Ok(Outcome { doc_changed: changed, selection: at..at + frames, message: changed.then_some(label) })
     }
 
+    /// Rename marker `id` (one history step, "Rename Marker"). Returns whether anything changed.
+    pub fn rename_marker(&mut self, id: u64, name: &str) -> bool {
+        let Some(markers) = self.history.current().markers().with_renamed(id, name) else { return false };
+        self.history.push_markers("Rename Marker", Arc::new(markers));
+        true
+    }
+
+    /// Move marker `id` so it starts at `start`, keeping its length (one history step,
+    /// "Move Marker"). Returns whether anything changed.
+    pub fn move_marker(&mut self, id: u64, start: u64) -> bool {
+        let Some(markers) = self.history.current().markers().with_moved(id, start, self.len()) else { return false };
+        self.history.push_markers("Move Marker", Arc::new(markers));
+        true
+    }
+
     /// Run `id` on `selection`. A disabled action does nothing and says why.
     pub fn run(&mut self, id: ActionId, selection: Range<u64>) -> Result<Outcome, EditError> {
         let len = self.len();

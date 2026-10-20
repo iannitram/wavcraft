@@ -15,6 +15,8 @@ pub struct Marker {
     pub start: u64,
     /// Frame just past the range (equal to `start` for a point marker).
     pub end: u64,
+    /// Free text shown in the Markers panel (not saved in the WAV yet).
+    pub description: String,
 }
 
 impl Marker {
@@ -69,7 +71,7 @@ impl Markers {
         }
         let mut out = self.clone();
         let name = name.map_or_else(|| self.default_name(), str::to_string);
-        out.list.push(Marker { id: out.next_id, name, start, end });
+        out.list.push(Marker { id: out.next_id, name, start, end, description: String::new() });
         out.next_id += 1;
         out.list.sort_by_key(|m| (m.start, m.id));
         Some(out)
@@ -141,7 +143,7 @@ impl Markers {
     pub fn from_items(items: Vec<(String, u64, u64)>) -> Markers {
         let mut out = Markers::new();
         for (name, start, end) in items {
-            out.list.push(Marker { id: out.next_id, name, start, end: end.max(start) });
+            out.list.push(Marker { id: out.next_id, name, start, end: end.max(start), description: String::new() });
             out.next_id += 1;
         }
         out.list.sort_by_key(|m| (m.start, m.id));
@@ -240,6 +242,37 @@ impl Markers {
     /// The `cue ` chunk and the `LIST`/`adtl` chunk (each with its 8-byte header and pad byte),
     /// for a WAV file; empty when there are no markers. A point is a cue point with a `labl`; a
     /// range also has an `ltxt` (purpose `rgn `) with its length. Positions past 32 bits are left out.
+    /// This list with marker `id` named `name` (an empty name is refused; `None`: no change).
+    pub fn with_renamed(&self, id: u64, name: &str) -> Option<Markers> {
+        let name = name.trim();
+        let at = self.list.iter().position(|m| m.id == id)?;
+        if name.is_empty() || self.list[at].name == name {
+            return None;
+        }
+        let mut out = self.clone();
+        out.list[at].name = name.to_string();
+        Some(out)
+    }
+
+    /// Marker `id` moved so its start is `start`, keeping its length, held inside `0..=len`
+    /// (`None`: no marker, no change, or another marker is exactly there).
+    pub fn with_moved(&self, id: u64, start: u64, len: u64) -> Option<Markers> {
+        let m = self.list.iter().find(|m| m.id == id)?;
+        let span = m.end.max(m.start) - m.start;
+        let start = start.min(len.saturating_sub(span));
+        self.with_extent(id, start..start + span)
+    }
+
+    /// The id of the marker at position `index` in list order.
+    pub fn id_at(&self, index: usize) -> Option<u64> {
+        self.list.get(index).map(|m| m.id)
+    }
+
+    /// The position of marker `id` in list order.
+    pub fn index_of(&self, id: u64) -> Option<usize> {
+        self.list.iter().position(|m| m.id == id)
+    }
+
     pub fn to_wav_chunks(&self) -> Vec<u8> {
         let kept: Vec<&Marker> = self.list.iter().filter(|m| m.end <= u64::from(u32::MAX)).take(MAX_WAV_MARKERS).collect();
         if kept.is_empty() {
@@ -321,11 +354,70 @@ impl Markers {
         }
         for (name, start, end) in items {
             let name = name.unwrap_or_else(|| out.default_name());
-            out.list.push(Marker { id: out.next_id, name, start, end });
+            out.list.push(Marker { id: out.next_id, name, start, end, description: String::new() });
             out.next_id += 1;
         }
         out.list.sort_by_key(|m| (m.start, m.id));
         out
+    }
+}
+
+/// The markers picked in the Markers panel: ids (they survive edits that reorder the list) and
+/// the row Shift-click extends from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MarkerPick {
+    pub ids: Vec<u64>,
+    anchor: Option<u64>,
+}
+
+impl MarkerPick {
+    /// A click on row `index`: plain picks only it; `ctrl` toggles it; `shift` picks the rows
+    /// from the last plain/ctrl click to it (added to the pick when `ctrl` is also held).
+    pub fn click(&mut self, markers: &Markers, index: usize, shift: bool, ctrl: bool) {
+        let Some(id) = markers.id_at(index) else { return };
+        let anchor = self.anchor.and_then(|a| markers.index_of(a));
+        match (shift, anchor) {
+            (true, Some(a)) => {
+                let (lo, hi) = (a.min(index), a.max(index));
+                let rows: Vec<u64> = (lo..=hi).filter_map(|i| markers.id_at(i)).collect();
+                if !ctrl {
+                    self.ids.clear();
+                }
+                for r in rows {
+                    if !self.ids.contains(&r) {
+                        self.ids.push(r);
+                    }
+                }
+            }
+            (_, _) if ctrl => {
+                if let Some(p) = self.ids.iter().position(|&i| i == id) {
+                    self.ids.remove(p);
+                } else {
+                    self.ids.push(id);
+                }
+                self.anchor = Some(id);
+            }
+            _ => {
+                self.ids = vec![id];
+                self.anchor = Some(id);
+            }
+        }
+    }
+
+    /// The picked ids that still exist, as positions in list order.
+    pub fn indices(&self, markers: &Markers) -> Vec<usize> {
+        let mut v: Vec<usize> = self.ids.iter().filter_map(|&i| markers.index_of(i)).collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// The span of the picked markers (the time selection a click makes): the first start to the
+    /// last end. `None` when nothing is picked.
+    pub fn span(&self, markers: &Markers) -> Option<Range<u64>> {
+        let picked: Vec<&Marker> = markers.iter().filter(|m| self.ids.contains(&m.id)).collect();
+        let start = picked.iter().map(|m| m.start).min()?;
+        let end = picked.iter().map(|m| m.end.max(m.start)).max()?;
+        Some(start..end)
     }
 }
 
@@ -417,5 +509,44 @@ mod tests {
         );
         assert_eq!(pts(&m.moved_by(&Shift::Replace { range: 5..15, len: 2 }).unwrap()), [(12, 32), (52, 52)], "the point inside goes");
         assert_eq!(pts(&m.moved_by(&Shift::Crop(15..50)).unwrap()), [(5, 25)]);
+    }
+    #[test]
+    fn rename_and_move_keep_ids_and_refuse_nonsense() {
+        let m = Markers::from_items(vec![("A".into(), 100, 100), ("B".into(), 300, 400), ("C".into(), 900, 900)]);
+        let (a, b) = (m.id_at(0).unwrap(), m.id_at(1).unwrap());
+        let r = m.with_renamed(a, "  Verse ").unwrap();
+        assert_eq!(r.as_slice()[0].name, "Verse");
+        assert!(m.with_renamed(a, "A").is_none() && m.with_renamed(a, "  ").is_none() && m.with_renamed(99, "x").is_none());
+        // A range keeps its length, a move is held inside the file, and the list stays ordered.
+        let mv = m.with_moved(b, 1000, 1200).unwrap();
+        assert_eq!(
+            mv.as_slice().iter().map(|x| (x.name.as_str(), x.start, x.end)).collect::<Vec<_>>(),
+            [("A", 100, 100), ("C", 900, 900), ("B", 1000, 1100)]
+        );
+        assert_eq!(m.with_moved(b, 5000, 1200).unwrap().as_slice()[2].range(), 1100..1200);
+        assert!(m.with_moved(a, 900, 1200).is_none(), "onto another marker's place");
+        assert!(m.with_moved(a, 100, 1200).is_none(), "no change");
+    }
+
+    #[test]
+    fn picking_rows_with_click_ctrl_and_shift() {
+        let m = Markers::from_items((0..5).map(|i| (format!("m{i}"), i * 100, i * 100 + if i == 3 { 50 } else { 0 })).collect());
+        let mut p = MarkerPick::default();
+        p.click(&m, 1, false, false);
+        assert_eq!(p.indices(&m), [1]);
+        assert_eq!(p.span(&m), Some(100..100));
+        p.click(&m, 3, false, true);
+        assert_eq!(p.indices(&m), [1, 3]);
+        assert_eq!(p.span(&m), Some(100..350));
+        p.click(&m, 1, false, true);
+        assert_eq!(p.indices(&m), [3], "ctrl toggles off");
+        p.click(&m, 0, false, false);
+        p.click(&m, 2, true, false);
+        assert_eq!(p.indices(&m), [0, 1, 2], "shift picks the rows between");
+        p.click(&m, 4, true, true);
+        assert_eq!(p.indices(&m), [0, 1, 2, 3, 4]);
+        p.click(&m, 9, false, false);
+        assert_eq!(p.indices(&m).len(), 5, "a row that is not there changes nothing");
+        assert!(MarkerPick::default().span(&m).is_none());
     }
 }
