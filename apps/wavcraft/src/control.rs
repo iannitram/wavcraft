@@ -12,6 +12,7 @@
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
 //! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
+//! - `STRETCH ratio=<0.1-10> pitch=<semitones>` → `OK selection=<a>-<b> changed=<0|1>` (Stretch and Pitch on the selection, the whole file when none; the result is selected); `PITCHDETECT` → `OK hz=<f0>|none` (median pitch of the selection)
 //! - `EFFECT_DIALOG <name> [key=value ...]` opens the effect's dialog on those values; `EFFECT_DIALOG` → `OK open=<id|none> values=[..]`; `EFFECT_DIALOG OK|CANCEL` presses the button
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)

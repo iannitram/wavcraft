@@ -254,6 +254,22 @@ impl Clip {
         self.channels.first().map_or(0, |c| c.len())
     }
 
+    /// A clip of new audio (one `Vec` per channel, all one length), written into `store` in
+    /// blocks (f127: length-changing processes build their result this way).
+    pub fn from_samples(store: &Store, sample_rate: u32, samples: &[Vec<f32>]) -> io::Result<Clip> {
+        let mut channels = Vec::with_capacity(samples.len());
+        for s in samples {
+            let mut ch = Channel::new();
+            for part in s.chunks(BLOCK_FRAMES) {
+                if let Some(p) = Piece::whole(store.append(part)?) {
+                    ch.push_merged(p);
+                }
+            }
+            channels.push(Arc::new(ch));
+        }
+        Ok(Clip { store: store.clone(), channels, sample_rate })
+    }
+
     /// Copy frames of channel `ch` from `start` into `out`, as [`DocState::read`].
     pub fn read(&self, ch: usize, start: u64, out: &mut [f32]) -> io::Result<usize> {
         let channel = self.channels.get(ch).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("no channel {ch}")))?;
