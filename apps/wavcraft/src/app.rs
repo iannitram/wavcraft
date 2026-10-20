@@ -13,6 +13,7 @@ use wavcraft_core::doc::edit as doc_edit;
 use wavcraft_core::doc::newdoc::{self, NewDocOptions};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::match_loudness::Target;
+use wavcraft_core::meta;
 use wavcraft_core::panels::{self, DockSide, Layout, PanelSet};
 use wavcraft_core::save::{SampleType, SaveFormat, save};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
@@ -339,6 +340,12 @@ pub struct WaveApp {
     stats: StatsPanel,
     /// Window › Match Loudness (f33).
     matcher: MatchUi,
+    /// Window › Metadata.
+    show_metadata: bool,
+    /// The Metadata panel's text boxes (one per `meta::FIELDS`) and the source they were filled
+    /// from: refilled whenever the current step's metadata is another one.
+    meta_draft: Vec<String>,
+    meta_for: Option<Arc<wavcraft_core::SourceFormat>>,
 }
 
 impl WaveApp {
@@ -440,6 +447,9 @@ impl WaveApp {
             rack: RackPanel::new(),
             keymap,
             matcher: MatchUi::new(),
+            show_metadata: false,
+            meta_draft: Vec::new(),
+            meta_for: None,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -2552,6 +2562,63 @@ impl WaveApp {
         }
     }
 
+    /// Set metadata fields as ONE undoable step ("Edit Metadata"). Nothing changes (and no step
+    /// is made) when every value is already what the file has.
+    fn apply_metadata(&mut self, changes: &[(String, String)]) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let current = editor.history.current().clone();
+        let mut meta = current.source().meta.clone();
+        for (field, value) in changes {
+            if meta.get(field).as_deref() != Some(value.as_str()) {
+                meta.set(field, value)?;
+            }
+        }
+        if meta == current.source().meta {
+            return Ok(false);
+        }
+        editor.history.push_metadata("Edit Metadata", current.with_metadata(meta));
+        self.error = None;
+        Ok(true)
+    }
+
+    /// Window › Metadata: the Broadcast Wave fields and the INFO title, artist and comment of the
+    /// current step. Apply makes one history step.
+    fn metadata_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Metadata");
+        let Some(editor) = self.editor.as_ref() else {
+            ui.label("No file open.");
+            return;
+        };
+        let src = editor.history.current().source().clone();
+        if self.meta_for.as_ref().is_none_or(|a| !Arc::ptr_eq(a, &src)) || self.meta_draft.len() != meta::FIELDS.len() {
+            self.meta_draft = meta::FIELDS.iter().map(|f| src.meta.get(f).unwrap_or_default()).collect();
+            self.meta_for = Some(src.clone());
+        }
+        let mut apply = false;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (field, text) in meta::FIELDS.iter().zip(self.meta_draft.iter_mut()) {
+                ui.label(field.replace('_', " "));
+                if *field == "coding_history" {
+                    ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY));
+                } else {
+                    ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                }
+            }
+            ui.add_space(6.0);
+            apply = ui.button("Apply").clicked();
+        });
+        if apply {
+            let changes: Vec<(String, String)> = meta::FIELDS.iter().map(|f| f.to_string()).zip(self.meta_draft.iter().cloned()).collect();
+            match self.apply_metadata(&changes) {
+                Ok(_) => self.meta_for = None,
+                Err(e) => self.error = Some(format!("Metadata: {e}")),
+            }
+        }
+    }
+
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
         if !self.confirm_clear_history {
             return;
@@ -3295,6 +3362,27 @@ impl WaveApp {
                 }
                 Err(()) => format!("ERR {cmd} [index]"),
             },
+            // META get [field] | META set <field> <value>: the metadata of the current step.
+            "META" => {
+                let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
+                let meta = &editor.history.current().source().meta;
+                match (verb, rest.trim()) {
+                    ("get", "") => format!("OK {}", meta.summary()),
+                    ("get", field) => match meta.get(field) {
+                        Some(v) => format!("OK {}", meta::escape_lines(&v)),
+                        None => format!("ERR no metadata field {field:?}"),
+                    },
+                    ("set", args) => {
+                        let (field, value) = args.split_once(' ').unwrap_or((args, ""));
+                        match self.apply_metadata(&[(field.to_string(), meta::unescape_lines(value))]) {
+                            Ok(changed) => format!("OK changed={}", u8::from(changed)),
+                            Err(e) => format!("ERR {e}"),
+                        }
+                    }
+                    _ => "ERR META get [field] | META set <field> <value>".to_string(),
+                }
+            }
             // Convert Sample Type with `key=value` settings (`rate=44100 channels=1 bits=16`), or
             // `preset=<name>`; it runs in the background: poll STATE until busy=0.
             "CONVERT" => {
@@ -3814,6 +3902,7 @@ impl WaveApp {
                 ui.checkbox(&mut self.meters.show_levels, "Levels");
                 ui.checkbox(&mut self.meters.show_stats, "Amplitude/Loudness Statistics");
                 ui.checkbox(&mut self.matcher.show, "Match Loudness");
+                ui.checkbox(&mut self.show_metadata, "Metadata panel");
             });
             let label = if self.transport.mode == Mode::Playing { "■ Stop" } else { "▶ Play" };
             if ui.add_enabled(!self.rec.is_active(), egui::Button::new(label)).on_hover_text("Space").clicked() {
@@ -4615,6 +4704,9 @@ impl eframe::App for WaveApp {
         egui::Panel::bottom("transport").show(ui, |ui| self.transport_panel(ui));
         if self.panels.is_shown("history") {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
+        }
+        if self.show_metadata {
+            egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));
         }
         self.tab_rects.clear();
         self.zone_rects.clear();

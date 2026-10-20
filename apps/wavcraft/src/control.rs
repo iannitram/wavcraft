@@ -48,6 +48,7 @@
 //!   (Convert Sample Type, in the background; poll `STATE` until `busy=0`; `ERR` for a bad setting)
 //! - `INTERPRET <hz>` → `OK` (Interpret Sample Rate: relabel the rate, no resampling)
 //! - `PRESET list` | `PRESET save <name> | <settings>` | `PRESET delete <name>` → `OK …` (conversion presets)
+//! - `META get [field]` / `META set <field> <value>` → `OK <value>` / `OK changed=<0|1>` (one undo step "Edit Metadata" per set; `\r` and `\n` in a value are line breaks)
 //! - `SAVE [path] [bits=16|24|32] [float=0|1]` → `OK` (Save, or Save As to `path`, the format from
 //!   its extension: .wav, .aiff/.aif, .flac; `bits`/`float=1` choose the sample type; poll `STATE` until `busy=0`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes in any document `ERR …` unless `QUIT discard`
