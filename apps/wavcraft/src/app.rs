@@ -19,6 +19,7 @@ use wavcraft_core::{ChannelMask, DocState, Document, FileFormat, GRAB_PX, Histor
 
 use crate::control;
 use crate::player::Player;
+use crate::recovery::{self, Choice, Recovery};
 use crate::spectrum::{Job, Renderer};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
@@ -116,6 +117,8 @@ pub struct WaveApp {
     history_focus: bool,
     /// The History row to give keyboard focus next frame (after an arrow key moved the cursor).
     history_refocus: Option<usize>,
+    /// Auto Save: the journal writer, and the offer to recover a crashed run's work.
+    recovery: Recovery,
 }
 
 impl WaveApp {
@@ -128,17 +131,11 @@ impl WaveApp {
         let sessions = settings::resolve_session_folder(session_dir, env, &settings, default_sessions_root(), settings::check_folder);
         // Folders left by runs that ended without closing their store (a crash, a kill, a
         // signal) are removed in the background; this run's own store is never touched.
-        let roots: Vec<PathBuf> = [sessions.path.clone(), default_sessions_root()].into_iter().fold(Vec::new(), |mut v, p| {
-            if !v.contains(&p) {
-                v.push(p);
-            }
-            v
-        });
-        let _ = std::thread::Builder::new().name("session sweep".into()).spawn(move || {
-            for root in roots {
-                wavcraft_core::store::sweep_stale_sessions(Some(&root));
-            }
-        });
+        let roots = recovery::roots(&sessions.path, &default_sessions_root());
+        let recovery = {
+            let ctx = cc.egui_ctx.clone();
+            Recovery::new(roots, move || ctx.request_repaint())
+        };
         let mut app = WaveApp {
             doc: None,
             generation: 0,
@@ -172,6 +169,7 @@ impl WaveApp {
             confirm_clear_history: false,
             history_focus: false,
             history_refocus: None,
+            recovery,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -243,6 +241,46 @@ impl WaveApp {
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
         }
         self.opening = None;
+    }
+
+    /// Recover the `index`th session a crashed run left (Auto Save): its document and undo
+    /// history come back as they were at the last journal. Refused while another file has
+    /// unsaved changes, or one is opening.
+    fn recover_session(&mut self, index: usize, ctx: &egui::Context) -> Result<(), String> {
+        if self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() {
+            return Err("Wait for the current job to finish before recovering".to_string());
+        }
+        if self.unsaved() {
+            return Err("Save or close the open file before recovering".to_string());
+        }
+        let dir = self.recovery.offers.get(index).map(|o| o.dir.clone()).ok_or_else(|| format!("no recoverable session {index}"))?;
+        let rec =
+            wavcraft_core::autosave::recover(&dir, wavcraft_core::store::StoreOptions::default()).map_err(|e| format!("Could not recover: {e}"))?;
+        let cap = History::default_cap(&self.sessions.path);
+        let history = rec.into_history(cap).ok_or("Could not recover: the journal holds no steps")?;
+        self.doc_path = history.current().source().path.clone();
+        self.editor = Some(Editor::new(history));
+        self.saved = None;
+        self.doc_id += 1;
+        self.doc = None;
+        self.player.set_audio(None);
+        self.selection = Selection::default();
+        self.spectrum = None;
+        self.fit_on_next_frame = true;
+        self.recovery.remove(index);
+        self.notice = Some("Recovered the unsaved work (File › Save keeps it)".to_string());
+        log::info!(target: "wavcraft", "recovery: restored the session in {}", dir.display());
+        self.rebuild(ctx);
+        Ok(())
+    }
+
+    /// Remove a crashed run's session folder the owner chose to discard.
+    fn discard_recovery(&mut self, index: usize) -> Result<(), String> {
+        let dir = self.recovery.offers.get(index).map(|o| o.dir.clone()).ok_or_else(|| format!("no recoverable session {index}"))?;
+        wavcraft_core::autosave::discard(&dir).map_err(|e| format!("Could not discard: {e}"))?;
+        log::info!(target: "wavcraft", "recovery: discarded the session in {} at the owner's request", dir.display());
+        self.recovery.remove(index);
+        Ok(())
     }
 
     fn pick_file(&mut self, ctx: &egui::Context) {
@@ -985,6 +1023,23 @@ impl WaveApp {
                 },
                 _ => "ERR INSERT_SILENCE <seconds>, above 0".to_string(),
             },
+            // Auto Save: the journal writer's progress, and the sessions a crashed run left.
+            "AUTOSAVE" => {
+                let (offered, written, failed, pending) = self.recovery.stats();
+                format!(
+                    "OK offered={offered} written={written} failed={failed} pending={} scanned={} recoverable={}",
+                    u8::from(pending),
+                    u8::from(self.recovery.scanned),
+                    self.recovery.offers.len()
+                )
+            }
+            "RECOVER" | "DISCARD_RECOVERY" => match rest.trim().parse::<usize>().or_else(|_| if rest.trim().is_empty() { Ok(0) } else { Err(()) }) {
+                Ok(i) => {
+                    let r = if cmd == "RECOVER" { self.recover_session(i, ctx) } else { self.discard_recovery(i) };
+                    r.map_or_else(|e| format!("ERR {e}"), |()| "OK".to_string())
+                }
+                Err(()) => format!("ERR {cmd} [index]"),
+            },
             // The History panel's click: go to step <index> (0 is Open).
             "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
                 (Ok(i), true) if self.saving.is_none() => {
@@ -1434,6 +1489,9 @@ impl eframe::App for WaveApp {
         self.finish_opening();
         self.finish_rebuild();
         self.finish_saving(ctx);
+        self.recovery.poll();
+        let unsaved = self.unsaved();
+        self.recovery.track(self.editor.as_ref(), unsaved, ctx);
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
@@ -1497,6 +1555,19 @@ impl eframe::App for WaveApp {
         }
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
+        match self.recovery.show(&ctx) {
+            Some(Choice::Recover(i)) => {
+                if let Err(e) = self.recover_session(i, &ctx) {
+                    self.error = Some(e);
+                }
+            }
+            Some(Choice::Discard(i)) => {
+                if let Err(e) = self.discard_recovery(i) {
+                    self.error = Some(e);
+                }
+            }
+            None => {}
+        }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
     }
 }

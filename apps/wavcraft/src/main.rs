@@ -12,6 +12,7 @@ mod app;
 mod control;
 mod oscb;
 mod player;
+mod recovery;
 mod selflog;
 mod spectrum;
 #[cfg(windows)]

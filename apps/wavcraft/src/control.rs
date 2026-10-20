@@ -22,6 +22,8 @@
 //! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
 //! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)
 //! - `HISTORY_KEY up|down` → `OK cursor=<i>` (the panel's arrow keys)
+//! - `AUTOSAVE` → `OK offered=<n> written=<n> failed=<n> pending=<0|1> scanned=<0|1> recoverable=<n>` (Auto Save's journal writer for the open file, and the sessions a crashed run left; poll until `scanned=1`)
+//! - `RECOVER [index]` → `OK` (recover that crashed session, 0 by default; poll `STATE` until `busy=0`); `DISCARD_RECOVERY [index]` → `OK`
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
