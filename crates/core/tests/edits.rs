@@ -347,7 +347,7 @@ proptest! {
     }
 }
 
-/// W1 (the Legion Go's verification, 2026-10-15): a Crop of an empty range, at the end of the file
+/// W1 (the Linux handheld's verification, 2026-10-15): a Crop of an empty range, at the end of the file
 /// (`s == len`, what the property test kept drawing) and in the middle (`s == e`), leaves a
 /// non-empty document unchanged and adds no history step, in the edit and in the model; so do
 /// Delete and Cut of an empty range. Fixed inputs, no random draw (`plan/tasks/audition-check.md`,
@@ -657,8 +657,8 @@ fn frames_dur(frames: u64) -> Duration {
 ///
 /// **These hold for a full-scale sine at 1 kHz and above only** (the tests use 1 kHz), not for
 /// any audio. Lower down, the sine's own largest step shrinks while the 2 ms fade's slope does
-/// not, so the ratio grows without any discontinuity: the Legion Go measured Delete at 1.43 × at
-/// 220 Hz and 4.12 × at 50 Hz, Paste at 1.10 × and 1.43 × (`verification-by-legiongo.md` W6,
+/// not, so the ratio grows without any discontinuity: a Linux handheld measured Delete at 1.43 × at
+/// 220 Hz and 4.12 × at 50 Hz, Paste at 1.10 × and 1.43 × (the Linux handheld review's W6,
 /// 2026-10-16). At 50 Hz that step is about 0.027 of full scale, which is the fade's own slope,
 /// not a click. A test of "no click" at low frequencies needs another measure (for example the
 /// step against the fade's slope); none is written yet.
