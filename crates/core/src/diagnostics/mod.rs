@@ -5,7 +5,9 @@
 pub mod declick;
 pub mod declip;
 
-use std::sync::atomic::AtomicBool;
+use std::io;
+use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
@@ -72,4 +74,109 @@ pub(crate) fn write_fixes(
         }
         Ok(())
     })
+}
+
+/// What a scan found, whichever tool ran it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Found {
+    /// The regions, in frame order.
+    pub regions: Vec<Region>,
+    /// The scan stopped at the tool's region cap before the end of the range.
+    pub truncated: bool,
+}
+
+/// What a subset repair did.
+pub struct Subset {
+    /// The edit to push on the history (a no-op when nothing was repaired).
+    pub edit: Edit,
+    /// Regions redrawn.
+    pub repaired: usize,
+    /// Regions left alone (too long, or too close to a file edge).
+    pub skipped: usize,
+}
+
+/// A diagnostic tool with its settings: scan, then repair any chosen subset of what it found.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Tool {
+    DeClip(declip::Params),
+    DeClick(declick::Params),
+}
+
+impl Tool {
+    /// The tool's name, also the label of its undo step.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Tool::DeClip(_) => declip::LABEL,
+            Tool::DeClick(_) => declick::LABEL,
+        }
+    }
+
+    /// Find the regions of `channels` within `range` (empty: the whole file).
+    pub fn scan(&self, doc: &DocState, range: Range<u64>, channels: ChannelMask, cancel: &AtomicBool) -> Result<Found, EditError> {
+        Ok(match self {
+            Tool::DeClip(p) => {
+                let s = declip::scan(doc, range, channels, p, cancel)?;
+                Found { regions: s.regions, truncated: s.truncated }
+            }
+            Tool::DeClick(p) => {
+                let s = declick::scan(doc, range, channels, p, cancel)?;
+                Found { regions: s.regions, truncated: s.truncated }
+            }
+        })
+    }
+
+    /// For each region, whether a repair would leave it alone.
+    pub fn skipped(&self, doc: &DocState, regions: &[Region], cancel: &AtomicBool) -> Result<Vec<bool>, EditError> {
+        let mut out = Vec::with_capacity(regions.len());
+        for r in regions {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(EditError::Cancelled);
+            }
+            out.push(self.fit(doc, r)?.is_none());
+        }
+        Ok(out)
+    }
+
+    /// Redraw only `regions` (as found by a scan of this document), as one edit labelled with
+    /// the tool's name. Nothing outside them changes.
+    pub fn repair(&self, doc: &DocState, regions: &[Region], xf: Crossfades, cancel: &AtomicBool) -> Result<Subset, EditError> {
+        repair_regions(doc, regions, self.label(), xf, cancel, |d, r| self.fit(d, r))
+    }
+
+    fn fit(&self, doc: &DocState, r: &Region) -> io::Result<Option<Vec<f32>>> {
+        match self {
+            Tool::DeClip(_) => declip::fit(doc, r),
+            Tool::DeClick(_) => declick::fit(doc, r),
+        }
+    }
+}
+
+/// Fit and write every region `fit` can redraw as one edit; count the ones it cannot.
+pub(crate) fn repair_regions(
+    doc: &DocState,
+    regions: &[Region],
+    label: &'static str,
+    xf: Crossfades,
+    cancel: &AtomicBool,
+    fit: impl Fn(&DocState, &Region) -> io::Result<Option<Vec<f32>>>,
+) -> Result<Subset, EditError> {
+    let mut fixes: Vec<(usize, u64, Vec<f32>)> = Vec::new();
+    let mut skipped = 0;
+    for r in regions {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EditError::Cancelled);
+        }
+        match fit(doc, r)? {
+            Some(v) => fixes.push((r.channel, r.start, v)),
+            None => skipped += 1,
+        }
+    }
+    let repaired = fixes.len();
+    let edit = if fixes.is_empty() {
+        // An empty range is a no-op edit that keeps the history untouched.
+        edit::replace_range(doc, 0..0, ChannelMask::NONE, label, xf, cancel, |_, _, _| Ok(()))?
+    } else {
+        write_fixes(doc, fixes, label, xf, cancel)?
+    };
+    Ok(Subset { edit, repaired, skipped })
 }

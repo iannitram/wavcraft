@@ -10,6 +10,7 @@
 
 mod app;
 mod control;
+mod diagnostics_panel;
 mod effect_dialog;
 mod player;
 mod selflog;

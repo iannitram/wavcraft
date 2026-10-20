@@ -32,10 +32,10 @@ use std::io;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::Region;
 use super::declip::Repair;
-use super::{Region, write_fixes};
 use crate::doc::DocState;
-use crate::doc::edit::{self, ChannelMask, Crossfades, EditError};
+use crate::doc::edit::{ChannelMask, Crossfades, EditError};
 use crate::store::BLOCK_FRAMES;
 
 /// The most regions one scan holds.
@@ -444,7 +444,7 @@ pub fn scan(doc: &DocState, range: Range<u64>, channels: ChannelMask, params: &P
 }
 
 /// New samples for one click, or `None` when it cannot be redrawn.
-fn fit(doc: &DocState, r: &Region) -> io::Result<Option<Vec<f32>>> {
+pub(crate) fn fit(doc: &DocState, r: &Region) -> io::Result<Option<Vec<f32>>> {
     if r.len > MAX_REPAIR_WIDTH {
         return Ok(None);
     }
@@ -585,24 +585,8 @@ fn repair(
     cancel: &AtomicBool,
 ) -> Result<Repair, EditError> {
     let found = scan(doc, range, channels, params, cancel)?;
-    let mut fixes: Vec<(usize, u64, Vec<f32>)> = Vec::new();
-    let mut skipped = 0;
-    for r in &found.regions {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(EditError::Cancelled);
-        }
-        match fit(doc, r)? {
-            Some(v) => fixes.push((r.channel, r.start, v)),
-            None => skipped += 1,
-        }
-    }
-    let (n_found, repaired) = (found.regions.len(), fixes.len());
-    let edit = if fixes.is_empty() {
-        edit::replace_range(doc, 0..0, ChannelMask::NONE, label, xf, cancel, |_, _, _| Ok(()))?
-    } else {
-        write_fixes(doc, fixes, label, xf, cancel)?
-    };
-    Ok(Repair { edit, found: n_found, repaired, skipped, truncated: found.truncated })
+    let r = super::repair_regions(doc, &found.regions, label, xf, cancel, fit)?;
+    Ok(Repair { edit: r.edit, found: found.regions.len(), repaired: r.repaired, skipped: r.skipped, truncated: found.truncated })
 }
 
 /// DeClicker: scan `range` of `channels` (empty range: the whole file) and redraw every click,

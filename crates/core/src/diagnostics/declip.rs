@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::Region;
 use crate::doc::DocState;
-use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
+use crate::doc::edit::{ChannelMask, Crossfades, Edit, EditError};
 use crate::store::BLOCK_FRAMES;
 
 /// The most runs one scan holds.
@@ -205,7 +205,7 @@ pub fn scan(doc: &DocState, range: Range<u64>, channels: ChannelMask, params: &P
 }
 
 /// New samples for one run, or `None` when it cannot be redrawn.
-fn fit(doc: &DocState, r: &Region) -> io::Result<Option<Vec<f32>>> {
+pub(crate) fn fit(doc: &DocState, r: &Region) -> io::Result<Option<Vec<f32>>> {
     if r.len > MAX_REPAIR_RUN {
         return Ok(None);
     }
@@ -296,24 +296,6 @@ pub fn declip(
     cancel: &AtomicBool,
 ) -> Result<Repair, EditError> {
     let found = scan(doc, range, channels, params, cancel)?;
-    // (channel, first frame, new samples), sorted by channel then frame.
-    let mut fixes: Vec<(usize, u64, Vec<f32>)> = Vec::new();
-    let mut skipped = 0;
-    for r in &found.regions {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(EditError::Cancelled);
-        }
-        match fit(doc, r)? {
-            Some(v) => fixes.push((r.channel, r.start, v)),
-            None => skipped += 1,
-        }
-    }
-    let repaired = fixes.len();
-    let nothing = |edit| Repair { edit, found: found.regions.len(), repaired, skipped, truncated: found.truncated };
-    if fixes.is_empty() {
-        // An empty range is a no-op edit that keeps the history untouched.
-        return Ok(nothing(edit::replace_range(doc, 0..0, ChannelMask::NONE, LABEL, xf, cancel, |_, _, _| Ok(()))?));
-    }
-    let edit = super::write_fixes(doc, fixes, LABEL, xf, cancel)?;
-    Ok(nothing(edit))
+    let r = super::repair_regions(doc, &found.regions, LABEL, xf, cancel, fit)?;
+    Ok(Repair { edit: r.edit, found: found.regions.len(), repaired: r.repaired, skipped: r.skipped, truncated: found.truncated })
 }
