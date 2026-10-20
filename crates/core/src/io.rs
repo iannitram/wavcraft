@@ -29,6 +29,9 @@ use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptio
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
+mod containers;
+pub use containers::{RAW_MAX_CHANNELS, RAW_MAX_RATE_HZ, RawEncoding, RawSpec};
+
 use crate::doc::{Channel, ChunkInfo, DocState, Piece, SourceFormat};
 use crate::settings::HOW_TO_CHANGE;
 use crate::space::{FreeSpaceFn, format_bytes, frames_from_file_size, store_bytes};
@@ -158,6 +161,22 @@ const HEAD_BYTES: u64 = 1 << 16;
 /// the session folder's disk: too little gives [`OpenError::NoSpace`]. A disk that fills up
 /// anyway gives [`OpenError::DiskFull`]. Either way the session folder is removed.
 pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), cancel: &AtomicBool) -> Result<DocState, OpenError> {
+    open_inner(path, opts, None, progress, cancel)
+}
+
+/// File > Import > Raw Data: open the headerless `path` as `spec` says, streamed into a new
+/// session store exactly like [`open`] (same space check, cancel and progress).
+pub fn open_raw(path: &Path, spec: &RawSpec, opts: &OpenOptions, progress: &mut dyn FnMut(f64), cancel: &AtomicBool) -> Result<DocState, OpenError> {
+    open_inner(path, opts, Some(spec), progress, cancel)
+}
+
+fn open_inner(
+    path: &Path,
+    opts: &OpenOptions,
+    raw: Option<&RawSpec>,
+    progress: &mut dyn FnMut(f64),
+    cancel: &AtomicBool,
+) -> Result<DocState, OpenError> {
     let mut file = File::open(path)?;
     let file_len = file.metadata()?.len();
     let mut head = Vec::new();
@@ -172,10 +191,18 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
     src.path = path.to_path_buf();
     let free_space = opts.free_space.unwrap_or(crate::space::free_space);
     let mut job = Job { file: &mut file, file_len, progress, cancel, free_space };
-    let built = if is_wav(&head) {
+    let built = if let Some(spec) = raw {
+        containers::open_raw(&mut job, &store, &mut src, spec)
+    } else if is_wav(&head) {
         open_wav(&mut job, &store, &mut src)
     } else if is_aiff(&head) {
         open_aiff(&mut job, &store, &mut src)
+    } else if containers::is_w64(&head) {
+        containers::open_w64(&mut job, &store, &mut src)
+    } else if containers::is_caf(&head) {
+        containers::open_caf(&mut job, &store, &mut src)
+    } else if containers::is_au(&head) {
+        containers::open_au(&mut job, &store, &mut src)
     } else {
         let detected = soundcraft_audio_io::detect_format(&head, ext);
         drop(head);

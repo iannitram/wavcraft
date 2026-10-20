@@ -12,7 +12,8 @@
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
-//! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `IMPORT_RAW <path> rate=<hz> ch=<n> fmt=<u8|s8|s16|s24|s32|f32|f64><le|be> [offset=<bytes>]` → `OK` (File › Import › Raw Data; poll `STATE`)
+//! - `SAVE [path]` → `OK` (Save, or Save As to `path`; the extension picks the format: .wav .w64 .caf .au; poll `STATE` until `busy=0`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
