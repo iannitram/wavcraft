@@ -116,6 +116,8 @@ pub enum ActionId {
     StatsPrevClip,
     TimeSmpte5994,
     SnapFrames,
+    /// Snap to markers on or off (f59).
+    SnapMarkersToggle,
 }
 
 /// Which part of the program carries an action out.
@@ -248,6 +250,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeSmpte30, "view.time_display.smpte_30", "SMPTE 30 fps"),
     window(ActionId::TimeSmpte5994, "view.time_display.smpte_5994", "SMPTE 59.94 fps"),
     window(ActionId::SnapFrames, "view.snap_frames.toggle", "Snap to Frames"),
+    edit(ActionId::SnapMarkersToggle, "view.snap.markers.toggle", "Snap to Markers"),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -483,7 +486,7 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::InsertFile | ActionId::CursorToStart | ActionId::CursorToEnd => true,
-            ActionId::SnapToggle | ActionId::SnapZeroToggle => true,
+            ActionId::SnapToggle | ActionId::SnapZeroToggle | ActionId::SnapMarkersToggle => true,
             ActionId::ToggleChannel(n) => usize::from(n) < self.channel_count(),
             ActionId::MarkerAdd => self.len() > 0,
             ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
@@ -546,6 +549,7 @@ impl Editor {
             ActionId::Redo => self.history.redo_label().map_or_else(|| a.menu.to_string(), |l| format!("Redo {l}")),
             ActionId::SnapToggle => format!("Snapping ({})", if self.snap.enabled { "on" } else { "off" }),
             ActionId::SnapZeroToggle => format!("Snap to Zero Crossings ({})", if self.snap.zero_crossings { "on" } else { "off" }),
+            ActionId::SnapMarkersToggle => format!("Snap to Markers ({})", if self.snap.markers { "on" } else { "off" }),
             ActionId::LeftChannel if self.channels == ChannelMask::only(0) => "Both Channels".to_string(),
             ActionId::RightChannel if self.channels == ChannelMask::only(1) => "Both Channels".to_string(),
             ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
@@ -808,10 +812,14 @@ impl Editor {
         }
         match id {
             ActionId::RepeatLast => return self.repeat(sel),
-            ActionId::SnapToggle | ActionId::SnapZeroToggle => {
-                let flag = if id == ActionId::SnapToggle { &mut self.snap.enabled } else { &mut self.snap.zero_crossings };
+            ActionId::SnapToggle | ActionId::SnapZeroToggle | ActionId::SnapMarkersToggle => {
+                let (flag, what) = match id {
+                    ActionId::SnapToggle => (&mut self.snap.enabled, "Snapping"),
+                    ActionId::SnapZeroToggle => (&mut self.snap.zero_crossings, "Snap to zero crossings"),
+                    _ => (&mut self.snap.markers, "Snap to markers"),
+                };
                 *flag = !*flag;
-                let (what, on) = if id == ActionId::SnapToggle { ("Snapping", *flag) } else { ("Snap to zero crossings", *flag) };
+                let on = *flag;
                 return Ok(Outcome { doc_changed: false, selection: sel, message: Some(format!("{what} {}", if on { "on" } else { "off" })) });
             }
             ActionId::ToggleChannel(n) => return Ok(self.toggle_channel(usize::from(n), sel)),
@@ -984,6 +992,7 @@ impl Editor {
             | ActionId::RepeatLast
             | ActionId::SnapToggle
             | ActionId::SnapZeroToggle
+            | ActionId::SnapMarkersToggle
             | ActionId::ToggleChannel(_)
             | ActionId::StatsShow
             | ActionId::StatsGotoPeak

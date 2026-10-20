@@ -3756,7 +3756,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {tstate} snap={} snapzero={} enabled={} clipboard={} clip_frames={} time_display={} selection_text={} tool={} right_click={} view={} vzoom={:.2} ampscale={}{} snap_frames={} msel={} undo={} redo={} path={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {tstate} snap={} snapzero={} snapmarkers={} enabled={} clipboard={} clip_frames={} time_display={} selection_text={} tool={} right_click={} view={} vzoom={:.2} ampscale={}{} snap_frames={} msel={} undo={} redo={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -3766,6 +3766,8 @@ impl WaveApp {
                             u8::from(busy),
                             u8::from(e.snap.enabled),
                             u8::from(e.snap.zero_crossings),
+                            u8::from(e.snap.markers),
+                            u8::from(e.snap.markers),
                             e.enabled_flags(),
                             e.current_clipboard + 1,
                             e.clipboard().map_or(0, |c| c.len_frames()),
@@ -3788,7 +3790,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {tstate} snap=1 snapzero=0 enabled= clipboard=1 clip_frames=0 time_display={} selection_text=- tool={} right_click={} view=0-0 vzoom=1.00 ampscale={}{} snap_frames={} msel=- undo=- redo=- path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {tstate} snap=1 snapzero=0 snapmarkers=1 enabled= clipboard=1 clip_frames=0 time_display={} selection_text=- tool={} right_click={} view=0-0 vzoom=1.00 ampscale={}{} snap_frames={} msel=- undo=- redo=- path=",
                         u8::from(busy),
                         self.time_format.name(),
                         self.tool.name(),

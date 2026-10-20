@@ -1,6 +1,6 @@
 //! Snapping (f09, roadmap A123 and A127): move a frame the pointer is on to the nearest snap
 //! target within [`SNAP_PX`] pixels. Targets are the ruler's ticks, the frames the caller lists
-//! (selection edges, the cursor) and, when asked, zero crossings of the enabled channels. The
+//! (selection edges, the cursor), the document's markers and, when asked, zero crossings of the enabled channels. The
 //! selection gestures (f08) call [`snap_frame`] (or `Editor::snap`) for each frame they place.
 
 use crate::actions::{Toward, ZERO_CROSSING_REACH_MS, zero_crossing};
@@ -17,11 +17,13 @@ pub struct SnapSettings {
     pub enabled: bool,
     /// Also snap to zero crossings of the enabled channels.
     pub zero_crossings: bool,
+    /// Also snap to markers: point markers and the edges of range markers (f59, A124).
+    pub markers: bool,
 }
 
 impl Default for SnapSettings {
     fn default() -> Self {
-        SnapSettings { enabled: true, zero_crossings: false }
+        SnapSettings { enabled: true, zero_crossings: false, markers: true }
     }
 }
 
@@ -58,6 +60,15 @@ pub fn snap_frame(doc: &DocState, settings: &SnapSettings, channels: ChannelMask
             best = Some((d, c));
         }
     };
+    if settings.markers {
+        for m in doc.markers().iter() {
+            for c in [m.start, m.end] {
+                if near(c) {
+                    offer(c);
+                }
+            }
+        }
+    }
     let tick = ruler_tick_near(frame, frames_per_px, doc.sample_rate());
     if near(tick) {
         offer(tick);

@@ -40,7 +40,7 @@ fn flip_stereo() -> Vec<Vec<f32>> {
 }
 
 fn on() -> SnapSettings {
-    SnapSettings { enabled: true, zero_crossings: false }
+    SnapSettings { enabled: true, zero_crossings: false, markers: true }
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn ruler_ticks_are_the_ones_the_ruler_draws() {
 fn snapping_off_or_nothing_near_changes_nothing() {
     let t = TempDir::new("off");
     let doc = doc_from(&t.0, &flip_stereo());
-    let off = SnapSettings { enabled: false, zero_crossings: true };
+    let off = SnapSettings { enabled: false, zero_crossings: true, markers: true };
     assert_eq!(snap_frame(&doc, &off, ChannelMask::ALL, 100.0, &[10_000], 10_100), 10_100);
     // Reach is 800 frames at 100 frames a pixel; the tick at 0 and the target are farther.
     assert_eq!(snap_frame(&doc, &on(), ChannelMask::ALL, 100.0, &[1000], 10_000), 10_000);
@@ -80,7 +80,7 @@ fn a_frame_snaps_to_the_ruler_a_target_and_the_nearest_wins() {
 fn zero_crossings_snap_only_when_asked_and_only_on_enabled_channels() {
     let t = TempDir::new("zero");
     let doc = doc_from(&t.0, &flip_stereo());
-    let zero = SnapSettings { enabled: true, zero_crossings: true };
+    let zero = SnapSettings { enabled: true, zero_crossings: true, markers: true };
     // 2 frames a pixel: reach 16 frames, ruler ticks every 240 (5040 is 37 away).
     assert_eq!(snap_frame(&doc, &on(), ChannelMask::ALL, 2.0, &[], 5003), 5003);
     assert_eq!(snap_frame(&doc, &zero, ChannelMask::ALL, 2.0, &[], 5003), 5000);
@@ -166,4 +166,60 @@ fn channel_toggles_pick_the_channels_edits_and_snapping_act_on() {
     // The Up / Down keys still work with the toggles.
     e.run(ActionId::LeftChannel, 0..0).unwrap();
     assert_eq!(e.enabled_flags(), "10");
+}
+
+fn with_markers(doc: &DocState, list: &[(u64, u64)]) -> DocState {
+    let mut m = wavcraft_core::Markers::new();
+    for &(a, b) in list {
+        m = m.with_added(a..b, None).unwrap();
+    }
+    doc.with_markers(std::sync::Arc::new(m))
+}
+
+#[test]
+fn frames_snap_to_point_markers_and_range_edges_when_asked() {
+    let t = TempDir::new("markers");
+    let doc = with_markers(&doc_from(&t.0, &flip_stereo()), &[(7_300, 7_300), (12_000, 16_000)]);
+    // 100 frames a pixel: 8 px reach is 800 frames; the ruler's ticks are 24,000 frames apart, far away.
+    assert_eq!(snap_frame(&doc, &on(), ChannelMask::ALL, 100.0, &[], 7_000), 7_300, "a point marker");
+    assert_eq!(snap_frame(&doc, &on(), ChannelMask::ALL, 100.0, &[], 11_500), 12_000, "a range's start");
+    assert_eq!(snap_frame(&doc, &on(), ChannelMask::ALL, 100.0, &[], 16_600), 16_000, "a range's end");
+    assert_eq!(snap_frame(&doc, &on(), ChannelMask::ALL, 100.0, &[], 14_000), 14_000, "inside a range, away from its edges");
+    assert_eq!(snap_frame(&doc, &on(), ChannelMask::ALL, 100.0, &[], 9_000), 9_000, "nothing near");
+    let off = SnapSettings { markers: false, ..on() };
+    assert_eq!(snap_frame(&doc, &off, ChannelMask::ALL, 100.0, &[], 7_000), 7_000, "marker snapping off");
+    let master_off = SnapSettings { enabled: false, ..on() };
+    assert_eq!(snap_frame(&doc, &master_off, ChannelMask::ALL, 100.0, &[], 7_000), 7_000, "master switch off");
+    // The nearest of a marker and a listed target wins.
+    assert_eq!(snap_frame(&doc, &on(), ChannelMask::ALL, 100.0, &[7_050], 7_000), 7_050);
+}
+
+#[test]
+fn the_markers_toggle_flips_the_flag_and_the_editor_snaps_with_it() {
+    let t = TempDir::new("markers-toggle");
+    let mut e = editor(&t.0, &flip_stereo());
+    assert_eq!(by_name("view.snap.markers.toggle").map(|a| a.id), Some(ActionId::SnapMarkersToggle));
+    e.run(ActionId::MarkerAdd, 7_300..7_300).unwrap();
+    assert!(e.snap.markers, "marker snapping starts on");
+    assert_eq!(e.snap(7_000, 100.0, &[]), 7_300);
+    e.run(ActionId::SnapMarkersToggle, 0..0).unwrap();
+    assert!(!e.snap.markers);
+    assert_eq!(e.snap(7_000, 100.0, &[]), 7_000);
+    // A marker added later and undone is gone from the targets (markers live in the document state).
+    e.run(ActionId::SnapMarkersToggle, 0..0).unwrap();
+    e.history.undo();
+    assert_eq!(e.snap(7_000, 100.0, &[]), 7_000);
+}
+
+/// A131, unchanged and unverified against Audition: on stereo an edge lands where the sum of the
+/// active channels changes sign. Here no single channel crosses at 3000; only their mix does.
+#[test]
+fn stereo_zero_crossing_rule_is_the_sum_of_the_active_channels() {
+    use wavcraft_core::actions::{Toward, zero_crossing};
+    let t = TempDir::new("zero-sum");
+    let left: Vec<f32> = (0..8_000).map(|k| if k < 3000 { 0.5 } else { 0.2 }).collect();
+    let doc = doc_from(&t.0, &[left, vec![-0.3; 8_000]]);
+    assert_eq!(zero_crossing(&doc, ChannelMask::ALL, 2_900, Toward::Right, 480).unwrap(), Some(3000));
+    assert_eq!(zero_crossing(&doc, ChannelMask::only(0), 2_900, Toward::Right, 480).unwrap(), None);
+    assert_eq!(zero_crossing(&doc, ChannelMask::only(1), 2_900, Toward::Right, 480).unwrap(), None);
 }
