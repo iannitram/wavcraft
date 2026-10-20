@@ -48,13 +48,21 @@ pub fn monitor_at(mons: &[Monitor], p: [f32; 2]) -> Option<&Monitor> {
 }
 
 /// A window rectangle moved (and, if it is bigger than the monitor, shrunk) until it lies wholly
-/// inside the monitor. Returns (position, size), rounded to whole points.
+/// inside the monitor. Returns (position, size) in whole points that never stick out of the
+/// monitor, whatever the monitor's size: fractional, tiny or zero sizes shrink the rectangle (to
+/// nothing at worst) and never panic. Non-finite inputs count as zero.
 pub fn clamp_into(pos: [f32; 2], size: [f32; 2], m: &Monitor) -> ([f32; 2], [f32; 2]) {
+    let fin = |v: f32| if v.is_finite() { v } else { 0.0 };
     let mut p = [0.0; 2];
     let mut s = [0.0; 2];
     for i in 0..2 {
-        s[i] = size[i].min(m.size[i]).round();
-        p[i] = pos[i].clamp(m.pos[i], m.pos[i] + m.size[i] - s[i]).round();
+        let (mp, ms) = (fin(m.pos[i]), fin(m.size[i]).max(0.0));
+        let (lo, end) = (mp.ceil(), mp + ms);
+        // Whole points that fit between the first whole point and the far edge.
+        let room = (end - lo).floor().max(0.0);
+        s[i] = fin(size[i]).max(0.0).floor().min(room);
+        let hi = (end - s[i]).floor().max(lo);
+        p[i] = fin(pos[i]).max(lo).min(hi);
     }
     (p, s)
 }
@@ -98,5 +106,32 @@ mod tests {
         assert_eq!(clamp_into([100.0, 100.0], [320.0, 260.0], m), ([100.0, 100.0], [320.0, 260.0]));
         let off = Monitor { name: "o".into(), pos: [-1000.0, 200.0], size: [800.0, 600.0] };
         assert_eq!(clamp_into([0.0, 0.0], [320.0, 260.0], &off), ([-520.0, 200.0], [320.0, 260.0]));
+    }
+
+    #[test]
+    fn clamping_survives_fractional_tiny_and_zero_monitors() {
+        let mk = |x: f32, y: f32, w: f32, h: f32| Monitor { name: "f".into(), pos: [x, y], size: [w, h] };
+        let inside = |p: [f32; 2], s: [f32; 2], m: &Monitor| (0..2).all(|i| p[i] >= m.pos[i] && p[i] + s[i] <= m.pos[i] + m.size[i] && s[i] >= 0.0);
+        // Fractional size: rounding the window up used to make min > max in `clamp` (panic).
+        let m = mk(0.0, 0.0, 100.5, 50.5);
+        assert_eq!(clamp_into([90.0, 40.0], [200.0, 200.0], &m), ([0.0, 0.0], [100.0, 50.0]));
+        // Fractional origin.
+        let m = mk(10.5, -3.25, 100.5, 50.5);
+        let (p, s) = clamp_into([0.0, 0.0], [300.0, 300.0], &m);
+        assert!(inside(p, s, &m), "{p:?} {s:?}");
+        // Monitor smaller than the window.
+        let m = mk(0.0, 0.0, 3.0, 2.0);
+        assert_eq!(clamp_into([50.0, 50.0], [320.0, 260.0], &m), ([0.0, 0.0], [3.0, 2.0]));
+        // Smaller than one point, and zero.
+        for (w, h) in [(0.4, 0.9), (0.0, 0.0), (-5.0, 3.0)] {
+            let m = mk(5.5, 7.5, w, h);
+            let (p, s) = clamp_into([1.0, 1.0], [320.0, 260.0], &m);
+            assert_eq!(s, [0.0, if h > 1.0 { 2.0 } else { 0.0 }]);
+            assert!(p.iter().all(|v| v.is_finite()));
+        }
+        // Non-finite input.
+        let m = mk(0.0, 0.0, f32::NAN, 10.0);
+        let (p, s) = clamp_into([f32::NAN, 1.0], [f32::INFINITY, 4.0], &m);
+        assert_eq!((p, s), ([0.0, 1.0], [0.0, 4.0]));
     }
 }
