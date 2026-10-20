@@ -10,6 +10,7 @@
 
 mod app;
 mod control;
+mod oscb;
 mod player;
 mod selflog;
 mod spectrum;
