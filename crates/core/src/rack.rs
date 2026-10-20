@@ -69,6 +69,12 @@ impl RackConfig {
     pub fn set_slot(&mut self, slot: usize, effect: &str, params: Option<Vec<f64>>) -> Result<(), String> {
         let n = self.slots.len();
         let s = self.slots.get_mut(slot).ok_or_else(|| format!("slot {} does not exist (the rack has {n})", slot + 1))?;
+        if crate::vst3::is_vst3(effect) {
+            // A hosted plugin (f128): found by the last scan; no settings of its own yet.
+            let f = crate::vst3::resolve(effect)?;
+            *s = SlotConfig { effect: Some(format!("{}{}", crate::vst3::PREFIX, f.name)), params: Vec::new(), enabled: true };
+            return Ok(());
+        }
         let Some(e) = effects::find(effect) else { return Err(format!("no effect named {effect:?}")) };
         let params = params.unwrap_or_else(|| effects::Params::defaults(e));
         effects::validate(e, &params)?;
@@ -187,6 +193,10 @@ impl RackProcessor {
         let mut streams = Vec::new();
         if config.power {
             for s in config.active_slots() {
+                if let Some(spec) = s.effect.as_deref().filter(|e| crate::vst3::is_vst3(e)) {
+                    streams.push(crate::vst3::open_stream(spec, channels, rate)?);
+                    continue;
+                }
                 let Some(e) = s.effect.as_deref().and_then(effects::find) else { continue };
                 streams.push(effects::open_stream(e, &s.params, channels, rate)?);
             }

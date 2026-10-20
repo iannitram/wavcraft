@@ -401,6 +401,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "com-scrape-types"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ce183b975b8fc736a20919c4002717255fbd867df575c792aeefa9a56a73ad0"
+
+[[package]]
 name = "combine"
 version = "4.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2711,6 +2717,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-dsp"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "log",
+ "rustfft",
+ "serde",
+]
+
+[[package]]
+name = "soundcraft-vst3-host"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "libloading",
+ "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "serde",
+ "soundcraft-dsp",
+ "thiserror 2.0.21",
+ "vst3",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "spirv"
 version = "0.4.0+sdk-1.4.341.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3183,6 +3216,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vst3"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31e3fe7a6f028ded8c5a9984cf283319e6dc63572c9b71da1d4ee9d71d3b6bf"
+dependencies = [
+ "com-scrape-types",
+]
+
+[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3294,6 +3336,8 @@ dependencies = [
  "rustfft",
  "rustix 1.1.5",
  "soundcraft-audio-io",
+ "soundcraft-dsp",
+ "soundcraft-vst3-host",
  "symphonia",
  "sysinfo",
 ]

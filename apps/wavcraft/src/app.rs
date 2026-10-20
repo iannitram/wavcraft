@@ -908,6 +908,8 @@ impl WaveApp {
                 Err(e) => format!("ERR {e}"),
             },
             "RACK" => self.rack.command(rest),
+            // VST3 hosting (f128): `VST3 scan` (background), `VST3 list`.
+            "VST3" => self.rack.vst3_command(rest),
             // `PRESET save|load|delete|list <effect|rack> [name]`.
             "PRESET" => self.rack.preset(rest, &mut self.effect_dialog),
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {

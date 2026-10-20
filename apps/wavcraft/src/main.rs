@@ -22,6 +22,20 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
+    // Scan worker (f128): report one VST3 bundle on standard output and exit; no window, no log.
+    {
+        let mut raw = std::env::args_os().skip(1);
+        if raw.next().is_some_and(|a| a == wavcraft_core::vst3::WORKER_FLAG) {
+            if let Some(bundle) = raw.next() {
+                use std::io::Write;
+                let text = wavcraft_core::vst3::worker_lines(std::path::Path::new(&bundle));
+                let mut out = std::io::stdout();
+                let _ = out.write_all(text.as_bytes());
+                let _ = out.flush();
+            }
+            std::process::exit(0);
+        }
+    }
     let Args { file, session_dir } = parse_args(std::env::args_os().skip(1));
     selflog::install();
     let mut options = eframe::NativeOptions {
