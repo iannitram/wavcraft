@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 soundcraft-audio-io.workspace = true
+soundcraft-time.workspace = true
 rustfft.workspace = true
 rayon.workspace = true
 symphonia.workspace = true

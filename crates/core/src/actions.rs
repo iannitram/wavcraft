@@ -47,6 +47,8 @@ pub enum ActionId {
     TimeCompact,
     TimeSamples,
     TimeSmpte30,
+    TimeBarsBeats,
+    EditTempo,
 }
 
 /// Which part of the program carries an action out.
@@ -169,6 +171,8 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeCompact, "view.time_display.compact", "Compact", &[]),
     window(ActionId::TimeSamples, "view.time_display.samples", "Samples", &[]),
     window(ActionId::TimeSmpte30, "view.time_display.smpte30", "SMPTE 30 fps", &[]),
+    window(ActionId::TimeBarsBeats, "view.time_display.bars_beats", "Bars and Beats", &[]),
+    window(ActionId::EditTempo, "view.editTempo", "Edit Tempo…", &[]),
 ];
 
 /// The table row for `id`.
@@ -296,7 +300,12 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
-            ActionId::TimeDecimal | ActionId::TimeCompact | ActionId::TimeSamples | ActionId::TimeSmpte30 => true,
+            ActionId::TimeDecimal
+            | ActionId::TimeCompact
+            | ActionId::TimeSamples
+            | ActionId::TimeSmpte30
+            | ActionId::TimeBarsBeats
+            | ActionId::EditTempo => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -469,6 +478,8 @@ impl Editor {
             | ActionId::TimeCompact
             | ActionId::TimeSamples
             | ActionId::TimeSmpte30
+            | ActionId::TimeBarsBeats
+            | ActionId::EditTempo
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast

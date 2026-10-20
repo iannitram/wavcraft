@@ -13,7 +13,7 @@ use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport};
+use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport, tempo::Tempo};
 
 use crate::control;
 use crate::player::Player;
@@ -109,6 +109,10 @@ pub struct WaveApp {
     confirm_clear_history: bool,
     /// View › Time Display (kept in the settings file).
     time_format: TimeFormat,
+    /// The open document's tempo and time signature (Bars and Beats).
+    tempo: Tempo,
+    /// Edit Tempo… dialog: the tempo and the time signature as typed.
+    tempo_dialog: Option<(String, String)>,
     /// View › Time panel / Selection/View panel.
     show_time_panel: bool,
     show_sel_view_panel: bool,
@@ -152,6 +156,8 @@ impl WaveApp {
             error: sessions.warning.clone(),
             notice: None,
             time_format: settings.time_display,
+            tempo: Tempo::default(),
+            tempo_dialog: None,
             sessions,
             settings,
             settings_path,
@@ -227,6 +233,7 @@ impl WaveApp {
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
+                self.tempo = self.settings.tempo_for(&self.doc_path);
                 self.doc_id += 1;
                 self.rebuilding = None;
                 self.doc = Some(doc);
@@ -294,9 +301,23 @@ impl WaveApp {
         }
     }
 
+    /// Keep `tempo` for the open document (View › Edit Tempo…, `PREF set tempo`), in the settings.
+    fn set_tempo(&mut self, tempo: Tempo) {
+        self.tempo = tempo;
+        if self.doc_path.as_os_str().is_empty() {
+            return;
+        }
+        self.settings.set_tempo_for(&self.doc_path, tempo);
+        if let Some(file) = &self.settings_path
+            && let Err(e) = self.settings.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not save the tempo to {}: {e}", file.display());
+        }
+    }
+
     /// `frame` in the chosen time format at the open file's rate.
     fn fmt_time(&self, frame: usize) -> String {
-        self.time_format.format(frame, self.doc.as_ref().map_or(0, |d| d.sample_rate()))
+        self.time_format.format_with(frame, self.doc.as_ref().map_or(0, |d| d.sample_rate()), &self.tempo)
     }
 
     fn toggle_play(&mut self) {
@@ -359,13 +380,14 @@ impl WaveApp {
             ActionId::TimeCompact => Some(TimeFormat::Compact),
             ActionId::TimeSamples => Some(TimeFormat::Samples),
             ActionId::TimeSmpte30 => Some(TimeFormat::Smpte30),
+            ActionId::TimeBarsBeats => Some(TimeFormat::BarsBeats),
             _ => None,
         };
         if let Some(fmt) = fmt {
             self.set_time_format(fmt);
             return Ok(false);
         }
-        if frames == 0 && id != ActionId::InsertSilence {
+        if frames == 0 && !matches!(id, ActionId::InsertSilence | ActionId::EditTempo) {
             return Err("no file is open".to_string());
         }
         let width = self.editor_width.max(1.0);
@@ -389,6 +411,7 @@ impl WaveApp {
                 let start = self.selection.start().min(playhead);
                 self.selection = Selection { anchor: start, head: playhead };
             }
+            ActionId::EditTempo => self.tempo_dialog = Some((self.tempo.bpm_text(), self.tempo.meter_text())),
             ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
             // Repeat Last Command with its dialog: Insert Silence opens its dialog with the last
             // length; the other repeatable commands have no dialog and simply run again.
@@ -407,6 +430,45 @@ impl WaveApp {
             _ => return Err(format!("{} is not available now", actions::action(id).menu)),
         }
         Ok(false)
+    }
+
+    /// View › Edit Tempo…: the tempo and time signature Bars and Beats counts by, kept for this file.
+    fn tempo_dialog(&mut self, ctx: &egui::Context) {
+        let Some((bpm, meter)) = self.tempo_dialog.as_mut() else { return };
+        let mut choice = None;
+        egui::Window::new("Edit Tempo").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Tempo (beats a minute):");
+                ui.text_edit_singleline(bpm);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Time signature (e.g. 4/4):");
+                let r = ui.text_edit_singleline(meter);
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    choice = Some(true);
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("OK").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        match choice {
+            Some(true) => {
+                let Some((bpm, meter)) = self.tempo_dialog.take() else { return };
+                let parsed = bpm.trim().parse::<f64>().ok().zip(Tempo::parse_meter(&meter)).and_then(|(b, (n, d))| Tempo::new(b, n, d));
+                match parsed {
+                    Some(t) => self.set_tempo(t),
+                    None => self.error = Some("Edit Tempo: a tempo from 20 to 400 and a time signature such as 4/4 or 6/8".to_string()),
+                }
+            }
+            Some(false) => self.tempo_dialog = None,
+            None => {}
+        }
     }
 
     /// Insert › Silence…: a length in seconds, inserted at the cursor on every channel.
@@ -475,7 +537,7 @@ impl WaveApp {
     /// Window › Time panel: the playhead (or, stopped, the cursor) as a large readout.
     fn time_panel(&mut self, ui: &mut egui::Ui) {
         let frame = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
-        let text = if self.doc.is_some() { self.fmt_time(frame) } else { self.time_format.format(0, 0) };
+        let text = if self.doc.is_some() { self.fmt_time(frame) } else { self.time_format.format_with(0, 0, &self.tempo) };
         ui.horizontal(|ui| {
             ui.label("Time");
             ui.label(egui::RichText::new(text).monospace().size(34.0));
@@ -532,7 +594,7 @@ impl WaveApp {
         let editing = matches!(&self.panel_edit, Some((n, _)) if *n == name);
         let mut text = match (&self.panel_edit, editing) {
             (Some((_, t)), true) => t.clone(),
-            _ => self.time_format.format(value, rate),
+            _ => self.time_format.format_with(value, rate, &self.tempo),
         };
         let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(120.0).font(egui::TextStyle::Monospace));
         if r.changed() || (r.has_focus() && !editing) {
@@ -546,8 +608,10 @@ impl WaveApp {
         if escaped || rate == 0 {
             return None;
         }
-        match self.time_format.parse(&text, rate) {
-            Some(frame) if self.time_format.format(frame, rate) != self.time_format.format(value, rate) => Some(frame),
+        match self.time_format.parse_with(&text, rate, &self.tempo) {
+            Some(frame) if self.time_format.format_with(frame, rate, &self.tempo) != self.time_format.format_with(value, rate, &self.tempo) => {
+                Some(frame)
+            }
             Some(_) => None,
             None => {
                 self.error = Some(format!("\"{text}\" is not a time in the {} format", self.time_format.menu()));
@@ -732,6 +796,7 @@ impl WaveApp {
             Ok(()) => {
                 self.saved = Some(state);
                 self.doc_path = path.clone();
+                self.set_tempo(self.tempo);
                 if let Some(doc) = self.doc.as_mut() {
                     doc.path = path.clone();
                 }
@@ -805,7 +870,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} time_display={} selection_text={} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} time_display={} tempo={} meter={} selection_text={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -814,16 +879,43 @@ impl WaveApp {
                             e.history.cursor(),
                             u8::from(busy),
                             self.time_format.name(),
+                            self.tempo.bpm_text(),
+                            self.tempo.meter_text(),
                             self.selection_text(),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 time_display={} selection_text=- undo=- redo=-",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 time_display={} tempo={} meter={} selection_text=- undo=- redo=-",
                         u8::from(busy),
-                        self.time_format.name()
+                        self.time_format.name(),
+                        self.tempo.bpm_text(),
+                        self.tempo.meter_text()
                     ),
+                }
+            }
+            // PREF set tempo <bpm> | PREF set meter <n/d> | PREF get tempo | PREF get meter
+            "PREF" => {
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                match words.as_slice() {
+                    ["set", "tempo", v] => match v.parse::<f64>().ok().and_then(|b| Tempo::new(b, self.tempo.numerator, self.tempo.denominator)) {
+                        Some(t) => {
+                            self.set_tempo(t);
+                            format!("OK tempo={}", t.bpm_text())
+                        }
+                        None => "ERR PREF set tempo <bpm>, 20 to 400".to_string(),
+                    },
+                    ["set", "meter", v] => match Tempo::parse_meter(v).and_then(|(n, d)| Tempo::new(self.tempo.bpm, n, d)) {
+                        Some(t) => {
+                            self.set_tempo(t);
+                            format!("OK meter={}", t.meter_text())
+                        }
+                        None => "ERR PREF set meter <n/d>, such as 3/4".to_string(),
+                    },
+                    ["get", "tempo"] => format!("OK tempo={}", self.tempo.bpm_text()),
+                    ["get", "meter"] => format!("OK meter={}", self.tempo.meter_text()),
+                    _ => "ERR PREF set|get tempo|meter [value]".to_string(),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -843,8 +935,8 @@ impl WaveApp {
             }
             "SELECT_TIME" => {
                 let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
-                let fmt = self.time_format;
-                let mut it = rest.split_whitespace().map(|t| fmt.parse(t, rate));
+                let (fmt, tempo) = (self.time_format, self.tempo);
+                let mut it = rest.split_whitespace().map(|t| fmt.parse_with(t, rate, &tempo));
                 match (it.next(), it.next(), it.next()) {
                     (Some(Some(a)), Some(Some(b)), None) => {
                         let len = self.editor.as_ref().map_or(0, |e| e.history.current().len_frames() as usize);
@@ -1120,7 +1212,7 @@ impl WaveApp {
         let (start, end) = (self.view.start, self.view.end(width));
         let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
-        draw_ruler(&painter, ruler, &self.view, rate, self.time_format);
+        draw_ruler(&painter, ruler, &self.view, rate, self.time_format, &self.tempo);
 
         let (wave_area, spectrum_area) = match (self.show_waveform, self.show_spectrum) {
             (true, true) => {
@@ -1264,6 +1356,7 @@ impl eframe::App for WaveApp {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
         self.insert_silence_dialog(&ctx);
+        self.tempo_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
     }
@@ -1301,10 +1394,10 @@ fn lane(area: Rect, ch: usize, channels: usize) -> Rect {
 }
 
 /// Tick marks and times along the top, at a round step that leaves room for the labels.
-fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, fmt: TimeFormat) {
+fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, fmt: TimeFormat, tempo: &Tempo) {
     painter.rect_filled(rect, 0.0, Color32::from_gray(32));
     let seconds_per_px = view.frames_per_px / f64::from(rate.max(1));
-    let step = ruler_step_for(fmt, seconds_per_px * 110.0, rate);
+    let step = ruler_step_for(fmt, seconds_per_px * 110.0, rate, tempo);
     let first = (view.start / f64::from(rate.max(1)) / step).floor() as i64;
     for k in first..first + 200 {
         let t = k as f64 * step;
@@ -1319,7 +1412,7 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, f
         painter.text(
             pos2(x + 3.0, rect.top() + 3.0),
             egui::Align2::LEFT_TOP,
-            fmt.format_tick(t, rate),
+            fmt.format_tick_with(t, rate, tempo),
             egui::FontId::monospace(11.0),
             Color32::from_gray(190),
         );
@@ -1328,8 +1421,15 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, f
 
 /// The ruler's tick spacing in seconds for `fmt`: round numbers of the format's own unit (samples
 /// in powers 1-2-5, SMPTE frames below a second), else of seconds.
-fn ruler_step_for(fmt: TimeFormat, min_seconds: f64, rate: u32) -> f64 {
+fn ruler_step_for(fmt: TimeFormat, min_seconds: f64, rate: u32, tempo: &Tempo) -> f64 {
     match fmt {
+        TimeFormat::BarsBeats => {
+            // Sixty-fourths of a beat up to a beat, then 1, 2, 4, 8 ... bars.
+            let (beat, bar) = (tempo.beat_seconds(), tempo.bar_seconds());
+            let mut candidates: Vec<f64> = [64.0, 32.0, 16.0, 8.0, 4.0, 2.0, 1.0].iter().map(|d| beat / d).collect();
+            candidates.extend((0..20).map(|k| bar * f64::from(1u32 << k)));
+            candidates.into_iter().find(|s| *s >= min_seconds).unwrap_or(bar * 1_048_576.0)
+        }
         TimeFormat::Samples => {
             let min_frames = (min_seconds * f64::from(rate.max(1))).max(1.0);
             let mut decade = 1.0f64;
@@ -1390,11 +1490,11 @@ mod tests {
 
     #[test]
     fn ruler_steps_follow_the_time_format() {
-        assert_eq!(ruler_step_for(TimeFormat::Decimal, 0.7, 48_000), 1.0);
-        assert!((ruler_step_for(TimeFormat::Samples, 0.0011, 48_000) - 100.0 / 48_000.0).abs() < 1e-12, "100 samples");
-        assert!((ruler_step_for(TimeFormat::Smpte30, 0.02, 48_000) - 1.0 / 30.0).abs() < 1e-12, "one frame");
-        assert!((ruler_step_for(TimeFormat::Smpte30, 0.2, 48_000) - 10.0 / 30.0).abs() < 1e-12);
-        assert_eq!(ruler_step_for(TimeFormat::Smpte30, 3.0, 48_000), 5.0);
+        assert_eq!(ruler_step_for(TimeFormat::Decimal, 0.7, 48_000, &Tempo::default()), 1.0);
+        assert!((ruler_step_for(TimeFormat::Samples, 0.0011, 48_000, &Tempo::default()) - 100.0 / 48_000.0).abs() < 1e-12, "100 samples");
+        assert!((ruler_step_for(TimeFormat::Smpte30, 0.02, 48_000, &Tempo::default()) - 1.0 / 30.0).abs() < 1e-12, "one frame");
+        assert!((ruler_step_for(TimeFormat::Smpte30, 0.2, 48_000, &Tempo::default()) - 10.0 / 30.0).abs() < 1e-12);
+        assert_eq!(ruler_step_for(TimeFormat::Smpte30, 3.0, 48_000, &Tempo::default()), 5.0);
     }
 
     #[test]

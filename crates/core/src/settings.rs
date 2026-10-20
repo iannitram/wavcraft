@@ -22,14 +22,17 @@ pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the 
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_TIME_DISPLAY: &str = "time_display";
+const KEY_TEMPO: &str = "tempo";
 
 /// What the settings file holds.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
     /// View › Time Display.
     pub time_display: crate::view::TimeFormat,
+    /// Tempo and time signature per document, keyed by the document's path (Bars and Beats).
+    pub tempos: std::collections::BTreeMap<String, crate::tempo::Tempo>,
 }
 
 impl Settings {
@@ -65,10 +68,32 @@ impl Settings {
             match key.trim() {
                 KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
                 KEY_TIME_DISPLAY => s.time_display = crate::view::TimeFormat::from_name(value).unwrap_or_default(),
+                KEY_TEMPO => {
+                    // `tempo = <bpm> <n>/<d> <document path>`
+                    let mut it = value.splitn(3, char::is_whitespace);
+                    let (bpm, meter, path) = (it.next(), it.next(), it.next().map(str::trim));
+                    if let (Some(bpm), Some(meter), Some(path)) = (bpm, meter, path)
+                        && let (Ok(bpm), Some((n, d))) = (bpm.parse::<f64>(), crate::tempo::Tempo::parse_meter(meter))
+                        && let Some(t) = crate::tempo::Tempo::new(bpm, n, d)
+                        && !path.is_empty()
+                    {
+                        s.tempos.insert(path.to_string(), t);
+                    }
+                }
                 _ => {}
             }
         }
         s
+    }
+
+    /// The tempo kept for the document at `path` (the default, 120 bpm in 4/4, when none).
+    pub fn tempo_for(&self, path: &Path) -> crate::tempo::Tempo {
+        self.tempos.get(path.to_string_lossy().as_ref()).copied().unwrap_or_default()
+    }
+
+    /// Keep `tempo` for the document at `path`.
+    pub fn set_tempo_for(&mut self, path: &Path, tempo: crate::tempo::Tempo) {
+        self.tempos.insert(path.to_string_lossy().into_owned(), tempo);
     }
 
     /// The file's text for these settings.
@@ -77,8 +102,12 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
-        out.push_str("# time_display: decimal, compact, samples or smpte30 (View > Time Display).\n");
+        out.push_str("# time_display: decimal, compact, samples or smpte30, bars_beats (View > Time Display).\n");
         out.push_str(&format!("{KEY_TIME_DISPLAY} = {}\n", self.time_display.name()));
+        out.push_str("# tempo: beats a minute, time signature and document, one line per document (Bars and Beats).\n");
+        for (path, t) in &self.tempos {
+            out.push_str(&format!("{KEY_TEMPO} = {} {} {path}\n", t.bpm_text(), t.meter_text()));
+        }
         out
     }
 
@@ -175,5 +204,31 @@ pub fn resolve_session_folder(
             log::warn!("{warning}");
             SessionFolder { path: default, source: FolderSource::Default, warning: Some(warning) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tempo_tests {
+    use super::*;
+    use crate::tempo::Tempo;
+
+    #[test]
+    fn a_documents_tempo_is_saved_and_read_back() {
+        let mut s = Settings::default();
+        let doc = Path::new("/tmp/some folder/a song.wav");
+        assert_eq!(s.tempo_for(doc), Tempo::default());
+        s.set_tempo_for(doc, Tempo::new(93.5, 3, 4).unwrap());
+        s.time_display = crate::view::TimeFormat::BarsBeats;
+        let back = Settings::parse(&s.to_text());
+        assert_eq!(back, s);
+        assert_eq!(back.tempo_for(doc), Tempo::new(93.5, 3, 4).unwrap());
+        assert_eq!(back.tempo_for(Path::new("/tmp/other.wav")), Tempo::default());
+    }
+
+    #[test]
+    fn a_bad_tempo_line_is_ignored() {
+        let s = Settings::parse("tempo = 5 4/4 /a.wav\ntempo = 120 4/3 /b.wav\ntempo = abc 4/4 /c.wav\ntempo = 120 4/4\ntempo = 100 6/8 /d.wav\n");
+        assert_eq!(s.tempos.len(), 1);
+        assert_eq!(s.tempo_for(Path::new("/d.wav")), Tempo::new(100.0, 6, 8).unwrap());
     }
 }

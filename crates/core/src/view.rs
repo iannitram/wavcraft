@@ -1,5 +1,7 @@
 //! Zoom and scroll arithmetic, selections and time formatting. All positions are in frames.
 
+use crate::tempo::Tempo;
+
 /// The closest zoom: one frame spread over this many pixels.
 const MAX_PX_PER_FRAME: f64 = 16.0;
 
@@ -165,13 +167,15 @@ pub enum TimeFormat {
     Samples,
     /// `hh:mm:ss:ff` at 30 frames a second.
     Smpte30,
+    /// `bar:beat.tick` at the document's tempo and time signature ([`Tempo`]). Roadmap A101.
+    BarsBeats,
 }
 
 /// SMPTE frames per second (the only rate so far).
 pub const SMPTE_FPS: u64 = 30;
 
 impl TimeFormat {
-    pub const ALL: [TimeFormat; 4] = [TimeFormat::Decimal, TimeFormat::Compact, TimeFormat::Samples, TimeFormat::Smpte30];
+    pub const ALL: [TimeFormat; 5] = [TimeFormat::Decimal, TimeFormat::Compact, TimeFormat::Samples, TimeFormat::Smpte30, TimeFormat::BarsBeats];
 
     /// The name used in the settings file, the control channel and action names.
     pub fn name(self) -> &'static str {
@@ -180,6 +184,7 @@ impl TimeFormat {
             TimeFormat::Compact => "compact",
             TimeFormat::Samples => "samples",
             TimeFormat::Smpte30 => "smpte30",
+            TimeFormat::BarsBeats => "bars_beats",
         }
     }
 
@@ -190,6 +195,7 @@ impl TimeFormat {
             TimeFormat::Compact => "Compact",
             TimeFormat::Samples => "Samples",
             TimeFormat::Smpte30 => "SMPTE 30 fps",
+            TimeFormat::BarsBeats => "Bars and Beats",
         }
     }
 
@@ -199,7 +205,13 @@ impl TimeFormat {
 
     /// `frame` at `sample_rate` in this format.
     pub fn format(self, frame: usize, sample_rate: u32) -> String {
+        self.format_with(frame, sample_rate, &Tempo::default())
+    }
+
+    /// [`format`](Self::format) with the document's tempo for Bars and Beats.
+    pub fn format_with(self, frame: usize, sample_rate: u32, tempo: &Tempo) -> String {
         match self {
+            TimeFormat::BarsBeats => tempo.format(frame, sample_rate),
             TimeFormat::Decimal => format_time(frame, sample_rate),
             TimeFormat::Compact => compact(frame, sample_rate),
             TimeFormat::Samples => frame.to_string(),
@@ -216,8 +228,14 @@ impl TimeFormat {
 
     /// A ruler tick at `seconds`, exact for that format (a tick is not rounded through a frame).
     pub fn format_tick(self, seconds: f64, sample_rate: u32) -> String {
+        self.format_tick_with(seconds, sample_rate, &Tempo::default())
+    }
+
+    /// [`format_tick`](Self::format_tick) with the document's tempo for Bars and Beats.
+    pub fn format_tick_with(self, seconds: f64, sample_rate: u32, tempo: &Tempo) -> String {
         let seconds = seconds.max(0.0);
         match self {
+            TimeFormat::BarsBeats => tempo.format_tick(seconds, sample_rate),
             TimeFormat::Decimal => format_time((seconds * 1000.0).round() as usize, 1000),
             TimeFormat::Compact => compact((seconds * 1000.0).round() as usize, 1000),
             TimeFormat::Samples => ((seconds * f64::from(sample_rate)).round() as usize).to_string(),
@@ -230,12 +248,18 @@ impl TimeFormat {
     /// same as `f`. Decimal and Compact take `[h:]m:ss[.fff]` or plain seconds (`12.5`); SMPTE
     /// takes `[[hh:]mm:]ss:ff` (`;` also separates the frames).
     pub fn parse(self, text: &str, sample_rate: u32) -> Option<usize> {
+        self.parse_with(text, sample_rate, &Tempo::default())
+    }
+
+    /// [`parse`](Self::parse) with the document's tempo for Bars and Beats (`bar:beat.tick`).
+    pub fn parse_with(self, text: &str, sample_rate: u32, tempo: &Tempo) -> Option<usize> {
         let text = text.trim();
         let rate = u64::from(sample_rate);
         if text.is_empty() || rate == 0 {
             return None;
         }
         let frames = match self {
+            TimeFormat::BarsBeats => return tempo.parse(text, sample_rate),
             TimeFormat::Samples => text.replace([',', '_'], "").parse::<u64>().ok()?,
             TimeFormat::Decimal | TimeFormat::Compact => {
                 let (whole, frac) = match text.split_once('.') {
