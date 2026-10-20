@@ -6,8 +6,9 @@
 //! the binding is matched, never Adobe's text. `cmd` is Command on a Mac and Ctrl elsewhere.
 
 use std::ops::Range;
+use std::sync::atomic::AtomicBool;
 
-use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, PasteAt};
+use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, MixOptions, PasteAt};
 use crate::doc::history::History;
 
 /// An action's id, as the menu, the keys and the control channel name it.
@@ -381,6 +382,30 @@ impl Editor {
         let label = edit.label.clone();
         self.history.push_edit(edit);
         Ok(Outcome { doc_changed: changed, selection: at..at + frames, message: changed.then_some(label) })
+    }
+
+    /// Edit › Mix Paste at `at`: `source` is the audio to mix in (a file opened as a clip), or
+    /// the clipboard when `None`. The pasted stretch ends up selected. This and
+    /// [`Editor::clipboard_clip`] are the only places Mix Paste touches the clipboard.
+    pub fn mix_paste(&mut self, at: u64, source: Option<Clip>, opts: &MixOptions, cancel: &AtomicBool) -> Result<Outcome, EditError> {
+        let doc = self.history.current().clone();
+        let at = at.min(doc.len_frames());
+        let Some(clip) = source.or_else(|| self.clipboard_clip()) else {
+            return Ok(Outcome { doc_changed: false, selection: at..at, message: Some("Mix Paste: the clipboard is empty".to_string()) });
+        };
+        let channels = self.channels.within(doc.channel_count());
+        let pasted = edit::mix_paste_frames(&doc, at, &clip, channels, opts);
+        let e = edit::mix_paste(&doc, at, &clip, channels, opts, cancel)?;
+        let changed = !e.is_noop();
+        let label = e.label.clone();
+        self.history.push_edit(e);
+        let new_len = self.len();
+        Ok(Outcome { doc_changed: changed, selection: at.min(new_len)..(at + pasted).min(new_len), message: changed.then_some(label) })
+    }
+
+    /// The clipboard's audio (the one place its content is read).
+    fn clipboard_clip(&self) -> Option<Clip> {
+        self.clipboard.clone()
     }
 
     /// Run `id` on `selection`. A disabled action does nothing and says why.
