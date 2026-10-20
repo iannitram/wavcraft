@@ -726,6 +726,16 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
+            // f102: the open document as a SoundCraft clip source, read back in bounded chunks.
+            "SCSOURCE" if rest.trim() == "test" => match &self.editor {
+                Some(e) => match wavcraft_core::sc_source::session_with_document(e.history.current(), "document")
+                    .and_then(|(session, _)| wavcraft_core::sc_source::read_checksum(&session))
+                {
+                    Ok((frames, sum)) => format!("OK frames={frames} checksum={sum:016x}"),
+                    Err(e) => format!("ERR {e}"),
+                },
+                None => "ERR no document is open".to_string(),
+            },
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
