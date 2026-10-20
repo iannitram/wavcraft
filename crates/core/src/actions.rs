@@ -47,6 +47,9 @@ pub enum ActionId {
     ZoomToSelection,
     ZoomOutFull,
     ToolTimeSelection,
+    ZoomAmpIn,
+    ZoomAmpOut,
+    ZoomAmpReset,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -113,6 +116,9 @@ const fn cmd_shift(key: &'static str) -> Shortcut {
 }
 const fn cmd_alt(key: &'static str) -> Shortcut {
     Shortcut { cmd: true, shift: false, alt: true, key }
+}
+const fn alt(key: &'static str) -> Shortcut {
+    Shortcut { cmd: false, shift: false, alt: true, key }
 }
 const fn shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: false, shift: true, alt: false, key }
@@ -238,6 +244,9 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeSmpte30, "view.time_display.smpte30", "SMPTE 30 fps", &[]),
     // Audition's single-key tool switch; Move and the spectral tools join when they exist.
     window(ActionId::ToolTimeSelection, "tool.time_selection", "Time Selection Tool", &[key("T")]),
+    window(ActionId::ZoomAmpIn, "view.zoom.ampIn", "Zoom In Vertically", &[alt("Equals")]),
+    window(ActionId::ZoomAmpOut, "view.zoom.ampOut", "Zoom Out Vertically", &[alt("Minus")]),
+    window(ActionId::ZoomAmpReset, "view.zoom.ampReset", "Reset Vertical Zoom", &[]),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -277,6 +286,14 @@ pub fn action(id: ActionId) -> &'static Action {
 
 /// The action the control channel calls `name` (table rows only; see [`id_by_name`]).
 pub fn by_name(name: &str) -> Option<&'static Action> {
+    // The zoom actions also answer to a `view.zoom.*` name (the zoom panel's buttons).
+    let name = match name {
+        "view.zoom.in" => "view.zoomIn",
+        "view.zoom.out" => "view.zoomOut",
+        "view.zoom.selection" => "view.zoomToSelection",
+        "view.zoom.full" => "view.zoomOutFull",
+        n => n,
+    };
     all_actions().find(|a| a.name == name)
 }
 
@@ -474,7 +491,14 @@ impl Editor {
             ActionId::MarkerDelete => !self.history.current().markers().touched(selection).is_empty(),
             ActionId::MarkerToRange => has_sel && !self.history.current().markers().touched_kind(selection, true).is_empty(),
             ActionId::MarkerToPoint => !self.history.current().markers().touched_kind(selection, false).is_empty(),
-            ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
+            ActionId::SetIn
+            | ActionId::SetOut
+            | ActionId::ZoomIn
+            | ActionId::ZoomOut
+            | ActionId::ZoomOutFull
+            | ActionId::ZoomAmpIn
+            | ActionId::ZoomAmpOut
+            | ActionId::ZoomAmpReset => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
@@ -816,6 +840,9 @@ impl Editor {
             | ActionId::TimeSamples
             | ActionId::TimeSmpte30
             | ActionId::ToolTimeSelection
+            | ActionId::ZoomAmpIn
+            | ActionId::ZoomAmpOut
+            | ActionId::ZoomAmpReset
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::ConvertSampleType

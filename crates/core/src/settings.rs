@@ -24,6 +24,7 @@ const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
 const KEY_TIME_DISPLAY: &str = "time_display";
 const KEY_RIGHT_CLICK: &str = "right_click";
+const KEY_AMP_SCALE: &str = "amp_scale";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -37,6 +38,8 @@ pub struct Settings {
     /// Right-click in the waveform opens a context menu instead of extending the selection to
     /// the click (Audition's preference; off is its default).
     pub right_click_menu: bool,
+    /// How the amplitude ruler labels its scale.
+    pub amp_scale: crate::view::AmpScale,
 }
 
 impl Settings {
@@ -76,6 +79,11 @@ impl Settings {
                 KEY_RIGHT_CLICK => s.right_click_menu = value.eq_ignore_ascii_case("menu"),
                 _ => {}
             }
+            if key.trim() == KEY_SESSION_FOLDER {
+                s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            } else if key.trim() == KEY_AMP_SCALE {
+                s.amp_scale = crate::view::AmpScale::parse(value).unwrap_or_default();
+            }
         }
         s
     }
@@ -92,6 +100,8 @@ impl Settings {
         out.push_str(&format!("{KEY_TIME_DISPLAY} = {}\n", self.time_display.name()));
         out.push_str("# right_click: `extend` moves the nearest selection edge to the click, `menu` opens a context menu.\n");
         out.push_str(&format!("{KEY_RIGHT_CLICK} = {}\n", if self.right_click_menu { "menu" } else { "extend" }));
+        out.push_str("# amp_scale: the amplitude ruler's scale: db, percent, samples or normalized.\n");
+        out.push_str(&format!("{KEY_AMP_SCALE} = {}\n", self.amp_scale.name()));
         out
     }
 
