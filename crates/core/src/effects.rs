@@ -231,7 +231,7 @@ pub fn apply(
     let ctx = RunContext { doc, range: range.clone(), channels: channels.active(doc.channel_count()), sample_rate: doc.sample_rate() };
     let mut run = effect.begin(params, &ctx).map_err(EditError::Io)?;
     edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, input, output| match run.as_mut() {
-        Some(run) => run.process(range.start + at, input, output),
-        None => effect.process(params, range.start + at, input, output),
+        Some(run) => run.process(at, input, output),
+        None => effect.process(params, at, input, output),
     })
 }

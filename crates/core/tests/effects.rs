@@ -167,3 +167,44 @@ fn an_empty_document_is_refused_by_enabled() {
     let e = editor(&tmp.0, &[vec![], vec![]]);
     assert!(!e.enabled(invert(), &(0..0)));
 }
+
+/// Test-only effect: each output sample is its absolute frame number in the document.
+struct FrameIndex;
+
+impl effects::Effect for FrameIndex {
+    fn id(&self) -> &'static str {
+        "frame_index"
+    }
+    fn name(&self) -> &'static str {
+        "Frame Index"
+    }
+    fn process(&self, _params: &[f64], first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> std::io::Result<()> {
+        for (i, o) in input.iter().zip(output.iter_mut()) {
+            for (k, (_, b)) in i.iter().zip(o.iter_mut()).enumerate() {
+                *b = (first_frame + k as u64) as f32;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn first_frame_is_the_absolute_frame_for_a_selection_not_at_zero() {
+    let tmp = TempDir::new("firstframe");
+    let frames = BLOCK_FRAMES * 3 + 500;
+    let e = editor(&tmp.0, &stereo(frames));
+    let range = 1234..(frames as u64 - 77);
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let edit =
+        effects::apply(&FrameIndex, &[], e.history.current(), range.clone(), wavcraft_core::ChannelMask::ALL, Crossfades::NONE, &cancel).unwrap();
+    let doc = &edit.state;
+    for c in 0..2 {
+        let mut v = vec![f32::NAN; frames];
+        assert_eq!(doc.read(c, 0, &mut v).unwrap(), frames);
+        for f in 0..frames as u64 {
+            if range.contains(&f) {
+                assert_eq!(v[f as usize], f as f32, "channel {c} frame {f}");
+            }
+        }
+    }
+}
