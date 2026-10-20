@@ -70,25 +70,13 @@ fn now(e: &Editor) -> Vec<Vec<f32>> {
 
 #[test]
 fn t1_every_action_has_unique_keys_and_a_unique_name() {
-    let mut keys = HashSet::new();
     let mut names = HashSet::new();
     for a in TABLE {
         assert!(names.insert(a.name), "name {} twice", a.name);
         assert_eq!(by_name(a.name).map(|b| b.id), Some(a.id));
         assert_eq!(action(a.id).name, a.name);
-        for k in a.keys {
-            assert!(keys.insert(*k), "{k:?} bound twice");
-        }
     }
-    // Audition's keys for the common ones (task 07's table).
-    let text = |id| action(id).keys.iter().map(|k| k.text(false)).collect::<Vec<_>>();
-    assert_eq!(text(ActionId::Undo), ["Ctrl+Z"]);
-    assert_eq!(text(ActionId::Redo), ["Ctrl+Shift+Z", "Ctrl+Y"]);
-    assert_eq!(text(ActionId::Delete), ["Delete", "Backspace"]);
-    assert_eq!(text(ActionId::Crop), ["Ctrl+T"]);
-    assert_eq!(text(ActionId::ClearTimeSelection), ["G"]);
-    assert!(action(ActionId::Silence).keys.is_empty(), "Audition has no key for Silence");
-    assert_eq!(action(ActionId::Undo).keys[0].text(true), "⌘Z");
+    // The keys are in `shortcuts` now, one test each (tests/shortcuts.rs).
 }
 
 #[test]
@@ -249,12 +237,6 @@ fn window_actions_are_left_to_the_window() {
         assert!(!out.doc_changed && out.selection == (5..9), "{id:?}: the editor leaves it alone");
     }
     assert_eq!(e.history.steps().len(), 1);
-    // Audition's keys for them.
-    let text = |id| action(id).keys.iter().map(|k| k.text(false)).collect::<Vec<_>>();
-    assert_eq!(text(ActionId::ZoomToSelection), ["Shift+S"]);
-    assert_eq!(text(ActionId::ZoomOutFull), ["Ctrl+\\"]);
-    assert_eq!(text(ActionId::SetIn), ["I"]);
-    assert_eq!(text(ActionId::ZoomIn), ["="]);
 }
 
 /// A 1 kHz sine at 48 kHz (48 frames a cycle), phase-shifted so no sample is exactly 0.
@@ -385,12 +367,6 @@ fn repeat_last_command_runs_silence_again_on_the_new_selection_but_never_delete(
     assert_eq!(e.history.undo_label(), Some("Silence"));
     // Repeat follows the repeated command's enabled rule: Silence needs a selection.
     assert!(!e.enabled(ActionId::RepeatLast, &(3..3)));
-    // Its keys: F3 and Shift+R; with the dialog F2 and Ctrl+R.
-    let text = |id| action(id).keys.iter().map(|k| k.text(false)).collect::<Vec<_>>();
-    assert_eq!(text(ActionId::RepeatLast), ["F3", "Shift+R"]);
-    assert_eq!(text(ActionId::RepeatLastDialog), ["F2", "Ctrl+R"]);
-    assert_eq!(text(ActionId::ZeroInward), ["Shift+I"]);
-    assert_eq!(text(ActionId::ZeroRightToRight), ["Shift+L"]);
     assert_eq!(by_name("edit.zeroCrossings.outward").map(|a| a.id), Some(ActionId::ZeroOutward));
 }
 
@@ -405,7 +381,7 @@ fn markers(e: &Editor) -> Vec<(u64, u64)> {
 fn m1_add_marker_is_a_point_at_the_cursor_or_a_range_for_a_selection_and_undo_redo_restore_it() {
     let t = TempDir::new("markers");
     let mut e = editor(&t.0, &stereo(1000));
-    assert_eq!(action(ActionId::MarkerAdd).keys[0].text(false), "M");
+    assert_eq!(wavcraft_core::shortcuts::Keymap::new().menu_text(wavcraft_core::shortcuts::Command::Action(ActionId::MarkerAdd), false), "M");
     let steps = e.history.steps().len();
     let out = e.run(ActionId::MarkerAdd, 100..100).unwrap();
     assert!(!out.doc_changed, "the audio is untouched");
@@ -672,8 +648,11 @@ fn f19_zoom_actions_answer_to_their_panel_names_and_amplitude_zoom_has_alt_keys(
     assert_eq!(by_name("view.zoom.selection").map(|a| a.id), Some(ActionId::ZoomToSelection));
     assert_eq!(by_name("view.zoom.full").map(|a| a.id), Some(ActionId::ZoomOutFull));
     let amp_in = by_name("view.zoom.ampIn").unwrap();
-    assert_eq!((amp_in.keys[0].alt, amp_in.keys[0].key), (true, "Equals"));
+    let first = |id| wavcraft_core::shortcuts::Keymap::new().chords(wavcraft_core::shortcuts::Command::Action(id)).next().unwrap();
+    let k = first(amp_in.id);
+    assert_eq!((k.alt, k.key), (true, "Equals"));
     let amp_out = by_name("view.zoom.ampOut").unwrap();
-    assert_eq!((amp_out.keys[0].alt, amp_out.keys[0].key), (true, "Minus"));
+    let k = first(amp_out.id);
+    assert_eq!((k.alt, k.key), (true, "Minus"));
     assert_eq!(by_name("view.zoom.ampReset").map(|a| a.id), Some(ActionId::ZoomAmpReset));
 }

@@ -15,6 +15,7 @@ use wavcraft_core::io::OpenOptions;
 use wavcraft_core::panels::{self, DockSide, Layout, PanelSet};
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
+use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::snap::ruler_step;
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
@@ -326,6 +327,8 @@ pub struct WaveApp {
     rec: Recording,
     /// The Effects Rack panel and its settings (f31).
     rack: RackPanel,
+    /// The keyboard shortcuts in use (the defaults; the user's key file will override them).
+    keymap: Keymap,
 }
 
 impl WaveApp {
@@ -346,6 +349,10 @@ impl WaveApp {
             let ctx = cc.egui_ctx.clone();
             Recovery::new(roots, move || ctx.request_repaint())
         };
+        let keymap = Keymap::new();
+        if let Err(e) = keymap.check() {
+            log::error!(target: "wavcraft", "keyboard shortcuts conflict: {e}");
+        }
         let mut app = WaveApp {
             doc: None,
             generation: 0,
@@ -419,6 +426,7 @@ impl WaveApp {
             meters: MetersUi::new(),
             rec: Recording::default(),
             rack: RackPanel::new(),
+            keymap,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -1688,6 +1696,23 @@ impl WaveApp {
 
     fn selection_range(&self) -> Range<u64> {
         self.selection.start() as u64..self.selection.end() as u64
+    }
+
+    /// Run what a shortcut is bound to (a key press or the control channel's `KEY`). Returns
+    /// whether the document changed.
+    fn run_command(&mut self, command: Command, ctx: &egui::Context) -> Result<bool, String> {
+        match command {
+            Command::Action(id) => self.run_action(id, ctx),
+            Command::Save | Command::SaveAs => self.save(ctx, command == Command::SaveAs, None, false).map(|()| false),
+            Command::PlayStop => {
+                self.toggle_play();
+                Ok(false)
+            }
+            Command::Open => {
+                self.pick_file(ctx);
+                Ok(false)
+            }
+        }
     }
 
     /// Run an action from the table on the open file (menu, key or control channel). Returns
@@ -2978,6 +3003,16 @@ impl WaveApp {
                 Some(p) => format!("OK frames={} channels={} rate={}", p.frames, p.density.len(), p.sample_rate),
                 None => "OK none".to_string(),
             },
+            // Press a shortcut: `KEY Ctrl+Z` runs what the table binds it to, as the key would.
+            // (Open is refused: it would wait for a file dialog nobody can answer.)
+            "KEY" => match self.keymap.resolve_text(rest) {
+                Ok(Command::Open) => "ERR file.open opens a dialog: use OPEN <path>".to_string(),
+                Ok(command) => match self.run_command(command, ctx) {
+                    Ok(changed) => format!("OK command={} selection={} changed={}", command.name(), sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+                Err(e) => format!("ERR {e}"),
+            },
             // Minimise or restore the window (scripted checks of hidden-window behaviour).
             "WINDOW" => match rest {
                 "minimize" => {
@@ -3397,7 +3432,7 @@ impl WaveApp {
             }
             let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
             let enabled = enabled && self.saving.is_none() && self.converting.is_none();
-            let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
+            let keys = self.keymap.menu_text(Command::Action(a.id), mac);
             if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
                 chosen = Some(a.id);
             }
@@ -3405,7 +3440,7 @@ impl WaveApp {
         ui.separator();
         for a in TABLE.iter().filter(|a| a.name.starts_with("marker.")) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
-            let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
+            let keys = self.keymap.menu_text(Command::Action(a.id), mac);
             if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
                 chosen = Some(a.id);
             }
@@ -3432,7 +3467,7 @@ impl WaveApp {
             // Capture Noise Print belongs with Noise Reduction: it learns what that effect removes.
             let a = actions::action(ActionId::CaptureNoisePrint);
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
-            let keys = a.keys.first().map(|k| k.text(cfg!(target_os = "macos"))).unwrap_or_default();
+            let keys = self.keymap.menu_text(Command::Action(a.id), cfg!(target_os = "macos"));
             if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
                 chosen = Some((a.id, false));
             }
@@ -3473,7 +3508,8 @@ impl WaveApp {
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("Open…  Ctrl+O").clicked() {
+                let open = format!("Open…  {}", self.keymap.menu_text(Command::Open, cfg!(target_os = "macos")));
+                if ui.button(open).clicked() {
                     self.pick_file(ui.ctx());
                 }
                 ui.menu_button("New", |ui| {
@@ -3484,7 +3520,7 @@ impl WaveApp {
                 });
                 let mac = cfg!(target_os = "macos");
                 let has_doc = self.editor.is_some() && self.saving.is_none();
-                let (save, save_as) = if mac { ("⌘S", "⇧⌘S") } else { ("Ctrl+S", "Ctrl+Shift+S") };
+                let (save, save_as) = (self.keymap.menu_text(Command::Save, mac), self.keymap.menu_text(Command::SaveAs, mac));
                 if ui.add_enabled(has_doc, egui::Button::new("Save").shortcut_text(save)).clicked()
                     && let Err(e) = self.save(ui.ctx(), false, None, false)
                 {
@@ -3557,7 +3593,7 @@ impl WaveApp {
                 let mut chosen = None;
                 for a in TABLE.iter().filter(|a| a.name.starts_with("view.") && !a.name.starts_with("view.time_display.")) {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
-                    let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
+                    let keys = self.keymap.menu_text(Command::Action(a.id), mac);
                     let label = self.editor.as_ref().map_or_else(|| a.menu.to_string(), |e| e.label(a.id));
                     if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
                         chosen = Some(a.id);
@@ -4266,8 +4302,14 @@ impl eframe::App for WaveApp {
         if close && let Some(id) = self.hover {
             self.close_panel(id);
         }
-        for id in pressed_actions(&ctx) {
-            let _ = self.run_action(id, &ctx);
+        for command in pressed_commands(&ctx, &self.keymap) {
+            if let Err(e) = self.run_command(command, &ctx) {
+                // A key that can't act now (no file open, a save running) is not an error to show,
+                // except a failed save, which the old key handler reported.
+                if matches!(command, Command::Save | Command::SaveAs) {
+                    self.error = Some(e);
+                }
+            }
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Comma)) {
             self.open_preferences();
@@ -4316,6 +4358,7 @@ impl eframe::App for WaveApp {
         if open {
             self.pick_file(&ctx);
         }
+        let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()));
         if let Some(path) = dropped {
             self.open(path, &ctx);
         } else if dropped_without_path {
@@ -4456,33 +4499,39 @@ fn move_settings_aside(path: &std::path::Path) -> String {
     }
 }
 
-/// The actions whose keys were pressed this frame. Keys with more modifiers are taken first, so
-/// Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
-fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
-    let mut keys: Vec<(ActionId, actions::Shortcut)> = TABLE.iter().flat_map(|a| a.keys.iter().map(move |k| (a.id, *k))).collect();
-    keys.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
+/// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
+/// so Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
+fn pressed_commands(ctx: &egui::Context, keymap: &Keymap) -> Vec<Command> {
+    // Open, Save, Save As and Play/Stop are read by the window's own handlers below (they also
+    // know about recording, the drop target and text fields), so the keymap's rows for them only
+    // serve the menus and `KEY`.
+    let mut rows: Vec<(Command, Shortcut)> = keymap
+        .bindings()
+        .iter()
+        .filter(|b| !matches!(b.command, Command::Open | Command::Save | Command::SaveAs | Command::PlayStop))
+        .map(|b| (b.command, b.chord))
+        .collect();
+    rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
-        // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
-        let mut pressed: Vec<ActionId> = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
-            .into_iter()
-            .enumerate()
-            .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(ActionId::ToggleChannel(n as u8)))
-            .collect();
-        pressed.extend(keys.iter().filter_map(|(id, k)| {
-            let key = Key::from_name(k.key)?;
-            let mut mods = egui::Modifiers::NONE;
-            if k.cmd {
-                mods |= egui::Modifiers::COMMAND;
-            }
-            if k.shift {
-                mods |= egui::Modifiers::SHIFT;
-            }
-            if k.alt {
-                mods |= egui::Modifiers::ALT;
-            }
-            i.consume_key(mods, key).then_some(*id)
-        }));
-        pressed
+        rows.iter()
+            .filter_map(|(command, k)| {
+                let key = Key::from_name(k.key)?;
+                let mut mods = egui::Modifiers::NONE;
+                if k.cmd {
+                    mods |= egui::Modifiers::COMMAND;
+                }
+                if k.shift {
+                    mods |= egui::Modifiers::SHIFT;
+                }
+                if k.alt {
+                    mods |= egui::Modifiers::ALT;
+                }
+                // Play/Stop must not toggle again on auto-repeat during a long press.
+                let fresh = *command != Command::PlayStop
+                    || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
+                (i.consume_key(mods, key) && fresh).then_some(*command)
+            })
+            .collect()
     })
 }
 

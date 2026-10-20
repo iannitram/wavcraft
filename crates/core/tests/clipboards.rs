@@ -88,7 +88,11 @@ fn a152_five_clipboards_hold_their_own_clips_and_survive_switching() {
 fn a152_the_actions_are_in_the_table_with_ctrl_1_to_5() {
     for n in 1..=5 {
         let a = by_name(&format!("edit.clipboard.{n}")).unwrap();
-        assert_eq!(action(a.id).keys.iter().map(|k| k.text(false)).collect::<Vec<_>>(), [format!("Ctrl+{n}")]);
+        let chords = wavcraft_core::shortcuts::Keymap::new()
+            .chords(wavcraft_core::shortcuts::Command::Action(a.id))
+            .map(|k| k.text(false))
+            .collect::<Vec<_>>();
+        assert_eq!(chords, [format!("Ctrl+{n}")]);
     }
     assert_eq!(TABLE.iter().filter(|a| a.name.starts_with("edit.clipboard.")).count(), 5);
 }

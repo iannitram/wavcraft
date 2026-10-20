@@ -212,8 +212,9 @@ fn noise_reduction_lowers_the_noise_floor_by_the_set_amount_and_keeps_the_tone()
     let mut e = editor(&tmp.0, std::slice::from_ref(&x));
     // The print comes from the first 2 s (noise only), through the action.
     let a = by_name("nr.capture_print").unwrap();
-    assert_eq!(a.keys[0].key, "P");
-    assert!(a.keys[0].shift);
+    let chord = wavcraft_core::shortcuts::Keymap::new().chords(wavcraft_core::shortcuts::Command::Action(a.id)).next().unwrap();
+    assert_eq!(chord.key, "P");
+    assert!(chord.shift);
     let out = e.run(a.id, 0..2 * RATE as u64).unwrap();
     assert!(!out.doc_changed);
     assert!(out.message.unwrap().contains("Noise print captured"));

@@ -39,6 +39,7 @@ pub mod random;
 pub mod record;
 pub mod save;
 pub mod settings;
+pub mod shortcuts;
 pub mod snap;
 pub mod space;
 pub mod spectrogram;

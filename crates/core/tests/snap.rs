@@ -104,7 +104,13 @@ fn editor(dir: &Path, data: &[Vec<f32>]) -> Editor {
 fn snap_and_channel_actions_have_names_and_keys() {
     assert_eq!(by_name("view.snap.toggle").map(|a| a.id), Some(ActionId::SnapToggle));
     assert_eq!(by_name("view.snap.zero.toggle").map(|a| a.id), Some(ActionId::SnapZeroToggle));
-    assert_eq!(action(ActionId::SnapToggle).keys.iter().map(|k| k.text(false)).collect::<Vec<_>>(), ["S"]);
+    assert_eq!(
+        wavcraft_core::shortcuts::Keymap::new()
+            .chords(wavcraft_core::shortcuts::Command::Action(ActionId::SnapToggle))
+            .map(|k| k.text(false))
+            .collect::<Vec<_>>(),
+        ["S"]
+    );
     assert_eq!(id_by_name("channel.toggle.1"), Some(ActionId::ToggleChannel(1)));
     assert_eq!(id_by_name("channel.toggle.64"), None);
     assert_eq!(id_by_name("channel.toggle.x"), None);
