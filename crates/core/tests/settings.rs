@@ -102,3 +102,23 @@ fn the_time_display_is_saved_and_read_back() {
     }
     assert_eq!(Settings::parse("time_display = nonsense\n").time_display, TimeFormat::Decimal);
 }
+
+#[test]
+fn the_custom_frame_rate_is_saved_and_read_back() {
+    use wavcraft_core::TimeFormat;
+    let t = TempDir::new("custom-fps");
+    let file = t.0.join("settings.txt");
+    assert_eq!(Settings::load(&file).custom_fps, 48, "the default");
+    for n in [2u16, 7, 48, 999, 1000] {
+        Settings { time_display: TimeFormat::Custom(n), custom_fps: n, ..Settings::default() }.save(&file).unwrap();
+        let back = Settings::load(&file);
+        assert_eq!((back.custom_fps, back.time_display), (n, TimeFormat::Custom(n)));
+    }
+    // Out of range or unreadable: the earlier value stays.
+    for bad in ["1", "0", "1001", "-5", "abc", "", "24.5", "99999999999"] {
+        assert_eq!(Settings::parse(&format!("custom_fps = {bad}\n")).custom_fps, 48, "{bad:?}");
+    }
+    assert_eq!(Settings::parse("custom_fps = 120\ntime_display = custom\n").time_display, TimeFormat::Custom(120), "either line order");
+    assert_eq!(Settings::parse("time_display = custom\ncustom_fps = 120\n").time_display, TimeFormat::Custom(120));
+    assert_eq!(Settings::parse("time_display = cd75\n").time_display, TimeFormat::Cd75);
+}

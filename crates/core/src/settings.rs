@@ -22,14 +22,23 @@ pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the 
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_TIME_DISPLAY: &str = "time_display";
+const KEY_CUSTOM_FPS: &str = "custom_fps";
 
 /// What the settings file holds.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
     /// View › Time Display.
     pub time_display: crate::view::TimeFormat,
+    /// The frame rate of the custom time format, 2 to 1000 (A102).
+    pub custom_fps: u16,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { session_folder: None, time_display: crate::view::TimeFormat::default(), custom_fps: crate::smpte::CUSTOM_DEFAULT_FPS }
+    }
 }
 
 impl Settings {
@@ -65,8 +74,17 @@ impl Settings {
             match key.trim() {
                 KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
                 KEY_TIME_DISPLAY => s.time_display = crate::view::TimeFormat::from_name(value).unwrap_or_default(),
+                KEY_CUSTOM_FPS => {
+                    if let Some(r) = value.parse::<u32>().ok().and_then(crate::smpte::SmpteRate::custom) {
+                        s.custom_fps = r.nominal() as u16;
+                    }
+                }
                 _ => {}
             }
+        }
+        // The custom format carries the rate the file names, wherever the lines came.
+        if let crate::view::TimeFormat::Custom(_) = s.time_display {
+            s.time_display = crate::view::TimeFormat::Custom(s.custom_fps);
         }
         s
     }
@@ -77,8 +95,10 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
-        out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30 or smpte_5994 (View > Time Display).\n");
+        out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994, custom or cd75 (View > Time Display).\n");
         out.push_str(&format!("{KEY_TIME_DISPLAY} = {}\n", self.time_display.name()));
+        out.push_str("# custom_fps: frames a second of the custom time display, 2 to 1000.\n");
+        out.push_str(&format!("{KEY_CUSTOM_FPS} = {}\n", self.custom_fps));
         out
     }
 

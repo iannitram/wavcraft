@@ -52,6 +52,8 @@ pub enum ActionId {
     TimeSmpte2997Ndf,
     TimeSmpte30,
     TimeSmpte5994,
+    TimeCustom,
+    TimeCd75,
     SnapFrames,
 }
 
@@ -180,6 +182,8 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeSmpte2997Ndf, "view.time_display.smpte_2997ndf", "SMPTE 29.97 fps non-drop", &[]),
     window(ActionId::TimeSmpte30, "view.time_display.smpte_30", "SMPTE 30 fps", &[]),
     window(ActionId::TimeSmpte5994, "view.time_display.smpte_5994", "SMPTE 59.94 fps", &[]),
+    window(ActionId::TimeCustom, "view.time_display.custom", "Custom frame rate…", &[]),
+    window(ActionId::TimeCd75, "view.time_display.cd75", "Compact Disc (mm:ss:ff, 75 fps)", &[]),
     window(ActionId::SnapFrames, "view.snap_frames.toggle", "Snap to Frames", &[]),
 ];
 
@@ -317,6 +321,8 @@ impl Editor {
             | ActionId::TimeSmpte2997Ndf
             | ActionId::TimeSmpte30
             | ActionId::TimeSmpte5994
+            | ActionId::TimeCustom
+            | ActionId::TimeCd75
             | ActionId::SnapFrames => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
@@ -495,6 +501,8 @@ impl Editor {
             | ActionId::TimeSmpte2997Ndf
             | ActionId::TimeSmpte30
             | ActionId::TimeSmpte5994
+            | ActionId::TimeCustom
+            | ActionId::TimeCd75
             | ActionId::SnapFrames
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog

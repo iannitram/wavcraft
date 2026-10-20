@@ -1,6 +1,6 @@
 //! Zoom and scroll arithmetic, selections and time formatting. All positions are in frames.
 
-use crate::smpte::SmpteRate;
+use crate::smpte::{CUSTOM_DEFAULT_FPS, SmpteRate};
 
 /// The closest zoom: one frame spread over this many pixels.
 const MAX_PX_PER_FRAME: f64 = 16.0;
@@ -177,10 +177,15 @@ pub enum TimeFormat {
     Smpte30,
     /// SMPTE at 59.94 frames a second.
     Smpte5994,
+    /// `hh:mm:ss:ff` at a whole rate the user sets, 2 to 1000 frames a second (A102).
+    Custom(u16),
+    /// Compact Disc `mm:ss:ff` at 75 frames a second (A103).
+    Cd75,
 }
 
 impl TimeFormat {
-    pub const ALL: [TimeFormat; 9] = [
+    /// Every format once; `Custom` carries the default rate (the settings file keeps the user's).
+    pub const ALL: [TimeFormat; 11] = [
         TimeFormat::Decimal,
         TimeFormat::Compact,
         TimeFormat::Samples,
@@ -190,6 +195,8 @@ impl TimeFormat {
         TimeFormat::Smpte2997Ndf,
         TimeFormat::Smpte30,
         TimeFormat::Smpte5994,
+        TimeFormat::Custom(CUSTOM_DEFAULT_FPS),
+        TimeFormat::Cd75,
     ];
 
     /// The SMPTE rate, for the SMPTE formats.
@@ -201,6 +208,8 @@ impl TimeFormat {
             TimeFormat::Smpte2997Ndf => Some(SmpteRate::Fps2997Ndf),
             TimeFormat::Smpte30 => Some(SmpteRate::Fps30),
             TimeFormat::Smpte5994 => Some(SmpteRate::Fps5994),
+            TimeFormat::Custom(n) => Some(SmpteRate::Custom(n)),
+            TimeFormat::Cd75 => Some(SmpteRate::Cd75),
             _ => None,
         }
     }
@@ -224,6 +233,8 @@ impl TimeFormat {
             TimeFormat::Smpte2997Ndf => "smpte_2997ndf",
             TimeFormat::Smpte30 => "smpte_30",
             TimeFormat::Smpte5994 => "smpte_5994",
+            TimeFormat::Custom(_) => "custom",
+            TimeFormat::Cd75 => "cd75",
         }
     }
 
@@ -239,6 +250,16 @@ impl TimeFormat {
             TimeFormat::Smpte2997Ndf => "SMPTE 29.97 fps non-drop",
             TimeFormat::Smpte30 => "SMPTE 30 fps",
             TimeFormat::Smpte5994 => "SMPTE 59.94 fps",
+            TimeFormat::Custom(_) => "Custom frame rate…",
+            TimeFormat::Cd75 => "Compact Disc (mm:ss:ff, 75 fps)",
+        }
+    }
+
+    /// The menu text with the rate a custom format is set to.
+    pub fn menu_with_rate(self) -> String {
+        match self {
+            TimeFormat::Custom(n) => format!("Custom frame rate ({n} fps)…"),
+            other => other.menu().to_string(),
         }
     }
 
@@ -412,6 +433,25 @@ mod tests {
         assert_eq!(TimeFormat::Smpte25.snap_to_frame(2900, r, 1_000_000), 3840);
         assert_eq!(TimeFormat::Decimal.snap_to_frame(2900, r, 1_000_000), 2900, "only SMPTE has frames");
         assert_eq!(TimeFormat::from_name("smpte30"), Some(TimeFormat::Smpte30), "the old settings spelling");
+    }
+
+    #[test]
+    fn custom_and_cd_formats_read_snap_and_name_themselves() {
+        let r = 44_100;
+        let c = TimeFormat::Custom(1000);
+        assert_eq!(c.format(r as usize, r), "00:00:01:000");
+        assert_eq!(c.parse("00:00:00:999", r).map(|f| c.format(f, r)), Some("00:00:00:999".into()));
+        assert_eq!(c.parse("00:00:00:1000", r), None);
+        let two = TimeFormat::Custom(2);
+        assert_eq!(two.parse("00:00:01:01", r), Some(r as usize * 3 / 2));
+        assert_eq!(two.parse("00:00:00:02", r), None);
+        assert_eq!(TimeFormat::Cd75.format(588 * 75 * 61 + 5, r), "01:01:00");
+        assert_eq!(TimeFormat::Cd75.format_tick(61.0, r), "01:01:00");
+        assert_eq!(TimeFormat::Cd75.snap_to_frame(300, r, 10_000), 588);
+        assert_eq!(TimeFormat::Custom(75).snap_to_frame(300, r, 10_000), 588, "75 fps custom is the CD grid");
+        assert_eq!(TimeFormat::from_name("custom"), Some(TimeFormat::Custom(48)));
+        assert_eq!(TimeFormat::from_name("cd75"), Some(TimeFormat::Cd75));
+        assert_eq!(TimeFormat::Custom(30).menu_with_rate(), "Custom frame rate (30 fps)…");
     }
 
     #[test]
