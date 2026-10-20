@@ -1,4 +1,4 @@
-//! Automatic Phase Correction (z13.15): lines up two channels recorded with a time offset.
+//! Automatic Phase Correction (B076): lines up two channels recorded with a time offset.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
