@@ -11,6 +11,10 @@
 //! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `KEY <chord>` (`Ctrl+Z`, `Cmd+Shift+Z`, `Space`, `F3`; Ctrl and Cmd mean the same) → `OK command=<name> selection=<a>-<b> changed=<0|1>`
 //!   (runs what the shortcut table binds the chord to, as the key would; `ERR` when none)
+//! - `SHORTCUTS` → `OK <command>=<chord>[|<chord>]…` for every command (`-` when it has none)
+//! - `SHORTCUT set <command> <chord> [reassign]` → `OK …`, or `ERR conflict: <chord> is already <command>`
+//!   (with `reassign` the chord is taken from that command); `SHORTCUT clear <command>`;
+//!   `SHORTCUT reset` (the defaults). Each saves the user's key file.
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)

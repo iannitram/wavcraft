@@ -12,6 +12,7 @@ mod app;
 mod control;
 mod player;
 mod selflog;
+mod shortcut_editor;
 mod spectrum;
 #[cfg(windows)]
 mod win_acl;
