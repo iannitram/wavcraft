@@ -99,6 +99,6 @@ fn a_run_keeps_its_state_across_chunks() {
 fn the_new_param_kinds_describe_themselves() {
     let f = ParamDesc::frequency("freq", "Frequency", 20.0, 20_000.0, 1000.0);
     assert_eq!((f.kind, f.unit), (ParamKind::Frequency, "Hz"));
-    let q = ParamDesc::number("q", "Q", 0.1, 20.0, 0.7);
+    let q = ParamDesc::number("q", "Q", 0.1, 20.0, 0.7, "");
     assert_eq!((q.kind, q.unit), (ParamKind::Number, ""));
 }
