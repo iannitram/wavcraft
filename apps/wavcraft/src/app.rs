@@ -327,6 +327,8 @@ impl WaveApp {
         log::info!(target: "wavcraft", "recovery: discarded the session in {} at the owner's request", dir.display());
         self.recovery.remove(index);
         Ok(())
+    }
+
     /// Insert › Audio from File…: pick a file, then [`insert_file`](Self::insert_file).
     fn pick_insert_file(&mut self, ctx: &egui::Context) -> Result<(), String> {
         if self.editor.is_none() {
