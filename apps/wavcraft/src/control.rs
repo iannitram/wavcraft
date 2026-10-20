@@ -5,10 +5,10 @@
 //! by `WAVCRAFT_CONTROL_TOKEN_FILE` (made owner-only with a CSPRNG token when missing; an
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
-//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> unsaved=<0|1> snap=<0|1> snapzero=<0|1> enabled=<one 0|1 per channel> undo=<label> redo=<label>`
+//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> unsaved=<0|1> snap=<0|1> snapzero=<0|1> snaprc=<0|1> snaprf=<0|1> snapedges=<0|1> enabled=<one 0|1 per channel> undo=<label> redo=<label>`
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
-//! - `ACTION <name>` (an action table name, `edit.delete`; `view.snap.toggle`, `view.snap.zero.toggle`, `channel.toggle.<n>` with n from 0) → `OK selection=<a>-<b> changed=<0|1>`
+//! - `ACTION <name>` (an action table name, `edit.delete`; `view.snap.toggle`, `view.snap.zero.toggle`, `view.snap.ruler_coarse.toggle`, `view.snap.ruler_fine.toggle`, `view.snap.edges.toggle`, `channel.toggle.<n>` with n from 0) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `SNAP <frame> [frames_per_px]` → `OK frame=<snapped>` (the snap step selection gestures call, with the selection's edges as targets)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)

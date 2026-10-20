@@ -15,18 +15,36 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::snap::SnapSettings;
+
 /// The environment variable that sets the session folder (over the settings file).
 pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 /// How a person changes the session folder, for messages.
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_SNAP: &str = "snap";
+const KEY_SNAP_ZERO: &str = "snap_zero_crossings";
+const KEY_SNAP_COARSE: &str = "snap_ruler_coarse";
+const KEY_SNAP_FINE: &str = "snap_ruler_fine";
+const KEY_SNAP_EDGES: &str = "snap_edges";
+
+/// A switch's value: 1/0, on/off, true/false, yes/no. Anything else is no value (the default stays).
+fn parse_flag(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "on" | "true" | "yes" => Some(true),
+        "0" | "off" | "false" | "no" => Some(false),
+        _ => None,
+    }
+}
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// Which things snapping pulls to, and whether it is on (f49; it lasts from run to run).
+    pub snap: SnapSettings,
 }
 
 impl Settings {
@@ -59,8 +77,18 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
-            if key.trim() == KEY_SESSION_FOLDER {
+            let key = key.trim();
+            if key == KEY_SESSION_FOLDER {
                 s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            } else if let Some(on) = parse_flag(value) {
+                match key {
+                    KEY_SNAP => s.snap.enabled = on,
+                    KEY_SNAP_ZERO => s.snap.zero_crossings = on,
+                    KEY_SNAP_COARSE => s.snap.ruler_coarse = on,
+                    KEY_SNAP_FINE => s.snap.ruler_fine = on,
+                    KEY_SNAP_EDGES => s.snap.edges = on,
+                    _ => {}
+                }
             }
         }
         s
@@ -72,6 +100,17 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        out.push_str("# snap_*: what snapping pulls to (1 on, 0 off): all, zero crossings, ruler major ticks, ruler minor ticks, selection edges and cursor.\n");
+        let n = &self.snap;
+        for (key, on) in [
+            (KEY_SNAP, n.enabled),
+            (KEY_SNAP_ZERO, n.zero_crossings),
+            (KEY_SNAP_COARSE, n.ruler_coarse),
+            (KEY_SNAP_FINE, n.ruler_fine),
+            (KEY_SNAP_EDGES, n.edges),
+        ] {
+            out.push_str(&format!("{key} = {}\n", u8::from(on)));
+        }
         out
     }
 

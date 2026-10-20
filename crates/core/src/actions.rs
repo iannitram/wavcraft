@@ -48,6 +48,12 @@ pub enum ActionId {
     SnapToggle,
     /// Snap to zero crossings on or off (f09).
     SnapZeroToggle,
+    /// Snap to the ruler's major ticks on or off (f49).
+    SnapRulerCoarseToggle,
+    /// Snap to the ruler's minor ticks on or off (f49).
+    SnapRulerFineToggle,
+    /// Snap to selection edges and the cursor on or off (f49).
+    SnapEdgesToggle,
     /// Enable or disable channel `n` (0-based): edits and the selection act on enabled ones.
     ToggleChannel(u8),
 }
@@ -170,7 +176,42 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
     edit(ActionId::SnapToggle, "view.snap.toggle", "Snapping", &[key("S")]),
     edit(ActionId::SnapZeroToggle, "view.snap.zero.toggle", "Snap to Zero Crossings", &[]),
+    edit(ActionId::SnapRulerCoarseToggle, "view.snap.ruler_coarse.toggle", "Snap to Ruler (Coarse)", &[]),
+    edit(ActionId::SnapRulerFineToggle, "view.snap.ruler_fine.toggle", "Snap to Ruler (Fine)", &[]),
+    edit(ActionId::SnapEdgesToggle, "view.snap.edges.toggle", "Snap to Selection Edges and Cursor", &[]),
 ];
+
+/// The snapping switch `id` flips, if it is one of the snapping actions.
+pub fn snap_flag(snap: &mut SnapSettings, id: ActionId) -> Option<&mut bool> {
+    match id {
+        ActionId::SnapToggle => Some(&mut snap.enabled),
+        ActionId::SnapZeroToggle => Some(&mut snap.zero_crossings),
+        ActionId::SnapRulerCoarseToggle => Some(&mut snap.ruler_coarse),
+        ActionId::SnapRulerFineToggle => Some(&mut snap.ruler_fine),
+        ActionId::SnapEdgesToggle => Some(&mut snap.edges),
+        _ => None,
+    }
+}
+
+/// Whether the snapping switch `id` stands for is on (`None` for any other action).
+pub fn snap_flag_value(snap: &SnapSettings, id: ActionId) -> Option<bool> {
+    snap_flag(&mut { *snap }, id).map(|f| *f)
+}
+
+/// Flip a snapping switch; the status-bar message says which and how it is now.
+pub fn toggle_snap(snap: &mut SnapSettings, id: ActionId) -> Option<String> {
+    let flag = snap_flag(snap, id)?;
+    *flag = !*flag;
+    let on = *flag;
+    let what = match id {
+        ActionId::SnapToggle => "Snapping",
+        ActionId::SnapZeroToggle => "Snap to zero crossings",
+        ActionId::SnapRulerCoarseToggle => "Snap to ruler (coarse)",
+        ActionId::SnapRulerFineToggle => "Snap to ruler (fine)",
+        _ => "Snap to selection edges and cursor",
+    };
+    Some(format!("{what} {}", if on { "on" } else { "off" }))
+}
 
 /// The row every `channel.toggle.<n>` action shares (the channel number is in the id).
 const CHANNEL_ROW: Action = edit(ActionId::ToggleChannel(0), "channel.toggle", "Toggle Channel", &[]);
@@ -313,7 +354,11 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
-            ActionId::SnapToggle | ActionId::SnapZeroToggle => true,
+            ActionId::SnapToggle
+            | ActionId::SnapZeroToggle
+            | ActionId::SnapRulerCoarseToggle
+            | ActionId::SnapRulerFineToggle
+            | ActionId::SnapEdgesToggle => true,
             ActionId::ToggleChannel(n) => usize::from(n) < self.channel_count(),
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
@@ -455,11 +500,12 @@ impl Editor {
         }
         match id {
             ActionId::RepeatLast => return self.repeat(sel),
-            ActionId::SnapToggle | ActionId::SnapZeroToggle => {
-                let flag = if id == ActionId::SnapToggle { &mut self.snap.enabled } else { &mut self.snap.zero_crossings };
-                *flag = !*flag;
-                let (what, on) = if id == ActionId::SnapToggle { ("Snapping", *flag) } else { ("Snap to zero crossings", *flag) };
-                return Ok(Outcome { doc_changed: false, selection: sel, message: Some(format!("{what} {}", if on { "on" } else { "off" })) });
+            ActionId::SnapToggle
+            | ActionId::SnapZeroToggle
+            | ActionId::SnapRulerCoarseToggle
+            | ActionId::SnapRulerFineToggle
+            | ActionId::SnapEdgesToggle => {
+                return Ok(Outcome { doc_changed: false, selection: sel, message: toggle_snap(&mut self.snap, id) });
             }
             ActionId::ToggleChannel(n) => return Ok(self.toggle_channel(usize::from(n), sel)),
             ActionId::ZeroInward
@@ -527,6 +573,9 @@ impl Editor {
             | ActionId::RepeatLast
             | ActionId::SnapToggle
             | ActionId::SnapZeroToggle
+            | ActionId::SnapRulerCoarseToggle
+            | ActionId::SnapRulerFineToggle
+            | ActionId::SnapEdgesToggle
             | ActionId::ToggleChannel(_)
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
