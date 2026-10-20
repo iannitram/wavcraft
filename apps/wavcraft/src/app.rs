@@ -20,7 +20,7 @@ use crate::player::{Devices, Player};
 use crate::spectrum::{Job, Renderer};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
-const WAVE: Color32 = Color32::from_rgb(64, 200, 140);
+const BACKGROUND_LIGHT: Color32 = Color32::from_rgb(246, 247, 249);
 const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
 const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
@@ -34,10 +34,24 @@ enum PrefPage {
     MarkersMetadata,
     PlaybackRecording,
     AudioHardware,
+    SpectralDisplays,
+    TimeDisplay,
+    Loudness,
+    Appearance,
 }
 
 impl PrefPage {
-    const ALL: [PrefPage; 5] = [PrefPage::General, PrefPage::Data, PrefPage::MarkersMetadata, PrefPage::PlaybackRecording, PrefPage::AudioHardware];
+    const ALL: [PrefPage; 9] = [
+        PrefPage::General,
+        PrefPage::Appearance,
+        PrefPage::Data,
+        PrefPage::MarkersMetadata,
+        PrefPage::PlaybackRecording,
+        PrefPage::SpectralDisplays,
+        PrefPage::TimeDisplay,
+        PrefPage::Loudness,
+        PrefPage::AudioHardware,
+    ];
 
     fn title(self) -> &'static str {
         match self {
@@ -46,6 +60,10 @@ impl PrefPage {
             PrefPage::MarkersMetadata => "Markers and Metadata",
             PrefPage::PlaybackRecording => "Playback and Recording",
             PrefPage::AudioHardware => "Audio Hardware",
+            PrefPage::SpectralDisplays => "Spectral Displays",
+            PrefPage::TimeDisplay => "Time Display",
+            PrefPage::Loudness => "Loudness and Diagnostics",
+            PrefPage::Appearance => "Appearance",
         }
     }
 }
@@ -144,6 +162,12 @@ pub struct WaveApp {
     confirm_clear_history: bool,
     /// Edit › Preferences…: the page showing while the dialog is up.
     prefs: Option<PrefPage>,
+    /// The look last given to egui: (dark, brightness in thousandths); `None` until the first frame.
+    applied_look: Option<(bool, i32)>,
+    /// Whether the dark theme is in force (from the Theme preference, or the system's), and the
+    /// brightness: what the editor's own painting uses.
+    dark: bool,
+    brightness: f32,
     /// The devices the Audio Hardware page lists (read when the dialog opens or on Refresh).
     devices: Devices,
     /// The device list being read (the system can be slow to answer).
@@ -182,7 +206,11 @@ impl WaveApp {
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
             selection: Selection::default(),
             player: Player::new(settings.output_device.clone()),
-            params: SpectrogramParams::default(),
+            params: {
+                let mut p = SpectrogramParams::default();
+                settings.apply_to_spectrogram(&mut p);
+                p
+            },
             show_waveform: true,
             show_spectrum: true,
             spectrum: None,
@@ -208,6 +236,9 @@ impl WaveApp {
             insert_silence: None,
             confirm_clear_history: false,
             prefs: None,
+            applied_look: None,
+            dark: true,
+            brightness: 1.0,
             devices: Devices::default(),
             devices_rx: None,
             shift_frames: SHIFT_RESET_FRAMES,
@@ -220,6 +251,34 @@ impl WaveApp {
             app.open(path, &cc.egui_ctx);
         }
         app
+    }
+
+    /// Give egui the theme and brightness from the preferences (only when they changed, or when
+    /// the system theme changed while the preference is "system").
+    fn apply_look(&mut self, ctx: &egui::Context) {
+        let dark = match self.settings.theme {
+            settings::Theme::Dark => true,
+            settings::Theme::Light => false,
+            settings::Theme::System => ctx.system_theme().is_none_or(|t| t == egui::Theme::Dark),
+        };
+        let key = (dark, (self.settings.ui_brightness * 1000.0).round() as i32);
+        self.dark = dark;
+        self.brightness = self.settings.ui_brightness;
+        if self.applied_look == Some(key) {
+            return;
+        }
+        self.applied_look = Some(key);
+        let b = self.brightness;
+        ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+        let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+        for c in [&mut v.panel_fill, &mut v.window_fill, &mut v.extreme_bg_color, &mut v.faint_bg_color, &mut v.code_bg_color] {
+            *c = brighten(*c, b);
+        }
+        for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
+            w.bg_fill = brighten(w.bg_fill, b);
+            w.weak_bg_fill = brighten(w.weak_bg_fill, b);
+        }
+        ctx.set_visuals(v);
     }
 
     /// Give the open file's editor the crossfade lengths from the preferences.
@@ -255,6 +314,10 @@ impl WaveApp {
         match key {
             "crossfade_cut_join_ms" | "crossfade_edge_ms" => self.apply_crossfades(),
             "output_device" => self.player.set_output(self.settings.output_device.clone()),
+            "spec_resolution" | "spec_db_range" => {
+                self.settings.apply_to_spectrogram(&mut self.params);
+                self.spectrum = None;
+            }
             _ => {}
         }
         self.save_settings()
@@ -269,6 +332,8 @@ impl WaveApp {
         }
         self.apply_crossfades();
         self.player.set_output(None);
+        self.settings.apply_to_spectrogram(&mut self.params);
+        self.spectrum = None;
         self.error = None;
         self.notice = Some(note.unwrap_or_else(|| "Preferences reset to their defaults.".to_string()));
     }
@@ -319,6 +384,12 @@ impl WaveApp {
                                     action = Some(PrefAction::Set("session_folder", String::new()));
                                 }
                             });
+                            ui.add_space(12.0);
+                            pref_number(ui, "Zoom In / Out factor", "zoom_factor", self.settings.zoom_factor, settings::MIN_ZOOM_FACTOR..=settings::MAX_ZOOM_FACTOR, "x", &mut action);
+                            pref_choice(ui, "Extend selection from", "extend_selection", self.settings.extend_selection.name(), settings::ExtendSelection::ALL.iter().map(|c| c.name()), &mut action);
+                            ui.label("Stored only for now: Shift-click extension is not on this branch.");
+                            pref_check(ui, "Context-sensitive channel editing", "context_channel_editing", self.settings.context_channel_editing, &mut action);
+                            ui.label("Stored only for now: per-channel pointer editing is not on this branch.");
                             ui.add_space(12.0);
                             if ui.button("Reset all preferences").on_hover_text("The settings file is kept aside, not deleted").clicked() {
                                 action = Some(PrefAction::ResetAll);
@@ -430,6 +501,32 @@ impl WaveApp {
                                 }
                                 ui.label("Record offset (placeholder until recording lands)");
                             });
+                        }
+                        PrefPage::Appearance => {
+                            pref_choice(ui, "Theme", "theme", self.settings.theme.name(), settings::Theme::ALL.iter().map(|c| c.name()), &mut action);
+                            pref_choice(ui, "Waveform colour", "waveform_colour", self.settings.waveform_colour.name(), settings::WaveColour::ALL.iter().map(|c| c.name()), &mut action);
+                            pref_number(ui, "UI brightness", "ui_brightness", self.settings.ui_brightness, settings::MIN_BRIGHTNESS..=settings::MAX_BRIGHTNESS, "x", &mut action);
+                            ui.label("Theme, waveform colour and brightness apply at once.");
+                        }
+                        PrefPage::SpectralDisplays => {
+                            let res: Vec<String> = settings::SPEC_RESOLUTIONS.iter().map(u32::to_string).collect();
+                            pref_choice(ui, "Resolution (FFT length)", "spec_resolution", &self.settings.spec_resolution.to_string(), res.iter().map(String::as_str), &mut action);
+                            pref_number(ui, "dB range", "spec_db_range", self.settings.spec_db_range as f32, settings::MIN_SPEC_DB_RANGE as f32..=settings::MAX_SPEC_DB_RANGE as f32, "dB", &mut action);
+                            ui.label("Resolution and dB range apply to the spectral display at once.");
+                            pref_choice(ui, "Window function", "spec_window", self.settings.spec_window.name(), settings::SpecWindow::ALL.iter().map(|c| c.name()), &mut action);
+                            ui.label("Stored only for now: the display always analyses with a Hann window.");
+                            pref_check(ui, "Play only selected frequencies (placeholder)", "spec_play_selected_freqs", self.settings.spec_play_selected_freqs, &mut action);
+                            ui.label("Stored only: there is no frequency selection to play yet.");
+                        }
+                        PrefPage::TimeDisplay => {
+                            pref_choice(ui, "Default time format", "time_format", self.settings.time_format.name(), settings::TimeFormat::ALL.iter().map(|c| c.name()), &mut action);
+                            pref_number(ui, "Frame rate (SMPTE)", "frame_rate", self.settings.frame_rate, settings::MIN_FRAME_RATE..=settings::MAX_FRAME_RATE, "fps", &mut action);
+                            ui.label("Stored only for now: the time displays still use minutes:seconds.");
+                        }
+                        PrefPage::Loudness => {
+                            pref_number(ui, "Default loudness target", "loudness_target_lufs", self.settings.loudness_target_lufs, settings::MIN_LOUDNESS_TARGET_LUFS..=settings::MAX_LOUDNESS_TARGET_LUFS, "LUFS", &mut action);
+                            pref_number(ui, "Default true-peak ceiling", "true_peak_ceiling_dbtp", self.settings.true_peak_ceiling_dbtp, settings::MIN_TRUE_PEAK_DBTP..=settings::MAX_TRUE_PEAK_DBTP, "dBTP", &mut action);
+                            ui.label("Stored only for now: loudness features read these when they are merged.");
                         }
                         PrefPage::AudioHardware => {
                             for (label, key, list, now) in [
@@ -658,8 +755,8 @@ impl WaveApp {
         // Where play is, or the cursor when stopped.
         let playhead = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
         match id {
-            ActionId::ZoomIn => self.view.zoom_at(2.0, width * 0.5, width, frames),
-            ActionId::ZoomOut => self.view.zoom_at(0.5, width * 0.5, width, frames),
+            ActionId::ZoomIn => self.view.zoom_at(f64::from(self.settings.zoom_factor), width * 0.5, width, frames),
+            ActionId::ZoomOut => self.view.zoom_at(1.0 / f64::from(self.settings.zoom_factor), width * 0.5, width, frames),
             ActionId::ZoomOutFull => self.fit_on_next_frame = true,
             ActionId::ZoomToSelection if !self.selection.is_empty() => {
                 let (a, b) = (self.selection.start() as f64, self.selection.end() as f64);
@@ -1247,7 +1344,7 @@ impl WaveApp {
     fn editor(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
-        painter.rect_filled(rect, 0.0, BACKGROUND);
+        painter.rect_filled(rect, 0.0, brighten(if self.dark { BACKGROUND } else { BACKGROUND_LIGHT }, self.brightness));
         let Some(doc) = &self.doc else { return };
         let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
         let width = rect.width().max(1.0);
@@ -1303,7 +1400,7 @@ impl WaveApp {
         let (start, end) = (self.view.start, self.view.end(width));
         let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
-        draw_ruler(&painter, ruler, &self.view, rate);
+        draw_ruler(&painter, ruler, &self.view, rate, self.dark);
 
         let (wave_area, spectrum_area) = match (self.show_waveform, self.show_spectrum) {
             (true, true) => {
@@ -1317,15 +1414,20 @@ impl WaveApp {
 
         if let Some(area) = wave_area {
             let cols = area.width().round().max(1.0) as usize;
+            let [r, g, b] = self.settings.waveform_rgb();
+            let wave = Color32::from_rgb(r, g, b);
             for ch in 0..channels {
                 let lane = lane(area, ch, channels);
                 let mid = lane.center().y;
-                painter.line_segment([pos2(lane.left(), mid), pos2(lane.right(), mid)], Stroke::new(1.0, Color32::from_gray(50)));
+                painter.line_segment(
+                    [pos2(lane.left(), mid), pos2(lane.right(), mid)],
+                    Stroke::new(1.0, Color32::from_gray(if self.dark { 50 } else { 200 })),
+                );
                 let half = lane.height() * 0.5 - 2.0;
                 for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
                     let x = lane.left() + i as f32 + 0.5;
                     let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);
-                    painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, WAVE));
+                    painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, wave));
                 }
             }
         }
@@ -1397,6 +1499,7 @@ impl eframe::App for WaveApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.apply_look(&ctx);
         self.close_prompt(&ctx);
         let (save_as, save) = ctx.input_mut(|i| {
             let save_as = i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::S);
@@ -1499,6 +1602,61 @@ fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
     })
 }
 
+/// A row with a combo box for a named choice (`current` is shown; a pick asks to set `key`).
+fn pref_choice<'a>(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &'static str,
+    current: &str,
+    all: impl Iterator<Item = &'a str>,
+    action: &mut Option<PrefAction>,
+) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        egui::ComboBox::from_id_salt(key).selected_text(current).show_ui(ui, |ui| {
+            for name in all {
+                if ui.selectable_label(current == name, name).clicked() {
+                    *action = Some(PrefAction::Set(key, name.to_string()));
+                }
+            }
+        });
+    });
+}
+
+/// A row with a number box (dragging or typing asks to set `key`).
+fn pref_number(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &'static str,
+    value: f32,
+    range: std::ops::RangeInclusive<f32>,
+    unit: &str,
+    action: &mut Option<PrefAction>,
+) {
+    ui.horizontal(|ui| {
+        let mut v = value;
+        let speed = (range.end() - range.start()) / 400.0;
+        if ui.add(egui::DragValue::new(&mut v).range(range).speed(speed).max_decimals(2).suffix(format!(" {unit}"))).changed() {
+            *action = Some(PrefAction::Set(key, v.to_string()));
+        }
+        ui.label(label);
+    });
+}
+
+/// A check box for a true/false preference.
+fn pref_check(ui: &mut egui::Ui, label: &str, key: &'static str, on: bool, action: &mut Option<PrefAction>) {
+    let mut v = on;
+    if ui.checkbox(&mut v, label).changed() {
+        *action = Some(PrefAction::Set(key, v.to_string()));
+    }
+}
+
+/// `c` with each colour channel multiplied by `b` (1: unchanged), kept in range.
+fn brighten(c: Color32, b: f32) -> Color32 {
+    let m = |v: u8| (f32::from(v) * b).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgba_unmultiplied(m(c.r()), m(c.g()), m(c.b()), c.a())
+}
+
 /// The vertical slice of `area` for channel `ch` of `channels`.
 fn lane(area: Rect, ch: usize, channels: usize) -> Rect {
     let h = area.height() / channels.max(1) as f32;
@@ -1506,8 +1664,9 @@ fn lane(area: Rect, ch: usize, channels: usize) -> Rect {
 }
 
 /// Tick marks and times along the top, at a round step that leaves room for the labels.
-fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32) {
-    painter.rect_filled(rect, 0.0, Color32::from_gray(32));
+fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, dark: bool) {
+    let (ground, tick, text) = if dark { (32, 140, 190) } else { (225, 110, 60) };
+    painter.rect_filled(rect, 0.0, Color32::from_gray(ground));
     let seconds_per_px = view.frames_per_px / f64::from(rate.max(1));
     let step = ruler_step(seconds_per_px * 110.0);
     let first = (view.start / f64::from(rate.max(1)) / step).floor() as i64;
@@ -1520,8 +1679,8 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32) {
         if x < rect.left() || t < 0.0 {
             continue;
         }
-        painter.line_segment([pos2(x, rect.bottom() - 6.0), pos2(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(140)));
-        painter.text(pos2(x + 3.0, rect.top() + 3.0), egui::Align2::LEFT_TOP, tick_label(t), egui::FontId::monospace(11.0), Color32::from_gray(190));
+        painter.line_segment([pos2(x, rect.bottom() - 6.0), pos2(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(tick)));
+        painter.text(pos2(x + 3.0, rect.top() + 3.0), egui::Align2::LEFT_TOP, tick_label(t), egui::FontId::monospace(11.0), Color32::from_gray(text));
     }
 }
 
@@ -1562,6 +1721,13 @@ fn palette() -> Vec<Color32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brightness_scales_colours_and_stays_in_range() {
+        assert_eq!(brighten(Color32::from_rgb(100, 200, 50), 1.0), Color32::from_rgb(100, 200, 50));
+        assert_eq!(brighten(Color32::from_rgb(100, 200, 50), 0.5), Color32::from_rgb(50, 100, 25));
+        assert_eq!(brighten(Color32::from_rgb(100, 200, 50), 1.5), Color32::from_rgb(150, 255, 75));
+    }
 
     #[test]
     fn ruler_steps_are_round_and_wide_enough() {

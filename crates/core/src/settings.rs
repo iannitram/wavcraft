@@ -39,8 +39,23 @@ const KEY_PREROLL: &str = "preroll_s";
 const KEY_POSTROLL: &str = "postroll_s";
 const KEY_RECORD_OFFSET: &str = "record_offset_ms";
 
+const KEY_SPEC_WINDOW: &str = "spec_window";
+const KEY_SPEC_RESOLUTION: &str = "spec_resolution";
+const KEY_SPEC_DB_RANGE: &str = "spec_db_range";
+const KEY_SPEC_PLAY_FREQS: &str = "spec_play_selected_freqs";
+const KEY_TIME_FORMAT: &str = "time_format";
+const KEY_FRAME_RATE: &str = "frame_rate";
+const KEY_LOUDNESS_TARGET: &str = "loudness_target_lufs";
+const KEY_TRUE_PEAK: &str = "true_peak_ceiling_dbtp";
+const KEY_ZOOM_FACTOR: &str = "zoom_factor";
+const KEY_EXTEND_SELECTION: &str = "extend_selection";
+const KEY_CONTEXT_CHANNELS: &str = "context_channel_editing";
+const KEY_THEME: &str = "theme";
+const KEY_WAVE_COLOUR: &str = "waveform_colour";
+const KEY_BRIGHTNESS: &str = "ui_brightness";
+
 /// Every preference key, in the order the file lists them.
-pub const KEYS: [&str; 14] = [
+pub const KEYS: [&str; 28] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
@@ -55,7 +70,142 @@ pub const KEYS: [&str; 14] = [
     KEY_PREROLL,
     KEY_POSTROLL,
     KEY_RECORD_OFFSET,
+    KEY_SPEC_WINDOW,
+    KEY_SPEC_RESOLUTION,
+    KEY_SPEC_DB_RANGE,
+    KEY_SPEC_PLAY_FREQS,
+    KEY_TIME_FORMAT,
+    KEY_FRAME_RATE,
+    KEY_LOUDNESS_TARGET,
+    KEY_TRUE_PEAK,
+    KEY_ZOOM_FACTOR,
+    KEY_EXTEND_SELECTION,
+    KEY_CONTEXT_CHANNELS,
+    KEY_THEME,
+    KEY_WAVE_COLOUR,
+    KEY_BRIGHTNESS,
 ];
+
+/// Spectral display resolutions (FFT lengths in frames) the page offers, and the default.
+pub const SPEC_RESOLUTIONS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
+pub const DEFAULT_SPEC_RESOLUTION: u32 = 2048;
+/// The spectral display's dB range (top is 0 dBFS): whole dB, limits and default.
+pub const MIN_SPEC_DB_RANGE: u32 = 40;
+pub const MAX_SPEC_DB_RANGE: u32 = 160;
+pub const DEFAULT_SPEC_DB_RANGE: u32 = 100;
+/// Frame rate limits (frames a second) and default.
+pub const MIN_FRAME_RATE: f32 = 1.0;
+pub const MAX_FRAME_RATE: f32 = 240.0;
+pub const DEFAULT_FRAME_RATE: f32 = 30.0;
+/// Default loudness target (LUFS) and true-peak ceiling (dBTP), and their limits.
+pub const DEFAULT_LOUDNESS_TARGET_LUFS: f32 = -16.0;
+pub const MIN_LOUDNESS_TARGET_LUFS: f32 = -70.0;
+pub const MAX_LOUDNESS_TARGET_LUFS: f32 = 0.0;
+pub const DEFAULT_TRUE_PEAK_DBTP: f32 = -1.0;
+pub const MIN_TRUE_PEAK_DBTP: f32 = -20.0;
+pub const MAX_TRUE_PEAK_DBTP: f32 = 0.0;
+/// Zoom In/Out multiplies the view by this much: limits and default.
+pub const MIN_ZOOM_FACTOR: f32 = 1.1;
+pub const MAX_ZOOM_FACTOR: f32 = 8.0;
+pub const DEFAULT_ZOOM_FACTOR: f32 = 2.0;
+/// Interface brightness (1 is the theme as drawn): limits and default.
+pub const MIN_BRIGHTNESS: f32 = 0.5;
+pub const MAX_BRIGHTNESS: f32 = 1.5;
+pub const DEFAULT_BRIGHTNESS: f32 = 1.0;
+
+/// A preference that is one of a few named choices: `ALL`, `name`, `from_name`, `NAMES`.
+macro_rules! choice {
+    ($(#[$m:meta])* $name:ident { $($(#[$vm:meta])* $v:ident = $text:literal),+ $(,)? }) => {
+        $(#[$m])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum $name { $($(#[$vm])* $v),+ }
+
+        impl $name {
+            pub const ALL: &'static [$name] = &[$($name::$v),+];
+            /// The choices as the settings file and `PREF` spell them, for messages.
+            pub const NAMES: &'static str = concat!($($text, ", "),+);
+
+            pub fn name(self) -> &'static str {
+                match self { $($name::$v => $text),+ }
+            }
+
+            pub fn from_name(s: &str) -> Option<$name> {
+                $name::ALL.iter().copied().find(|c| c.name() == s)
+            }
+        }
+    };
+}
+
+choice! {
+    /// The window function of the spectral display's FFT.
+    SpecWindow {
+        Hann = "hann",
+        Hamming = "hamming",
+        Blackman = "blackman",
+        BlackmanHarris = "blackman-harris",
+        Rectangular = "rectangular",
+    }
+}
+
+choice! {
+    /// How times are written by default.
+    TimeFormat {
+        /// Minutes, seconds and thousandths.
+        Decimal = "decimal",
+        /// Whole sample frames.
+        Samples = "samples",
+        /// Compact disc frames, 75 a second.
+        Cd75 = "cd-75",
+        /// Hours, minutes, seconds and frames at the frame rate preference.
+        Smpte = "smpte",
+    }
+}
+
+choice! {
+    /// Which edge Shift-click moves when it extends a selection.
+    ExtendSelection {
+        /// The edge nearest the click.
+        Nearest = "nearest",
+        /// The edge away from the anchor, so the anchor never moves.
+        Anchor = "anchor",
+    }
+}
+
+choice! {
+    /// The interface theme.
+    Theme {
+        /// Follow the operating system (dark when it can't say).
+        System = "system",
+        Light = "light",
+        Dark = "dark",
+    }
+}
+
+choice! {
+    /// The waveform colour, from a small palette.
+    WaveColour {
+        Green = "green",
+        Blue = "blue",
+        Amber = "amber",
+        Rose = "rose",
+        Cyan = "cyan",
+        White = "white",
+    }
+}
+
+impl WaveColour {
+    /// The colour as red, green, blue.
+    pub fn rgb(self) -> [u8; 3] {
+        match self {
+            WaveColour::Green => [64, 200, 140],
+            WaveColour::Blue => [90, 150, 240],
+            WaveColour::Amber => [235, 170, 60],
+            WaveColour::Rose => [230, 100, 140],
+            WaveColour::Cyan => [70, 200, 215],
+            WaveColour::White => [235, 235, 235],
+        }
+    }
+}
 
 /// The default marker name pattern (`{n}` is the marker's number).
 pub const DEFAULT_MARKER_PATTERN: &str = "Marker {n}";
@@ -164,6 +314,27 @@ pub struct Settings {
     pub postroll_s: f32,
     /// Record offset in ms (positive: later). Stored only; recording applies it when it exists.
     pub record_offset_ms: i32,
+    /// Spectral Displays page: window function, FFT length, dB range (top is 0 dBFS).
+    pub spec_window: SpecWindow,
+    pub spec_resolution: u32,
+    pub spec_db_range: u32,
+    /// Placeholder: play only the selected frequencies. Stored only.
+    pub spec_play_selected_freqs: bool,
+    /// Time Display page: the default format and the frame rate that SMPTE uses.
+    pub time_format: TimeFormat,
+    pub frame_rate: f32,
+    /// Loudness and Diagnostics page: the default target (LUFS) and true-peak ceiling (dBTP).
+    pub loudness_target_lufs: f32,
+    pub true_peak_ceiling_dbtp: f32,
+    /// General page: how much Zoom In/Out changes the view; the extend-selection rule; whether
+    /// an edit follows the channel the pointer is over.
+    pub zoom_factor: f32,
+    pub extend_selection: ExtendSelection,
+    pub context_channel_editing: bool,
+    /// Appearance page.
+    pub theme: Theme,
+    pub waveform_colour: WaveColour,
+    pub ui_brightness: f32,
 }
 
 impl Default for Settings {
@@ -183,6 +354,20 @@ impl Default for Settings {
             preroll_s: DEFAULT_ROLL_S,
             postroll_s: DEFAULT_ROLL_S,
             record_offset_ms: 0,
+            spec_window: SpecWindow::Hann,
+            spec_resolution: DEFAULT_SPEC_RESOLUTION,
+            spec_db_range: DEFAULT_SPEC_DB_RANGE,
+            spec_play_selected_freqs: false,
+            time_format: TimeFormat::Decimal,
+            frame_rate: DEFAULT_FRAME_RATE,
+            loudness_target_lufs: DEFAULT_LOUDNESS_TARGET_LUFS,
+            true_peak_ceiling_dbtp: DEFAULT_TRUE_PEAK_DBTP,
+            zoom_factor: DEFAULT_ZOOM_FACTOR,
+            extend_selection: ExtendSelection::Nearest,
+            context_channel_editing: true,
+            theme: Theme::Dark,
+            waveform_colour: WaveColour::Green,
+            ui_brightness: DEFAULT_BRIGHTNESS,
         }
     }
 }
@@ -243,6 +428,34 @@ impl Settings {
         Duration::from_secs_f32(self.postroll_s)
     }
 
+    /// The spectral display's FFT length and lowest level (dBFS) from the preferences, put into
+    /// `params`. The window function is stored only: the analysis uses Hann.
+    pub fn apply_to_spectrogram(&self, params: &mut crate::SpectrogramParams) {
+        params.fft_size = self.spec_resolution as usize;
+        params.floor_db = -(self.spec_db_range as f32);
+        params.ceil_db = 0.0;
+    }
+
+    /// Default loudness target in LUFS (-16 unless changed).
+    pub fn loudness_target(&self) -> f32 {
+        self.loudness_target_lufs
+    }
+
+    /// Default true-peak ceiling in dBTP (-1 unless changed).
+    pub fn true_peak_ceiling(&self) -> f32 {
+        self.true_peak_ceiling_dbtp
+    }
+
+    /// The frame rate SMPTE times use.
+    pub fn frame_rate(&self) -> f32 {
+        self.frame_rate
+    }
+
+    /// The waveform colour as red, green, blue.
+    pub fn waveform_rgb(&self) -> [u8; 3] {
+        self.waveform_colour.rgb()
+    }
+
     /// The name for marker number `n` from the pattern (`{n}` replaced; a pattern without it
     /// gets the number appended).
     pub fn marker_name(&self, n: u32) -> String {
@@ -267,6 +480,20 @@ impl Settings {
             KEY_PREROLL => self.preroll_s.to_string(),
             KEY_POSTROLL => self.postroll_s.to_string(),
             KEY_RECORD_OFFSET => self.record_offset_ms.to_string(),
+            KEY_SPEC_WINDOW => self.spec_window.name().to_string(),
+            KEY_SPEC_RESOLUTION => self.spec_resolution.to_string(),
+            KEY_SPEC_DB_RANGE => self.spec_db_range.to_string(),
+            KEY_SPEC_PLAY_FREQS => self.spec_play_selected_freqs.to_string(),
+            KEY_TIME_FORMAT => self.time_format.name().to_string(),
+            KEY_FRAME_RATE => self.frame_rate.to_string(),
+            KEY_LOUDNESS_TARGET => self.loudness_target_lufs.to_string(),
+            KEY_TRUE_PEAK => self.true_peak_ceiling_dbtp.to_string(),
+            KEY_ZOOM_FACTOR => self.zoom_factor.to_string(),
+            KEY_EXTEND_SELECTION => self.extend_selection.name().to_string(),
+            KEY_CONTEXT_CHANNELS => self.context_channel_editing.to_string(),
+            KEY_THEME => self.theme.name().to_string(),
+            KEY_WAVE_COLOUR => self.waveform_colour.name().to_string(),
+            KEY_BRIGHTNESS => self.ui_brightness.to_string(),
             _ => return Err(unknown_key(key)),
         })
     }
@@ -309,6 +536,32 @@ impl Settings {
                     _ => return Err(format!("{key} is a whole number of milliseconds, -{MAX_RECORD_OFFSET_MS} to {MAX_RECORD_OFFSET_MS}")),
                 }
             }
+            KEY_SPEC_WINDOW => self.spec_window = choose(key, value, SpecWindow::from_name, SpecWindow::NAMES)?,
+            KEY_SPEC_RESOLUTION => {
+                self.spec_resolution = match value.parse::<u32>() {
+                    Ok(n) if SPEC_RESOLUTIONS.contains(&n) => n,
+                    _ => return Err(format!("{key} is one of {}", SPEC_RESOLUTIONS.map(|n| n.to_string()).join(", "))),
+                }
+            }
+            KEY_SPEC_DB_RANGE => {
+                self.spec_db_range = match value.parse::<u32>() {
+                    Ok(n) if (MIN_SPEC_DB_RANGE..=MAX_SPEC_DB_RANGE).contains(&n) => n,
+                    _ => return Err(format!("{key} is a whole number of dB, {MIN_SPEC_DB_RANGE} to {MAX_SPEC_DB_RANGE}")),
+                }
+            }
+            KEY_SPEC_PLAY_FREQS => self.spec_play_selected_freqs = parse_bool(key, value)?,
+            KEY_TIME_FORMAT => self.time_format = choose(key, value, TimeFormat::from_name, TimeFormat::NAMES)?,
+            KEY_FRAME_RATE => self.frame_rate = parse_range(key, value, MIN_FRAME_RATE, MAX_FRAME_RATE, "frames a second")?,
+            KEY_LOUDNESS_TARGET => {
+                self.loudness_target_lufs = parse_range(key, value, MIN_LOUDNESS_TARGET_LUFS, MAX_LOUDNESS_TARGET_LUFS, "LUFS")?;
+            }
+            KEY_TRUE_PEAK => self.true_peak_ceiling_dbtp = parse_range(key, value, MIN_TRUE_PEAK_DBTP, MAX_TRUE_PEAK_DBTP, "dBTP")?,
+            KEY_ZOOM_FACTOR => self.zoom_factor = parse_range(key, value, MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR, "times")?,
+            KEY_EXTEND_SELECTION => self.extend_selection = choose(key, value, ExtendSelection::from_name, ExtendSelection::NAMES)?,
+            KEY_CONTEXT_CHANNELS => self.context_channel_editing = parse_bool(key, value)?,
+            KEY_THEME => self.theme = choose(key, value, Theme::from_name, Theme::NAMES)?,
+            KEY_WAVE_COLOUR => self.waveform_colour = choose(key, value, WaveColour::from_name, WaveColour::NAMES)?,
+            KEY_BRIGHTNESS => self.ui_brightness = parse_range(key, value, MIN_BRIGHTNESS, MAX_BRIGHTNESS, "(1 is normal)")?,
             _ => return Err(unknown_key(key)),
         }
         Ok(())
@@ -338,6 +591,20 @@ impl Settings {
         for k in [KEY_AUTOSCROLL, KEY_JKL_STEPS, KEY_PREROLL, KEY_POSTROLL, KEY_RECORD_OFFSET] {
             out.push_str(&format!("{k} = {}\n", self.get(k).unwrap_or_default()));
         }
+        out.push_str("# Spectral Displays page: spec_window (");
+        out.push_str(SpecWindow::NAMES.trim_end_matches(", "));
+        out.push_str("), spec_resolution (FFT length), spec_db_range (dB below 0 dBFS), spec_play_selected_freqs (placeholder).\n");
+        out.push_str("# Time Display page: time_format (");
+        out.push_str(TimeFormat::NAMES.trim_end_matches(", "));
+        out.push_str("), frame_rate (SMPTE frames a second).\n");
+        out.push_str("# Loudness and Diagnostics page: default loudness_target_lufs and true_peak_ceiling_dbtp.\n");
+        out.push_str("# General page: zoom_factor, extend_selection (nearest, anchor), context_channel_editing (true/false).\n");
+        out.push_str("# Appearance page: theme (system, light, dark), waveform_colour (");
+        out.push_str(WaveColour::NAMES.trim_end_matches(", "));
+        out.push_str("), ui_brightness (0.5 to 1.5).\n");
+        for k in &KEYS[14..] {
+            out.push_str(&format!("{k} = {}\n", self.get(k).unwrap_or_default()));
+        }
         out
     }
 
@@ -357,6 +624,17 @@ fn parse_bool(key: &str, v: &str) -> Result<bool, String> {
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err(format!("{key} is true or false")),
+    }
+}
+
+fn choose<T>(key: &str, v: &str, from: fn(&str) -> Option<T>, names: &str) -> Result<T, String> {
+    from(v).ok_or_else(|| format!("{key} is one of {}", names.trim_end_matches(", ")))
+}
+
+fn parse_range(key: &str, v: &str, lo: f32, hi: f32, unit: &str) -> Result<f32, String> {
+    match v.parse::<f32>() {
+        Ok(n) if n.is_finite() && (lo..=hi).contains(&n) => Ok(n),
+        _ => Err(format!("{key} is a number, {lo} to {hi} {unit}")),
     }
 }
 
