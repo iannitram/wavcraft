@@ -33,14 +33,57 @@ pub const ENV_FAKE_INPUT: &str = "WAVCRAFT_FAKE_INPUT";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecFormat {
     pub rate: u32,
+    /// Channels in the take (the number of inputs recorded).
     pub channels: u16,
     pub bits: u16,
+    /// Which inputs of the device are recorded (C034): bit `i` is input `i + 1`. 0 means the
+    /// first `channels` inputs. Otherwise exactly `channels` bits are set, and the take's
+    /// channels are those inputs in ascending order.
+    pub inputs: u32,
+}
+
+/// The most inputs of one device a take can choose from (bits in [`RecFormat::inputs`]).
+pub const MAX_INPUTS: u32 = 32;
+
+/// Which device channels make up the take, in take order. `Copy` and fixed-size, so the audio
+/// callback can hold it without allocating.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelPick {
+    idx: [u8; 8],
+    n: u8,
+}
+
+impl ChannelPick {
+    /// The device channels (0-based) picked, in take order.
+    pub fn indices(&self) -> &[u8] {
+        &self.idx[..usize::from(self.n)]
+    }
+
+    /// The number of device channels the device must have for this pick.
+    pub fn needs_device_channels(&self) -> usize {
+        self.indices().iter().map(|i| usize::from(*i) + 1).max().unwrap_or(1)
+    }
+
+    /// Copy the picked channels of interleaved device frames (`dev_channels` wide) into `out`
+    /// (the take's channels wide). Frames that are cut short read as silence. Returns the
+    /// frames written; no allocation, so the audio callback may call it.
+    pub fn gather(&self, src: &[f32], dev_channels: usize, out: &mut [f32]) -> usize {
+        let n = usize::from(self.n).max(1);
+        let dev = dev_channels.max(1);
+        let frames = (src.len() / dev).min(out.len() / n);
+        for f in 0..frames {
+            for (k, i) in self.indices().iter().enumerate() {
+                out[f * n + k] = src[f * dev + usize::from(*i)];
+            }
+        }
+        frames
+    }
 }
 
 impl Default for RecFormat {
     /// 48 kHz, mono, 24-bit: the owner's v1 rule (issue 51).
     fn default() -> Self {
-        RecFormat { rate: 48_000, channels: 1, bits: 24 }
+        RecFormat { rate: 48_000, channels: 1, bits: 24, inputs: 0 }
     }
 }
 
@@ -55,10 +98,59 @@ impl RecFormat {
         if !(1..=8).contains(&self.channels) {
             return Err(format!("{} channels is outside 1 to 8", self.channels));
         }
+        if self.inputs != 0 && self.inputs.count_ones() != u32::from(self.channels) {
+            return Err(format!("{} inputs chosen for {} channels: they must match", self.inputs.count_ones(), self.channels));
+        }
         if !Self::BITS.contains(&self.bits) {
             return Err(format!("{} bits: use 16, 24 or 32 (32 is float)", self.bits));
         }
         Ok(self)
+    }
+
+    /// The device channels this take records, in take order.
+    pub fn pick(self) -> ChannelPick {
+        let mut p = ChannelPick { idx: [0; 8], n: 0 };
+        if self.inputs == 0 {
+            for i in 0..self.channels.min(8) {
+                p.idx[usize::from(i)] = i as u8;
+                p.n += 1;
+            }
+        } else {
+            for i in 0..MAX_INPUTS {
+                if self.inputs & (1 << i) != 0 && p.n < 8 {
+                    p.idx[usize::from(p.n)] = i as u8;
+                    p.n += 1;
+                }
+            }
+        }
+        p
+    }
+
+    /// The inputs (1-based) this take records: `1,2,3,4`.
+    pub fn inputs_text(self) -> String {
+        self.pick().indices().iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(",")
+    }
+
+    /// Choose inputs (1-based numbers). The channels follow the choice; a choice of just the
+    /// first N inputs is stored as the default (0).
+    pub fn with_inputs(mut self, list: &[u32]) -> Result<RecFormat, String> {
+        let mut mask = 0u32;
+        for &n in list {
+            if !(1..=MAX_INPUTS).contains(&n) {
+                return Err(format!("input {n} is outside 1 to {MAX_INPUTS}"));
+            }
+            mask |= 1 << (n - 1);
+        }
+        let count = mask.count_ones();
+        if count == 0 {
+            return Err("choose at least one input".to_string());
+        }
+        if count > 8 {
+            return Err(format!("{count} inputs: a take holds at most 8 channels"));
+        }
+        self.channels = count as u16;
+        self.inputs = if mask == (1u32 << count) - 1 { 0 } else { mask };
+        self.validate()
     }
 
     /// Bytes in one frame (one sample of every channel).
@@ -74,14 +166,32 @@ impl RecFormat {
     /// `rate=48000 ch=1 bits=24` (any subset, any order; the rest are the defaults).
     pub fn parse_args(text: &str) -> Result<RecFormat, String> {
         let mut f = RecFormat::default();
+        let (mut ch_given, mut chosen) = (false, None);
         for word in text.split_whitespace() {
             let (key, value) = word.split_once('=').ok_or_else(|| format!("expected key=value, got {word:?}"))?;
             let bad = |_| format!("{key}: {value:?} is not a number");
             match key {
                 "rate" => f.rate = value.parse().map_err(bad)?,
-                "ch" | "channels" => f.channels = value.parse().map_err(bad)?,
+                "ch" | "channels" => {
+                    f.channels = value.parse().map_err(bad)?;
+                    ch_given = true;
+                }
+                "inputs" => {
+                    let list = value
+                        .split(',')
+                        .map(|v| v.trim().parse::<u32>().map_err(|_| format!("inputs: {v:?} is not an input number")))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    chosen = Some(list);
+                }
                 "bits" => f.bits = value.parse().map_err(bad)?,
-                _ => return Err(format!("unknown setting {key:?} (rate, ch, bits)")),
+                _ => return Err(format!("unknown setting {key:?} (rate, ch, bits, inputs)")),
+            }
+        }
+        if let Some(list) = chosen {
+            let want = f.channels;
+            f = f.with_inputs(&list)?;
+            if ch_given && f.channels != want {
+                return Err(format!("ch={want} does not match the {} inputs chosen", f.channels));
             }
         }
         f.validate()
@@ -541,17 +651,19 @@ fn write_loop(mut w: TakeWriter, shared: &Shared, stall: Duration) -> TakeWriter
     w
 }
 
-/// A generated input: a sine on every channel, produced on a timer thread at the take's rate.
-/// Stands in for a microphone in tests and scripted runs (`WAVCRAFT_FAKE_INPUT=sine:440`).
+/// A generated input: a sine on every channel (one tone per input, see [`FakeSpec`]), produced on a timer thread at the take's rate.
+/// Stands in for a microphone in tests and scripted runs (`WAVCRAFT_FAKE_INPUT=sine:440`, or `sine:440+660+880+1100` for four inputs).
 pub struct FakeInput {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 /// What `WAVCRAFT_FAKE_INPUT` asks for.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FakeSpec {
-    pub hz: f64,
+    /// The tone on each input of the fake device (`sine:440+660+880`): input `k` plays tone `k`.
+    /// A single tone plays on every input.
+    pub tones: Vec<f64>,
     /// `ring=<ms>`: the queue holds only this much (default: two seconds).
     pub ring_ms: Option<u32>,
     /// `stall=<ms>`: the writer waits this long before it starts, so a small ring overflows.
@@ -563,15 +675,15 @@ impl FakeSpec {
     /// `Ok(None)` when the variable is unset or empty.
     pub fn parse(text: Option<&str>) -> Result<Option<FakeSpec>, String> {
         let Some(text) = text.map(str::trim).filter(|t| !t.is_empty()) else { return Ok(None) };
-        let bad = || format!("{ENV_FAKE_INPUT}={text:?}: expected sine:<hz>[,ring=<ms>][,stall=<ms>]");
+        let bad = || format!("{ENV_FAKE_INPUT}={text:?}: expected sine:<hz>[+<hz>...][,ring=<ms>][,stall=<ms>]");
         let mut parts = text.split(',');
-        let hz = parts
+        let tones = parts
             .next()
             .and_then(|p| p.strip_prefix("sine:"))
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .filter(|h| h.is_finite() && *h > 0.0)
+            .and_then(|v| v.split('+').map(|t| t.trim().parse::<f64>().ok().filter(|h| h.is_finite() && *h > 0.0)).collect::<Option<Vec<_>>>())
+            .filter(|t| !t.is_empty() && t.len() <= MAX_INPUTS as usize)
             .ok_or_else(bad)?;
-        let mut spec = FakeSpec { hz, ring_ms: None, stall_ms: 0 };
+        let mut spec = FakeSpec { tones, ring_ms: None, stall_ms: 0 };
         for p in parts {
             match p.trim().split_once('=') {
                 Some(("ring", v)) => spec.ring_ms = Some(v.trim().parse::<u32>().ok().filter(|v| *v > 0).ok_or_else(bad)?),
@@ -582,6 +694,20 @@ impl FakeSpec {
         Ok(Some(spec))
     }
 
+    /// The tone of each channel of a take recorded as `fmt`: channel `k` carries the tone of the
+    /// device input it was picked from. A fake device with several tones has that many inputs.
+    pub fn tones_for(&self, fmt: RecFormat) -> Result<Vec<f64>, String> {
+        fmt.pick()
+            .indices()
+            .iter()
+            .map(|&i| match (self.tones.len(), self.tones.get(usize::from(i))) {
+                (1, _) => Ok(self.tones[0]),
+                (_, Some(t)) => Ok(*t),
+                (n, None) => Err(format!("the fake input has {n} inputs, and input {} was asked for", i + 1)),
+            })
+            .collect()
+    }
+
     pub fn from_env() -> Result<Option<FakeSpec>, String> {
         FakeSpec::parse(std::env::var(ENV_FAKE_INPUT).ok().as_deref())
     }
@@ -590,6 +716,7 @@ impl FakeSpec {
 impl FakeInput {
     /// Feed `ring` from a timer thread, in step with the clock (a slow wake-up catches up).
     pub fn spawn(spec: FakeSpec, fmt: RecFormat, ring: Arc<Ring>) -> io::Result<FakeInput> {
+        let tones = spec.tones_for(fmt).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let handle = std::thread::Builder::new().name("fake input".into()).spawn(move || {
@@ -602,8 +729,9 @@ impl FakeInput {
                 while made < due && !flag.load(Ordering::Relaxed) {
                     let frames = ((due - made) as usize).min(480);
                     for f in 0..frames {
-                        let v = (std::f64::consts::TAU * spec.hz * (made + f as u64) as f64 / rate).sin() as f32 * 0.5;
-                        chunk[f * ch..(f + 1) * ch].fill(v);
+                        for (k, hz) in tones.iter().enumerate() {
+                            chunk[f * ch + k] = (std::f64::consts::TAU * hz * (made + f as u64) as f64 / rate).sin() as f32 * 0.5;
+                        }
                     }
                     ring.push(&chunk[..frames * ch]);
                     made += frames as u64;
@@ -708,8 +836,8 @@ mod tests {
 
     #[test]
     fn rec_format_parses_and_refuses() {
-        assert_eq!(RecFormat::parse_args("").unwrap(), RecFormat { rate: 48_000, channels: 1, bits: 24 });
-        assert_eq!(RecFormat::parse_args("ch=2 bits=16 rate=44100").unwrap(), RecFormat { rate: 44_100, channels: 2, bits: 16 });
+        assert_eq!(RecFormat::parse_args("").unwrap(), RecFormat { rate: 48_000, channels: 1, bits: 24, inputs: 0 });
+        assert_eq!(RecFormat::parse_args("ch=2 bits=16 rate=44100").unwrap(), RecFormat { rate: 44_100, channels: 2, bits: 16, inputs: 0 });
         assert!(RecFormat::parse_args("bits=20").is_err());
         assert!(RecFormat::parse_args("ch=0").is_err());
         assert!(RecFormat::parse_args("rate=5").is_err());
@@ -746,7 +874,7 @@ mod tests {
     #[test]
     fn the_header_is_valid_at_every_moment() {
         let dir = scratch("header");
-        let fmt = RecFormat { rate: 48_000, channels: 2, bits: 24 };
+        let fmt = RecFormat { rate: 48_000, channels: 2, bits: 24, inputs: 0 };
         let mut w = create_take(&dir, fmt, 5).unwrap();
         assert_eq!(header_of(w.path()), (2, 48_000, 24, 0, 44), "valid and empty at once");
         w.write_frames(&vec![0.25; 2 * 1000]).unwrap();
@@ -770,7 +898,7 @@ mod tests {
     fn samples_are_converted_at_each_depth() {
         for (bits, width) in [(16u16, 2usize), (24, 3), (32, 4)] {
             let dir = scratch(&format!("depth{bits}"));
-            let mut w = create_take(&dir, RecFormat { rate: 48_000, channels: 1, bits }, 1).unwrap();
+            let mut w = create_take(&dir, RecFormat { rate: 48_000, channels: 1, bits, inputs: 0 }, 1).unwrap();
             w.write_frames(&[1.0, -1.0, 0.5, 0.0, 2.0, f32::NAN]).unwrap();
             w.update_header().unwrap();
             let b = std::fs::read(w.path()).unwrap();
@@ -812,7 +940,7 @@ mod tests {
     #[test]
     fn a_paused_take_holds_only_what_was_recorded() {
         let dir = scratch("paused");
-        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 16 };
+        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 16, inputs: 0 };
         let ring = Ring::new(48_000, 1);
         let rec = Recorder::start(create_take(&dir, fmt, 11).unwrap(), ring.clone()).unwrap();
         ring.push(&[0.5; 4_800]);
@@ -832,7 +960,7 @@ mod tests {
     #[test]
     fn an_overflow_is_counted_and_the_take_stays_readable() {
         let dir = scratch("overflow");
-        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 16 };
+        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 16, inputs: 0 };
         let ring = Ring::new(1_000, 1);
         let rec = Recorder::start_stalled(create_take(&dir, fmt, 12).unwrap(), ring.clone(), Duration::from_millis(150)).unwrap();
         for _ in 0..10 {
@@ -850,8 +978,11 @@ mod tests {
 
     #[test]
     fn the_fake_input_spec_takes_overflow_knobs() {
-        assert_eq!(FakeSpec::parse(Some("sine:440")).unwrap(), Some(FakeSpec { hz: 440.0, ring_ms: None, stall_ms: 0 }));
-        assert_eq!(FakeSpec::parse(Some("sine:220,ring=50,stall=1500")).unwrap(), Some(FakeSpec { hz: 220.0, ring_ms: Some(50), stall_ms: 1500 }));
+        assert_eq!(FakeSpec::parse(Some("sine:440")).unwrap(), Some(FakeSpec { tones: vec![440.0], ring_ms: None, stall_ms: 0 }));
+        assert_eq!(
+            FakeSpec::parse(Some("sine:220,ring=50,stall=1500")).unwrap(),
+            Some(FakeSpec { tones: vec![220.0], ring_ms: Some(50), stall_ms: 1500 })
+        );
         assert!(FakeSpec::parse(Some("sine:220,ring=0")).is_err());
         assert!(FakeSpec::parse(Some("sine:220,speed=1")).is_err());
         assert!(FakeSpec::parse(Some("saw:220")).is_err());
@@ -861,7 +992,7 @@ mod tests {
     #[test]
     fn the_recorder_drains_the_ring_and_finishes_the_header() {
         let dir = scratch("recorder");
-        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 16 };
+        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 16, inputs: 0 };
         let ring = Ring::new(48_000, 1);
         let rec = Recorder::start(create_take(&dir, fmt, 9).unwrap(), ring.clone()).unwrap();
         for _ in 0..10 {
@@ -890,7 +1021,7 @@ mod tests {
     fn fake_input_spec_parses() {
         assert_eq!(FakeSpec::parse(None), Ok(None));
         assert_eq!(FakeSpec::parse(Some("")), Ok(None));
-        assert_eq!(FakeSpec::parse(Some("sine:440")), Ok(Some(FakeSpec { hz: 440.0, ring_ms: None, stall_ms: 0 })));
+        assert_eq!(FakeSpec::parse(Some("sine:440")), Ok(Some(FakeSpec { tones: vec![440.0], ring_ms: None, stall_ms: 0 })));
         assert!(FakeSpec::parse(Some("sine:abc")).is_err());
         assert!(FakeSpec::parse(Some("noise")).is_err());
         assert!(FakeSpec::parse(Some("sine:-5")).is_err());
@@ -901,10 +1032,10 @@ mod tests {
     #[test]
     fn a_fake_sine_take_has_the_right_length_and_pitch() {
         let dir = scratch("fake");
-        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 24 };
+        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 24, inputs: 0 };
         let ring = Ring::new(48_000, 1);
         let rec = Recorder::start(create_take(&dir, fmt, 7).unwrap(), ring.clone()).unwrap();
-        let fake = FakeInput::spawn(FakeSpec { hz: 440.0, ring_ms: None, stall_ms: 0 }, fmt, ring).unwrap();
+        let fake = FakeInput::spawn(FakeSpec { tones: vec![440.0], ring_ms: None, stall_ms: 0 }, fmt, ring).unwrap();
         std::thread::sleep(Duration::from_millis(1_200));
         fake.stop();
         let take = rec.stop();
@@ -921,6 +1052,90 @@ mod tests {
         assert!((hz - 440.0).abs() < 5.0, "{hz} Hz");
         let peak = samples.iter().map(|s| s.abs()).max().unwrap();
         assert!((3_900_000..4_300_000).contains(&peak), "peak {peak} is about half of full scale");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inputs_are_parsed_and_channels_follow_them() {
+        let f = RecFormat::parse_args("inputs=1,2,3,4").unwrap();
+        assert_eq!((f.channels, f.inputs), (4, 0), "the first four inputs are the default pick");
+        let f = RecFormat::parse_args("ch=2 inputs=3,4").unwrap();
+        assert_eq!((f.channels, f.inputs, f.inputs_text().as_str()), (2, 0b1100, "3,4"));
+        let f = RecFormat::parse_args("inputs=4,2").unwrap();
+        assert_eq!(f.inputs_text(), "2,4", "the take's channels are in ascending input order");
+        assert_eq!(RecFormat::parse_args("ch=4").unwrap().inputs_text(), "1,2,3,4");
+        assert!(RecFormat::parse_args("ch=3 inputs=1,2").is_err(), "ch must match the choice");
+        assert!(RecFormat::parse_args("inputs=0").is_err());
+        assert!(RecFormat::parse_args("inputs=1,x").is_err());
+        assert!(RecFormat::parse_args("inputs=1,2,3,4,5,6,7,8,9").is_err());
+        assert!(RecFormat { rate: 48_000, channels: 2, bits: 16, inputs: 0b1 }.validate().is_err());
+    }
+
+    /// C034: a subset of a wider device lands in the take's channels in order.
+    #[test]
+    fn a_subset_of_the_device_inputs_is_gathered_in_order() {
+        let fmt = RecFormat::parse_args("inputs=2,4").unwrap();
+        let pick = fmt.pick();
+        assert_eq!((pick.indices(), pick.needs_device_channels()), (&[1u8, 3][..], 4));
+        // Four device channels, three frames: value = frame * 10 + channel.
+        let src: Vec<f32> = (0..3).flat_map(|f| (0..4).map(move |c| (f * 10 + c) as f32)).collect();
+        let mut out = [0.0f32; 6];
+        assert_eq!(pick.gather(&src, 4, &mut out), 3);
+        assert_eq!(out, [1.0, 3.0, 11.0, 13.0, 21.0, 23.0]);
+        // Output room for two frames only: two frames are gathered, none overrun.
+        let mut small = [0.0f32; 4];
+        assert_eq!(pick.gather(&src, 4, &mut small), 2);
+        // The default pick is the identity on the first channels.
+        let id = RecFormat::parse_args("ch=2").unwrap().pick();
+        let mut out2 = [0.0f32; 6];
+        assert_eq!(id.gather(&src[..12], 4, &mut out2), 3);
+        assert_eq!(out2, [0.0, 1.0, 10.0, 11.0, 20.0, 21.0]);
+    }
+
+    #[test]
+    fn the_fake_input_gives_each_input_its_own_tone() {
+        let spec = FakeSpec::parse(Some("sine:440+660+880+1100")).unwrap().unwrap();
+        assert_eq!(spec.tones, [440.0, 660.0, 880.0, 1100.0]);
+        let all = RecFormat::parse_args("inputs=1,2,3,4").unwrap();
+        assert_eq!(spec.tones_for(all).unwrap(), [440.0, 660.0, 880.0, 1100.0]);
+        let some = RecFormat::parse_args("inputs=2,4").unwrap();
+        assert_eq!(spec.tones_for(some).unwrap(), [660.0, 1100.0]);
+        assert!(spec.tones_for(RecFormat::parse_args("inputs=5").unwrap()).is_err(), "the fake device has four inputs");
+        let one = FakeSpec::parse(Some("sine:440")).unwrap().unwrap();
+        assert_eq!(one.tones_for(all).unwrap(), [440.0; 4], "one tone plays on every input");
+        assert!(FakeSpec::parse(Some("sine:440+")).is_err());
+    }
+
+    /// C034 + C022: a 4-channel take through the writer thread holds each channel's own tone,
+    /// and a copy of the file taken mid-take (what a kill leaves) is a readable 4-channel WAV.
+    #[test]
+    fn a_four_channel_take_keeps_every_tone_and_survives_a_kill() {
+        let dir = scratch("four");
+        let fmt = RecFormat::parse_args("rate=48000 bits=16 inputs=1,2,3,4").unwrap();
+        let ring = Ring::new(48_000, 4);
+        let rec = Recorder::start(create_take(&dir, fmt, 8).unwrap(), ring.clone()).unwrap();
+        let spec = FakeSpec::parse(Some("sine:400+800+1200+2400")).unwrap().unwrap();
+        let fake = FakeInput::spawn(spec, fmt, ring).unwrap();
+        // Past one header interval, so the on-disk header has been rewritten at least once.
+        std::thread::sleep(HEADER_INTERVAL + Duration::from_millis(500));
+        let killed = dir.join("killed.wav");
+        std::fs::copy(rec.path(), &killed).unwrap();
+        let (ch, rate, bits, data, _) = header_of(&killed);
+        assert_eq!((ch, rate, bits), (4, 48_000, 16));
+        assert!(data >= 4 * 2 * 40_000 && u64::from(data) % fmt.block_align() == 0, "{data} data bytes, whole frames");
+        fake.stop();
+        let take = rec.stop();
+        assert_eq!((take.error.clone(), take.dropped_frames), (None, 0));
+        assert_eq!(header_of(&take.path).0, 4);
+        let bytes = std::fs::read(&take.path).unwrap();
+        let samples: Vec<i16> = bytes[44..].as_chunks::<2>().0.iter().map(|s| i16::from_le_bytes(*s)).collect();
+        assert_eq!(samples.len() as u64, take.frames * 4);
+        let seconds = take.frames as f64 / 48_000.0;
+        for (k, want) in [400.0, 800.0, 1200.0, 2400.0].into_iter().enumerate() {
+            let crossings = samples.chunks(4).map(|f| f[k]).collect::<Vec<_>>().windows(2).filter(|p| p[0] <= 0 && p[1] > 0).count() as f64;
+            let hz = crossings / seconds;
+            assert!((hz - want).abs() < want * 0.02 + 3.0, "channel {} is {hz} Hz, wanted {want}", k + 1);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

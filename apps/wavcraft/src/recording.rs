@@ -284,13 +284,14 @@ impl Recording {
         let make = |fmt: RecFormat| record::create_take(&dir, fmt, now).map_err(|e| format!("cannot make a take in {}: {e}", dir.display()));
         let (recorder, source, ring, device) = match FakeSpec::from_env()? {
             Some(spec) => {
+                let tones = spec.tones_for(want)?;
                 let ring_frames = spec.ring_ms.map_or(want.rate as usize * 2, |ms| (want.rate as usize * ms as usize / 1000).max(1));
                 let ring = Ring::new(ring_frames, want.channels);
                 ring.set_paused(held);
                 let recorder =
                     Recorder::start_stalled(make(want)?, ring.clone(), Duration::from_millis(u64::from(spec.stall_ms))).map_err(|e| e.to_string())?;
                 let fake = FakeInput::spawn(spec, want, ring.clone()).map_err(|e| e.to_string())?;
-                (recorder, Source::Fake(fake), ring, format!("fake sine {} Hz", spec.hz))
+                (recorder, Source::Fake(fake), ring, format!("fake sine {} Hz", tones.iter().map(f64::to_string).collect::<Vec<_>>().join(" + ")))
             }
             None => {
                 let opened = crate::input::open(want)?;
@@ -392,7 +393,7 @@ impl Recording {
                 let s = a.recorder.status();
                 let left = Self::left_secs(a).map_or(-1, |l| l.min(i64::MAX as u64) as i64);
                 format!(
-                    " recording=1 rec_frames={} rec_bytes={} rec_dropped={} rec_left_s={left} rec_paused={} rec_resumes={} rec_resume_at={} rec_max_s={} rec_armed=-1 rec_rate={} rec_ch={} rec_bits={} rec_mode={} rec_target={} rec_gate={}{}",
+                    " recording=1 rec_frames={} rec_bytes={} rec_dropped={} rec_left_s={left} rec_paused={} rec_resumes={} rec_resume_at={} rec_max_s={} rec_armed=-1 rec_rate={} rec_ch={} rec_bits={} rec_mode={} rec_target={} rec_gate={} rec_inputs={}{}",
                     s.frames,
                     s.file_bytes,
                     s.dropped_frames,
@@ -406,6 +407,7 @@ impl Recording {
                     self.into.as_ref().map_or("none", |i| i.plan.mode.name()),
                     self.into.as_ref().map_or("-", |i| i.plan.target.name()),
                     self.into.as_ref().and_then(|i| i.punch.as_ref()).map_or(-1, |p| i64::from(p.open)),
+                    a.recorder.format().inputs_text(),
                     self.timed_fields()
                 )
             }
@@ -435,13 +437,14 @@ impl Recording {
         };
         let limit = a.max_frames.map_or(String::new(), |m| format!(" of {}", clock(m / u64::from(fmt.rate.max(1)))));
         let mut text = format!(
-            "{warn}{state} {}{limit} · {} · {left} left on disk · peak {db}{} · {} Hz {} ch {}-bit · {}",
+            "{warn}{state} {}{limit} · {} · {left} left on disk · peak {db}{} · {} Hz {} ch {}-bit{} · {}",
             clock(elapsed),
             format_bytes(s.file_bytes),
             if a.clipped { " CLIP" } else { "" },
             fmt.rate,
             fmt.channels,
             fmt.bits,
+            if fmt.inputs != 0 { format!(" (inputs {})", fmt.inputs_text()) } else { String::new() },
             a.device
         );
         if let Some(e) = s.error {
@@ -468,9 +471,43 @@ impl Recording {
                 });
                 ui.end_row();
                 ui.label("Channels:");
-                egui::ComboBox::from_id_salt("rec-ch").selected_text(if fmt.channels == 1 { "Mono" } else { "Stereo" }).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut fmt.channels, 1, "Mono");
-                    ui.selectable_value(&mut fmt.channels, 2, "Stereo");
+                egui::ComboBox::from_id_salt("rec-ch")
+                    .selected_text(match fmt.channels {
+                        1 => "Mono".to_string(),
+                        2 => "Stereo".to_string(),
+                        n => format!("{n} channels"),
+                    })
+                    .show_ui(ui, |ui| {
+                        for n in 1..=8u16 {
+                            let label = match n {
+                                1 => "Mono".to_string(),
+                                2 => "Stereo".to_string(),
+                                n => format!("{n} channels"),
+                            };
+                            if ui.selectable_value(&mut fmt.channels, n, label).clicked() {
+                                fmt.inputs = 0;
+                            }
+                        }
+                    });
+                ui.end_row();
+                ui.label("Inputs:");
+                ui.horizontal_wrapped(|ui| {
+                    let mut picked: Vec<u32> = fmt.pick().indices().iter().map(|i| u32::from(*i) + 1).collect();
+                    let mut changed = false;
+                    for n in 1..=8u32 {
+                        let mut on = picked.contains(&n);
+                        if ui.checkbox(&mut on, n.to_string()).changed() {
+                            if on {
+                                picked.push(n);
+                            } else if picked.len() > 1 {
+                                picked.retain(|p| *p != n);
+                            }
+                            changed = true;
+                        }
+                    }
+                    if changed && let Ok(f) = fmt.with_inputs(&picked) {
+                        *fmt = f;
+                    }
                 });
                 ui.end_row();
                 ui.label("Bit depth:");
