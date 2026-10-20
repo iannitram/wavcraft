@@ -17,6 +17,8 @@ dirs.workspace = true
 sysinfo.workspace = true
 log.workspace = true
 getrandom.workspace = true
+serde.workspace = true
+postcard.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true

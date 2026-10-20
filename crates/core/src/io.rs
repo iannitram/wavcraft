@@ -142,6 +142,9 @@ pub struct OpenOptions {
     /// How free space is measured before writing ([`space::free_space`](crate::space::free_space)
     /// when `None`; tests pass their own). When it returns `None` the check is skipped.
     pub free_space: Option<FreeSpaceFn>,
+    /// The folder for saved waveform overviews ([`crate::peakcache`]); `None` leaves the cache
+    /// off. Used by [`Document::open_in`](crate::Document::open_in).
+    pub peak_cache: Option<PathBuf>,
 }
 
 /// Frames per chunk read (and per block written).

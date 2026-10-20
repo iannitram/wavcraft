@@ -107,6 +107,12 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Window › Properties.
+    show_properties: bool,
+    /// Where saved waveform overviews live (`WAVCRAFT_PEAK_CACHE_DIR`, else the system cache).
+    peak_dir: PathBuf,
+    /// How the open file's overviews were made (cache hit or computed), for `PEAKCACHE info`.
+    peak_report: Option<wavcraft_core::PeakReport>,
 }
 
 impl WaveApp {
@@ -161,6 +167,9 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            show_properties: false,
+            peak_dir: std::env::var_os("WAVCRAFT_PEAK_CACHE_DIR").map_or_else(wavcraft_core::peakcache::default_dir, PathBuf::from),
+            peak_report: None,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -181,7 +190,7 @@ impl WaveApp {
         let (tx, rx) = channel();
         let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
         let (ctx, job_path, job_cancel, job_progress) = (ctx.clone(), path.clone(), cancel.clone(), progress.clone());
-        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), ..OpenOptions::default() };
+        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), peak_cache: Some(self.peak_dir.clone()), ..OpenOptions::default() };
         std::thread::spawn(move || {
             let mut last = 0;
             let mut report = |p: f64| {
@@ -211,6 +220,12 @@ impl WaveApp {
         };
         match result {
             Ok(doc) => {
+                let r = &doc.peak_report;
+                log::info!(target: "wavcraft", "peaks for {}: {} in {:.1} ms", path.display(), r.result, r.ms);
+                if let Some(e) = &r.write_error {
+                    log::warn!(target: "wavcraft", "the peak cache could not be written: {e}");
+                }
+                self.peak_report = Some(r.clone());
                 self.player.set_audio(Some(doc.audio.clone()));
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
@@ -466,6 +481,30 @@ impl WaveApp {
         }
     }
 
+    /// Window › Properties: the open file's path, format, rate, channels, depth, duration, size.
+    fn properties_window(&mut self, ctx: &egui::Context) {
+        if !self.show_properties {
+            return;
+        }
+        let rows = self.doc.as_ref().map(Document::properties);
+        let mut open = true;
+        egui::Window::new("Properties").open(&mut open).resizable(true).default_width(380.0).show(ctx, |ui| match &rows {
+            Some(rows) => {
+                egui::Grid::new("properties").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                    for (label, value) in rows {
+                        ui.label(*label);
+                        ui.add(egui::Label::new(value).wrap().selectable(true));
+                        ui.end_row();
+                    }
+                });
+            }
+            None => {
+                ui.label("No file is open.");
+            }
+        });
+        self.show_properties = open;
+    }
+
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
         if !self.confirm_clear_history {
             return;
@@ -692,6 +731,26 @@ impl WaveApp {
                     None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
                 }
             }
+            "PEAKCACHE" => match rest.trim() {
+                "info" => {
+                    let (files, bytes) = wavcraft_core::peakcache::info(&self.peak_dir);
+                    let last = self
+                        .peak_report
+                        .as_ref()
+                        .map_or_else(|| "last=none last_ms=0".to_string(), |r| format!("last={} last_ms={:.1}", r.result, r.ms));
+                    format!("OK files={files} bytes={bytes} cap={} {last}", wavcraft_core::peakcache::DEFAULT_CAP_BYTES)
+                }
+                "clear" => format!("OK removed={}", wavcraft_core::peakcache::clear(&self.peak_dir)),
+                _ => "ERR PEAKCACHE info|clear".to_string(),
+            },
+            "PROPERTIES" => match &self.doc {
+                Some(d) => {
+                    let parts: Vec<String> =
+                        d.properties().into_iter().map(|(k, v)| format!("{}={}", k.to_lowercase().replace(' ', "_"), v)).collect();
+                    format!("OK {}", parts.join(" | "))
+                }
+                None => "ERR PROPERTIES needs a file open".to_string(),
+            },
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -839,6 +898,7 @@ impl WaveApp {
                 }
                 ui.separator();
                 ui.checkbox(&mut self.show_history, "History panel");
+                ui.checkbox(&mut self.show_properties, "Properties");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -1096,6 +1156,7 @@ impl eframe::App for WaveApp {
         if self.show_history {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
+        self.properties_window(&ctx);
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));

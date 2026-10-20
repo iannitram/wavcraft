@@ -9,6 +9,8 @@
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`
+//! - `PEAKCACHE info` → `OK files=<n> bytes=<n> cap=<n> last=<hit|miss|stale|corrupt|off|none> last_ms=<ms>` (the cache folder, and how the open file's overviews were made); `PEAKCACHE clear` → `OK removed=<n>`
+//! - `PROPERTIES` → `OK path=… | format=… | sample_rate=… | channels=… | bit_depth=… | duration=… | size=…` (the Properties panel's rows; BWF fields and warnings follow when present)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)

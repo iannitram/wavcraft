@@ -6,6 +6,7 @@
 //! - [`doc`]: the piece table ([`DocState`]) and its one read path; [`doc::edit`], the edits
 //!   (pure functions from one state to the next), and [`doc::history`], undo with a disk cap.
 //! - [`io`]: streamed open into the store.
+//! - [`peakcache`]: saved waveform overviews, so a long file reopens fast.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
@@ -19,6 +20,7 @@ pub mod actions;
 pub mod doc;
 pub mod document;
 pub mod io;
+pub mod peakcache;
 pub mod random;
 pub mod save;
 pub mod settings;
@@ -31,7 +33,7 @@ pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;
 pub use doc::{Channel, DocState, Piece, SourceFormat};
 
-pub use document::{Document, OpenError};
+pub use document::{Document, OpenError, PeakReport};
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
 pub use view::{Selection, Viewport, format_time};
