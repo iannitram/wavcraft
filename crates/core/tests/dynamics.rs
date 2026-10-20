@@ -273,3 +273,31 @@ fn the_limiter_is_the_final_ceiling_even_with_makeup() {
     let top = db(peak(&out[0]));
     assert!(top <= -1.0 + 0.1, "peak {top} dB above the -1 dB ceiling");
 }
+
+#[test]
+fn a_non_finite_sample_does_not_poison_the_rest_of_the_run() {
+    let frames = RATE as usize;
+    let clean = sine(-20.0, 1000.0, frames);
+    let mut glitched = clean.clone();
+    glitched[10_000] = f32::INFINITY;
+    glitched[10_010] = f32::NAN;
+    for args in ["lookahead_ms=0", "lookahead_ms=5"] {
+        let a = run("clean", args, std::slice::from_ref(&clean), 0..0);
+        let b = run("glitch", args, std::slice::from_ref(&glitched), 0..0);
+        // well after the glitch and a release time (100 ms)
+        let from = 10_010 + RATE as usize / 2;
+        assert!(b[0][from..].iter().all(|v| v.is_finite()), "{args}: the output stays finite after the glitch");
+        let (pa, pb) = (db(peak(&a[0][from..])), db(peak(&b[0][from..])));
+        assert!((pa - pb).abs() < 0.5, "{args}: clean {pa:.2} dB, glitched {pb:.2} dB");
+    }
+}
+
+#[test]
+fn the_first_lookahead_frames_are_delayed_and_silent() {
+    let x = vec![0.1f32; 4000];
+    let out = run("delay", "lookahead_ms=5 expand_ratio=1 comp_ratio=1 limit_db=0", std::slice::from_ref(&x), 0..0);
+    let l = (5.0 * RATE as f64 / 1000.0) as usize;
+    assert!(out[0][..l].iter().all(|v| *v == 0.0), "the first {l} frames are silent");
+    assert!((out[0][l] - 0.1).abs() < 1e-6, "then the input appears, delayed: {}", out[0][l]);
+    assert!((out[0][3999] - 0.1).abs() < 1e-6);
+}

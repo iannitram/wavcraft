@@ -151,7 +151,12 @@ struct DynamicsRun {
     heard: Vec<f32>,
 }
 
+/// The detector's view of a sample: a NaN or infinite sample counts as full scale, so the
+/// detector state always stays finite.
 fn level_db(x: f32) -> f64 {
+    if !x.is_finite() {
+        return 0.0;
+    }
     (20.0 * (x.abs() as f64).max(1e-12).log10()).max(FLOOR_DB)
 }
 
@@ -181,15 +186,15 @@ impl Run for DynamicsRun {
                 self.heard[c] = if delay > 0 { self.ring[c][self.pos] } else { ch[f] };
             }
             if self.linked {
-                let loudest = input.iter().map(|ch| ch[f].abs()).fold(0.0f32, f32::max);
+                let loudest = input.iter().map(|ch| if ch[f].is_finite() { ch[f].abs() } else { 1.0 }).fold(0.0f32, f32::max);
                 let level = self.det[0].follow(level_db(loudest), self.attack, self.release);
-                let ceiling = (delay > 0).then(|| self.heard.iter().fold(0.0f32, |m, v| m.max(v.abs())));
+                let ceiling = (delay > 0).then(|| self.heard.iter().fold(0.0f32, |m, v| m.max(if v.is_finite() { v.abs() } else { 1.0 })));
                 let g = self.gain_db(level, ceiling);
                 self.gains.iter_mut().for_each(|x| *x = g);
             } else {
                 for (c, ch) in input.iter().enumerate() {
                     let level = self.det[c].follow(level_db(ch[f]), self.attack, self.release);
-                    let ceiling = (delay > 0).then(|| self.heard[c].abs());
+                    let ceiling = (delay > 0).then(|| if self.heard[c].is_finite() { self.heard[c].abs() } else { 1.0 });
                     self.gains[c] = self.gain_db(level, ceiling);
                 }
             }
