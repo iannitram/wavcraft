@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
-use wavcraft_core::save::{SampleType, SaveFormat, save};
+use wavcraft_core::save::{SampleType, SaveFormat, VORBIS_DEFAULT_QUALITY, save, save_vorbis};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
@@ -98,6 +98,8 @@ pub struct WaveApp {
     saving: Option<Saving>,
     /// File › Sample Type on Save: the type every save writes, or `None` to keep the file's own.
     save_type: Option<SampleType>,
+    /// Ogg Vorbis VBR quality, -1 to 10 (`SAVE ... quality=`).
+    vorbis_quality: f32,
     /// The "save changes before closing?" prompt is up.
     confirm_close: bool,
     /// Closing was confirmed (or nothing was unsaved): let the next close request through.
@@ -159,6 +161,7 @@ impl WaveApp {
             saved: None,
             saving: None,
             save_type: None,
+            vorbis_quality: VORBIS_DEFAULT_QUALITY,
             confirm_close: false,
             allow_close: false,
             editor_width: 800.0,
@@ -579,7 +582,7 @@ impl WaveApp {
                 let stem = self.doc_path.file_stem().map_or_else(|| "Untitled".to_string(), |s| s.to_string_lossy().into_owned());
                 let first = own_format.unwrap_or(SaveFormat::Wav);
                 let mut dialog = rfd::FileDialog::new().set_file_name(format!("{stem}.{}", first.extension()));
-                for f in [first, SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac].iter().fold(Vec::new(), |mut v, f| {
+                for f in [first, SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac, SaveFormat::Vorbis].iter().fold(Vec::new(), |mut v, f| {
                     if !v.contains(f) {
                         v.push(*f);
                     }
@@ -601,7 +604,7 @@ impl WaveApp {
         let (path, format) = match SaveFormat::from_path(&path) {
             Some(f) => (path, f),
             None if path.extension().is_none() => (path.with_extension("wav"), SaveFormat::Wav),
-            None => return Err(format!("{} is not a format WavCraft saves: use .wav, .aiff or .flac", path.display())),
+            None => return Err(format!("{} is not a format WavCraft saves: use .wav, .aiff, .flac or .ogg", path.display())),
         };
         let wanted = ty.unwrap_or_else(|| SampleType::for_source(state.source()));
         if !format.accepts(wanted) && (explicit || ty.is_some()) {
@@ -610,13 +613,19 @@ impl WaveApp {
         let ty = format.fit(wanted);
         let (tx, rx) = channel();
         let progress = Arc::new(AtomicU32::new(0));
+        let quality = self.vorbis_quality;
         let (job_state, job_path, job_progress, ctx) = (state.clone(), path.clone(), progress.clone(), ctx.clone());
         std::thread::spawn(move || {
             let mut report = |p: f64| {
                 job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
                 ctx.request_repaint();
             };
-            let _ = tx.send(save(&job_state, &job_path, format, ty, &mut report).map_err(|e| e.to_string()));
+            let done = if format == SaveFormat::Vorbis {
+                save_vorbis(&job_state, &job_path, quality, &mut report)
+            } else {
+                save(&job_state, &job_path, format, ty, &mut report)
+            };
+            let _ = tx.send(done.map_err(|e| e.to_string()));
             ctx.request_repaint();
         });
         self.player.stop();
@@ -787,9 +796,16 @@ impl WaveApp {
             },
             "SAVE" => {
                 // `SAVE <path> [bits=16|24|32] [float=0|1]`: the options end the line.
-                match parse_save_args(rest) {
+                let (rest, quality) = match take_quality(rest) {
+                    Ok(x) => x,
+                    Err(e) => return format!("ERR {e}"),
+                };
+                match parse_save_args(&rest) {
                     Err(e) => format!("ERR {e}"),
                     Ok((path, ty)) => {
+                        if let Some(q) = quality {
+                            self.vorbis_quality = q;
+                        }
                         let to = (!path.is_empty()).then(|| PathBuf::from(path));
                         match self.save_with(ctx, to.is_some(), to, false, ty.or(self.save_type), ty.is_some()) {
                             Ok(()) => "OK".to_string(),
@@ -1239,6 +1255,23 @@ fn palette() -> Vec<Color32> {
         .collect()
 }
 
+/// Takes a `quality=<-1..10>` option (Ogg Vorbis VBR) out of `SAVE`'s arguments: returns the rest
+/// and the quality, if given.
+fn take_quality(rest: &str) -> Result<(String, Option<f32>), String> {
+    let mut quality = None;
+    let mut kept = Vec::new();
+    for (i, tok) in rest.split_whitespace().enumerate() {
+        match tok.strip_prefix("quality=").filter(|_| i > 0) {
+            Some(v) => {
+                let q: f32 = v.parse().ok().filter(|q: &f32| (-1.0..=10.0).contains(q)).ok_or_else(|| format!("quality=<-1..10>, not {v}"))?;
+                quality = Some(q);
+            }
+            None => kept.push(tok),
+        }
+    }
+    Ok((kept.join(" "), quality))
+}
+
 /// `SAVE`'s arguments: a path (may hold spaces) then `bits=<16|24|32>` and `float=<0|1>` in any
 /// order. Returns the path and the sample type they name, if any.
 fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>), String> {
@@ -1314,6 +1347,9 @@ mod tests {
         assert_eq!(parse_save_args("/a b/c.wav bits=24 float=0"), Ok(("/a b/c.wav", Some(SampleType::Int24))));
         assert_eq!(parse_save_args("x.aiff float=1"), Ok(("x.aiff", Some(SampleType::Float32))));
         assert_eq!(parse_save_args("x.aiff bits=32 float=1"), Ok(("x.aiff", Some(SampleType::Float32))));
+        assert_eq!(take_quality("a b.ogg quality=7.5 bits=16"), Ok(("a b.ogg bits=16".to_string(), Some(7.5))));
+        assert_eq!(take_quality("x.ogg"), Ok(("x.ogg".to_string(), None)));
+        assert!(take_quality("x.ogg quality=11").is_err() && take_quality("x.ogg quality=loud").is_err());
         assert_eq!(parse_save_args("x.flac bits=16"), Ok(("x.flac", Some(SampleType::Int16))));
         assert_eq!(parse_save_args(""), Ok(("", None)));
         assert!(parse_save_args("x.wav bits=20").is_err());
