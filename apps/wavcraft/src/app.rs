@@ -891,7 +891,7 @@ impl WaveApp {
     fn effects_menu(&mut self, ui: &mut egui::Ui) {
         let sel = self.selection_range();
         let mut chosen = None;
-        for a in TABLE.iter().filter(|a| a.name.starts_with("effect.")) {
+        for a in actions::all_actions().filter(|a| a.name.starts_with("effect.")) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
             if ui.add_enabled(enabled, egui::Button::new(a.menu)).clicked() {
                 chosen = Some(a.id);

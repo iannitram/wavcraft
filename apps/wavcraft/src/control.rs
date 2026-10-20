@@ -9,7 +9,7 @@
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)
-//! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`
+//! - `ACTION <name>` (an action table name, `edit.delete`, or an effect, `effect.invert`) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
 //! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1>` (which panels are shown)
 //! - `PARAM <amplify.db|normalize.db> <number>` → `OK` (the number Effects › Amplify or Normalize uses)

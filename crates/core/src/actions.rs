@@ -10,6 +10,7 @@ use std::ops::Range;
 use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, PasteAt};
 use crate::doc::history::History;
 use crate::effects::{self, EffectParams, FadeCurve, FadeDir};
+use std::sync::OnceLock;
 
 /// An action's id, as the menu, the keys and the control channel name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,6 +52,8 @@ pub enum ActionId {
     FadeInCosine,
     FadeOutLinear,
     FadeOutCosine,
+    /// A registered effect: its index in [`effects::all`].
+    Effect(u16),
 }
 
 /// Which part of the program carries an action out.
@@ -180,14 +183,38 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::FadeOutCosine, "effect.fadeOut.cosine", "Fade Out (Raised Cosine)", &[]),
 ];
 
+/// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
+/// leaked once so rows can be `'static` like the table's.
+fn effect_rows() -> &'static [Action] {
+    static ROWS: OnceLock<Vec<Action>> = OnceLock::new();
+    ROWS.get_or_init(|| {
+        effects::all()
+            .iter()
+            .enumerate()
+            .map(|(i, e)| Action {
+                id: ActionId::Effect(i as u16),
+                name: Box::leak(format!("effect.{}", e.id()).into_boxed_str()),
+                menu: e.name(),
+                keys: &[],
+                kind: Kind::Edit,
+            })
+            .collect()
+    })
+}
+
+/// The table's rows followed by one row per registered effect: the whole action table.
+pub fn all_actions() -> impl Iterator<Item = &'static Action> {
+    TABLE.iter().chain(effect_rows())
+}
+
 /// The table row for `id`.
 pub fn action(id: ActionId) -> &'static Action {
-    TABLE.iter().find(|a| a.id == id).unwrap_or(&TABLE[0])
+    all_actions().find(|a| a.id == id).unwrap_or(&TABLE[0])
 }
 
 /// The action the control channel calls `name`.
 pub fn by_name(name: &str) -> Option<&'static Action> {
-    TABLE.iter().find(|a| a.name == name)
+    all_actions().find(|a| a.name == name)
 }
 
 /// What a run did, for the window to follow.
@@ -228,7 +255,8 @@ pub enum Repeat {
 fn repeatable(id: ActionId) -> bool {
     matches!(
         id,
-        ActionId::Silence
+        ActionId::Effect(_)
+            | ActionId::Silence
             | ActionId::Paste
             | ActionId::Crop
             | ActionId::ZeroInward
@@ -337,6 +365,8 @@ impl Editor {
             | ActionId::ZeroLeftToRight
             | ActionId::ZeroRightToLeft
             | ActionId::ZeroRightToRight => has_sel,
+            // An effect takes the selection, or the whole file when there is none.
+            ActionId::Effect(_) => self.len() > 0,
             ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
                 Some(Repeat::Action(last)) => self.enabled(last, selection),
                 Some(Repeat::InsertSilence(_)) => true,
@@ -517,6 +547,12 @@ impl Editor {
                     ActionId::FadeOutLinear => effects::fade(&doc, range, channels, FadeDir::Out, FadeCurve::Linear, xf)?,
                     _ => effects::fade(&doc, range, channels, FadeDir::Out, FadeCurve::RaisedCosine, xf)?,
                 };
+                (e, sel.clone())
+            }
+            ActionId::Effect(i) => {
+                let Some(effect) = effects::all().get(usize::from(i)) else { return unchanged(sel) };
+                let cancel = std::sync::atomic::AtomicBool::new(false);
+                let e = effects::apply(*effect, &effects::Params::defaults(*effect), &doc, sel.clone(), channels, xf, &cancel)?;
                 (e, sel.clone())
             }
             ActionId::SelectAll => return unchanged(0..len),
