@@ -24,9 +24,6 @@ soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "
 # (its metering), at the head of our fork's `ours` branch. All MIT OR Apache-2.0. The mix crate pulls
 # in SoundCraft's plugin hosts (CLAP, VST3, AU), which only compile into the build; none is loaded.
 soundcraft-mix = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
-# The mix crates' own audio-io (same rev), kept apart from the older audio-io pin above so the file
-# decoding does not change with this feature; only the panel's synthetic tones use it.
-mix-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b", package = "soundcraft-audio-io" }
 soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
 
 # Multitrack basics (f103): SoundCraft's session model (MIT OR Apache-2.0), pinned to the head of

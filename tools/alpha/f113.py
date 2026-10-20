@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""f104 scripted run: the Mixer panel through the control channel.
+"""f113 scripted run: the Mixer panel through the control channel.
 
-    python3 tools/alpha/f104.py --exe <path to the wavcraft binary>
+    python3 tools/alpha/f113.py --exe <path to the wavcraft binary>
 
-Starts the app with a fresh scratch HOME, shows the Mixer panel, then checks `MIXER state` against
-`MIXER set` for fader, pan, mute and solo (the meters are the mix engine's own), quits through the
+Starts the app with a fresh scratch HOME, makes a session with two tracks (a synthetic tone clip each),
+sets fader, pan and mute through `MIXER set` and checks `SESSION state` (the session model) and
+`MIXER state` (the strips), adds and removes a track and checks the strips follow, quits through the
 channel and fails on any ERROR line in the app's log. The scratch folder is deleted at the end.
 """
-import argparse, math, os, shutil, socket, subprocess, sys, tempfile, time
+import argparse, json, math, os, struct, wave, shutil, socket, subprocess, sys, tempfile, time
 
-PORT = 47204
+PORT = 47213
 
 
 class Control:
@@ -48,7 +49,7 @@ def main():
     exe = ap.parse_args().exe
     base = os.path.expanduser("~/dev/craft/_wt/scratch")
     os.makedirs(base, exist_ok=True)
-    work = tempfile.mkdtemp(prefix="f104.", dir=base)
+    work = tempfile.mkdtemp(prefix="f113.", dir=base)
     home = os.path.join(work, "home")
     logs = os.path.join(work, "logs")
     os.makedirs(home)
@@ -62,6 +63,13 @@ def main():
         checks.append((label, bool(ok), detail))
         print(("PASS " if ok else "FAIL ") + label + ("" if ok else f"  [{detail}]"), flush=True)
 
+    work_wav = os.path.join(work, "tone.wav")
+    with wave.open(work_wav, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(b"".join(struct.pack("<h", int(16000 * math.sin(2 * math.pi * 440 * i / 48000))) for i in range(48000 * 2)))
+
     err = open(os.path.join(work, "stderr.log"), "w")
     proc = subprocess.Popen([exe], env=env, stdout=err, stderr=err)
     try:
@@ -70,37 +78,33 @@ def main():
                 break
             time.sleep(0.5)
         c = Control(PORT, token)
+        check("without a session the mixer says so", c.ask("MIXER state").startswith("ERR MIXER: no multitrack session"))
         check("the Mixer panel opens", c.ask("MIXER show") == "OK")
+        check("a session is made", c.ask("SESSION new Alpha rate=48000").startswith("OK"))
+        check("two tracks", c.ask("TRACK add Drums mono").startswith("OK") and c.ask("TRACK add Bass mono").startswith("OK"))
+        check("a clip on each", c.ask(f"CLIP add 1 {work_wav} 0").startswith("OK") and c.ask(f"CLIP add 2 {work_wav} 0").startswith("OK"))
         s = parse(c.ask("MIXER state"))
-        t1 = s["t1"]
-        check("four tracks and a master", s["head"]["tracks"] == "4" and "master" in s and "t4" in s, s["head"])
-        check("a new strip is at unity, centred, audible and sounding", t1["vol"] == 0 and t1["pan"] == 0 and t1["audible"] == 1 and abs(t1["peak"] + 6.0) < 0.5, t1)  # a 0.5 sine: -6 dB, strip meter taken before the pan
-        base_peak = t1["peak"]
-        s = parse(c.ask("MIXER set 1 vol=-12"))
-        check("the fader lowers the strip's meter by the same dB", abs((base_peak - s["t1"]["peak"]) - 12) < 0.5 and s["t1"]["vol"] == -12, s["t1"])
-        check("the other strips are untouched", s["t2"]["vol"] == 0 and abs(s["t2"]["peak"] - parse(c.ask("MIXER state"))["t2"]["peak"]) < 0.01)
-        parse(c.ask("MIXER set 1 vol=0 pan=0 solo=1"))
-        centre = parse(c.ask("MIXER state"))["master"]["peak"]
-        s = parse(c.ask("MIXER set 1 pan=-1"))
-        left = s["master"]["peak"]
-        check("hard-left pan: the main mix is 3 dB louder than centre in its loudest channel (constant-power law)",
-              s["t1"]["pan"] == -1 and abs((left - centre) - 3.01) < 0.5, f"centre {centre} left {left}")
-        parse(c.ask("MIXER set 1 solo=0"))
-        s = parse(c.ask("MIXER set 1 pan=0"))
-        s = parse(c.ask("MIXER set 2 mute=1"))
-        check("mute silences the strip and its meter", s["t2"]["mute"] == 1 and s["t2"]["audible"] == 0 and s["t2"]["peak"] < -100, s["t2"])
-        check("the others keep sounding", s["t1"]["audible"] == 1 and s["t1"]["peak"] > -20)
-        s = parse(c.ask("MIXER set 3 solo=1"))
-        check("solo silences every other strip", s["head"]["any_solo"] == "1" and s["t3"]["audible"] == 1 and s["t3"]["peak"] > -20
-              and s["t1"]["audible"] == 0 and s["t1"]["peak"] < -100 and s["t4"]["audible"] == 0, s)
-        s = parse(c.ask("MIXER set 3 solo=0 mute=0"))
-        s = parse(c.ask("MIXER set 2 mute=0"))
-        check("clearing solo and mute brings every strip back", all(s[f"t{i}"]["audible"] == 1 for i in range(1, 5)) and s["head"]["any_solo"] == "0", s["head"])
-        s = parse(c.ask("MIXER set master vol=-6"))
-        check("the master fader is a strip too", s["master"]["vol"] == -6, s["master"])
-        check("out-of-range values are refused or clamped", c.ask("MIXER set 1 vol=loud").startswith("ERR") and parse(c.ask("MIXER set 1 vol=99"))["t1"]["vol"] == 12)
-        check("an unknown track is refused", c.ask("MIXER set 9 vol=0").startswith("ERR"))
-        time.sleep(1.0)  # let the panel draw a few frames with real meters
+        check("one strip per session track, plus the master", s["head"]["tracks"] == "2" and "t1" in s and "t2" in s and "master" in s, s["head"])
+        check("the strips meter the session's clips", s["t1"]["peak"] > -20 and s["t2"]["peak"] > -20, s)
+
+        def tracks():
+            return json.loads(c.ask("SESSION state")[3:].strip())["tracks"]
+
+        c.ask("MIXER set 1 vol=-6 pan=-0.5 mute=1")
+        t = tracks()[0]
+        check("fader, pan and mute are in SESSION state", abs(t["volume_db"] + 6) < 0.05 and abs(t["pan"] + 0.5) < 0.01 and t["mute"] is True, t)
+        check("the other track is untouched", tracks()[1]["volume_db"] == 0 and tracks()[1]["mute"] is False)
+        c.ask("TRACK volume 2 -9")
+        s = parse(c.ask("MIXER state"))
+        check("an edit made on the session shows on the strip", abs(s["t2"]["vol"] + 9) < 0.05, s["t2"])
+        check("a muted strip is silent", s["t1"]["audible"] == 0 and s["t1"]["peak"] < -100, s["t1"])
+        c.ask("TRACK add Vox stereo")
+        check("an added track is a new strip", parse(c.ask("MIXER state"))["head"]["tracks"] == "3")
+        c.ask("TRACK remove 1")
+        s = parse(c.ask("MIXER state"))
+        check("a removed track's strip goes", s["head"]["tracks"] == "2" and abs(s["t1"]["vol"] + 9) < 0.05, s["head"])
+        check("an unknown strip is refused", c.ask("MIXER set 9 vol=0").startswith("ERR"))
+        time.sleep(1.0)  # let the panel draw a few frames
         check("the app is still up after drawing the panel", proc.poll() is None)
         check("QUIT closes the app", c.ask("QUIT") == "OK")
         for _ in range(40):

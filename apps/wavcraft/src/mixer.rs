@@ -3,25 +3,18 @@
 //! solo), the fader taper is the model's `fader_pos_to_db` / `fader_db_to_pos`, the pan law is
 //! `soundcraft_dsp::pan` and the meters are the mix engine's `StripMeter`s.
 //!
-//! The multitrack session is another feature's (issue 305), so the panel runs a small session of
-//! its own, made in code: a few tracks of synthetic tones. When the multitrack session lands, the
-//! panel is pointed at its `Session` instead (`MixerModel::session_mut`).
+//! The panel owns no session: every call is given the multitrack session's `Session` (f113), one
+//! strip per audio track plus the master, so a fader, pan, mute or solo writes the session model
+//! itself and a track added or removed there shows up here on the next frame.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use soundcraft_dsp::pan::PanLaw;
 use soundcraft_mix::MixEngine;
-use soundcraft_model::time::SampleRate;
-use soundcraft_model::{ChannelFormat, Clip, Session, SourceAudio, SourceId, TrackId, TrackKind, fader_db_to_pos, fader_pos_to_db};
+use soundcraft_model::{Session, TrackId, TrackKind, fader_db_to_pos, fader_pos_to_db};
 
-use mix_audio_io::AudioBuffer;
-
-const RATE: u32 = 48_000;
 /// Frames rendered for one meter reading.
 const BLOCK: usize = 1024;
-/// Seconds of tone in each demo track (the meter loops over it).
-const TONE_SECONDS: usize = 4;
 /// Below this a fader reads "-inf" and a meter is empty.
 pub const FLOOR_DB: f32 = -60.0;
 /// Where the control channel measures (a steady stretch of the tones).
@@ -84,149 +77,145 @@ pub fn db_text(db: f32) -> String {
     if db <= -143.0 { "-inf".to_string() } else { format!("{db:.1}") }
 }
 
-/// The panel's session, the mix engine that meters it and the last readings.
+/// The audio tracks of `s` in strip order (the master is separate).
+pub fn track_ids(s: &Session) -> Vec<TrackId> {
+    s.tracks.iter().filter(|t| t.kind == TrackKind::Audio).map(|t| t.id).collect()
+}
+
+/// The session's master track, if it has one (a session made here always does).
+pub fn master_id(s: &Session) -> Option<TrackId> {
+    s.tracks.iter().find(|t| t.kind == TrackKind::Master).map(|t| t.id)
+}
+
+fn any_solo(s: &Session) -> bool {
+    s.tracks.iter().any(|t| t.mixer.solo && !t.inactive)
+}
+
+/// The mix engine's rule: silent when muted, or when another track is soloed (unless solo-safe).
+pub fn audible(s: &Session, id: TrackId) -> bool {
+    let Some(t) = s.track(id) else { return false };
+    if t.kind == TrackKind::Master {
+        return true;
+    }
+    !(t.mixer.mute || (any_solo(s) && !t.mixer.solo && !t.mixer.solo_safe))
+}
+
+/// Apply `cmd` to a strip of `s`; the model clamps what it is given (fader -144..+12 dB, pan -1..1).
+pub fn set(s: &mut Session, id: TrackId, cmd: SetCmd) -> Result<(), String> {
+    let t = s.track_mut(id).ok_or("no such track")?;
+    if let Some(v) = cmd.vol {
+        t.mixer.volume_db = v;
+    }
+    if let Some(p) = cmd.pan {
+        // A mono strip has one pan; a stereo strip's pan is a balance both channels carry.
+        let n = t.mixer.pan.len().max(1);
+        t.mixer.pan = vec![p; n];
+    }
+    if let Some(m) = cmd.mute {
+        t.mixer.mute = m;
+    }
+    if let Some(v) = cmd.solo {
+        t.mixer.solo = v;
+    }
+    t.mixer.sanitize();
+    Ok(())
+}
+
+/// Track by 1-based number, or `master`.
+pub fn resolve(s: &Session, word: &str) -> Result<TrackId, String> {
+    if word.eq_ignore_ascii_case("master") {
+        return master_id(s).ok_or_else(|| "this session has no master".to_string());
+    }
+    let n: usize = word.parse().map_err(|_| format!("{word}: a track number from 1, or master"))?;
+    n.checked_sub(1).and_then(|i| track_ids(s).get(i).copied()).ok_or_else(|| format!("no track {n}"))
+}
+
+/// Fader position (0..1, the model's taper) of a strip.
+pub fn fader_pos(s: &Session, id: TrackId) -> f32 {
+    s.track(id).map_or(0.0, |t| fader_db_to_pos(t.mixer.volume_db))
+}
+
+/// Move a fader by position through the model's taper.
+pub fn set_fader_pos(s: &mut Session, id: TrackId, pos: f32) {
+    let _ = set(s, id, SetCmd { vol: Some(fader_pos_to_db(pos)), ..SetCmd::default() });
+}
+
+/// The mix engine that meters a session and the last readings. It holds no session.
 pub struct MixerModel {
-    session: Session,
     engine: MixEngine,
-    tracks: Vec<TrackId>,
-    master: TrackId,
+    engine_rate: u32,
     pos: i64,
     peaks: HashMap<TrackId, f32>,
     master_peak: f32,
+    master: Option<TrackId>,
     pub pan_law: PanLaw,
 }
 
+impl Default for MixerModel {
+    fn default() -> Self {
+        MixerModel::new()
+    }
+}
+
 impl MixerModel {
-    /// `n` mono tracks of a sine each (different pitches, 0.5 amplitude) and a master.
-    pub fn demo(n: usize) -> MixerModel {
-        let mut session = Session::new("Mixer", SampleRate::HZ_48000);
-        let frames = RATE as usize * TONE_SECONDS;
-        let mut tracks = Vec::new();
-        for i in 0..n {
-            let t = session.add_track(TrackKind::Audio, ChannelFormat::Mono, Some(&format!("Track {}", i + 1)));
-            let hz = 220.0 * 2f32.powf(i as f32 / 2.0);
-            let tone: Vec<f32> = (0..frames).map(|k| 0.5 * (std::f32::consts::TAU * hz * k as f32 / RATE as f32).sin()).collect();
-            let buffer = AudioBuffer { sample_rate: RATE, channels: vec![tone] };
-            let src = SourceId(1000 + i as u64);
-            session.pool.insert(src, Arc::new(SourceAudio::new(buffer)));
-            let cid = session.new_clip_id();
-            if let Some(pl) = session.track_mut(t).and_then(|t| t.playlist_mut()) {
-                pl.clips.push(Clip::audio(cid, "tone", src, 0, 0, frames as i64));
-            }
-            tracks.push(t);
-        }
-        let master = session.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+    pub fn new() -> MixerModel {
         MixerModel {
-            session,
-            engine: MixEngine::new(RATE as f32, BLOCK),
-            tracks,
-            master,
+            engine: MixEngine::new(48_000.0, BLOCK),
+            engine_rate: 48_000,
             pos: 0,
             peaks: HashMap::new(),
             master_peak: 0.0,
+            master: None,
             pan_law: PanLaw::Minus3,
         }
     }
 
-    #[allow(dead_code)] // the seam for the multitrack session (issue 305)
-    pub fn session_mut(&mut self) -> &mut Session {
-        &mut self.session
-    }
-
-    /// The track ids, in strip order (the master is separate).
-    #[cfg(test)]
-    pub fn track_ids(&self) -> &[TrackId] {
-        &self.tracks
-    }
-
-    fn any_solo(&self) -> bool {
-        self.session.tracks.iter().any(|t| t.mixer.solo && !t.inactive)
-    }
-
-    /// The mix engine's rule: silent when muted, or when another track is soloed (unless solo-safe).
-    pub fn audible(&self, id: TrackId) -> bool {
-        let Some(t) = self.session.track(id) else { return false };
-        if t.kind == TrackKind::Master {
-            return true;
-        }
-        !(t.mixer.mute || (self.any_solo() && !t.mixer.solo && !t.mixer.solo_safe))
-    }
-
-    /// Apply `cmd` to a strip; the model clamps what it is given (fader -144..+12 dB, pan -1..1).
-    pub fn set(&mut self, id: TrackId, cmd: SetCmd) -> Result<(), String> {
-        let t = self.session.track_mut(id).ok_or("no such track")?;
-        if let Some(v) = cmd.vol {
-            t.mixer.volume_db = v;
-        }
-        if let Some(p) = cmd.pan {
-            // A mono strip has one pan; a stereo strip's pan is a balance both channels carry.
-            let n = t.mixer.pan.len().max(1);
-            t.mixer.pan = vec![p; n];
-        }
-        if let Some(m) = cmd.mute {
-            t.mixer.mute = m;
-        }
-        if let Some(s) = cmd.solo {
-            t.mixer.solo = s;
-        }
-        t.mixer.sanitize();
-        Ok(())
-    }
-
-    /// Track by 1-based number, or `master`.
-    pub fn resolve(&self, word: &str) -> Result<TrackId, String> {
-        if word.eq_ignore_ascii_case("master") {
-            return Ok(self.master);
-        }
-        let n: usize = word.parse().map_err(|_| format!("{word}: a track number from 1, or master"))?;
-        n.checked_sub(1).and_then(|i| self.tracks.get(i)).copied().ok_or_else(|| format!("no track {n}"))
-    }
-
-    /// Fader position (0..1, the model's taper) of a strip.
-    pub fn fader_pos(&self, id: TrackId) -> f32 {
-        self.session.track(id).map_or(0.0, |t| fader_db_to_pos(t.mixer.volume_db))
-    }
-
-    /// Move a fader by position through the model's taper.
-    pub fn set_fader_pos(&mut self, id: TrackId, pos: f32) {
-        let _ = self.set(id, SetCmd { vol: Some(fader_pos_to_db(pos)), ..SetCmd::default() });
-    }
-
     /// Render the next block of the session and read the meters (the panel calls this each frame).
-    pub fn step(&mut self) {
-        let len = (RATE as usize * TONE_SECONDS) as i64;
-        if self.pos + BLOCK as i64 >= len {
+    pub fn step(&mut self, s: &Session) {
+        let end = s.content_end();
+        if self.pos + BLOCK as i64 >= end {
             self.pos = 0;
         }
         let at = self.pos;
         self.pos += BLOCK as i64;
-        self.render_at(at);
+        self.render_at(s, at);
     }
 
     /// A steady reading for the control channel: two blocks from a fixed place.
-    pub fn measure(&mut self) {
-        self.render_at(MEASURE_AT);
-        self.render_at(MEASURE_AT + BLOCK as i64);
+    pub fn measure(&mut self, s: &Session) {
+        self.render_at(s, MEASURE_AT);
+        self.render_at(s, MEASURE_AT + BLOCK as i64);
     }
 
-    fn render_at(&mut self, at: i64) {
+    fn render_at(&mut self, s: &Session, at: i64) {
+        let rate = s.sample_rate.hz();
+        if rate != self.engine_rate {
+            self.engine = MixEngine::new(rate as f32, BLOCK);
+            self.engine_rate = rate;
+        }
         let mut out = vec![vec![0.0f32; BLOCK]; 2];
         self.engine.pan_law = self.pan_law;
-        self.engine.render(&self.session, at, BLOCK, &mut out);
-        for (id, m) in &self.engine.meters {
-            self.peaks.insert(*id, m.peaks.iter().copied().fold(0.0, f32::max));
-        }
+        self.engine.render(s, at, BLOCK, &mut out);
+        // Only tracks still in the session keep a reading.
+        self.peaks = self
+            .engine
+            .meters
+            .iter()
+            .filter(|(id, _)| s.track(**id).is_some())
+            .map(|(id, m)| (*id, m.peaks.iter().copied().fold(0.0, f32::max)))
+            .collect();
+        self.master = master_id(s);
         self.master_peak = self.engine.main_meter.peaks.iter().copied().fold(0.0, f32::max);
     }
 
     /// Peak dB of a strip at the last reading (the master's is the main mix).
     pub fn peak_db(&self, id: TrackId) -> f32 {
-        let lin = if id == self.master { self.master_peak } else { self.peaks.get(&id).copied().unwrap_or(0.0) };
+        let lin = if Some(id) == self.master { self.master_peak } else { self.peaks.get(&id).copied().unwrap_or(0.0) };
         gain_to_db(lin)
     }
 
-    pub fn strip(&self, id: TrackId) -> Option<StripState> {
-        let t = self.session.track(id)?;
+    pub fn strip(&self, s: &Session, id: TrackId) -> Option<StripState> {
+        let t = s.track(id)?;
         let pan = t.mixer.pan.first().copied().unwrap_or(0.0);
         Some(StripState {
             name: t.name.clone(),
@@ -234,46 +223,48 @@ impl MixerModel {
             pan,
             mute: t.mixer.mute,
             solo: t.mixer.solo,
-            audible: self.audible(id),
+            audible: audible(s, id),
             peak_db: self.peak_db(id),
         })
     }
 
     /// `MIXER state`, one line: `OK tracks=<n> any_solo=<0|1> | master ... | t1 ... | t2 ...`.
-    pub fn state_line(&mut self) -> String {
-        self.measure();
-        let one = |label: &str, s: &StripState| {
+    pub fn state_line(&mut self, s: &Session) -> String {
+        self.measure(s);
+        let one = |label: &str, st: &StripState| {
             format!(
                 "{label} vol={:.2} pan={:.2} mute={} solo={} audible={} peak={:.1}",
-                s.volume_db,
-                s.pan,
-                u8::from(s.mute),
-                u8::from(s.solo),
-                u8::from(s.audible),
-                s.peak_db
+                st.volume_db,
+                st.pan,
+                u8::from(st.mute),
+                u8::from(st.solo),
+                u8::from(st.audible),
+                st.peak_db
             )
         };
-        let mut line = format!("OK tracks={} any_solo={}", self.tracks.len(), u8::from(self.any_solo()));
-        if let Some(s) = self.strip(self.master) {
-            line.push_str(&format!(" | {}", one("master", &s)));
+        let ids = track_ids(s);
+        let mut line = format!("OK tracks={} any_solo={}", ids.len(), u8::from(any_solo(s)));
+        if let Some(st) = master_id(s).and_then(|m| self.strip(s, m)) {
+            line.push_str(&format!(" | {}", one("master", &st)));
         }
-        for (i, id) in self.tracks.clone().iter().enumerate() {
-            if let Some(s) = self.strip(*id) {
-                line.push_str(&format!(" | {}", one(&format!("t{}", i + 1), &s)));
+        for (i, id) in ids.iter().enumerate() {
+            if let Some(st) = self.strip(s, *id) {
+                line.push_str(&format!(" | {}", one(&format!("t{}", i + 1), &st)));
             }
         }
         line
     }
 
-    /// The control channel's `MIXER <state | set ...>` (what follows the verb).
-    pub fn control(&mut self, rest: &str) -> String {
+    /// The control channel's `MIXER <state | set ...>` (what follows the verb); `None` is no session.
+    pub fn control(&mut self, rest: &str, session: Option<&mut Session>) -> String {
+        let Some(s) = session else { return "ERR MIXER: no multitrack session (SESSION new <name> first)".to_string() };
         let words: Vec<&str> = rest.split_whitespace().collect();
         match words.as_slice() {
-            ["state"] => self.state_line(),
+            ["state"] => self.state_line(s),
             ["set", track, settings @ ..] => {
-                let done = self.resolve(track).and_then(|id| parse_set(settings).and_then(|c| self.set(id, c)));
+                let done = resolve(s, track).and_then(|id| parse_set(settings).and_then(|c| set(s, id, c)));
                 match done {
-                    Ok(()) => self.state_line(),
+                    Ok(()) => self.state_line(s),
                     Err(e) => format!("ERR MIXER set: {e}"),
                 }
             }
@@ -281,56 +272,54 @@ impl MixerModel {
         }
     }
 
-    /// Render the main mix of the session over `range` offline (tests).
-    #[cfg(test)]
-    fn render_main(&self, range: soundcraft_model::time::Range) -> Vec<Vec<f32>> {
-        soundcraft_mix::render_range(&self.session, range, 512)
-    }
-
-    /// The panel: one strip per track, then the master.
-    pub fn show(&mut self, ui: &mut egui::Ui) {
-        self.step();
+    /// The panel: one strip per audio track of the session, then the master.
+    pub fn show(&mut self, ui: &mut egui::Ui, session: Option<&mut Session>) {
+        let Some(s) = session else {
+            ui.label("No multitrack session. Make one with File > New > Multitrack Session; its tracks appear here.");
+            return;
+        };
+        self.step(s);
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
-        let mut ids: Vec<TrackId> = self.tracks.clone();
-        ids.push(self.master);
+        let mut ids = track_ids(s);
+        ids.extend(master_id(s));
         egui::ScrollArea::horizontal().show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 for id in ids {
-                    self.strip_ui(ui, id);
+                    self.strip_ui(ui, s, id);
                     ui.separator();
                 }
             });
         });
     }
 
-    fn strip_ui(&mut self, ui: &mut egui::Ui, id: TrackId) {
-        let Some(s) = self.strip(id) else { return };
-        let is_master = id == self.master;
+    fn strip_ui(&mut self, ui: &mut egui::Ui, sess: &mut Session, id: TrackId) {
+        let Some(s) = self.strip(sess, id) else { return };
+        let is_master = Some(id) == master_id(sess);
         ui.vertical(|ui| {
             ui.set_width(74.0);
             ui.label(egui::RichText::new(&s.name).strong());
             if !is_master {
                 ui.horizontal(|ui| {
                     if ui.selectable_label(s.mute, "M").on_hover_text("Mute").clicked() {
-                        let _ = self.set(id, SetCmd { mute: Some(!s.mute), ..SetCmd::default() });
+                        let _ = set(sess, id, SetCmd { mute: Some(!s.mute), ..SetCmd::default() });
                     }
                     if ui.selectable_label(s.solo, "S").on_hover_text("Solo").clicked() {
-                        let _ = self.set(id, SetCmd { solo: Some(!s.solo), ..SetCmd::default() });
+                        let _ = set(sess, id, SetCmd { solo: Some(!s.solo), ..SetCmd::default() });
                     }
                 });
                 let mut pan = s.pan;
                 if ui.add(egui::Slider::new(&mut pan, -1.0..=1.0).show_value(false)).on_hover_text(format!("Pan {pan:+.2}")).changed() {
-                    let _ = self.set(id, SetCmd { pan: Some(pan), ..SetCmd::default() });
+                    let _ = set(sess, id, SetCmd { pan: Some(pan), ..SetCmd::default() });
                 }
             }
             ui.horizontal(|ui| {
-                let mut pos = self.fader_pos(id);
+                let mut pos = fader_pos(sess, id);
                 let r = ui.add(egui::Slider::new(&mut pos, 0.0..=1.0).vertical().show_value(false));
                 if r.changed() {
-                    self.set_fader_pos(id, pos);
+                    set_fader_pos(sess, id, pos);
                 }
                 if r.double_clicked() {
-                    let _ = self.set(id, SetCmd { vol: Some(0.0), ..SetCmd::default() });
+                    let _ = set(sess, id, SetCmd { vol: Some(0.0), ..SetCmd::default() });
                 }
                 meter_ui(ui, s.peak_db, s.audible);
             });
@@ -367,11 +356,72 @@ mod tests {
     use soundcraft_dsp::pan::gains;
     use soundcraft_model::time::Range;
 
-    fn model() -> MixerModel {
-        MixerModel::demo(3)
+    use soundcraft_model_audio::AudioBuffer;
+    use wavcraft_core::multitrack::Multitrack;
+    use wavcraft_core::multitrack::soundcraft_model::BitDepthSetting;
+
+    const RATE: u32 = 48_000;
+
+    /// The mixer over a real multitrack session of `n` mono tracks, a sine each (0.5 amplitude,
+    /// different pitches), with the old method names so the tests read the same.
+    struct Rig {
+        m: MixerModel,
+        mt: Multitrack,
     }
 
-    fn id(m: &MixerModel, n: usize) -> TrackId {
+    fn tone(hz: f32) -> AudioBuffer {
+        let frames = RATE as usize * 4;
+        let t: Vec<f32> = (0..frames).map(|k| 0.5 * (std::f32::consts::TAU * hz * k as f32 / RATE as f32).sin()).collect();
+        AudioBuffer { sample_rate: RATE, channels: vec![t] }
+    }
+
+    fn rig(n: usize) -> Rig {
+        let mut mt = Multitrack::new("Mix", RATE, BitDepthSetting::Int24).unwrap();
+        for i in 0..n {
+            let t = mt.add_track(None, 1).unwrap();
+            mt.add_clip_buffer(t, "tone", "tone.wav", tone(220.0 * 2f32.powf(i as f32 / 2.0)), 0.0).unwrap();
+        }
+        Rig { m: MixerModel::new(), mt }
+    }
+
+    impl Rig {
+        fn track_ids(&self) -> Vec<TrackId> {
+            track_ids(&self.mt.session)
+        }
+        fn set(&mut self, id: TrackId, c: SetCmd) -> Result<(), String> {
+            set(&mut self.mt.session, id, c)
+        }
+        fn strip(&self, id: TrackId) -> Option<StripState> {
+            self.m.strip(&self.mt.session, id)
+        }
+        fn fader_pos(&self, id: TrackId) -> f32 {
+            fader_pos(&self.mt.session, id)
+        }
+        fn set_fader_pos(&mut self, id: TrackId, p: f32) {
+            set_fader_pos(&mut self.mt.session, id, p)
+        }
+        fn measure(&mut self) {
+            self.m.measure(&self.mt.session)
+        }
+        fn peak_db(&self, id: TrackId) -> f32 {
+            self.m.peak_db(id)
+        }
+        fn audible(&self, id: TrackId) -> bool {
+            audible(&self.mt.session, id)
+        }
+        fn control(&mut self, rest: &str) -> String {
+            self.m.control(rest, Some(&mut self.mt.session))
+        }
+        fn render_main(&self, range: Range) -> Vec<Vec<f32>> {
+            soundcraft_mix::render_range(&self.mt.session, range, 512)
+        }
+    }
+
+    fn model() -> Rig {
+        rig(3)
+    }
+
+    fn id(m: &Rig, n: usize) -> TrackId {
         m.track_ids()[n]
     }
 
@@ -520,5 +570,42 @@ mod tests {
         assert!(m.control("set master vol=-3").starts_with("OK"));
         assert!(m.control("nonsense").starts_with("ERR"));
         assert!(m.control("state").contains("| master vol=-3.00"));
+    }
+
+    #[test]
+    fn strips_follow_the_session() {
+        let mut r = rig(2);
+        assert_eq!(r.track_ids().len(), 2);
+        assert!(r.control("state").starts_with("OK tracks=2"));
+        assert!(r.control("state").contains("| master "), "the session has a master strip");
+        // A track added to the session is a new strip; one removed is gone.
+        let t3 = r.mt.add_track(Some("Vox"), 2).unwrap();
+        assert!(r.control("state").starts_with("OK tracks=3"));
+        assert_eq!(r.m.strip(&r.mt.session, t3).unwrap().name, "Vox");
+        let first = id(&r, 0);
+        r.mt.remove_track(first).unwrap();
+        let line = r.control("state");
+        assert!(line.starts_with("OK tracks=2"), "{line}");
+        assert!(r.control("set 3 vol=0").starts_with("ERR"), "the removed strip's number is gone");
+        assert_eq!(r.strip(first), None);
+        // Strips are in session order, and the master strip is not a track.
+        assert_eq!(r.m.strip(&r.mt.session, id(&r, 0)).unwrap().name, "Audio 2");
+    }
+
+    #[test]
+    fn a_fader_change_is_in_the_session_state() {
+        let mut r = rig(2);
+        let t2 = id(&r, 1);
+        r.set_fader_pos(t2, fader_db_to_pos(-6.0));
+        r.control("set 2 pan=0.5 mute=1");
+        let state: serde_json::Value = serde_json::from_str(&r.mt.state_json()).unwrap();
+        let t = &state["tracks"][1];
+        assert!((t["volume_db"].as_f64().unwrap() + 6.0).abs() < 0.05, "{t}");
+        assert_eq!((t["mute"].as_bool(), t["pan"].as_f64()), (Some(true), Some(0.5)));
+        // And the other way: the session's own edit shows on the strip.
+        r.mt.set_volume_db(t2, -20.0).unwrap();
+        assert_eq!(r.strip(t2).unwrap().volume_db, -20.0);
+        // Without a session the verb says so.
+        assert!(MixerModel::new().control("state", None).starts_with("ERR MIXER: no multitrack session"));
     }
 }

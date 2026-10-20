@@ -18,8 +18,11 @@ craft-log.workspace = true
 soundcraft-model.workspace = true
 soundcraft-mix.workspace = true
 soundcraft-dsp.workspace = true
-mix-audio-io.workspace = true
 dirs.workspace = true
+
+[dev-dependencies]
+soundcraft-model-audio.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # The token file's owner-only DACL (win_acl.rs). Already in Cargo.lock (0.61.2: wavcraft-testkit,

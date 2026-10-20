@@ -16,8 +16,8 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
-use crate::multitrack_ui::MtView;
 use crate::mixer::MixerModel;
+use crate::multitrack_ui::MtView;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 
@@ -167,7 +167,7 @@ impl WaveApp {
             editor_width: 800.0,
             show_history: true,
             show_mixer: false,
-            mixer: MixerModel::demo(4),
+            mixer: MixerModel::new(),
             insert_silence: None,
             confirm_clear_history: false,
             mtv: MtView::default(),
@@ -761,7 +761,7 @@ impl WaveApp {
                 self.show_mixer = rest.trim() == "show";
                 "OK".to_string()
             }
-            "MIXER" => self.mixer.control(rest),
+            "MIXER" => self.mixer.control(rest, self.mtv.mt.as_mut().map(|m| &mut m.session)),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -1123,7 +1123,10 @@ impl eframe::App for WaveApp {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
         if self.show_mixer {
-            egui::Panel::bottom("mixer").resizable(true).default_size(260.0).show(ui, |ui| self.mixer.show(ui));
+            egui::Panel::bottom("mixer")
+                .resizable(true)
+                .default_size(260.0)
+                .show(ui, |ui| self.mixer.show(ui, self.mtv.mt.as_mut().map(|m| &mut m.session)));
         }
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);

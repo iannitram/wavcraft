@@ -10,8 +10,8 @@
 
 mod app;
 mod control;
-mod multitrack_ui;
 mod mixer;
+mod multitrack_ui;
 mod player;
 mod selflog;
 mod spectrum;
