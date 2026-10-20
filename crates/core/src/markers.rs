@@ -15,9 +15,22 @@ pub struct Marker {
     pub start: u64,
     /// Frame just past the range (equal to `start` for a point marker).
     pub end: u64,
-    /// Free text shown in the Markers panel (not saved in the WAV yet).
+    /// Free text shown in the Markers panel; a WAV keeps it in a `note` sub-chunk of `LIST`/`adtl`.
     pub description: String,
+    /// 0 for none, else 1..=[`PALETTE`].len(): an entry of [`PALETTE`]. Kept in the document and
+    /// its undo history only; no file format here has a place for it.
+    pub color: u8,
 }
+
+/// The marker colours (a small fixed set): name and RGB. Colour `n` is `PALETTE[n - 1]`.
+pub const PALETTE: [(&str, [u8; 3]); 6] = [
+    ("Red", [230, 80, 80]),
+    ("Orange", [240, 150, 50]),
+    ("Green", [90, 190, 100]),
+    ("Teal", [60, 180, 190]),
+    ("Blue", [90, 130, 235]),
+    ("Violet", [170, 110, 220]),
+];
 
 impl Marker {
     pub fn is_point(&self) -> bool {
@@ -71,7 +84,7 @@ impl Markers {
         }
         let mut out = self.clone();
         let name = name.map_or_else(|| self.default_name(), str::to_string);
-        out.list.push(Marker { id: out.next_id, name, start, end, description: String::new() });
+        out.list.push(Marker { id: out.next_id, name, start, end, description: String::new(), color: 0 });
         out.next_id += 1;
         out.list.sort_by_key(|m| (m.start, m.id));
         Some(out)
@@ -143,7 +156,7 @@ impl Markers {
     pub fn from_items(items: Vec<(String, u64, u64)>) -> Markers {
         let mut out = Markers::new();
         for (name, start, end) in items {
-            out.list.push(Marker { id: out.next_id, name, start, end: end.max(start), description: String::new() });
+            out.list.push(Marker { id: out.next_id, name, start, end: end.max(start), description: String::new(), color: 0 });
             out.next_id += 1;
         }
         out.list.sort_by_key(|m| (m.start, m.id));
@@ -285,6 +298,54 @@ impl Markers {
         self.list.iter().position(|m| m.id == id)
     }
 
+    /// Merge markers `ids` (two or more that exist) into one range from the earliest start to the
+    /// latest end. It keeps the first one's id and colour, joins the names with " + " and the
+    /// descriptions (those that are not empty) with " / ". The result is a point only if every
+    /// merged marker sat at one frame. None when fewer than two exist, or when another marker
+    /// already has exactly the merged extent.
+    pub fn merged(&self, ids: &[u64]) -> Option<Markers> {
+        let picked: Vec<&Marker> = self.list.iter().filter(|m| ids.contains(&m.id)).collect();
+        if picked.len() < 2 {
+            return None;
+        }
+        let start = picked.iter().map(|m| m.start).min()?;
+        let end = picked.iter().map(|m| m.end.max(m.start)).max()?;
+        if self.list.iter().any(|m| !ids.contains(&m.id) && m.start == start && m.end.max(m.start) == end) {
+            return None;
+        }
+        let names: Vec<&str> = picked.iter().map(|m| m.name.as_str()).collect();
+        let descs: Vec<&str> = picked.iter().map(|m| m.description.as_str()).filter(|d| !d.is_empty()).collect();
+        let first = picked[0].clone();
+        let keep = Marker { id: first.id, name: names.join(" + "), start, end, description: descs.join(" / "), color: first.color };
+        let mut out = self.clone();
+        out.list.retain(|m| !ids.contains(&m.id));
+        out.list.push(keep);
+        out.list.sort_by_key(|m| (m.start, m.id));
+        Some(out)
+    }
+
+    /// This list with marker `id` set to colour `color` (0 clears; above the palette is refused).
+    pub fn with_color(&self, id: u64, color: u8) -> Option<Markers> {
+        let at = self.list.iter().position(|m| m.id == id)?;
+        if usize::from(color) > PALETTE.len() || self.list[at].color == color {
+            return None;
+        }
+        let mut out = self.clone();
+        out.list[at].color = color;
+        Some(out)
+    }
+
+    /// This list with marker `id` given `description` (`None`: unknown marker or no change).
+    pub fn with_description(&self, id: u64, description: &str) -> Option<Markers> {
+        let at = self.list.iter().position(|m| m.id == id)?;
+        if self.list[at].description == description {
+            return None;
+        }
+        let mut out = self.clone();
+        out.list[at].description = description.to_string();
+        Some(out)
+    }
+
     pub fn to_wav_chunks(&self) -> Vec<u8> {
         let kept: Vec<&Marker> = self.list.iter().filter(|m| m.end <= u64::from(u32::MAX)).take(MAX_WAV_MARKERS).collect();
         if kept.is_empty() {
@@ -305,6 +366,12 @@ impl Markers {
             labl.extend_from_slice(m.name.as_bytes());
             labl.push(0);
             push_chunk(&mut adtl, b"labl", &labl);
+            if !m.description.is_empty() {
+                let mut note = id.to_le_bytes().to_vec();
+                note.extend_from_slice(m.description.as_bytes());
+                note.push(0);
+                push_chunk(&mut adtl, b"note", &note);
+            }
             if !m.is_point() {
                 let mut ltxt = id.to_le_bytes().to_vec();
                 ltxt.extend_from_slice(&((m.end - m.start) as u32).to_le_bytes());
@@ -331,6 +398,7 @@ impl Markers {
         }
         let mut names: Vec<(u32, String)> = Vec::new();
         let mut lens: Vec<(u32, u64)> = Vec::new();
+        let mut notes: Vec<(u32, String)> = Vec::new();
         for list in lists {
             if list.get(..4) != Some(b"adtl") {
                 continue;
@@ -345,6 +413,12 @@ impl Markers {
                             let text = &chunk[4..];
                             let text = text.split(|&b| b == 0).next().unwrap_or(&[]);
                             names.push((id, String::from_utf8_lossy(text).trim().to_string()));
+                        }
+                    }
+                    b"note" => {
+                        if let Some(id) = le32(chunk, 0) {
+                            let text = chunk[4..].split(|&b| b == 0).next().unwrap_or(&[]);
+                            notes.push((id, String::from_utf8_lossy(text).to_string()));
                         }
                     }
                     b"ltxt" => {
@@ -362,11 +436,105 @@ impl Markers {
         for (id, start) in points {
             let end = lens.iter().find(|(i, _)| *i == id).map_or(start, |&(_, l)| (start + l).min(frames));
             let name = names.iter().find(|(i, n)| *i == id && !n.is_empty()).map(|(_, n)| n.clone());
-            items.push((name, start, end));
+            let desc = notes.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone()).unwrap_or_default();
+            items.push((name, start, end, desc));
         }
-        for (name, start, end) in items {
+        for (name, start, end, description) in items {
             let name = name.unwrap_or_else(|| out.default_name());
-            out.list.push(Marker { id: out.next_id, name, start, end, description: String::new() });
+            out.list.push(Marker { id: out.next_id, name, start, end, description, color: 0 });
+            out.next_id += 1;
+        }
+        out.list.sort_by_key(|m| (m.start, m.id));
+        out
+    }
+}
+
+/// AIFF stores markers in one `MARK` chunk: a big-endian count, then per marker an id, a frame
+/// position and a Pascal string. It has no ranges, so a range is written as two markers: its
+/// start named `[<name>` and its end named `]<name>` (same name, later position). On reading,
+/// a `[` marker and the next `]` marker with the same name make one range named `<name>`; any
+/// marker not part of such a pair is a point with its name as it is. A point whose own name
+/// begins with `[` or `]` would be read back as half of a pair, which is the one limit of the
+/// convention. A description and a colour have no place in the chunk and are not saved.
+impl Markers {
+    /// The `MARK` chunk with its 8-byte header and pad byte; empty when there are no markers.
+    /// Positions past 32 bits are left out.
+    pub fn to_aiff_mark(&self) -> Vec<u8> {
+        fn pstring(out: &mut Vec<u8>, text: &str) {
+            let mut n = text.len().min(255);
+            while !text.is_char_boundary(n) {
+                n -= 1;
+            }
+            out.push(n as u8);
+            out.extend_from_slice(&text.as_bytes()[..n]);
+            if (n + 1) & 1 == 1 {
+                out.push(0);
+            }
+        }
+        let mut entries: Vec<(u32, String)> = Vec::new();
+        for m in self.list.iter().filter(|m| m.end <= u64::from(u32::MAX)) {
+            if m.is_point() {
+                entries.push((m.start as u32, m.name.clone()));
+            } else {
+                entries.push((m.start as u32, format!("[{}", m.name)));
+                entries.push((m.end as u32, format!("]{}", m.name)));
+            }
+        }
+        entries.truncate(i16::MAX as usize);
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        let mut body = (entries.len() as u16).to_be_bytes().to_vec();
+        for (i, (pos, name)) in entries.iter().enumerate() {
+            body.extend_from_slice(&((i + 1) as i16).to_be_bytes());
+            body.extend_from_slice(&pos.to_be_bytes());
+            pstring(&mut body, name);
+        }
+        let mut out = b"MARK".to_vec();
+        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        out.extend_from_slice(&body);
+        pad_even(&mut out);
+        out
+    }
+
+    /// Markers from the body of an AIFF `MARK` chunk (see the convention above). Anything
+    /// malformed is skipped; positions are held to `frames`.
+    pub fn from_aiff_mark(body: &[u8], frames: u64) -> Markers {
+        let be16 = |at: usize| Some(u16::from_be_bytes(body.get(at..at + 2)?.try_into().ok()?));
+        let be32 = |at: usize| Some(u32::from_be_bytes(body.get(at..at + 4)?.try_into().ok()?));
+        let count = be16(0).unwrap_or(0) as usize;
+        let mut raw: Vec<(u64, String)> = Vec::new();
+        let mut at = 2usize;
+        for _ in 0..count {
+            let (Some(_id), Some(pos), Some(&n)) = (be16(at), be32(at + 2), body.get(at + 6)) else { break };
+            let Some(text) = body.get(at + 7..at + 7 + n as usize) else { break };
+            raw.push((u64::from(pos).min(frames), String::from_utf8_lossy(text).trim().to_string()));
+            at += 7 + n as usize + ((n as usize + 1) & 1);
+        }
+        let mut used = vec![false; raw.len()];
+        let mut items: Vec<(String, u64, u64)> = Vec::new();
+        for i in 0..raw.len() {
+            if used[i] {
+                continue;
+            }
+            let (start, name) = &raw[i];
+            if let Some(base) = name.strip_prefix('[')
+                && let Some(j) = (i + 1..raw.len()).find(|&j| !used[j] && raw[j].0 >= *start && raw[j].1.strip_prefix(']') == Some(base))
+            {
+                used[i] = true;
+                used[j] = true;
+                items.push((base.to_string(), *start, raw[j].0));
+            }
+        }
+        for (i, (pos, name)) in raw.iter().enumerate() {
+            if !used[i] {
+                items.push((name.clone(), *pos, *pos));
+            }
+        }
+        let mut out = Markers::new();
+        for (name, start, end) in items {
+            let name = if name.is_empty() { out.default_name() } else { name };
+            out.list.push(Marker { id: out.next_id, name, start, end, description: String::new(), color: 0 });
             out.next_id += 1;
         }
         out.list.sort_by_key(|m| (m.start, m.id));
@@ -501,6 +669,102 @@ mod tests {
         }
         assert!(Markers::from_wav_chunks(&[255, 255, 255, 255], &[b"adtl\xff\xff\xff\xffabcd"], 10).is_empty());
         assert!(Markers::from_wav_chunks(&[], &[], 10).is_empty());
+    }
+
+    #[test]
+    fn merge_makes_one_range_and_refuses_what_it_cannot() {
+        let mut m = Markers::from_items(vec![("A".into(), 100, 100), ("B".into(), 300, 400), ("C".into(), 900, 900)]);
+        let (a, b, c) = (m.id_at(0).unwrap(), m.id_at(1).unwrap(), m.id_at(2).unwrap());
+        m = m.with_description(b, "second").unwrap().with_description(c, "third").unwrap().with_color(a, 3).unwrap();
+        let r = m.merged(&[c, a]).unwrap();
+        assert_eq!(r.len(), 2);
+        let x = &r.as_slice()[0];
+        assert_eq!(
+            (x.id, x.name.as_str(), x.range(), x.color, x.description.as_str()),
+            (a, "A + C", 100..900, 3, "third"),
+            "list order, not pick order"
+        );
+        assert_eq!(r.as_slice()[1].name, "B", "the others are untouched");
+        assert!(m.merged(&[a]).is_none() && m.merged(&[a, 99]).is_none() && m.merged(&[]).is_none(), "needs two that exist");
+        let all = m.merged(&[a, b, c]).unwrap();
+        assert_eq!((all.len(), all.as_slice()[0].name.as_str(), all.as_slice()[0].description.as_str()), (1, "A + B + C", "second / third"));
+        // Two points merge to a range; a merged extent another marker holds is refused.
+        let twin = Markers::from_items(vec![("A".into(), 100, 100), ("B".into(), 300, 300), ("X".into(), 100, 300)]);
+        let id = |n: &str| twin.iter().find(|m| m.name == n).unwrap().id;
+        let r = twin.merged(&[id("A"), id("B")]);
+        assert!(r.is_none(), "X already spans 100..300");
+        assert_eq!(twin.merged(&[id("A"), id("X")]).unwrap().len(), 2, "A and X merge to 100..300 and nothing else holds it");
+    }
+
+    #[test]
+    fn colour_and_description_edits() {
+        let m = Markers::from_items(vec![("A".into(), 1, 1)]);
+        let a = m.id_at(0).unwrap();
+        assert_eq!(m.with_color(a, 2).unwrap().as_slice()[0].color, 2);
+        assert!(m.with_color(a, 0).is_none() && m.with_color(a, 7).is_none() && m.with_color(9, 1).is_none());
+        assert!(m.with_description(a, "").is_none() && m.with_description(a, "x").is_some());
+    }
+
+    #[test]
+    fn descriptions_round_trip_in_the_wav_note_chunk() {
+        let mut m = Markers::from_items(vec![("Intro".into(), 0, 0), ("Verse".into(), 1000, 4000), ("Plain".into(), 5000, 5000)]);
+        let (i0, i1) = (m.id_at(0).unwrap(), m.id_at(1).unwrap());
+        m = m.with_description(i0, "Count in \u{2013} caf\u{e9}").unwrap().with_description(i1, "two\nlines").unwrap();
+        let bytes = m.to_wav_chunks();
+        let cue_len = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let list_at = 8 + cue_len + (cue_len & 1);
+        let list_len = u32::from_le_bytes(bytes[list_at + 4..list_at + 8].try_into().unwrap()) as usize;
+        let back = Markers::from_wav_chunks(&bytes[8..8 + cue_len], &[&bytes[list_at + 8..list_at + 8 + list_len]], 10_000);
+        let view = |m: &Markers| m.iter().map(|x| (x.name.clone(), x.start, x.end, x.description.clone())).collect::<Vec<_>>();
+        assert_eq!(view(&back), view(&m));
+        assert!(back.as_slice()[2].description.is_empty());
+    }
+
+    #[test]
+    fn aiff_mark_round_trips_points_and_ranges() {
+        let m = Markers::from_items(vec![
+            ("Intro".into(), 0, 0),
+            ("Caf\u{e9}".into(), 1000, 4000),
+            ("odd".into(), 77, 77),
+            ("Same".into(), 2000, 2500),
+            ("Same".into(), 2100, 2200),
+        ]);
+        let bytes = m.to_aiff_mark();
+        assert_eq!(&bytes[..4], b"MARK");
+        assert_eq!(bytes.len() % 2, 0);
+        let len = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        assert_eq!(bytes.len(), 8 + len + (len & 1));
+        assert_eq!(u16::from_be_bytes(bytes[8..10].try_into().unwrap()), 8, "five markers, three of them ranges: 8 entries");
+        let back = Markers::from_aiff_mark(&bytes[8..8 + len], 10_000);
+        let view = |m: &Markers| m.iter().map(|x| (x.name.clone(), x.start, x.end)).collect::<Vec<_>>();
+        assert_eq!(view(&back), view(&m));
+        assert!(Markers::new().to_aiff_mark().is_empty());
+    }
+
+    #[test]
+    fn aiff_mark_foreign_and_damaged_input_gives_points_and_never_panics() {
+        // A foreign file: plain named markers are points; an unpaired "[" stays as written.
+        let mut body = 3u16.to_be_bytes().to_vec();
+        for (id, pos, name) in [(1i16, 10u32, "Cue"), (2, 99_999, "[lonely"), (3, 20, "")] {
+            body.extend_from_slice(&id.to_be_bytes());
+            body.extend_from_slice(&pos.to_be_bytes());
+            body.push(name.len() as u8);
+            body.extend_from_slice(name.as_bytes());
+            if (name.len() + 1) & 1 == 1 {
+                body.push(0);
+            }
+        }
+        let m = Markers::from_aiff_mark(&body, 500);
+        assert_eq!(
+            m.iter().map(|x| (x.name.as_str(), x.start, x.end)).collect::<Vec<_>>(),
+            [("Cue", 10, 10), ("Marker 01", 20, 20), ("[lonely", 500, 500)]
+        );
+        let good = Markers::from_items(vec![("a".into(), 5, 9), ("b".into(), 20, 20)]).to_aiff_mark();
+        for cut in 0..good.len() {
+            let _ = Markers::from_aiff_mark(&good[8.min(cut)..cut], 100);
+        }
+        assert!(Markers::from_aiff_mark(&[255, 255, 0, 1, 0, 0, 0, 0, 200], 10).is_empty());
+        assert!(Markers::from_aiff_mark(&[], 10).is_empty());
     }
 
     fn pts(m: &Markers) -> Vec<(u64, u64)> {

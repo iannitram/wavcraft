@@ -39,6 +39,8 @@ pub struct MarkersUi {
     /// The marker whose name is being typed, and the text so far.
     renaming: Option<(u64, String)>,
     focus_rename: bool,
+    /// The description being typed for the one picked marker: (id, text so far).
+    desc_edit: Option<(u64, String)>,
     pub drag: Option<Drag>,
 }
 
@@ -163,6 +165,57 @@ impl MarkersUi {
                 }
             });
         });
+        // The picked markers: Merge (two or more), and one marker's colour and description.
+        let picked_ids: Vec<u64> = self.pick.indices(&markers).iter().filter_map(|&i| markers.id_at(i)).collect();
+        ui.separator();
+        let mut merge = false;
+        let mut set_color = None;
+        let mut set_desc: Option<(u64, String)> = None;
+        ui.horizontal(|ui| {
+            merge = ui.add_enabled(picked_ids.len() >= 2, egui::Button::new("Merge")).on_hover_text("Make the picked markers one range").clicked();
+            if let [id] = picked_ids[..] {
+                let current = markers.iter().find(|m| m.id == id).map_or(0, |m| m.color);
+                if ui.selectable_label(current == 0, "No colour").clicked() {
+                    set_color = Some((id, 0u8));
+                }
+                for (n, (name, c)) in wavcraft_core::PALETTE.iter().enumerate() {
+                    let n = (n + 1) as u8;
+                    let swatch =
+                        egui::RichText::new(if current == n { "\u{25cf}" } else { "\u{25cb}" }).color(egui::Color32::from_rgb(c[0], c[1], c[2]));
+                    if ui.button(swatch).on_hover_text(*name).clicked() {
+                        set_color = Some((id, n));
+                    }
+                }
+            }
+        });
+        if let [id] = picked_ids[..] {
+            let stored = markers.iter().find(|m| m.id == id).map(|m| m.description.clone()).unwrap_or_default();
+            if self.desc_edit.as_ref().is_none_or(|(i, _)| *i != id) {
+                self.desc_edit = Some((id, stored.clone()));
+            }
+            if let Some((_, text)) = self.desc_edit.as_mut() {
+                ui.horizontal(|ui| {
+                    ui.label("Description");
+                    let edit = ui.add(egui::TextEdit::multiline(text).desired_rows(2).desired_width(f32::INFINITY));
+                    if edit.lost_focus() && *text != stored {
+                        set_desc = Some((id, text.clone()));
+                    }
+                });
+            }
+        } else {
+            self.desc_edit = None;
+        }
+        if merge {
+            editor.merge_markers(&picked_ids);
+            self.pick.ids.retain(|i| editor.history.current().markers().index_of(*i).is_some());
+        }
+        if let Some((id, n)) = set_color {
+            editor.set_marker_color(id, n);
+        }
+        if let Some((id, text)) = set_desc {
+            editor.set_marker_description(id, &text);
+            self.desc_edit = None;
+        }
         if let Some(index) = clicked {
             out.select = self.click(&markers, index, shift, ctrl);
         }

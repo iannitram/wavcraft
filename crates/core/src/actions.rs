@@ -763,6 +763,28 @@ impl Editor {
         true
     }
 
+    /// Merge markers `ids` into one range (one history step, "Merge Markers"). Returns whether
+    /// anything changed.
+    pub fn merge_markers(&mut self, ids: &[u64]) -> bool {
+        let Some(markers) = self.history.current().markers().merged(ids) else { return false };
+        self.history.push_markers("Merge Markers", Arc::new(markers));
+        true
+    }
+
+    /// Give marker `id` colour `color` (0 clears; one history step, "Marker Colour").
+    pub fn set_marker_color(&mut self, id: u64, color: u8) -> bool {
+        let Some(markers) = self.history.current().markers().with_color(id, color) else { return false };
+        self.history.push_markers("Marker Colour", Arc::new(markers));
+        true
+    }
+
+    /// Set marker `id`'s description (one history step, "Marker Description").
+    pub fn set_marker_description(&mut self, id: u64, text: &str) -> bool {
+        let Some(markers) = self.history.current().markers().with_description(id, text) else { return false };
+        self.history.push_markers("Marker Description", Arc::new(markers));
+        true
+    }
+
     /// Move marker `id` so it starts at `start`, keeping its length (one history step,
     /// "Move Marker"). Returns whether anything changed.
     pub fn move_marker(&mut self, id: u64, start: u64) -> bool {

@@ -64,7 +64,7 @@ pub mod workspaces;
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;
 pub use doc::{Channel, DocState, Piece, SourceFormat};
-pub use markers::{Marker, MarkerPick, Markers};
+pub use markers::{Marker, MarkerPick, Markers, PALETTE};
 
 pub use document::{Document, OpenError};
 pub use smpte::SmpteRate;
