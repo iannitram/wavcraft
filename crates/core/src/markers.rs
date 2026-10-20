@@ -148,6 +148,18 @@ impl Markers {
         out
     }
 
+    /// A copy with every start and end passed through `f` (ids and names kept): a change of
+    /// sample rate re-expresses the positions with the same ids.
+    pub fn map_positions(&self, f: impl Fn(u64) -> u64) -> Markers {
+        let mut out = self.clone();
+        for m in &mut out.list {
+            m.start = f(m.start);
+            m.end = f(m.end).max(m.start);
+        }
+        out.list.sort_by_key(|m| (m.start, m.id));
+        out
+    }
+
     /// A copy with the positions an edit leaves. A marker inside a removed range goes (a point) or
     /// is cut to what is left (a range that overlaps it; one wholly inside goes). A point exactly
     /// where audio is inserted stays; a range that spans it grows. None when nothing changes.
