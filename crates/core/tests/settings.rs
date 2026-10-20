@@ -94,3 +94,16 @@ fn check_folder_makes_a_missing_folder_and_leaves_no_probe_behind() {
     assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
     assert!(check_folder(Path::new("")).is_err());
 }
+
+#[test]
+fn the_time_display_is_saved_and_read_back() {
+    use wavcraft_core::TimeFormat;
+    let t = TempDir::new("time-display");
+    let file = t.0.join("settings.txt");
+    assert_eq!(Settings::load(&file).time_display, TimeFormat::Decimal, "the default");
+    for f in TimeFormat::ALL {
+        Settings { time_display: f, ..Settings::default() }.save(&file).unwrap();
+        assert_eq!(Settings::load(&file).time_display, f);
+    }
+    assert_eq!(Settings::parse("time_display = nonsense\n").time_display, TimeFormat::Decimal);
+}

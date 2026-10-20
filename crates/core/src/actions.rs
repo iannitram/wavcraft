@@ -74,6 +74,10 @@ pub enum ActionId {
     MarkerPrev,
     ConvertSampleType,
     InterpretSampleRate,
+    TimeDecimal,
+    TimeCompact,
+    TimeSamples,
+    TimeSmpte30,
 }
 
 /// Which part of the program carries an action out.
@@ -220,6 +224,10 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::FadeOutCosine, "effect.fadeOut.cosine", "Fade Out (Raised Cosine)", &[]),
     edit(ActionId::SnapToggle, "view.snap.toggle", "Snapping", &[key("S")]),
     edit(ActionId::SnapZeroToggle, "view.snap.zero.toggle", "Snap to Zero Crossings", &[]),
+    window(ActionId::TimeDecimal, "view.time_display.decimal", "Decimal (mm:ss.ddd)", &[]),
+    window(ActionId::TimeCompact, "view.time_display.compact", "Compact", &[]),
+    window(ActionId::TimeSamples, "view.time_display.samples", "Samples", &[]),
+    window(ActionId::TimeSmpte30, "view.time_display.smpte30", "SMPTE 30 fps", &[]),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -452,6 +460,7 @@ impl Editor {
             ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
             ActionId::MarkerPrev => self.history.current().markers().prev_before(selection.start).is_some(),
             ActionId::ConvertSampleType | ActionId::InterpretSampleRate => self.len() > 0,
+            ActionId::TimeDecimal | ActionId::TimeCompact | ActionId::TimeSamples | ActionId::TimeSmpte30 => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -773,6 +782,10 @@ impl Editor {
             | ActionId::ZoomOut
             | ActionId::ZoomToSelection
             | ActionId::ZoomOutFull
+            | ActionId::TimeDecimal
+            | ActionId::TimeCompact
+            | ActionId::TimeSamples
+            | ActionId::TimeSmpte30
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::ConvertSampleType

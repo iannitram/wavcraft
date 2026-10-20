@@ -44,4 +44,4 @@ pub use markers::{Marker, Markers};
 pub use document::{Document, OpenError};
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
-pub use view::{Edge, GRAB_PX, Selection, Viewport, format_time};
+pub use view::{Edge, GRAB_PX, Selection, TimeFormat, Viewport, format_time};
