@@ -120,6 +120,8 @@ pub struct Ring {
     /// Next sample the producer writes.
     tail: AtomicU64,
     dropped_frames: AtomicU64,
+    /// While set, `push` discards what it is given (a pause: not a drop, not counted).
+    paused: AtomicBool,
     /// Largest absolute sample since the last [`Ring::take_peak`], as the bits of a non-negative
     /// `f32` (which order like integers).
     peak: AtomicU32,
@@ -136,6 +138,7 @@ impl Ring {
             head: AtomicU64::new(0),
             tail: AtomicU64::new(0),
             dropped_frames: AtomicU64::new(0),
+            paused: AtomicBool::new(false),
             peak: AtomicU32::new(0),
         })
     }
@@ -145,6 +148,9 @@ impl Ring {
     pub fn push(&self, samples: &[f32]) -> usize {
         let ch = self.channels;
         let frames = samples.len() / ch;
+        if self.paused.load(Ordering::Relaxed) {
+            return 0;
+        }
         let cap = self.slots.len() as u64;
         let (tail, head) = (self.tail.load(Ordering::Relaxed), self.head.load(Ordering::Acquire));
         let free_frames = (cap - (tail - head)) as usize / ch;
@@ -186,6 +192,22 @@ impl Ring {
     /// Frames dropped so far because the writer fell behind.
     pub fn dropped_frames(&self) -> u64 {
         self.dropped_frames.load(Ordering::Relaxed)
+    }
+
+    /// Pause or resume the take (C029): while paused the input is discarded, so the file holds
+    /// only what was recorded. Not a drop: `dropped_frames` does not count it.
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
+    /// Frames accepted into the queue since the start (the file's length once the writer has
+    /// caught up). At a resume this is where the new stretch begins in the file.
+    pub fn accepted_frames(&self) -> u64 {
+        self.tail.load(Ordering::Acquire) / self.channels as u64
     }
 
     /// The largest absolute sample since the last call (0.0 to above 1.0 when it clipped).
@@ -350,6 +372,12 @@ pub struct Recorder {
 impl Recorder {
     /// Start draining `ring` into `writer` on its own thread.
     pub fn start(writer: TakeWriter, ring: Arc<Ring>) -> io::Result<Recorder> {
+        Recorder::start_stalled(writer, ring, Duration::ZERO)
+    }
+
+    /// As [`Recorder::start`], but the writer first waits `stall`: a slow disk, for tests of the
+    /// dropped-sample warning (C035). The wait ends early when the take is stopped.
+    pub fn start_stalled(writer: TakeWriter, ring: Arc<Ring>, stall: Duration) -> io::Result<Recorder> {
         let (path, fmt) = (writer.path.clone(), writer.fmt);
         let shared = Arc::new(Shared {
             ring,
@@ -359,7 +387,7 @@ impl Recorder {
             error: Mutex::new(None),
         });
         let worker = shared.clone();
-        let handle = std::thread::Builder::new().name("take writer".into()).spawn(move || write_loop(writer, &worker))?;
+        let handle = std::thread::Builder::new().name("take writer".into()).spawn(move || write_loop(writer, &worker, stall))?;
         Ok(Recorder { shared, handle: Some(handle), path, fmt })
     }
 
@@ -407,7 +435,7 @@ impl Drop for Recorder {
     }
 }
 
-fn write_loop(mut w: TakeWriter, shared: &Shared) -> TakeWriter {
+fn write_loop(mut w: TakeWriter, shared: &Shared, stall: Duration) -> TakeWriter {
     let mut buf: Vec<f32> = Vec::new();
     let max_frames = 8_192;
     let mut last_header = Instant::now();
@@ -416,6 +444,10 @@ fn write_loop(mut w: TakeWriter, shared: &Shared) -> TakeWriter {
             e.get_or_insert(why);
         }
     };
+    let began = Instant::now();
+    while began.elapsed() < stall && !shared.stop.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(2));
+    }
     loop {
         // Read the stop flag first: whatever is queued before it was set is still drained.
         let stopping = shared.stop.load(Ordering::Acquire);
@@ -461,14 +493,34 @@ pub struct FakeInput {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FakeSpec {
     pub hz: f64,
+    /// `ring=<ms>`: the queue holds only this much (default: two seconds).
+    pub ring_ms: Option<u32>,
+    /// `stall=<ms>`: the writer waits this long before it starts, so a small ring overflows.
+    pub stall_ms: u32,
 }
 
 impl FakeSpec {
-    /// `sine:440`. `Ok(None)` when the variable is unset or empty.
+    /// `sine:440`, optionally with `,ring=<ms>` and `,stall=<ms>` (an overflow on purpose, C035).
+    /// `Ok(None)` when the variable is unset or empty.
     pub fn parse(text: Option<&str>) -> Result<Option<FakeSpec>, String> {
         let Some(text) = text.map(str::trim).filter(|t| !t.is_empty()) else { return Ok(None) };
-        let hz = text.strip_prefix("sine:").and_then(|v| v.trim().parse::<f64>().ok()).filter(|h| h.is_finite() && *h > 0.0);
-        hz.map(|hz| Some(FakeSpec { hz })).ok_or_else(|| format!("{ENV_FAKE_INPUT}={text:?}: expected sine:<hz>"))
+        let bad = || format!("{ENV_FAKE_INPUT}={text:?}: expected sine:<hz>[,ring=<ms>][,stall=<ms>]");
+        let mut parts = text.split(',');
+        let hz = parts
+            .next()
+            .and_then(|p| p.strip_prefix("sine:"))
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|h| h.is_finite() && *h > 0.0)
+            .ok_or_else(bad)?;
+        let mut spec = FakeSpec { hz, ring_ms: None, stall_ms: 0 };
+        for p in parts {
+            match p.trim().split_once('=') {
+                Some(("ring", v)) => spec.ring_ms = Some(v.trim().parse::<u32>().ok().filter(|v| *v > 0).ok_or_else(bad)?),
+                Some(("stall", v)) => spec.stall_ms = v.trim().parse().map_err(|_| bad())?,
+                _ => return Err(bad()),
+            }
+        }
+        Ok(Some(spec))
     }
 
     pub fn from_env() -> Result<Option<FakeSpec>, String> {
@@ -683,6 +735,71 @@ mod tests {
     }
 
     #[test]
+    fn a_pause_discards_input_without_counting_a_drop() {
+        let ring = Ring::new(100, 2);
+        assert_eq!(ring.push(&[0.1; 20]), 10);
+        ring.set_paused(true);
+        assert!(ring.is_paused());
+        assert_eq!(ring.push(&[0.9; 20]), 0);
+        assert_eq!((ring.dropped_frames(), ring.accepted_frames()), (0, 10));
+        ring.set_paused(false);
+        assert_eq!(ring.push(&[0.2; 10]), 5);
+        assert_eq!(ring.accepted_frames(), 15);
+        let mut out = Vec::new();
+        assert_eq!(ring.pop(&mut out, 100), 15);
+        assert!(out[..20].iter().all(|v| *v == 0.1) && out[20..].iter().all(|v| *v == 0.2), "the paused stretch is absent");
+    }
+
+    #[test]
+    fn a_paused_take_holds_only_what_was_recorded() {
+        let dir = scratch("paused");
+        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 16 };
+        let ring = Ring::new(48_000, 1);
+        let rec = Recorder::start(create_take(&dir, fmt, 11).unwrap(), ring.clone()).unwrap();
+        ring.push(&[0.5; 4_800]);
+        ring.set_paused(true);
+        ring.push(&[0.5; 9_600]);
+        ring.set_paused(false);
+        let resume_at = ring.accepted_frames();
+        ring.push(&[0.5; 2_400]);
+        let take = rec.stop();
+        assert_eq!((take.frames, take.dropped_frames, resume_at), (7_200, 0, 4_800));
+        assert_eq!(header_of(&take.path).3, 14_400);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// C035: a writer that falls behind a small ring loses frames, counts them, and the take
+    /// is still a readable WAV holding exactly the frames that were kept.
+    #[test]
+    fn an_overflow_is_counted_and_the_take_stays_readable() {
+        let dir = scratch("overflow");
+        let fmt = RecFormat { rate: 48_000, channels: 1, bits: 16 };
+        let ring = Ring::new(1_000, 1);
+        let rec = Recorder::start_stalled(create_take(&dir, fmt, 12).unwrap(), ring.clone(), Duration::from_millis(150)).unwrap();
+        for _ in 0..10 {
+            ring.push(&[0.5; 480]);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        ring.push(&[0.5; 480]);
+        let take = rec.stop();
+        assert_eq!(take.dropped_frames, 4_800 - 1_000);
+        assert_eq!(take.frames + take.dropped_frames, 5_280);
+        assert_eq!(u64::from(header_of(&take.path).3), take.frames * 2);
+        assert_eq!(take.error, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_fake_input_spec_takes_overflow_knobs() {
+        assert_eq!(FakeSpec::parse(Some("sine:440")).unwrap(), Some(FakeSpec { hz: 440.0, ring_ms: None, stall_ms: 0 }));
+        assert_eq!(FakeSpec::parse(Some("sine:220,ring=50,stall=1500")).unwrap(), Some(FakeSpec { hz: 220.0, ring_ms: Some(50), stall_ms: 1500 }));
+        assert!(FakeSpec::parse(Some("sine:220,ring=0")).is_err());
+        assert!(FakeSpec::parse(Some("sine:220,speed=1")).is_err());
+        assert!(FakeSpec::parse(Some("saw:220")).is_err());
+        assert_eq!(FakeSpec::parse(Some("")).unwrap(), None);
+    }
+
+    #[test]
     fn the_recorder_drains_the_ring_and_finishes_the_header() {
         let dir = scratch("recorder");
         let fmt = RecFormat { rate: 48_000, channels: 1, bits: 16 };
@@ -714,7 +831,7 @@ mod tests {
     fn fake_input_spec_parses() {
         assert_eq!(FakeSpec::parse(None), Ok(None));
         assert_eq!(FakeSpec::parse(Some("")), Ok(None));
-        assert_eq!(FakeSpec::parse(Some("sine:440")), Ok(Some(FakeSpec { hz: 440.0 })));
+        assert_eq!(FakeSpec::parse(Some("sine:440")), Ok(Some(FakeSpec { hz: 440.0, ring_ms: None, stall_ms: 0 })));
         assert!(FakeSpec::parse(Some("sine:abc")).is_err());
         assert!(FakeSpec::parse(Some("noise")).is_err());
         assert!(FakeSpec::parse(Some("sine:-5")).is_err());
@@ -728,7 +845,7 @@ mod tests {
         let fmt = RecFormat { rate: 48_000, channels: 1, bits: 24 };
         let ring = Ring::new(48_000, 1);
         let rec = Recorder::start(create_take(&dir, fmt, 7).unwrap(), ring.clone()).unwrap();
-        let fake = FakeInput::spawn(FakeSpec { hz: 440.0 }, fmt, ring).unwrap();
+        let fake = FakeInput::spawn(FakeSpec { hz: 440.0, ring_ms: None, stall_ms: 0 }, fmt, ring).unwrap();
         std::thread::sleep(Duration::from_millis(1_200));
         fake.stop();
         let take = rec.stop();
