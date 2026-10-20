@@ -1,4 +1,4 @@
-//! z13.9 (B047): the silence scan and Delete Silence, on synthetic files: five 1 s tone bursts
+//! B047: the silence scan and Delete Silence, on synthetic files: five 1 s tone bursts
 //! with gaps of 2 s, 0.3 s, 2 s and 0.3 s of noise at -60 dB. The first gap crosses the 64 K-frame
 //! chunk joins of the scan (frames 65,536 and 131,072).
 

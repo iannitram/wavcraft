@@ -1,4 +1,4 @@
-//! Silence scan and Delete Silence (z13.9, B047).
+//! Silence scan and Delete Silence (B047).
 //!
 //! **Level measure: sample peak.** A frame is quiet when the largest absolute sample over the
 //! scanned channels is below the threshold (`threshold_db` dBFS, full scale 1.0). A stretch is a
