@@ -25,6 +25,7 @@ soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "
 # f27: the biquad filter designs (RBJ cookbook shelves, peaks, notch, high/low-pass), MIT OR Apache-2.0,
 # from the same pinned commit as soundcraft-audio-io. f28 (dynamics: compressor, de-esser) uses the
 # same crate and commit.
+# Reverb and delay (f124): soundcraft-dsp, same fork and commit (storytold/soundcraft, MIT OR Apache-2.0).
 soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
 
 rustfft = "6"

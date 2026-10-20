@@ -175,16 +175,24 @@ pub fn fade(doc: &DocState, range: Range<u64>, channels: ChannelMask, dir: FadeD
     })
 }
 
+mod delay;
+mod dsp_run;
 mod dynamics;
 mod eq;
 mod gain;
 mod noise_reduction;
+pub use delay::Delay;
 pub use dynamics::{Compressor, DeEsser, HardLimiter};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
 pub use noise_reduction::NoiseReduction;
 mod pitch_saturate;
+mod reverb;
 pub use pitch_saturate::{PitchShift, Saturator};
+pub use reverb::Reverb;
+
+/// Block size hint given to wrapped plugins (chunks are 64 K frames; plugins loop internally).
+pub(crate) const CHUNK_HINT: usize = 4096;
 
 /// What a setting means, so a dialog can pick the right control and units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -502,6 +510,8 @@ pub static REGISTRY: &[&dyn Effect] = &[
     &DeEsser,
     &PitchShift,
     &Saturator,
+    &Reverb,
+    &Delay,
 ];
 
 /// Every registered effect.
