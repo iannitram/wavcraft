@@ -36,4 +36,4 @@ pub use document::{Document, OpenError};
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
 pub use tools::Tool;
-pub use view::{Selection, Viewport, format_time};
+pub use view::{Band, Selection, SpectralSelection, Viewport, format_time};

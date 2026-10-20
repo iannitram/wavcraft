@@ -1,6 +1,6 @@
-//! The tool model (roadmap A049, A057): which tool the pointer uses in the editor. Only Time
-//! Selection exists; Move and the spectral tools are listed, disabled, so the bar has room for
-//! them. Keys are Audition's single-key defaults, for the tools that exist.
+//! The tool model (roadmap A049, A057): which tool the pointer uses in the editor. Time
+//! Selection and Marquee exist; Move, Lasso and Paintbrush are listed, disabled, so the bar has
+//! room for them. Keys are Audition's single-key defaults, for the tools that exist.
 
 /// A tool of the tools bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -10,7 +10,7 @@ pub enum Tool {
     TimeSelection,
     /// Not built yet (listed disabled).
     Move,
-    /// Not built yet (listed disabled).
+    /// Drag a rectangle of time and frequency on the spectral display (B135).
     Marquee,
     /// Not built yet (listed disabled).
     Lasso,
@@ -46,13 +46,14 @@ impl Tool {
 
     /// Whether the tool can be picked yet.
     pub fn enabled(self) -> bool {
-        self == Tool::TimeSelection
+        matches!(self, Tool::TimeSelection | Tool::Marquee)
     }
 
     /// The tool's single key (egui key name), where it has one that works.
     pub fn key(self) -> Option<&'static str> {
         match self {
             Tool::TimeSelection => Some("T"),
+            Tool::Marquee => Some("E"),
             _ => None,
         }
     }
@@ -68,9 +69,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn time_selection_is_the_default_and_the_only_enabled_tool() {
+    fn time_selection_is_the_default_and_with_marquee_the_only_enabled_tool() {
         assert_eq!(Tool::default(), Tool::TimeSelection);
-        assert_eq!(ALL.iter().filter(|t| t.enabled()).count(), 1);
+        assert_eq!(ALL.iter().filter(|t| t.enabled()).count(), 2);
+        assert!(Tool::Marquee.enabled());
         assert!(Tool::TimeSelection.enabled());
         assert!(!Tool::Move.enabled());
     }

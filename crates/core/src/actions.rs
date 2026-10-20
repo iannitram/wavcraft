@@ -36,6 +36,7 @@ pub enum ActionId {
     ZoomToSelection,
     ZoomOutFull,
     ToolTimeSelection,
+    ToolMarquee,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -162,8 +163,10 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
-    // Audition's single-key tool switch; Move and the spectral tools join when they exist.
+    // Audition's single-key tool switch; the other tools join when they exist.
     window(ActionId::ToolTimeSelection, "tool.time_selection", "Time Selection Tool", &[key("T")]),
+    // The Marquee tool's key; E is free in the table.
+    window(ActionId::ToolMarquee, "tool.marquee", "Marquee Selection Tool", &[key("E")]),
 ];
 
 /// The table row for `id`.
@@ -290,7 +293,7 @@ impl Editor {
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
-            ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::ToolTimeSelection => true,
+            ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::ToolTimeSelection | ActionId::ToolMarquee => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -460,6 +463,7 @@ impl Editor {
             | ActionId::ZoomToSelection
             | ActionId::ZoomOutFull
             | ActionId::ToolTimeSelection
+            | ActionId::ToolMarquee
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast
