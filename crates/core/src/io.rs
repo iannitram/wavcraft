@@ -194,6 +194,15 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
         log::warn!("{}: {w}", path.display());
     }
     let rate = src.sample_rate;
+    if let Some(first) = built.channels.first() {
+        let mut at = 0u64;
+        let mut origin = Vec::new();
+        for p in first.pieces() {
+            origin.push((p.block().block().id, at));
+            at += u64::from(p.len());
+        }
+        src.origin = Arc::new(origin);
+    }
     DocState::new(store, built.channels, rate, src).map_err(|e| malformed(e.to_string()))
 }
 
@@ -542,7 +551,16 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
             }
             match &id {
                 b"fmt " => fmt = Some(parse_fmt(&job.read_at(body, declared)?)?),
-                b"bext" => src.bwf = parse_bext(&job.read_at(body, declared)?),
+                b"bext" if declared <= crate::meta::MAX_META_BYTES => {
+                    let raw = job.read_at(body, declared)?;
+                    src.bwf = parse_bext(&raw);
+                    src.meta.bext = crate::meta::Bext::parse(&raw);
+                }
+                b"LIST" if declared <= crate::meta::MAX_META_BYTES && src.meta.info.0.is_empty() => {
+                    if let Some(tags) = crate::meta::InfoTags::parse(&job.read_at(body, declared)?) {
+                        src.meta.info = tags;
+                    }
+                }
                 b"ds64" => ds64_data = le_u64(&job.read_at(body, declared.min(64))?, 8),
                 _ => {}
             }

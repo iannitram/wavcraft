@@ -180,19 +180,28 @@ impl History {
         if edit.is_noop() {
             return 0;
         }
-        self.push_with_change(edit.label, edit.state, edit.change)
+        self.push_with_change(edit.label, edit.state, edit.change, false)
+    }
+
+    /// Record a step that changes what is saved with the audio but not the audio (metadata):
+    /// unlike [`push`](Self::push) it is recorded although it shares every channel.
+    pub fn push_metadata(&mut self, label: impl Into<String>, state: DocState) -> usize {
+        self.push_with_change(label.into(), state, Change::None, true)
     }
 
     /// Make `state` the current step, after the cursor; any redo steps go. A state that is the
     /// current one (it shares every channel) records nothing. Returns how many old steps the cap
     /// dropped.
     pub fn push(&mut self, label: impl Into<String>, state: DocState) -> usize {
-        self.push_with_change(label.into(), state, Change::LengthFrom { frame: 0 })
+        self.push_with_change(label.into(), state, Change::LengthFrom { frame: 0 }, false)
     }
 
-    fn push_with_change(&mut self, label: String, state: DocState, change: Change) -> usize {
+    fn push_with_change(&mut self, label: String, state: DocState, change: Change, same_audio_ok: bool) -> usize {
         let cur = self.current();
-        if cur.channel_count() == state.channel_count() && cur.channels().iter().zip(state.channels()).all(|(a, b)| Arc::ptr_eq(a, b)) {
+        if !same_audio_ok
+            && cur.channel_count() == state.channel_count()
+            && cur.channels().iter().zip(state.channels()).all(|(a, b)| Arc::ptr_eq(a, b))
+        {
             return 0;
         }
         while self.steps.len() > self.cursor + 1 {
