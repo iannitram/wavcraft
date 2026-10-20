@@ -15,8 +15,16 @@ use std::sync::atomic::AtomicBool;
 use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
+mod delay;
+mod dsp_run;
 mod gain;
+mod reverb;
+pub use delay::Delay;
 pub use gain::Gain;
+pub use reverb::Reverb;
+
+/// Block size hint given to wrapped plugins (chunks are 64 K frames; plugins loop internally).
+pub(crate) const CHUNK_HINT: usize = 4096;
 
 /// What a setting means, so a dialog can pick the right control and units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +210,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &Reverb, &Delay];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
