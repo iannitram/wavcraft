@@ -66,6 +66,27 @@ impl Settings {
         s
     }
 
+    /// Check settings text strictly (an import uses this): every line is blank, a `#` comment,
+    /// or `key = value` with a key this version knows. The error names the line.
+    pub fn validate(text: &str) -> Result<(), String> {
+        for (i, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, _)) = line.split_once('=') else { return Err(format!("line {} is not \"key = value\"", i + 1)) };
+            if key.trim() != KEY_SESSION_FOLDER {
+                return Err(format!("line {} has a setting this version does not know ({:?})", i + 1, key.trim()));
+            }
+        }
+        Ok(())
+    }
+
+    /// The config folder the settings file lives in (`<config dir>/wavcraft`).
+    pub fn default_dir() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("wavcraft"))
+    }
+
     /// The file's text for these settings.
     pub fn to_text(&self) -> String {
         let mut out = String::from("# WavCraft settings. One `key = value` per line.\n");

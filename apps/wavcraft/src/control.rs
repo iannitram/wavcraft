@@ -13,6 +13,9 @@
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `SETTINGS export <path>` / `SETTINGS import <path>` → `OK …` (the settings as one file; an import is checked whole first, `ERR …` changes nothing)
+//! - `PREF reset` → `OK …` (Restore Preference Defaults; the old files stay as `.old`); `PREF show` → `OK session_folder=… source=… saved_session_folder=…`
+//! - `ABOUT` → `OK notices_bytes=<n>` (opens Help › About)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
