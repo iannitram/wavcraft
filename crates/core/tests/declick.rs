@@ -31,9 +31,13 @@ impl Drop for TempDir {
 }
 
 fn editor(dir: &Path, data: &[Vec<f32>]) -> Editor {
+    editor_at(dir, data, RATE)
+}
+
+fn editor_at(dir: &Path, data: &[Vec<f32>], rate: u32) -> Editor {
     let s = Store::create_with(dir, StoreOptions { cache_bytes: 64 << 20, ..StoreOptions::default() }).unwrap();
     let chans = data.iter().map(|c| Channel::from_pieces(c.chunks(BLOCK_FRAMES).map(|b| Piece::whole(s.append(b).unwrap()).unwrap()))).collect();
-    let doc = DocState::new(s, chans, RATE, SourceFormat::synthetic(RATE, data.len() as u16)).unwrap();
+    let doc = DocState::new(s, chans, rate, SourceFormat::synthetic(rate, data.len() as u16)).unwrap();
     let mut e = Editor::new(History::new(doc, u64::MAX));
     e.crossfades = Crossfades::NONE;
     e
@@ -85,10 +89,19 @@ fn click_plan() -> Vec<(u64, usize)> {
 
 /// A click: an alternating-sign burst of size 0.8 for its whole width.
 fn add_clicks(clean: &[f32]) -> Vec<f32> {
+    add_shaped(clean, &click_plan(), false)
+}
+
+/// Flat-topped pulses (constant +0.8, 5 to 30 samples), the same positions as the bursts.
+fn flat_plan() -> Vec<(u64, usize)> {
+    click_plan().into_iter().map(|(s, w)| (s, 5 + (w * 3) % 26)).collect()
+}
+
+fn add_shaped(clean: &[f32], plan: &[(u64, usize)], flat: bool) -> Vec<f32> {
     let mut x = clean.to_vec();
-    for (s, w) in click_plan() {
+    for &(s, w) in plan {
         for k in 0..w {
-            let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
+            let sign = if flat || k % 2 == 0 { 1.0 } else { -1.0 };
             x[s as usize + k] += (0.8 * sign) as f32;
         }
     }
@@ -234,4 +247,70 @@ fn bad_settings_are_refused() {
     assert!(Params::parse("sensitivity=50% max_width_ms=2ms").is_ok());
     assert!(Params::parse("bogus=1").is_err());
     assert!(AutoParams::parse("threshold=30 complexity=10").is_ok());
+}
+
+#[test]
+fn flat_topped_pulses_are_found_whole_and_repaired() {
+    let plan = flat_plan();
+    for (name, clean) in fixtures() {
+        let dirty: Vec<Vec<f32>> = clean.iter().map(|c| add_shaped(c, &plan, true)).collect();
+        let tmp = TempDir::new(&format!("flat-{name}"));
+        let mut e = editor(&tmp.0, &dirty);
+        let doc = e.history.current().clone();
+        let cancel = AtomicBool::new(false);
+        let got = declick::scan(&doc, 0..0, ChannelMask::ALL, &Params::default(), &cancel).unwrap();
+        for ch in 0..2 {
+            let found =
+                plan.iter().filter(|(s, w)| got.regions.iter().any(|r| r.channel == ch && r.start <= s + 1 && r.end() >= s + *w as u64)).count();
+            assert!(found >= 18, "{name} ch{ch}: only {found} of 20 pulses found whole (from the first frame to the last)");
+        }
+        let r = declick::declick(&doc, 0..0, ChannelMask::ALL, &Params::default(), Crossfades::NONE, &cancel).unwrap();
+        e.history.push_edit(r.edit);
+        let after = now(&e);
+        let (mut before, mut left) = (0.0f64, 0.0f64);
+        for ch in 0..2 {
+            for &(s, w) in &plan {
+                for i in s as usize..s as usize + w {
+                    let (d0, d1) = (f64::from(dirty[ch][i] - clean[ch][i]), f64::from(after[ch][i] - clean[ch][i]));
+                    before += d0 * d0;
+                    left += d1 * d1;
+                }
+            }
+        }
+        assert!(left.sqrt() <= 0.2 * before.sqrt(), "{name}: error fell from {} to {}", before.sqrt(), left.sqrt());
+    }
+}
+
+#[test]
+fn a_click_wider_than_the_repair_cap_is_reported_but_skipped() {
+    // 768 kHz: 5 ms is 3840 frames, far past the 256-frame repair cap.
+    let rate = 768_000u32;
+    let mut x: Vec<f32> = (0..200_000).map(|n| (0.5 * (2.0 * std::f64::consts::PI * 1000.0 * n as f64 / f64::from(rate)).sin()) as f32).collect();
+    for v in &mut x[50_000..51_000] {
+        *v += 0.8;
+    }
+    let tmp = TempDir::new("wide");
+    let e = editor_at(&tmp.0, &[x], rate);
+    let doc = e.history.current();
+    let cancel = AtomicBool::new(false);
+    let p = Params { sensitivity: 50.0, max_width_ms: 5.0 };
+    let got = declick::scan(doc, 0..0, ChannelMask::ALL, &p, &cancel).unwrap();
+    assert!(got.regions.iter().any(|r| r.len > declick::MAX_REPAIR_WIDTH), "{:?}", got.regions);
+    let r = declick::declick(doc, 0..0, ChannelMask::ALL, &p, Crossfades::NONE, &cancel).unwrap();
+    assert!(r.skipped >= 1 && r.repaired == 0 && r.edit.is_noop());
+}
+
+#[test]
+fn near_silence_gives_no_false_regions() {
+    let cancel = AtomicBool::new(false);
+    // Gaussian noise at -70 dBFS RMS, and 16-bit dither (sparse single-LSB values).
+    let quiet: Vec<f32> = noise(3).iter().map(|v| v * 0.00316 / 0.1).collect();
+    let mut r = Rng(77);
+    let lsb: Vec<f32> = (0..FRAMES).map(|_| if r.next() < 0.02 { (if r.next() < 0.5 { 1.0 } else { -1.0 }) / 32768.0 } else { 0.0 }).collect();
+    for (name, v) in [("-70 dBFS noise", quiet), ("sparse LSB", lsb), ("digital silence", vec![0.0; FRAMES])] {
+        let tmp = TempDir::new("quiet");
+        let e = editor(&tmp.0, &[v]);
+        let got = declick::scan(e.history.current(), 0..0, ChannelMask::ALL, &Params::default(), &cancel).unwrap();
+        assert!(got.regions.len() <= 2, "{name}: {} false regions", got.regions.len());
+    }
 }

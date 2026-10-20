@@ -9,7 +9,10 @@
 //! sensitivity (8 at 1 %, about 5 at the default 50 %, about 2 at 100 %). A click is a run of
 //! low centres (gaps of up to [`GAP`] frames allowed) that holds at least one high centre; the
 //! reported [`Region`] spans the run. A run longer than `max_width_ms` is not a click (it is a
-//! loud passage) and is dropped. The scan reads 64 K frames at a time and carries the state
+//! loud passage) and is dropped. The first difference is judged the same way, which catches the
+//! two edges of a flat-topped pulse (no second difference inside it); two such edges of opposite
+//! sign, with a plateau between them off the surrounding level, are merged into one click. Both
+//! kinds of residual must also clear a fixed floor of about -80 dBFS, so near-silence is left alone. The scan reads 64 K frames at a time and carries the state
 //! across chunk joins, so a click that straddles one is found whole.
 //!
 //! **Repair.** Each region is redrawn by least-squares autoregressive interpolation: an order
@@ -43,6 +46,15 @@ pub const WINDOW: usize = 2048;
 pub const GAP: u64 = 2;
 /// Order of the autoregressive predictor.
 pub const ORDER: usize = 16;
+/// The widest click [`declick`] redraws, in frames, whatever the sample rate (the repair solves
+/// a dense system as large as the click). Wider regions are reported but skipped.
+pub const MAX_REPAIR_WIDTH: u64 = 256;
+/// Smallest noise scale of a residual window (stops a silent window from having a zero scale).
+pub const SCALE_FLOOR: f64 = 1e-5;
+/// A residual must exceed this to be a seed (about -80 dBFS), whatever the noise scale.
+pub const HIGH_FLOOR: f64 = 1e-4;
+/// A residual must exceed this to extend a click.
+pub const LOW_FLOOR: f64 = 5e-5;
 /// Samples of context either side used to fit the predictor.
 pub const CONTEXT: usize = 256;
 /// A repaired sample never exceeds this size.
@@ -185,16 +197,137 @@ struct Open {
     last: u64,
     high: bool,
     peak: f32,
+    /// The first difference at the run's largest step (signed) and the noise scale it was judged by.
+    step: f64,
+    step_scale: f64,
+    /// For a merged pulse, the edge runs it was made from (so a better pairing can undo it).
+    parts: Vec<Open>,
 }
 
 /// Per-channel scan state carried across chunks.
 struct Lane {
     carry: Vec<f32>,
     open: Option<Open>,
-    scale: f64,
+    /// Finished runs held back in case one is the first edge of a flat-topped pulse.
+    pending: Vec<Open>,
+    scale_e: f64,
+    scale_d: f64,
 }
 
-/// Find the clicks of `channels` within `range` (empty: the whole file).
+/// Median-based noise scale of one window of residuals (at least [`SCALE_FLOOR`]).
+fn window_scale(win: &[f32], sorted: &mut Vec<f32>) -> f64 {
+    sorted.clear();
+    sorted.extend(win.iter().map(|e| e.abs()));
+    let mid = sorted.len() / 2;
+    let (_, med, _) = sorted.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+    (f64::from(*med) / 0.6745).max(SCALE_FLOOR)
+}
+
+fn mean(v: &[f32]) -> f64 {
+    v.iter().map(|x| f64::from(*x)).sum::<f64>() / v.len().max(1) as f64
+}
+
+/// Whether runs `a` then `b` (a gap apart) are the two edges of one flat-topped pulse: steps of
+/// opposite sign and similar size, no wider than `max_width` in all. Such a pulse has no second
+/// difference inside it. When neither edge is strong on its own the plateau must also stand off
+/// the few samples either side by about the size of the steps.
+fn is_pulse(doc: &DocState, ch: usize, a: &Open, b: &Open, max_width: u64) -> io::Result<bool> {
+    if b.last - a.first + 1 > max_width || a.step * b.step >= 0.0 {
+        return Ok(false);
+    }
+    let (sa, sb) = (a.step.abs(), b.step.abs());
+    if sa < 3.0 * a.step_scale || sb < 3.0 * b.step_scale || sa > 2.0 * sb || sb > 2.0 * sa {
+        return Ok(false);
+    }
+    if a.high || b.high {
+        return Ok(true);
+    }
+    const SIDE: u64 = 4;
+    let (ls, rs) = (a.first.saturating_sub(SIDE), b.last + 1);
+    let (ln, rn) = ((a.first - ls) as usize, SIDE.min(doc.len_frames().saturating_sub(rs)) as usize);
+    if ln < 2 || rn < 2 {
+        return Ok(false);
+    }
+    let mut left = vec![0.0f32; ln];
+    let mut right = vec![0.0f32; rn];
+    let mut mid = vec![0.0f32; (b.first - a.last + 1) as usize];
+    if doc.read(ch, ls, &mut left)? != ln || doc.read(ch, rs, &mut right)? != rn || doc.read(ch, a.last, &mut mid)? != mid.len() {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "document shorter than its length"));
+    }
+    let lift = mean(&mid) - (mean(&left) + mean(&right)) / 2.0;
+    // The plateau's level is averaged over many samples, so it is a better measure than either step.
+    Ok(lift * a.step > 0.0 && lift.abs() >= 0.6 * sa.max(sb) && lift.abs() <= 2.0 * (sa + sb))
+}
+
+/// Hand a finished run to the lane. Runs stay held while one could still pair with a later run
+/// as the two edges of a pulse (so noise-sized runs on the plateau do not break the pairing); a
+/// run that does pair absorbs everything held after its first edge. Held runs that are out of
+/// reach, or all of them when `run` is `None`, are released. Returns true when the region cap
+/// was hit.
+fn settle(doc: &DocState, regions: &mut Vec<Region>, lane: &mut Lane, ch: usize, run: Option<Open>, max_width: u64) -> io::Result<bool> {
+    let mut release = |lane: &mut Lane, upto: usize| -> bool {
+        for o in lane.pending.drain(..upto) {
+            let width = o.last - o.first + 1;
+            if o.high && width <= max_width {
+                if regions.len() >= MAX_REGIONS {
+                    return true;
+                }
+                regions.push(Region { channel: ch, start: o.first, len: width, peak: o.peak });
+            }
+        }
+        false
+    };
+    let Some(r) = run else {
+        let n = lane.pending.len();
+        return Ok(release(lane, n));
+    };
+    // Of the held runs (and the edges inside held pulses) that pair with this one, take the one
+    // with the sharpest edge: a noise-sized run also passes the test, but its step is smaller.
+    // (index, how many of its parts to keep, the edge it pairs with)
+    let mut best: Option<(usize, bool, f64)> = None;
+    for (i, p) in lane.pending.iter().enumerate() {
+        let score = p.step.abs().min(r.step.abs());
+        if r.last - p.first < max_width && best.is_none_or(|(_, _, sc)| score > sc) && is_pulse(doc, ch, p, &r, max_width)? {
+            best = Some((i, false, score));
+        }
+        if let Some(e) = p.parts.last() {
+            let score = e.step.abs().min(r.step.abs());
+            if r.last - e.first < max_width && best.is_none_or(|(_, _, sc)| score >= sc) && is_pulse(doc, ch, e, &r, max_width)? {
+                best = Some((i, true, score));
+            }
+        }
+    }
+    let join = |p: Open, r: Open| {
+        let step = if p.step.abs() >= r.step.abs() { p.step } else { r.step };
+        Open { first: p.first, last: r.last, high: true, peak: p.peak.max(r.peak), step, step_scale: p.step_scale, parts: vec![p, r] }
+    };
+    match best {
+        Some((i, false, _)) => {
+            let tail: Vec<Open> = lane.pending.drain(i..).collect();
+            if let Some(p) = tail.into_iter().next() {
+                lane.pending.push(join(p, r));
+            }
+        }
+        Some((i, true, _)) => {
+            let tail: Vec<Open> = lane.pending.drain(i..).collect();
+            if let Some(mut m) = tail.into_iter().next()
+                && let Some(e) = m.parts.pop()
+            {
+                // Undo the earlier pairing: its first edge goes back to being a run of its own.
+                lane.pending.extend(m.parts);
+                lane.pending.push(join(e, r));
+            }
+        }
+        None => lane.pending.push(r),
+    }
+    let newest = lane.pending.last().map_or(0, |o| o.last);
+    let out = lane.pending.iter().take_while(|o| newest - o.first >= max_width).count();
+    Ok(release(lane, out))
+}
+
+/// Find the clicks of `channels` within `range` (empty: the whole file). A click wider than
+/// [`MAX_REPAIR_WIDTH`] frames is still reported when it is within `max_width_ms`; [`declick`]
+/// leaves it alone.
 pub fn scan(doc: &DocState, range: Range<u64>, channels: ChannelMask, params: &Params, cancel: &AtomicBool) -> Result<Scan, EditError> {
     params.validate().map_err(invalid)?;
     let len = doc.len_frames();
@@ -204,27 +337,17 @@ pub fn scan(doc: &DocState, range: Range<u64>, channels: ChannelMask, params: &P
     }
     let max_width = ((params.max_width_ms * f64::from(doc.sample_rate()) / 1000.0).round() as u64).max(1);
     let k_high = params.k_high();
-    let k_low = k_high / 3.0;
+    let (k_low_e, k_low_d) = (k_high / 3.0, k_high / 2.5);
     let active = channels.active(doc.channel_count());
-    let mut lanes: Vec<Lane> = active.iter().map(|_| Lane { carry: Vec::new(), open: None, scale: 0.0 }).collect();
+    let mut lanes: Vec<Lane> =
+        active.iter().map(|_| Lane { carry: Vec::new(), open: None, pending: Vec::new(), scale_e: 0.0, scale_d: 0.0 }).collect();
     let mut regions: Vec<Region> = Vec::new();
     let mut truncated = false;
     let mut buf = vec![0.0f32; BLOCK_FRAMES];
     let mut work: Vec<f32> = Vec::with_capacity(BLOCK_FRAMES + 2);
     let mut es: Vec<f32> = Vec::with_capacity(BLOCK_FRAMES);
+    let mut ds: Vec<f32> = Vec::with_capacity(BLOCK_FRAMES);
     let mut sorted: Vec<f32> = Vec::with_capacity(WINDOW);
-
-    // Keep a finished run if it is a click (has a high centre, not wider than `max_width`).
-    let finish = |regions: &mut Vec<Region>, ch: usize, o: Open| -> bool {
-        let width = o.last - o.first + 1;
-        if o.high && width <= max_width {
-            if regions.len() >= MAX_REGIONS {
-                return true;
-            }
-            regions.push(Region { channel: ch, start: o.first, len: width, peak: o.peak });
-        }
-        false
-    };
 
     let mut at = range.start;
     'outer: while at < range.end {
@@ -243,52 +366,60 @@ pub fn scan(doc: &DocState, range: Range<u64>, channels: ChannelMask, params: &P
             // work[0] is frame `base`; centre j (1..len-1) is frame base + j.
             let base = at - lane.carry.len() as u64;
             es.clear();
+            ds.clear();
             for j in 1..work.len().saturating_sub(1) {
                 es.push(work[j - 1] - 2.0 * work[j] + work[j + 1]);
+                ds.push(work[j] - work[j - 1]);
             }
             lane.carry.clear();
             let keep = work.len().min(2);
             lane.carry.extend_from_slice(&work[work.len() - keep..]);
             let first_centre = base + 1;
             for (w, win) in es.chunks(WINDOW).enumerate() {
-                if win.len() >= 64 || lane.scale == 0.0 {
-                    sorted.clear();
-                    sorted.extend(win.iter().map(|e| e.abs()));
-                    let mid = sorted.len() / 2;
-                    let (_, med, _) = sorted.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
-                    lane.scale = (f64::from(*med) / 0.6745).max(1e-5);
+                let dwin = &ds[w * WINDOW..w * WINDOW + win.len()];
+                if win.len() >= 64 || lane.scale_e == 0.0 {
+                    lane.scale_e = window_scale(win, &mut sorted);
+                    lane.scale_d = window_scale(dwin, &mut sorted);
                 }
-                let (hi_t, lo_t) = (k_high * lane.scale, k_low * lane.scale);
+                let hi_e = (k_high * lane.scale_e).max(HIGH_FLOOR);
+                let lo_e = (k_low_e * lane.scale_e).max(LOW_FLOOR);
+                let hi_d = (k_high * lane.scale_d).max(HIGH_FLOOR);
+                let lo_d = (k_low_d * lane.scale_d).max(LOW_FLOOR);
                 for (i, &e) in win.iter().enumerate() {
                     let idx = w * WINDOW + i;
                     let frame = first_centre + idx as u64;
-                    let mag = f64::from(e.abs());
-                    if mag > lo_t {
+                    let (me, d) = (f64::from(e.abs()), f64::from(dwin[i]));
+                    let md = d.abs();
+                    if me > lo_e || md > lo_d {
                         let x = work[idx + 1].abs();
-                        let high = mag > hi_t;
+                        let high = me > hi_e || md > hi_d;
                         match &mut lane.open {
                             Some(o) if frame - o.last <= GAP + 1 => {
                                 o.last = frame;
                                 o.high |= high;
                                 o.peak = o.peak.max(x);
+                                if md > o.step.abs() {
+                                    o.step = d;
+                                    o.step_scale = lane.scale_d;
+                                }
                             }
                             slot => {
-                                if let Some(o) = slot.take()
-                                    && finish(&mut regions, c, o)
-                                {
+                                let done = slot.take();
+                                *slot = Some(Open { first: frame, last: frame, high, peak: x, step: d, step_scale: lane.scale_d, parts: Vec::new() });
+                                if done.is_some() && settle(doc, &mut regions, lane, c, done, max_width)? {
                                     truncated = true;
                                     break 'outer;
                                 }
-                                *slot = Some(Open { first: frame, last: frame, high, peak: x });
                             }
                         }
                     } else if let Some(o) = &lane.open
                         && frame - o.last > GAP
-                        && let Some(o) = lane.open.take()
-                        && finish(&mut regions, c, o)
                     {
-                        truncated = true;
-                        break 'outer;
+                        let done = lane.open.take();
+                        if settle(doc, &mut regions, lane, c, done, max_width)? {
+                            truncated = true;
+                            break 'outer;
+                        }
                     }
                 }
             }
@@ -297,9 +428,12 @@ pub fn scan(doc: &DocState, range: Range<u64>, channels: ChannelMask, params: &P
     }
     if !truncated {
         for (k, lane) in lanes.iter_mut().enumerate() {
-            if let Some(o) = lane.open.take()
-                && finish(&mut regions, active[k], o)
-            {
+            let done = lane.open.take();
+            if done.is_some() && settle(doc, &mut regions, lane, active[k], done, max_width)? {
+                truncated = true;
+                break;
+            }
+            if settle(doc, &mut regions, lane, active[k], None, max_width)? {
                 truncated = true;
                 break;
             }
@@ -311,6 +445,9 @@ pub fn scan(doc: &DocState, range: Range<u64>, channels: ChannelMask, params: &P
 
 /// New samples for one click, or `None` when it cannot be redrawn.
 fn fit(doc: &DocState, r: &Region) -> io::Result<Option<Vec<f32>>> {
+    if r.len > MAX_REPAIR_WIDTH {
+        return Ok(None);
+    }
     let total = doc.len_frames();
     let left = r.start.min(CONTEXT as u64) as usize;
     let right = (total - r.end()).min(CONTEXT as u64) as usize;

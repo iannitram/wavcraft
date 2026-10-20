@@ -314,37 +314,6 @@ pub fn declip(
         // An empty range is a no-op edit that keeps the history untouched.
         return Ok(nothing(edit::replace_range(doc, 0..0, ChannelMask::NONE, LABEL, xf, cancel, |_, _, _| Ok(()))?));
     }
-    fixes.sort_by_key(|f| (f.0, f.1));
-    let touched = fixes.iter().fold(ChannelMask::NONE, |m, f| m.with(f.0));
-    let active = touched.active(doc.channel_count());
-    // Pad the span by the edge crossfade so unchanged audio next to it passes through unchanged.
-    let pad = Crossfades::frames(xf.edge, doc.sample_rate()) + 1;
-    let first = fixes.iter().map(|f| f.1).min().unwrap_or(0);
-    let last = fixes.iter().map(|f| f.1 + f.2.len() as u64).max().unwrap_or(0);
-    let span = first.saturating_sub(pad)..(last + pad).min(doc.len_frames());
-    let mut next: Vec<usize> = vec![0; active.len()];
-    let per_channel: Vec<Vec<&(usize, u64, Vec<f32>)>> = active.iter().map(|&c| fixes.iter().filter(|f| f.0 == c).collect()).collect();
-    let edit = edit::replace_range(doc, span, touched, LABEL, xf, cancel, |at, input, output| {
-        for (k, (i, o)) in input.iter().zip(output.iter_mut()).enumerate() {
-            o.copy_from_slice(i);
-            let end = at + o.len() as u64;
-            let list = &per_channel[k];
-            while next[k] < list.len() && list[next[k]].1 + list[next[k]].2.len() as u64 <= at {
-                next[k] += 1;
-            }
-            let mut j = next[k];
-            while j < list.len() && list[j].1 < end {
-                let (_, s, v) = list[j];
-                for (n, &y) in v.iter().enumerate() {
-                    let f = s + n as u64;
-                    if f >= at && f < end {
-                        o[(f - at) as usize] = y;
-                    }
-                }
-                j += 1;
-            }
-        }
-        Ok(())
-    })?;
+    let edit = super::write_fixes(doc, fixes, LABEL, xf, cancel)?;
     Ok(nothing(edit))
 }
