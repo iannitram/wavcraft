@@ -6,6 +6,8 @@
 //! - [`doc`]: the piece table ([`DocState`]) and its one read path; [`doc::edit`], the edits
 //!   (pure functions from one state to the next), and [`doc::history`], undo with a disk cap.
 //! - [`io`]: streamed open into the store.
+//! - [`probe`]: a file's format, length and title from its header alone (no store).
+//! - [`recent`]: the Open Recent list and the config folder's small files.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
@@ -19,7 +21,9 @@ pub mod actions;
 pub mod doc;
 pub mod document;
 pub mod io;
+pub mod probe;
 pub mod random;
+pub mod recent;
 pub mod save;
 pub mod settings;
 pub mod space;

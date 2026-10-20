@@ -1,7 +1,8 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
+use std::collections::HashMap;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -11,6 +12,8 @@ use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::doc::edit as doc_edit;
 use wavcraft_core::doc::newdoc::{self, NewDocOptions};
 use wavcraft_core::io::OpenOptions;
+use wavcraft_core::probe::{self, FileInfo};
+use wavcraft_core::recent::{self, Recent};
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
@@ -110,6 +113,38 @@ struct DocSlot {
     rebuilding: Option<Receiver<Result<Document, OpenError>>>,
 }
 
+/// A file added by File › Import: listed in the Files panel, but not open. Only its header was
+/// read (`info`); it gets a session store when it is first made current.
+struct Import {
+    path: PathBuf,
+    info: FileInfo,
+}
+
+/// What the Files panel shows about an open document's file beyond its audio, from its header.
+#[derive(Default, Clone)]
+struct Meta {
+    title: String,
+    size: u64,
+}
+
+/// Whether two paths are the same file (equal, or the same after resolving links).
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+}
+
+/// The Files panel's Bits text for a sample type.
+fn bits_text(f: SampleFormat) -> &'static str {
+    match f {
+        SampleFormat::Int8 => "8",
+        SampleFormat::Int16 => "16",
+        SampleFormat::Int24 => "24",
+        SampleFormat::Int32 => "32",
+        SampleFormat::Float32 => "32f",
+        SampleFormat::Float64 => "64f",
+        SampleFormat::Compressed => "-",
+    }
+}
+
 /// Whether `editor`'s current step differs from `saved`, the one on disk.
 fn is_unsaved(editor: &Option<Editor>, saved: &Option<Arc<DocState>>) -> bool {
     match (editor, saved) {
@@ -201,6 +236,15 @@ pub struct WaveApp {
     /// Window › Files.
     show_files: bool,
     files: files::View,
+    /// The window's egui context, for opening a file from a click that has none at hand.
+    ctx: egui::Context,
+    /// File › Open Recent, and the file it is kept in (`None` when the system has no config folder).
+    recent: Recent,
+    recent_path: Option<PathBuf>,
+    /// Files added by File › Import, not open: listed after the open documents.
+    imports: Vec<Import>,
+    /// Header details of the open documents' files, by path (filled when the panel needs them).
+    meta: HashMap<PathBuf, Meta>,
     /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
@@ -265,7 +309,12 @@ impl WaveApp {
             save_all: None,
             show_history: true,
             show_files: true,
-            files: files::View::default(),
+            files: files::View { columns: files::load_columns().unwrap_or_else(|| files::Col::DEFAULT.to_vec()), ..files::View::default() },
+            ctx: cc.egui_ctx.clone(),
+            recent_path: recent::config_file("recent.txt"),
+            recent: recent::config_file("recent.txt").map(|p| Recent::load(&p)).unwrap_or_default(),
+            imports: Vec::new(),
+            meta: HashMap::new(),
             insert_silence: None,
             confirm_clear_history: false,
             control: {
@@ -330,6 +379,8 @@ impl WaveApp {
                 }
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
+                self.note_recent(&doc.path);
+                self.imports.retain(|i| !same_file(&i.path, &doc.path));
                 self.doc_serial += 1;
                 self.doc_id = self.doc_serial;
                 self.rebuilding = None;
@@ -733,7 +784,22 @@ impl WaveApp {
 
     /// The Files panel's rows, one per open document, in the order opened.
     fn file_rows(&self) -> Vec<files::Row> {
-        (0..self.docs.len(self.editor.is_some()))
+        let open = self.docs.len(self.editor.is_some());
+        let imported = self.imports.iter().enumerate().map(|(k, imp)| files::Row {
+            doc: open + k,
+            name: path_name(&imp.path),
+            unsaved: false,
+            frames: imp.info.frames,
+            rate: imp.info.sample_rate,
+            channels: usize::from(imp.info.channels),
+            bits: bits_text(imp.info.sample_format).to_string(),
+            format: format!("{:?}", imp.info.format),
+            path: imp.path.to_string_lossy().into_owned(),
+            title: imp.info.title.clone(),
+            size: imp.info.file_bytes,
+            imported: true,
+        });
+        (0..open)
             .filter_map(|i| {
                 let (path, editor, unsaved) = match self.docs.locate(i) {
                     Where::Current => (&self.doc_path, &self.editor, self.unsaved()),
@@ -744,15 +810,7 @@ impl WaveApp {
                 };
                 let state = editor.as_ref()?.history.current();
                 let src = state.source();
-                let bits = match src.sample_format {
-                    SampleFormat::Int8 => "8",
-                    SampleFormat::Int16 => "16",
-                    SampleFormat::Int24 => "24",
-                    SampleFormat::Int32 => "32",
-                    SampleFormat::Float32 => "32f",
-                    SampleFormat::Float64 => "64f",
-                    SampleFormat::Compressed => "-",
-                };
+                let meta = self.meta.get(path).cloned().unwrap_or_default();
                 Some(files::Row {
                     doc: i,
                     name: path_name(path),
@@ -760,12 +818,28 @@ impl WaveApp {
                     frames: state.len_frames(),
                     rate: state.sample_rate(),
                     channels: state.channel_count(),
-                    bits: bits.to_string(),
+                    bits: bits_text(src.sample_format).to_string(),
                     format: format!("{:?}", src.format),
                     path: path.to_string_lossy().into_owned(),
+                    title: meta.title,
+                    size: meta.size,
+                    imported: false,
                 })
             })
+            .chain(imported)
             .collect()
+    }
+
+    /// Read the header details of any open document's file not yet in the cache.
+    fn refresh_meta(&mut self) {
+        let paths: Vec<PathBuf> = std::iter::once(self.doc_path.clone()).chain(self.docs.parked().iter().map(|s| s.doc_path.clone())).collect();
+        for p in paths {
+            if p.as_os_str().is_empty() || self.meta.contains_key(&p) {
+                continue;
+            }
+            let m = probe::probe(&p).map(|i| Meta { title: i.title, size: i.file_bytes }).unwrap_or_default();
+            self.meta.insert(p, m);
+        }
     }
 
     /// The document the shown row `i` stands for (rows are sorted and filtered).
@@ -785,6 +859,88 @@ impl WaveApp {
         std::process::Command::new(&prog).args(&args).spawn().map(drop).map_err(|e| format!("could not run {prog}: {e}"))
     }
 
+    /// `path` was opened: it goes to the front of Open Recent, and the list is kept.
+    fn note_recent(&mut self, path: &Path) {
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        self.recent.push(&std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()));
+        self.save_recent();
+    }
+
+    fn save_recent(&self) {
+        if let Some(file) = &self.recent_path
+            && let Err(e) = self.recent.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not save the recent files list {}: {e}", file.display());
+        }
+    }
+
+    /// File › Open Recent › entry `i`. A file that is gone is taken off the list instead, and
+    /// the error says so.
+    fn open_recent(&mut self, i: usize) -> Result<PathBuf, String> {
+        let Some(path) = self.recent.paths().get(i).cloned() else { return Err(format!("no recent file {i}")) };
+        if !path.is_file() {
+            self.recent.remove(i);
+            self.save_recent();
+            return Err(format!("{} is missing, so it was removed from Open Recent", path.display()));
+        }
+        let ctx = self.ctx.clone();
+        self.open(path.clone(), &ctx);
+        Ok(path)
+    }
+
+    /// File › Import › File…: add `path` to the Files panel. Only its header is read: it is not
+    /// made current, the editor is left on whatever it shows, and no session store is made until
+    /// the row is first made current.
+    fn import_file(&mut self, path: PathBuf) -> Result<(), String> {
+        let path = std::path::absolute(&path).unwrap_or(path);
+        if !path.is_file() {
+            return Err(format!("{} is not a file", path.display()));
+        }
+        let open_here = std::iter::once(&self.doc_path).chain(self.docs.parked().iter().map(|s| &s.doc_path));
+        if open_here.chain(self.imports.iter().map(|i| &i.path)).any(|p| same_file(p, &path)) {
+            return Err(format!("{} is already in the Files panel", path.display()));
+        }
+        let info = probe::probe(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        self.notice = Some(format!("Imported {} (it opens when you select it in the Files panel)", path_name(&path)));
+        self.error = None;
+        self.imports.push(Import { path, info });
+        Ok(())
+    }
+
+    /// File › Import › File…, asking which files.
+    fn pick_import(&mut self) {
+        let picked =
+            rfd::FileDialog::new().add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "caf"]).pick_files();
+        for path in picked.unwrap_or_default() {
+            if let Err(e) = self.import_file(path) {
+                self.error = Some(e);
+            }
+        }
+    }
+
+    /// Open the imported file `k` (the open runs in the background, as File › Open does).
+    fn open_import(&mut self, k: usize) -> Result<(), String> {
+        if k >= self.imports.len() {
+            return Err(format!("no imported file {k}"));
+        }
+        let imp = self.imports.remove(k);
+        let ctx = self.ctx.clone();
+        self.open(imp.path, &ctx);
+        Ok(())
+    }
+
+    /// Make Files panel row document `i` current: an open document is switched to, an imported
+    /// file starts opening. `Some(i)` when `i` is now current, `None` while an import opens.
+    fn activate_row(&mut self, i: usize) -> Result<Option<usize>, String> {
+        let open = self.docs.len(self.editor.is_some());
+        if i >= open {
+            return self.open_import(i - open).map(|()| None);
+        }
+        self.switch_doc(i).map(|()| Some(i))
+    }
+
     /// Window › Files: the open documents as a table.
     fn files_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Files");
@@ -792,14 +948,16 @@ impl WaveApp {
             ui.label("Filter");
             ui.text_edit_singleline(&mut self.files.filter);
         });
+        self.refresh_meta();
         let rows = self.file_rows();
         let shown: Vec<files::Row> = self.files.arrange(&rows).into_iter().cloned().collect();
         let cur = self.docs.current();
         let busy = self.saving.is_some() || self.making.is_some() || self.save_all.is_some();
-        let (mut go, mut open, mut close, mut reveal) = (None, false, false, false);
+        let (mut go, mut open, mut close, mut reveal, mut import, mut unlist) = (None, false, false, false, false, None);
+        let columns = self.files.columns.clone();
         egui::ScrollArea::both().max_height((ui.available_height() - 40.0).max(60.0)).show(ui, |ui| {
             egui::Grid::new("files_grid").striped(true).show(ui, |ui| {
-                for col in files::Col::ALL {
+                for &col in &columns {
                     let arrow = match self.files.sort {
                         Some((c, true)) if c == col => " ▲",
                         Some((c, false)) if c == col => " ▼",
@@ -811,21 +969,26 @@ impl WaveApp {
                 }
                 ui.end_row();
                 for r in &shown {
-                    let on = r.doc == cur;
-                    let cells = [
-                        r.name.clone(),
-                        if r.unsaved { "*".to_string() } else { String::new() },
-                        format_time(r.frames as usize, r.rate),
-                        r.rate.to_string(),
-                        r.channels.to_string(),
-                        r.bits.clone(),
-                        r.format.clone(),
-                        r.path.clone(),
-                    ];
-                    for text in cells {
-                        let resp = ui.selectable_label(on, text);
+                    let on = !r.imported && r.doc == cur;
+                    for &col in &columns {
+                        // An imported row is dimmed: it is listed, not open.
+                        let text = egui::RichText::new(r.cell(col));
+                        let resp = ui.selectable_label(on, if r.imported { text.weak() } else { text });
                         if resp.clicked() || resp.double_clicked() {
                             go = Some(r.doc);
+                        }
+                        if r.imported {
+                            resp.context_menu(|ui| {
+                                if ui.button("Open this file").clicked() {
+                                    go = Some(r.doc);
+                                    ui.close();
+                                }
+                                if ui.button("Remove from the list").clicked() {
+                                    unlist = Some(r.doc);
+                                    ui.close();
+                                }
+                            });
+                            continue;
                         }
                         resp.context_menu(|ui| {
                             go = Some(r.doc);
@@ -849,14 +1012,41 @@ impl WaveApp {
         });
         ui.horizontal(|ui| {
             open |= ui.button("Open…").clicked();
+            import |= ui.button("Import…").on_hover_text("Add files to this list without opening them").clicked();
             close |= ui.add_enabled(!busy && self.editor.is_some(), egui::Button::new("Close")).clicked();
             reveal |= ui.add_enabled(self.editor.is_some(), egui::Button::new(reveal_label())).clicked();
+            ui.menu_button("Columns", |ui| {
+                let mut cols = self.files.columns.clone();
+                for c in files::Col::ALL {
+                    let mut on = cols.contains(&c);
+                    // At least one column stays.
+                    if ui.add_enabled(!on || cols.len() > 1, egui::Checkbox::new(&mut on, c.title())).changed() {
+                        if on {
+                            cols.push(c);
+                        } else {
+                            cols.retain(|x| *x != c);
+                        }
+                    }
+                }
+                if cols != self.files.columns {
+                    self.set_columns(cols);
+                }
+            });
         });
         // Clicking a row makes it current; Open, Close and Reveal then act on the current document.
         if let Some(i) = go
-            && let Err(e) = self.switch_doc(i)
+            && let Err(e) = self.activate_row(i)
         {
             self.error = Some(e);
+        }
+        if let Some(i) = unlist {
+            let open = self.docs.len(self.editor.is_some());
+            if i >= open && i - open < self.imports.len() {
+                self.imports.remove(i - open);
+            }
+        }
+        if import {
+            self.pick_import();
         }
         if open {
             self.pick_file(ui.ctx());
@@ -869,35 +1059,81 @@ impl WaveApp {
         }
     }
 
+    /// Show these columns, and keep the choice for the next run.
+    fn set_columns(&mut self, cols: Vec<files::Col>) {
+        if let Err(e) = files::save_columns(&cols) {
+            log::warn!(target: "wavcraft", "could not save the Files panel columns: {e}");
+        }
+        self.files.columns = cols;
+    }
+
+    /// `RECENT …` from the control channel.
+    fn recent_request(&mut self, rest: &str) -> String {
+        let mut words = rest.split_whitespace();
+        match words.next().map(str::to_ascii_lowercase).as_deref() {
+            None => {
+                let mut out = format!("OK count={}", self.recent.paths().len());
+                for (i, p) in self.recent.paths().iter().enumerate() {
+                    out.push_str(&format!(" | {i} exists={} path={}", u8::from(p.is_file()), p.display()));
+                }
+                out
+            }
+            Some("open") => match words.next().and_then(|w| w.parse::<usize>().ok()) {
+                Some(i) => match self.open_recent(i) {
+                    Ok(p) => format!("OK opening {}", p.display()),
+                    Err(e) => {
+                        self.error = Some(e.clone());
+                        format!("ERR {e}")
+                    }
+                },
+                None => "ERR RECENT open <i>, from RECENT".to_string(),
+            },
+            Some("clear") => {
+                self.recent.clear();
+                self.save_recent();
+                "OK count=0".to_string()
+            }
+            _ => "ERR RECENT [open <i> | clear]".to_string(),
+        }
+    }
+
     /// `FILES …` from the control channel.
     fn files_request(&mut self, rest: &str) -> String {
         let mut words = rest.split_whitespace();
         match words.next().map(str::to_ascii_lowercase).as_deref() {
             None => {
+                self.refresh_meta();
                 let rows = self.file_rows();
                 let shown = self.files.arrange(&rows);
                 let mut out = format!(
-                    "OK count={} total={} current={} sort={} filter={:?}",
+                    "OK count={} total={} current={} sort={} filter={:?} columns={}",
                     shown.len(),
                     rows.len(),
                     self.docs.current(),
                     self.files.sort_text(),
-                    self.files.filter.trim()
+                    self.files.filter.trim(),
+                    files::columns_text(&self.files.columns)
                 );
                 for (i, r) in shown.iter().enumerate() {
                     out.push_str(&format!(
-                        " | {i} doc={} current={} unsaved={} frames={} rate={} ch={} bits={} format={} name={} path={}",
+                        " | {i} doc={} current={} unsaved={} frames={} rate={} ch={} bits={} format={} imported={} size={} name={} path={}",
                         r.doc,
-                        u8::from(r.doc == self.docs.current()),
+                        u8::from(!r.imported && r.doc == self.docs.current()),
                         u8::from(r.unsaved),
                         r.frames,
                         r.rate,
                         r.channels,
                         r.bits,
                         r.format,
+                        u8::from(r.imported),
+                        r.size,
                         r.name,
                         r.path
                     ));
+                    // Last, and only when there is one: a title can hold spaces.
+                    if !r.title.is_empty() {
+                        out.push_str(&format!(" title={}", r.title));
+                    }
                 }
                 out
             }
@@ -907,7 +1143,10 @@ impl WaveApp {
                     (Some("none"), _, None) => self.files.sort = None,
                     (_, Some(c), Some("asc")) => self.files.sort = Some((c, true)),
                     (_, Some(c), Some("desc")) => self.files.sort = Some((c, false)),
-                    _ => return "ERR FILES sort <name|unsaved|duration|rate|channels|bits|format|path> asc|desc, or FILES sort none".to_string(),
+                    _ => {
+                        return "ERR FILES sort <name|unsaved|duration|rate|channels|bits|format|path|title|size> asc|desc, or FILES sort none"
+                            .to_string();
+                    }
                 }
                 format!("OK sort={}", self.files.sort_text())
             }
@@ -916,9 +1155,21 @@ impl WaveApp {
                 self.files.filter = text.to_string();
                 format!("OK filter={text:?}")
             }
+            Some("columns") => {
+                let list = rest.trim().get("columns".len()..).unwrap_or("").trim();
+                if !list.is_empty() {
+                    match files::parse_columns(list) {
+                        Ok(cols) => self.set_columns(cols),
+                        Err(e) => return format!("ERR {e}"),
+                    }
+                }
+                format!("OK columns={}", files::columns_text(&self.files.columns))
+            }
+            // Making an imported row current starts opening its file: poll STATE until busy=0.
             Some("select") => match words.next().and_then(|w| w.parse::<usize>().ok()) {
-                Some(i) => match self.file_row_doc(i).and_then(|d| self.switch_doc(d).map(|()| d)) {
-                    Ok(d) => format!("OK current={d}"),
+                Some(i) => match self.file_row_doc(i).and_then(|d| self.activate_row(d)) {
+                    Ok(Some(d)) => format!("OK current={d}"),
+                    Ok(None) => "OK opening".to_string(),
                     Err(e) => format!("ERR {e}"),
                 },
                 None => "ERR FILES select <row>, from FILES".to_string(),
@@ -936,7 +1187,7 @@ impl WaveApp {
                     Err(e) => format!("ERR {e}"),
                 }
             }
-            _ => "ERR FILES [sort <col> asc|desc | filter <text> | select <row> | reveal [row]]".to_string(),
+            _ => "ERR FILES [sort <col> asc|desc | filter <text> | columns [<list>] | select <row> | reveal [row]]".to_string(),
         }
     }
 
@@ -1327,6 +1578,8 @@ impl WaveApp {
             Err(TryRecvError::Disconnected) => Err("the save stopped unexpectedly".to_string()),
         };
         let Some(Saving { path, state, ty, then_close, doc_id, .. }) = self.saving.take() else { return };
+        // The file's size (and title) on disk may have changed.
+        self.meta.clear();
         match result {
             // Another file was opened while this one was being saved: the file on disk is
             // written, but the open document is not the one saved, so its path, saved mark and
@@ -1546,6 +1799,12 @@ impl WaveApp {
                 }
             }
             "FILES" => self.files_request(rest),
+            "RECENT" => self.recent_request(rest),
+            // Add a file to the Files panel without opening it.
+            "IMPORT" if !rest.is_empty() => match self.import_file(PathBuf::from(rest)) {
+                Ok(()) => format!("OK listed={} open={}", self.imports.len(), self.docs.len(self.editor.is_some())),
+                Err(e) => format!("ERR {e}"),
+            },
             "SWITCH" => match rest.trim().parse::<usize>().map_err(|_| "SWITCH <index>, from DOCS".to_string()).and_then(|i| self.switch_doc(i)) {
                 Ok(()) => format!("OK current={}", self.docs.current()),
                 Err(e) => format!("ERR {e}"),
@@ -1597,12 +1856,48 @@ impl WaveApp {
         }
     }
 
+    /// File › Open Recent: the last files opened, a missing one greyed (clicking it takes it
+    /// off the list and says so), and Clear Recent.
+    fn recent_menu(&mut self, ui: &mut egui::Ui) {
+        let mut chosen = None;
+        if self.recent.paths().is_empty() {
+            ui.add_enabled(false, egui::Button::new("(none)"));
+        }
+        for (i, p) in self.recent.paths().iter().enumerate() {
+            let text = egui::RichText::new(path_name(p));
+            let missing = !p.is_file();
+            let hover = if missing { format!("{} (missing)", p.display()) } else { p.display().to_string() };
+            if ui.button(if missing { text.weak() } else { text }).on_hover_text(hover).clicked() {
+                chosen = Some(i);
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.add_enabled(!self.recent.paths().is_empty(), egui::Button::new("Clear Recent")).clicked() {
+            self.recent.clear();
+            self.save_recent();
+            ui.close();
+        }
+        if let Some(i) = chosen
+            && let Err(e) = self.open_recent(i)
+        {
+            self.error = Some(e);
+        }
+    }
+
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("Open…  Ctrl+O").clicked() {
                     self.pick_file(ui.ctx());
                 }
+                ui.menu_button("Open Recent", |ui| self.recent_menu(ui));
+                ui.menu_button("Import", |ui| {
+                    if ui.button("File…").on_hover_text("Add files to the Files panel without opening them").clicked() {
+                        self.pick_import();
+                        ui.close();
+                    }
+                });
                 ui.menu_button("New", |ui| {
                     if ui.button("Audio File…").clicked() {
                         self.new_audio = Some(NewAudio::default());
