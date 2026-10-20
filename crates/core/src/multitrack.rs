@@ -13,10 +13,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::json;
+use soundcraft_audio_io::AudioBuffer as ModelBuffer;
 use soundcraft_model::time::SampleRate;
 use soundcraft_model::{BitDepthSetting, ChannelFormat, Clip, Source, SourceAudio, SourceId, TrackId, TrackKind, truncate_chars};
 use soundcraft_model::{MAX_NAME_CHARS, Session};
-use soundcraft_model_audio::AudioBuffer as ModelBuffer;
 
 use crate::Document;
 
@@ -229,7 +229,7 @@ impl Multitrack {
             channels,
             frames: frames as u64,
             sample_rate: rate,
-            format: soundcraft_model_audio::FileFormat::Wav,
+            format: soundcraft_audio_io::FileFormat::Wav,
             time_reference: 0,
             unsaved: false,
         });
@@ -256,14 +256,14 @@ impl Multitrack {
         }
         let bytes = std::fs::read(path).map_err(|e| MtError(format!("cannot read {}: {e}", path.display())))?;
         let ext = path.extension().and_then(|e| e.to_str());
-        let info = soundcraft_model_audio::probe(&bytes, ext).map_err(|e| MtError(format!("cannot decode {}: {e}", path.display())))?;
+        let info = soundcraft_audio_io::probe(&bytes, ext).map_err(|e| MtError(format!("cannot decode {}: {e}", path.display())))?;
         if info.frames.saturating_mul(u64::from(info.channels)) > MAX_IMPORT_SAMPLES {
             return err(format!(
                 "{} is too long to hold in memory as a clip; long files wait for the disk-backed sources (issue #302)",
                 path.display()
             ));
         }
-        let (_, audio) = soundcraft_model_audio::decode(&bytes, ext).map_err(|e| MtError(format!("cannot decode {}: {e}", path.display())))?;
+        let (_, audio) = soundcraft_audio_io::decode(&bytes, ext).map_err(|e| MtError(format!("cannot decode {}: {e}", path.display())))?;
         drop(bytes);
         let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Clip").to_string();
         let file = path.file_name().and_then(|s| s.to_str()).unwrap_or("clip").to_string();
@@ -284,6 +284,11 @@ impl Multitrack {
     /// One line of JSON for the control channel and the tests: the session and every audio track
     /// with its clips (start and length in seconds).
     pub fn state_json(&self) -> String {
+        self.state_value().to_string()
+    }
+
+    /// [`Multitrack::state_json`] as a value, so a caller can add fields (the app adds the transport).
+    pub fn state_value(&self) -> serde_json::Value {
         let rate = self.session.sample_rate;
         let tracks: Vec<_> = self
             .session
@@ -300,7 +305,6 @@ impl Multitrack {
             })
             .collect();
         json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "tracks": tracks})
-            .to_string()
     }
 
     /// The session as the model's own JSON (audio is not in it; the sources' file names are).
@@ -429,7 +433,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
         let path = dir.join("tone.wav");
         let buf = tone(48_000, 0.5, 2);
-        let bytes = soundcraft_model_audio::encode(&buf, &soundcraft_model_audio::EncodeOptions::default()).unwrap_or_else(|e| panic!("{e}"));
+        let bytes = soundcraft_audio_io::encode(&buf, &soundcraft_audio_io::EncodeOptions::default()).unwrap_or_else(|e| panic!("{e}"));
         std::fs::write(&path, bytes).unwrap_or_else(|e| panic!("{e}"));
         let (mut m, a, b) = two_tracks();
         m.add_clip_file(a, &path, 1.0).unwrap_or_else(|e| panic!("{e}"));

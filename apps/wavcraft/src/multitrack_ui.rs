@@ -3,9 +3,12 @@
 //! control verbs `SESSION`, `TRACK`, `CLIP` and `VIEW`, so a script can drive it.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use soundcraft_playback::Player as DevicePlayer;
 use wavcraft_core::Document;
+use wavcraft_core::mtplay::{PlaybackSession, SilentPlayer};
 use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, TrackId};
 use wavcraft_core::multitrack::{MtError, Multitrack, bit_depth_from_bits, bits_of};
 
@@ -14,6 +17,77 @@ const ROW_H: f32 = 64.0;
 const RULER_H: f32 = 20.0;
 const RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
+
+/// The session's transport (f114): a device player, or the silent clock under `WAVCRAFT_NO_AUDIO=1`.
+/// Only output is ever opened; no input device.
+#[derive(Default)]
+pub struct Transport {
+    device: Option<DevicePlayer>,
+    silent: Option<SilentPlayer>,
+    snapshot: Option<Arc<PlaybackSession>>,
+    playing: bool,
+}
+
+impl Transport {
+    fn no_audio() -> bool {
+        std::env::var_os("WAVCRAFT_NO_AUDIO").is_some_and(|v| v == "1")
+    }
+
+    /// Snapshot the session and play it from `from` (session frames).
+    pub fn play(&mut self, mt: &Multitrack, from: i64) {
+        self.stop();
+        let ps = Arc::new(PlaybackSession::new(mt));
+        if Self::no_audio() {
+            match &self.silent {
+                Some(p) => p.set_session(Arc::clone(&ps)),
+                None => self.silent = Some(SilentPlayer::new(Arc::clone(&ps))),
+            }
+            if let Some(p) = &self.silent {
+                p.play(from);
+            }
+        } else {
+            let p = DevicePlayer::new(Arc::clone(&ps.session));
+            p.play(from, None, None);
+            self.device = Some(p);
+        }
+        self.snapshot = Some(ps);
+        self.playing = true;
+    }
+
+    pub fn stop(&mut self) {
+        if let Some(p) = &self.silent {
+            p.stop();
+        }
+        if let Some(p) = self.device.take() {
+            p.stop();
+        }
+        self.playing = false;
+    }
+
+    /// The playhead, in session frames.
+    pub fn position(&self) -> i64 {
+        match (&self.silent, &self.device) {
+            (Some(p), _) if Self::no_audio() => p.position(),
+            (_, Some(p)) => p.position(),
+            _ => 0,
+        }
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.playing
+    }
+
+    pub fn underruns(&self) -> u64 {
+        self.snapshot.as_ref().map_or(0, |s| s.underruns())
+    }
+
+    /// Stops at the end of the content; call every frame.
+    fn tick(&mut self, end: i64) {
+        if self.playing && self.position() >= end {
+            self.stop();
+        }
+    }
+}
 
 /// File › New › Multitrack Session…: the fields being typed.
 pub struct NewDialog {
@@ -32,6 +106,7 @@ pub struct MtView {
     selected: Option<TrackId>,
     rename: Option<(TrackId, String)>,
     pub message: Option<String>,
+    pub transport: Transport,
     px_per_sec: f32,
     import_at: f64,
     sessions_made: u32,
@@ -46,6 +121,7 @@ impl Default for MtView {
             selected: None,
             rename: None,
             message: None,
+            transport: Transport::default(),
             px_per_sec: 60.0,
             import_at: 0.0,
             sessions_made: 0,
@@ -61,6 +137,7 @@ impl MtView {
 
     fn create(&mut self, name: &str, rate: u32, depth: BitDepthSetting) -> Result<(), MtError> {
         self.mt = Some(Multitrack::new(name, rate, depth)?);
+        self.transport.stop();
         self.selected = None;
         self.rename = None;
         self.show = true;
@@ -135,6 +212,19 @@ impl MtView {
                 mt.rate(),
                 if bits_of(mt.session.bit_depth) == 32 { "32-bit float".into() } else { format!("{}-bit", bits_of(mt.session.bit_depth)) }
             ));
+            ui.separator();
+            let end_frames = mt.session.content_end();
+            self.transport.tick(end_frames);
+            if self.transport.is_playing() {
+                if ui.button("■ Stop").clicked() {
+                    self.transport.stop();
+                }
+                ui.ctx().request_repaint();
+            } else if ui.add_enabled(end_frames > 0, egui::Button::new("▶ Play")).on_hover_text("play the session from the start").clicked() {
+                self.transport.play(mt, 0);
+            }
+            let at = self.transport.position() as f64 / f64::from(mt.rate());
+            ui.monospace(format!("{:02}:{:05.2}", (at / 60.0) as u32, at % 60.0));
             ui.separator();
             if ui.button("Add Stereo Track").clicked() {
                 note(&mut failure, mt.add_track(None, 2).map(|_| ()));
@@ -240,6 +330,10 @@ impl MtView {
                 }
                 let rate = f64::from(mt.rate());
                 let p = ui.painter_at(lane);
+                if self.transport.is_playing() {
+                    let x = lane.left() + (self.transport.position() as f64 / rate) as f32 * self.px_per_sec;
+                    p.line_segment([pos2(x, lane.top()), pos2(x, lane.bottom())], Stroke::new(1.5, Color32::from_rgb(255, 200, 60)));
+                }
                 for c in &clips {
                     let x0 = lane.left() + (c.start as f64 / rate) as f32 * self.px_per_sec;
                     let w = ((c.length as f64 / rate) as f32 * self.px_per_sec).max(2.0);
@@ -300,10 +394,29 @@ impl MtView {
                 Ok("OK".into())
             }
             ("SESSION", "new") => usage("SESSION new <name> [rate=48000] [depth=16|24|32]"),
+            ("SPLAY", _) => {
+                let mt = self.mt.as_ref().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+                let at: f64 = if w.is_empty() { 0.0 } else { word(0).parse().map_err(|_| MtError("usage: SPLAY [seconds]".into()))? };
+                if !at.is_finite() || at < 0.0 {
+                    return usage("SPLAY [seconds], 0 or more");
+                }
+                if mt.session.content_end() <= 0 {
+                    return Err(MtError("the session has no clips to play".into()));
+                }
+                self.transport.play(mt, mt.session.sample_rate.samples(at));
+                Ok("OK".into())
+            }
+            ("SSTOP", _) => {
+                self.transport.stop();
+                Ok("OK".into())
+            }
             ("SESSION", "state") => match &self.mt {
                 Some(mt) => {
-                    let json = mt.state_json();
-                    Ok(format!("OK view={} {json}", if self.show { "multitrack" } else { "waveform" }))
+                    let mut v = mt.state_value();
+                    v["playing"] = self.transport.is_playing().into();
+                    v["position"] = (self.transport.position() as f64 / f64::from(mt.rate())).into();
+                    v["underruns"] = self.transport.underruns().into();
+                    Ok(format!("OK view={} {v}", if self.show { "multitrack" } else { "waveform" }))
                 }
                 None => Ok(format!("OK view={} none", if self.show { "multitrack" } else { "waveform" })),
             },

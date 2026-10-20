@@ -14,18 +14,16 @@ wavcraft-core = { path = "crates/core" }
 # Self-logging (SELF-LOGGING.md), the same crates the Craft forks carry, copied from PhotoCraft `ours`.
 craft-log = { path = "crates/craft-log" }
 
-# SoundCraft's engine crates, pinned to one commit of our fork (upstream v0.5.0 plus our merged
-# fixes: long-file handling, parallel WAV/AIFF decode). Bump deliberately; see README.
-# This commit is tagged `wavecraft-pin-2026-10-12` on iannitram/soundcraft. The tag keeps the
-# app's old name (WaveCraft, renamed WavCraft 2026-10-15) on purpose: it lives on another repo,
-# and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
-soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
-
-# Multitrack basics (f103): SoundCraft's session model (MIT OR Apache-2.0), pinned to the head of
-# `ours` on the same fork, SEPARATELY from the audio-io pin above (the model needs a newer audio-io).
-# The model's own audio-io is named `soundcraft-model-audio` here so the two never meet in a type.
-soundcraft-model = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
-soundcraft-model-audio = { package = "soundcraft-audio-io", git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
+# SoundCraft's engine crates (MIT OR Apache-2.0), ALL pinned to one commit: the head of the fork branch
+# `feat/streamed-readahead` on iannitram/soundcraft (upstream v0.5.0 plus our fixes: long-file handling,
+# parallel WAV/AIFF decode, the session model, the disk-backed `SampleSource` trait, the mix engine's
+# `ReadAheadSource`). Bump deliberately, all together; see README. (The tag `wavecraft-pin-2026-10-12`
+# keeps the app's old name on purpose: it lives on another repo, and renaming it would break old pins.)
+soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
+soundcraft-model = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
+# Playing the session (f114): the mix engine renders it, the playback crate owns the output device.
+soundcraft-mix = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
+soundcraft-playback = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
 # Session state for the control channel and tests (already in the tree through the model). MIT OR Apache-2.0.
 serde_json = "1"
 
