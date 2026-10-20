@@ -10,6 +10,7 @@
 
 mod app;
 mod control;
+mod match_ui;
 mod meters_ui;
 mod player;
 mod selflog;

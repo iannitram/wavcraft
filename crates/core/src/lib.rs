@@ -21,6 +21,7 @@ pub mod document;
 pub mod io;
 pub mod levels;
 pub mod loudness;
+pub mod match_loudness;
 pub mod random;
 pub mod save;
 pub mod settings;

@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
+use wavcraft_core::match_loudness::Target;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
@@ -16,6 +17,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
+use crate::match_ui::MatchUi;
 use crate::meters_ui::{self, MetersUi};
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
@@ -110,6 +112,8 @@ pub struct WaveApp {
     confirm_clear_history: bool,
     /// Window › Levels and the statistics window (f26).
     meters: MetersUi,
+    /// Window › Match Loudness (f33).
+    matcher: MatchUi,
 }
 
 impl WaveApp {
@@ -165,6 +169,7 @@ impl WaveApp {
             insert_silence: None,
             confirm_clear_history: false,
             meters: MetersUi::new(),
+            matcher: MatchUi::new(),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -217,6 +222,7 @@ impl WaveApp {
             Ok(doc) => {
                 self.player.set_audio(Some(doc.audio.clone()));
                 self.meters.new_file();
+                self.matcher.new_file();
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
@@ -502,6 +508,7 @@ impl WaveApp {
     /// Read the current step back for the views and the player on a worker thread (task 05
     /// replaces this with views that read the document directly).
     fn rebuild(&mut self, ctx: &egui::Context) {
+        self.matcher.audio_changed();
         let Some(editor) = &self.editor else { return };
         let (tx, rx) = channel();
         let (state, path, ctx) = (editor.history.current().as_ref().clone(), self.doc_path.clone(), ctx.clone());
@@ -511,6 +518,24 @@ impl WaveApp {
         });
         self.player.stop();
         self.rebuilding = Some(rx);
+    }
+
+    /// A Match Loudness run from the window finished: one step on the history, unless the audio
+    /// changed while it ran.
+    fn finish_match(&mut self, ctx: &egui::Context) {
+        let Some(done) = self.matcher.take_finished() else { return };
+        let Some(editor) = self.editor.as_mut() else { return };
+        if !Arc::ptr_eq(&done.base, editor.history.current()) {
+            self.matcher.say(false, "The audio changed while matching; nothing was applied. Run it again.".to_string());
+            return;
+        }
+        let changed = !done.result.edit.is_noop();
+        editor.history.push_edit(done.result.edit);
+        self.matcher.say(true, done.result.message.clone());
+        self.notice = Some(done.result.message);
+        if changed {
+            self.rebuild(ctx);
+        }
     }
 
     fn finish_rebuild(&mut self) {
@@ -784,6 +809,52 @@ impl WaveApp {
                     Err(e) => format!("ERR {e}"),
                 }
             }
+            // f33: `MATCH [target=<LUFS>] [tp=<dBTP>] [limit=on|off] [tol=<LU>] [lookahead=<ms>]
+            // [release=<ms>] [preset=podcast|broadcast]`: Match Loudness on the whole file, one step.
+            "MATCH" => {
+                let Some(e) = &mut self.editor else { return "ERR MATCH needs a file".to_string() };
+                let mut t = Target::PODCAST;
+                for word in rest.split_whitespace() {
+                    let (k, v) = word.split_once('=').unwrap_or((word, ""));
+                    let num = v.parse::<f64>();
+                    match (k, num) {
+                        ("preset", _) => match v {
+                            "podcast" => t = Target::PODCAST,
+                            "broadcast" => t = Target::BROADCAST,
+                            _ => return "ERR MATCH preset=podcast|broadcast".to_string(),
+                        },
+                        ("target", Ok(n)) => t.lufs = n,
+                        ("tp", Ok(n)) => t.max_true_peak_dbtp = n,
+                        ("tol", Ok(n)) => t.tolerance_lu = n,
+                        ("lookahead", Ok(n)) => t.look_ahead_ms = n,
+                        ("release", Ok(n)) => t.release_ms = n,
+                        ("limit", _) if v == "on" || v == "off" => t.limit = v == "on",
+                        _ => return format!("ERR MATCH: cannot read {word:?}; keys target tp tol limit lookahead release preset"),
+                    }
+                }
+                let state = e.history.current().clone();
+                match wavcraft_core::match_loudness::run(&state, &t, None, &AtomicBool::new(false), &mut |_| {}) {
+                    Ok(r) => {
+                        let line = format!(
+                            "OK gain={:.2} limited={} on_target={} before={:.2} after={:.2} true_peak={:.2} changed={}",
+                            r.gain_db,
+                            u8::from(r.limited),
+                            u8::from(r.on_target),
+                            r.before.integrated_lufs,
+                            r.after.integrated_lufs,
+                            r.after.true_peak_dbtp,
+                            u8::from(!r.edit.is_noop())
+                        );
+                        if !r.edit.is_noop() {
+                            e.history.push_edit(r.edit);
+                            self.notice = Some(r.message);
+                            self.rebuild(ctx);
+                        }
+                        line
+                    }
+                    Err(err) => format!("ERR {err}"),
+                }
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -879,6 +950,7 @@ impl WaveApp {
                 ui.checkbox(&mut self.show_history, "History panel");
                 ui.checkbox(&mut self.meters.show_levels, "Levels");
                 ui.checkbox(&mut self.meters.show_stats, "Amplitude/Loudness Statistics");
+                ui.checkbox(&mut self.matcher.show, "Match Loudness");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -1086,7 +1158,8 @@ impl eframe::App for WaveApp {
         self.finish_rebuild();
         self.finish_saving(ctx);
         self.meters.update(self.player.take_levels());
-        if self.meters.animating() || self.player.is_playing() {
+        self.finish_match(ctx);
+        if self.meters.animating() || self.matcher.animating() || self.player.is_playing() {
             ctx.request_repaint();
         }
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
@@ -1151,6 +1224,13 @@ impl eframe::App for WaveApp {
                 (state, range, scope.to_string())
             });
             self.meters.stats_window(&ctx, target);
+        }
+        if self.matcher.show {
+            let file = self.editor.as_ref().map(|e| {
+                let name = self.doc_path.file_name().map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
+                (name, e.history.current().clone())
+            });
+            self.matcher.window(&ctx, file);
         }
         if self.show_history {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));

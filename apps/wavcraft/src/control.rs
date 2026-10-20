@@ -18,6 +18,10 @@
 //! - `LOUDNESS [<start> <end>]` → `OK scope=<file|selection|range> frames=<n> integrated=<LUFS> range=<LU>
 //!   true_peak=<dBTP> sample_peak=<dBFS> max_momentary=<LUFS>` (`-inf` for nothing to measure; runs on the
 //!   window's thread, so a long file waits)
+//! - `MATCH [target=<LUFS>] [tp=<dBTP>] [tol=<LU>] [limit=on|off] [lookahead=<ms>] [release=<ms>] [preset=podcast|broadcast]`
+//!   → `OK gain=<dB> limited=<0|1> on_target=<0|1> before=<LUFS> after=<LUFS> true_peak=<dBTP> changed=<0|1>` (Match
+//!   Loudness on the whole file as one undoable step, default the podcast preset; runs on the window's thread;
+//!   poll `STATE` until `busy=0`, then `LOUDNESS` reads the result back)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
