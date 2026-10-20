@@ -3280,6 +3280,7 @@ dependencies = [
 name = "wavcraft"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "cpal",
  "craft-log",
  "dirs",

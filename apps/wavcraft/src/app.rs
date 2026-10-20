@@ -1,7 +1,7 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -110,6 +110,8 @@ pub struct WaveApp {
     /// Frames a selection drag snaps to besides the ruler: the edges of the selection that was
     /// there when the gesture began (the cursor is its start).
     snap_targets: Vec<u64>,
+    /// Copy and Paste's side of the system clipboard.
+    os_clipboard: crate::oscb::OsClipboard,
 }
 
 impl WaveApp {
@@ -160,6 +162,7 @@ impl WaveApp {
             saving: None,
             confirm_close: false,
             allow_close: false,
+            os_clipboard: crate::oscb::OsClipboard::new(),
             editor_width: 800.0,
             insert_silence: None,
             confirm_clear_history: false,
@@ -317,9 +320,19 @@ impl WaveApp {
             return self.run_window_action(id, ctx);
         }
         let sel = self.selection_range();
+        if id == ActionId::Paste {
+            self.take_system_clipboard();
+        }
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         match editor.run(id, sel) {
-            Ok(out) => {
+            Ok(mut out) => {
+                if matches!(id, ActionId::Copy | ActionId::Cut)
+                    && let Some(clip) = editor.clipboard()
+                    && let Err(why) = self.os_clipboard.publish(clip)
+                {
+                    log::info!(target: "wavcraft", "not on the system clipboard: {why}");
+                    out.message = Some(format!("Copied to clipboard {} only: {why}", editor.current_clipboard + 1));
+                }
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
                 if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd) {
                     self.player.stop();
@@ -338,6 +351,24 @@ impl WaveApp {
                 log::warn!(target: "wavcraft", "{why}");
                 self.error = Some(why.clone());
                 Err(why)
+            }
+        }
+    }
+
+    /// Before a Paste: if another program put an audio file on the system clipboard since we last
+    /// looked, it becomes the current internal clipboard's clip, and the Paste uses it.
+    fn take_system_clipboard(&mut self) {
+        let Some(path) = self.os_clipboard.incoming() else { return };
+        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), ..OpenOptions::default() };
+        match self.os_clipboard.take(&path, &opts) {
+            Ok(clip) => {
+                if let Some(e) = self.editor.as_mut() {
+                    e.set_clipboard(clip);
+                }
+            }
+            Err(why) => {
+                log::warn!(target: "wavcraft", "audio on the system clipboard not used: {why}");
+                self.notice = Some(format!("Audio on the system clipboard was not used: {why}"));
             }
         }
     }
@@ -758,7 +789,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} snap={} snapzero={} enabled={} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} snap={} snapzero={} enabled={} clipboard={} clip_frames={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -769,12 +800,14 @@ impl WaveApp {
                             u8::from(e.snap.enabled),
                             u8::from(e.snap.zero_crossings),
                             e.enabled_flags(),
+                            e.current_clipboard + 1,
+                            e.clipboard().map_or(0, |c| c.len_frames()),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 snap=1 snapzero=0 enabled= undo=- redo=-",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 snap=1 snapzero=0 enabled= clipboard=1 clip_frames=0 undo=- redo=-",
                         u8::from(busy)
                     ),
                 }
@@ -792,6 +825,18 @@ impl WaveApp {
                     _ => "ERR SNAP <frame> [frames_per_px], with a file open".to_string(),
                 }
             }
+            // Scripted checks of the system clipboard: what is on it, or put a file there as if
+            // another program had.
+            "OSCLIP" => match rest.split_once(' ') {
+                Some(("set", path)) => match self.os_clipboard.put_foreign(Path::new(path)) {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                },
+                _ => {
+                    let (first, ours) = self.os_clipboard.peek();
+                    format!("OK ours={} path={}", u8::from(ours), first.map_or("-".to_string(), |p| p.display().to_string()))
+                }
+            },
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -900,7 +945,16 @@ impl WaveApp {
         let mac = cfg!(target_os = "macos");
         let mut chosen = None;
         for a in TABLE.iter().filter(|a| a.name.starts_with("edit.")) {
-            if matches!(a.id, ActionId::Cut | ActionId::Delete | ActionId::Crop | ActionId::ZeroInward | ActionId::SetIn | ActionId::LeftChannel) {
+            if matches!(
+                a.id,
+                ActionId::Cut
+                    | ActionId::Clipboard1
+                    | ActionId::Delete
+                    | ActionId::Crop
+                    | ActionId::ZeroInward
+                    | ActionId::SetIn
+                    | ActionId::LeftChannel
+            ) {
                 ui.separator();
             }
             let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
