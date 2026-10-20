@@ -13,6 +13,8 @@
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `PREF set language <code>` / `PREF get language` → `OK language=<code>` (saved in the settings)
+//! - `I18N missing` → `OK <n> <keys>`; `I18N get <key>` → `OK <text now>` (e.g. a menu title)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

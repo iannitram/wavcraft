@@ -1,0 +1,102 @@
+# English: the source catalogue. One `key = text` per line; `{0}`, `{1}` are filled in by the caller.
+# Add a key here whenever the code calls tr("key"); a test checks every key the code uses is present.
+
+# Menu titles
+menu.file = File
+menu.edit = Edit
+menu.view = View
+menu.language = Language
+
+# File menu
+file.open = Open…  Ctrl+O
+file.save = Save
+file.save_as = Save As…
+file.session_folder = Session Folder…
+file.session_folder_tip = Where opened files are kept while you work on them. Now: {0}
+file.default_session_folder = Use the Default Session Folder
+file.quit = Quit
+
+# View menu and transport
+view.waveform = Waveform
+view.spectrum = Spectral frequency display
+view.log_freq = Logarithmic frequency axis
+view.history_panel = History panel
+transport.stop = ■ Stop
+transport.play = ▶ Play
+
+# Languages (shown in the Language menu)
+language.en = English
+language.pseudo = Pseudo-locale (accented, longer)
+
+# Edit and View menu items (the action table's menu text)
+action.edit.undo = Undo
+action.edit.redo = Redo
+action.edit.repeatLast = Repeat Last Command
+action.edit.repeatLastDialog = Repeat Last Command…
+action.edit.cut = Cut
+action.edit.copy = Copy
+action.edit.paste = Paste
+action.edit.delete = Delete
+action.edit.silence = Silence
+action.edit.insertSilence = Insert Silence…
+action.edit.crop = Crop
+action.edit.selectAll = Select All
+action.edit.deselectAll = Deselect All
+action.edit.clearTimeSelection = Clear Time Selection
+action.edit.zeroCrossings.inward = Zero Crossings: Adjust Selection Inward
+action.edit.zeroCrossings.outward = Zero Crossings: Adjust Selection Outward
+action.edit.zeroCrossings.leftToLeft = Zero Crossings: Left Side to Left
+action.edit.zeroCrossings.leftToRight = Zero Crossings: Left Side to Right
+action.edit.zeroCrossings.rightToLeft = Zero Crossings: Right Side to Left
+action.edit.zeroCrossings.rightToRight = Zero Crossings: Right Side to Right
+action.edit.setIn = Set In Point to Playhead
+action.edit.setOut = Set Out Point to Playhead
+action.edit.leftChannel = Left Channel Only
+action.edit.rightChannel = Right Channel Only
+action.view.cursorToStart = Playhead to Start
+action.view.cursorToEnd = Playhead to End
+action.view.zoomIn = Zoom In
+action.view.zoomOut = Zoom Out
+action.view.zoomToSelection = Zoom to Selection
+action.view.zoomOutFull = Zoom Out Full
+
+# Edit menu items that name a step
+action.undo_step = Undo {0}
+action.redo_step = Redo {0}
+action.repeat_step = Repeat {0}
+action.repeat_insert_silence = Repeat Insert Silence
+action.both_channels = Both Channels
+
+# Status bar
+status.opening = Opening {0}… {1}%
+status.saving = Saving {0}… {1}%
+status.updating = Updating the view…
+status.format = {0} {1} · {2} Hz · {3} ch · {4}
+status.warning = Warning: {0}
+status.cursor = Cursor {0}
+status.selection = Selection {0} – {1}  ({2})
+status.no_sound = No sound: {0}
+status.no_sound_stopped = No sound: the output device stopped (Play tries it again)
+status.out = Out: {0}
+status.hint = File › Open, or drop an audio file here.
+
+# Dialogs
+dialog.insert_silence = Insert Silence
+dialog.insert_silence.duration = Duration (seconds):
+dialog.clear_history = Clear History
+dialog.clear_history.body = Remove every step but the current one? This can't be undone.
+dialog.unsaved = Unsaved changes
+dialog.unsaved.body = Save changes to {0} before closing?
+button.ok = OK
+button.cancel = Cancel
+button.clear = Clear
+button.save = Save
+button.dont_save = Don't Save
+
+# History panel
+history.title = History
+history.no_file = No file open.
+history.dropped = Oldest {0} steps removed to stay under {1} GB
+history.session = Session: {0} MB · free {1}
+history.unknown = unknown
+history.clear = Clear History…
