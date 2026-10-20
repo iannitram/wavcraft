@@ -107,6 +107,8 @@ pub struct WaveApp {
     aiff_kind: AiffKind,
     /// The Save As / Export dialog is up.
     export_open: bool,
+    /// The control channel's answer to the next file dialog (`None` inside: the dialog was cancelled).
+    scripted_pick: Option<Option<PathBuf>>,
     /// What the export dialog (and `SAVEOPTS`) has chosen.
     export_choice: ExportChoice,
     /// The named choices, and the file they are kept in.
@@ -181,6 +183,7 @@ impl WaveApp {
             save_type: None,
             aiff_kind: AiffKind::Aiff,
             export_open: false,
+            scripted_pick: None,
             export_choice: ExportChoice::default(),
             export_presets_path: ExportPresets::default_path(),
             export_presets: ExportPresets::default_path().as_deref().map(ExportPresets::load).unwrap_or_default(),
@@ -619,7 +622,11 @@ impl WaveApp {
                 if let Some(dir) = self.doc_path.parent().filter(|d| !d.as_os_str().is_empty()) {
                     dialog = dialog.set_directory(dir);
                 }
-                match dialog.save_file() {
+                let picked = match self.scripted_pick.take() {
+                    Some(answer) => answer,
+                    None => dialog.save_file(),
+                };
+                match picked {
                     Some(p) => p,
                     None => return Ok(()),
                 }
@@ -704,8 +711,21 @@ impl WaveApp {
         self.export_open = true;
     }
 
+    /// The dialog's Save As button: save once with the choice. The dialog edits a copy
+    /// (`export_choice`); the document's own save type is not touched, so cancelling the file
+    /// dialog (or any failure) leaves later plain saves as they were.
+    fn export_go(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        let choice = self.export_choice;
+        self.dialog_format = Some(choice.format);
+        let kept = self.aiff_kind;
+        self.aiff_kind = choice.aiff;
+        let r = self.save_with(ctx, true, None, false, Some(choice.ty), false);
+        self.aiff_kind = kept;
+        r
+    }
+
     /// Make the export choice the one saves use (the type and AIFF kind; the format follows the
-    /// file name).
+    /// file name). Only the control channel's `SAVEOPTS set` and preset loads do this.
     fn apply_export_choice(&mut self) {
         self.save_type = Some(self.export_choice.ty);
         self.aiff_kind = self.export_choice.aiff;
@@ -825,17 +845,13 @@ impl WaveApp {
         if go || !open {
             self.export_open = false;
         }
-        if go {
-            self.apply_export_choice();
-            self.dialog_format = Some(self.export_choice.format);
-            if let Err(e) = self.save(ctx, true, None, false) {
-                self.error = Some(e);
-            }
+        if go && let Err(e) = self.export_go(ctx) {
+            self.error = Some(e);
         }
     }
 
     /// `SAVEOPTS estimate|set <fmt> <bits> [aiff=<kind>]` and `SAVEOPTS show` (control channel).
-    fn control_saveopts(&mut self, rest: &str) -> String {
+    fn control_saveopts(&mut self, ctx: &egui::Context, rest: &str) -> String {
         let mut words = rest.split_whitespace();
         let verb = words.next().unwrap_or("");
         if verb == "show" {
@@ -848,7 +864,9 @@ impl WaveApp {
             return format!("ERR no format or sample type {f} {t}: wav|aiff|flac, 16|24|32|float");
         };
         let mut aiff = self.export_choice.aiff;
-        for w in words {
+        let mut tail: Vec<&str> = words.collect();
+        let words_last = if verb == "dialog" { tail.pop() } else { None };
+        for w in tail {
             match w.strip_prefix("aiff=").and_then(AiffKind::parse) {
                 Some(k) => aiff = k,
                 None => return format!("ERR aiff=<aiff|aifc|sowt>, not {w}"),
@@ -861,6 +879,19 @@ impl WaveApp {
                 self.export_choice = choice;
                 self.apply_export_choice();
                 format!("OK {}", choice.describe())
+            }
+            // `SAVEOPTS dialog <fmt> <bits> [aiff=] cancel|<path>`: the Save As button with this
+            // choice, the file dialog answered with the path or cancelled. Changes no saved option.
+            "dialog" => {
+                let Some(answer) = words_last else { return "ERR SAVEOPTS dialog <fmt> <bits> cancel|<path>".to_string() };
+                self.export_choice = choice.fitted();
+                self.scripted_pick = Some((answer != "cancel").then(|| PathBuf::from(answer)));
+                let r = self.export_go(ctx);
+                self.scripted_pick = None;
+                match r {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                }
             }
             "estimate" => {
                 let Some(editor) = &self.editor else { return "ERR no file is open".to_string() };
@@ -1048,7 +1079,7 @@ impl WaveApp {
                     }
                 }
             }
-            "SAVEOPTS" => self.control_saveopts(rest),
+            "SAVEOPTS" => self.control_saveopts(ctx, rest),
             "EXPORTPRESET" => self.control_export_preset(rest),
             // A plain QUIT refuses with unsaved changes; `QUIT discard` closes anyway.
             "QUIT" if self.unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
