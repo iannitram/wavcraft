@@ -281,11 +281,16 @@ impl WaveApp {
 
     /// Start a take. Nothing plays while it runs (C024).
     fn start_recording(&mut self, fmt: wavcraft_core::record::RecFormat) -> Result<PathBuf, String> {
+        self.start_recording_max(fmt, None)
+    }
+
+    /// Start a take that stops by itself after `max_secs` of recorded audio, if given (C028).
+    fn start_recording_max(&mut self, fmt: wavcraft_core::record::RecFormat, max_secs: Option<u64>) -> Result<PathBuf, String> {
         if self.opening.is_some() || self.saving.is_some() {
             return Err("wait for the open or save to finish".to_string());
         }
         self.player.set_muted(true);
-        match self.rec.start(fmt) {
+        match self.rec.start(fmt, max_secs) {
             Ok(path) => {
                 self.error = None;
                 self.notice = None;
@@ -308,6 +313,16 @@ impl WaveApp {
         if let Some(e) = &take.error {
             self.error = Some(format!("Recording stopped early: {e} The take so far is kept in {}", take.path.display()));
         }
+        if take.dropped_frames > 0 {
+            let ms = take.dropped_frames * 1000 / u64::from(take.fmt.rate.max(1));
+            let why = format!(
+                "Recording lost {} frames (about {ms} ms) because the disk could not keep up. The take is kept in {} but has gaps.",
+                take.dropped_frames,
+                take.path.display()
+            );
+            log::warn!(target: "wavcraft", "{why}");
+            self.error.get_or_insert(why);
+        }
         if open && take.frames > 0 {
             self.open(take.path.clone(), ctx);
             if take.error.is_none() {
@@ -315,6 +330,12 @@ impl WaveApp {
             }
         }
         Some(take)
+    }
+
+    /// Record now with the last format used (the default the first time): no dialog (C031).
+    fn quick_record(&mut self) -> Result<PathBuf, String> {
+        let fmt = self.rec.last_format();
+        self.start_recording(fmt)
     }
 
     fn toggle_play(&mut self) {
@@ -800,20 +821,48 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
-            // RECORD start [rate=48000 ch=1 bits=24] | RECORD stop
+            // RECORD start [rate=48000 ch=1 bits=24] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop
             "RECORD" => {
                 let (verb, args) = rest.split_once(' ').unwrap_or((rest, ""));
                 match verb {
-                    "start" => match wavcraft_core::record::RecFormat::parse_args(args).and_then(|f| self.start_recording(f)) {
+                    "start" => {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                        match crate::recording::parse_start_args(args, now) {
+                            Ok((f, o)) if o.delay_secs.is_some_and(|d| d > 0) => {
+                                match self.rec.arm(f, std::time::Duration::from_secs(o.delay_secs.unwrap_or(0)), o.max_secs) {
+                                    Ok(()) => format!("OK armed in={}", o.delay_secs.unwrap_or(0)),
+                                    Err(e) => format!("ERR {e}"),
+                                }
+                            }
+                            Ok((f, o)) => match self.start_recording_max(f, o.max_secs) {
+                                Ok(path) => format!("OK path={}", path.display()),
+                                Err(e) => format!("ERR {e}"),
+                            },
+                            Err(e) => format!("ERR {e}"),
+                        }
+                    }
+                    "quick" => match self.quick_record() {
                         Ok(path) => format!("OK path={}", path.display()),
                         Err(e) => format!("ERR {e}"),
                     },
+                    "pause" | "resume" => {
+                        if !self.rec.is_active() {
+                            "ERR not recording".to_string()
+                        } else if self.rec.set_paused(verb == "pause") {
+                            "OK".to_string()
+                        } else {
+                            format!("ERR already {}", if verb == "pause" { "paused" } else { "recording" })
+                        }
+                    }
+                    "cancel" if self.rec.disarm() => "OK".to_string(),
+                    "cancel" => "ERR nothing is waiting to start".to_string(),
                     "stop" => match self.finish_recording(true, ctx) {
                         Some(t) if t.error.is_none() => format!("OK frames={} dropped={} path={}", t.frames, t.dropped_frames, t.path.display()),
                         Some(t) => format!("ERR the take stopped early: {} (kept at {})", t.error.unwrap_or_default(), t.path.display()),
                         None => "ERR not recording".to_string(),
                     },
-                    _ => "ERR RECORD start [rate=48000 ch=1 bits=24] | RECORD stop".to_string(),
+                    _ => "ERR RECORD start [rate=48000 ch=1 bits=24] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop"
+                        .to_string(),
                 }
             }
             "SAVE" => {
@@ -877,7 +926,10 @@ impl WaveApp {
                 }
                 let idle = !self.rec.is_active() && self.opening.is_none() && self.saving.is_none();
                 if ui.add_enabled(idle, egui::Button::new("New Recording…")).clicked() {
-                    self.rec.dialog = Some(wavcraft_core::record::RecFormat::default());
+                    self.rec.dialog = Some(self.rec.last_format());
+                }
+                if ui.add_enabled(idle, egui::Button::new("Record Now").shortcut_text("Shift+Space")).clicked() {
+                    let _ = self.quick_record();
                 }
                 ui.separator();
                 let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
@@ -923,12 +975,20 @@ impl WaveApp {
                 if ui.button("■ Stop Recording").clicked() {
                     self.finish_recording(true, ui.ctx());
                 }
+                let label = if self.rec.is_paused() { "● Resume" } else { "❚❚ Pause" };
+                if ui.button(label).on_hover_text("Space").clicked() {
+                    self.rec.set_paused(!self.rec.is_paused());
+                }
+            } else if self.rec.is_armed() {
+                if ui.button("Cancel Timed Recording").clicked() {
+                    self.rec.disarm();
+                }
             } else if ui
                 .add_enabled(self.opening.is_none() && self.saving.is_none(), egui::Button::new("● Record"))
-                .on_hover_text("New Recording")
+                .on_hover_text("New Recording (Shift+Space records at once with the last settings)")
                 .clicked()
             {
-                self.rec.dialog = Some(wavcraft_core::record::RecFormat::default());
+                self.rec.dialog = Some(self.rec.last_format());
             }
         });
     }
@@ -1137,6 +1197,17 @@ impl eframe::App for WaveApp {
             log::warn!(target: "wavcraft", "recording: {why}");
             self.finish_recording(true, ctx);
         }
+        if self.rec.max_reached() {
+            log::info!(target: "wavcraft", "recording: the time limit is reached, stopping");
+            self.finish_recording(true, ctx);
+        }
+        if let Some((fmt, max)) = self.rec.due() {
+            // Errors show in the status bar and the log.
+            let _ = self.start_recording_max(fmt, max);
+        }
+        if self.rec.is_active() || self.rec.is_armed() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
@@ -1171,15 +1242,29 @@ impl eframe::App for WaveApp {
             let _ = self.run_action(id, &ctx);
         }
         // Home and Zoom Out Full come from the action table now (Audition's Home and Cmd+\).
-        let (space, open, dropped) = ctx.input(|i| {
+        let (space, shift_space, open, dropped) = ctx.input(|i| {
+            let space = i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Space, pressed: true, repeat: false, .. }));
             (
-                // Not `key_pressed`: that also counts auto-repeat, so a long press would toggle again.
-                i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Space, pressed: true, repeat: false, .. })),
+                space && !i.modifiers.shift,
+                space && i.modifiers.shift,
                 i.modifiers.command && i.key_pressed(Key::O),
                 i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()),
             )
         });
-        if space {
+        // Not `key_pressed` above: that also counts auto-repeat, so a long press would toggle again.
+        if shift_space && !ctx.egui_wants_keyboard_input() {
+            // Shift+Space: record now (C031); while recording it stops the take.
+            if self.rec.is_active() {
+                self.finish_recording(true, &ctx);
+            } else if self.rec.is_armed() {
+                self.rec.disarm();
+            } else {
+                let _ = self.quick_record();
+            }
+        } else if space && self.rec.is_active() {
+            // Space while recording pauses and resumes the take (C029).
+            self.rec.set_paused(!self.rec.is_paused());
+        } else if space {
             self.toggle_play();
         }
         if open {
