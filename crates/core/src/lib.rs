@@ -43,6 +43,7 @@ pub mod shortcuts;
 pub mod snap;
 pub mod space;
 pub mod spectrogram;
+pub mod stats;
 pub mod stft;
 pub mod store;
 pub mod tools;

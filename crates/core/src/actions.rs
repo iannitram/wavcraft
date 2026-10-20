@@ -104,6 +104,12 @@ pub enum ActionId {
     ToggleAutoScroll,
     FollowPage,
     FollowCenter,
+    /// Window › Amplitude Statistics: show the panel.
+    StatsShow,
+    /// The panel's navigation: cursor to the peak, to the next / previous possibly clipped run.
+    StatsGotoPeak,
+    StatsNextClip,
+    StatsPrevClip,
 }
 
 /// Which part of the program carries an action out.
@@ -226,6 +232,10 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ToggleAutoScroll, "transport.autoScroll", "Auto-Scroll"),
     window(ActionId::FollowPage, "transport.followPage", "Auto-Scroll Pagewise"),
     window(ActionId::FollowCenter, "transport.followCenter", "Auto-Scroll Centered"),
+    window(ActionId::StatsShow, "stats.show", "Amplitude Statistics"),
+    window(ActionId::StatsGotoPeak, "stats.goto_peak", "Go to Peak"),
+    window(ActionId::StatsNextClip, "stats.next_clip", "Next Possibly Clipped Run"),
+    window(ActionId::StatsPrevClip, "stats.prev_clip", "Previous Possibly Clipped Run"),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -479,6 +489,7 @@ impl Editor {
             | ActionId::ZoomAmpIn
             | ActionId::ZoomAmpOut
             | ActionId::ZoomAmpReset => self.len() > 0,
+            ActionId::StatsShow | ActionId::StatsGotoPeak | ActionId::StatsNextClip | ActionId::StatsPrevClip => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::Play
             | ActionId::Pause
@@ -931,6 +942,10 @@ impl Editor {
             | ActionId::SnapToggle
             | ActionId::SnapZeroToggle
             | ActionId::ToggleChannel(_)
+            | ActionId::StatsShow
+            | ActionId::StatsGotoPeak
+            | ActionId::StatsNextClip
+            | ActionId::StatsPrevClip
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft

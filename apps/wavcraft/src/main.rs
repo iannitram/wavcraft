@@ -23,6 +23,7 @@ mod recording;
 mod recovery;
 mod selflog;
 mod spectrum;
+mod statspanel;
 #[cfg(windows)]
 mod win_acl;
 
