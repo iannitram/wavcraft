@@ -5,6 +5,7 @@
 //! - [`store`]: the session folder of append-only pack files, blocks, and the block cache.
 //! - [`doc`]: the piece table ([`DocState`]) and its one read path; [`doc::edit`], the edits
 //!   (pure functions from one state to the next), and [`doc::history`], undo with a disk cap.
+//! - [`batch`]: the Batch Process runner (a list of files through a chain of operations to WAV).
 //! - [`io`]: streamed open into the store.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`settings`]: the settings file and where the session folder is.
@@ -16,6 +17,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod actions;
+pub mod batch;
 pub mod doc;
 pub mod document;
 pub mod io;

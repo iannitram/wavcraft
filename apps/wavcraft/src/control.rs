@@ -13,6 +13,8 @@
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `BATCH add <path>|op <step>|out <folder> [pattern=<p>]|overwrite on|off|clear|run|cancel|status` → the
+//!   Batch Process panel (`status` lists `running= files= done= ok= failed= … results=`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

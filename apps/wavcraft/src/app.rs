@@ -15,6 +15,7 @@ use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
+use crate::batch_panel::BatchPanel;
 use crate::control;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
@@ -107,6 +108,8 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// File › Batch Process…
+    batch: BatchPanel,
 }
 
 impl WaveApp {
@@ -159,6 +162,7 @@ impl WaveApp {
             allow_close: false,
             editor_width: 800.0,
             show_history: true,
+            batch: BatchPanel::default(),
             insert_silence: None,
             confirm_clear_history: false,
             control: {
@@ -746,6 +750,7 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
+            "BATCH" => self.batch.control(rest, &self.sessions.path, ctx),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -803,6 +808,10 @@ impl WaveApp {
                     && let Err(e) = self.save(ui.ctx(), true, None, false)
                 {
                     self.error = Some(e);
+                }
+                ui.separator();
+                if ui.button("Batch Process…").clicked() {
+                    self.batch.open = true;
                 }
                 ui.separator();
                 let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
@@ -1045,6 +1054,7 @@ impl eframe::App for WaveApp {
         self.finish_opening();
         self.finish_rebuild();
         self.finish_saving(ctx);
+        self.batch.poll();
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
@@ -1098,6 +1108,7 @@ impl eframe::App for WaveApp {
         }
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
+        self.batch.ui(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
     }
 }

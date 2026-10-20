@@ -164,17 +164,48 @@ pub fn remove_leftover_temps(target: &Path) -> usize {
 /// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically.
 /// `progress` gets 0 to 1 as the samples go out.
 pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
-    save_wav_inner(doc, target, ty, progress, None)
+    save_wav_inner(doc, target, ty, progress, None, None)
+}
+
+/// A per-chunk change applied while a file is written (the batch runner's operations): the
+/// saved file has `channels` channels, and `apply` fills `out` (that many buffers, each at least
+/// `n` long) from the `n` frames of the document's channels in `input`. An error stops the
+/// save and removes its temporary file (the batch runner's cancel).
+/// The function a [`Transform`] holds.
+pub type ApplyFn<'a> = &'a mut dyn FnMut(&[Vec<f32>], usize, &mut [Vec<f32>]) -> io::Result<()>;
+
+pub struct Transform<'a> {
+    pub channels: usize,
+    pub apply: ApplyFn<'a>,
+}
+
+/// [`save_wav`] with a [`Transform`] applied to every chunk as it goes out; still streamed, so
+/// the document is never held whole.
+pub fn save_wav_transformed(
+    doc: &DocState,
+    target: &Path,
+    ty: SampleType,
+    transform: Transform<'_>,
+    progress: &mut dyn FnMut(f64),
+) -> Result<(), SaveError> {
+    save_wav_inner(doc, target, ty, progress, None, Some(transform))
 }
 
 /// [`save_wav`] that fails with an I/O error once `fail_after` frames are out (tests: a save
 /// that dies halfway must leave the target whole).
 #[doc(hidden)]
 pub fn save_wav_failing_after(doc: &DocState, target: &Path, ty: SampleType, fail_after: u64) -> Result<(), SaveError> {
-    save_wav_inner(doc, target, ty, &mut |_| {}, Some(fail_after))
+    save_wav_inner(doc, target, ty, &mut |_| {}, Some(fail_after), None)
 }
 
-fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> Result<(), SaveError> {
+fn save_wav_inner(
+    doc: &DocState,
+    target: &Path,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+    transform: Option<Transform<'_>>,
+) -> Result<(), SaveError> {
     let frames = doc.len_frames();
     if frames == 0 {
         return Err(SaveError::Empty);
@@ -183,7 +214,7 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
     let tmp = TempFile::create(target).map_err(SaveError::Io)?;
     let TempFile { path: tmp, file } = tmp;
     // Written through the handle made by the exclusive create, never reopened by name.
-    let file = match write_wav(doc, file, ty, progress, fail_after) {
+    let file = match write_wav(doc, file, ty, progress, fail_after, transform) {
         Ok(file) => file,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
@@ -204,25 +235,38 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
     Ok(())
 }
 
-fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> io::Result<File> {
-    let (frames, channels) = (doc.len_frames(), doc.channel_count());
+fn write_wav(
+    doc: &DocState,
+    file: File,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+    mut transform: Option<Transform<'_>>,
+) -> io::Result<File> {
+    let (frames, in_channels) = (doc.len_frames(), doc.channel_count());
+    let channels = transform.as_ref().map_or(in_channels, |t| t.channels);
     let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames)?;
-    let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
+    let mut inbufs = vec![vec![0f32; BLOCK_FRAMES]; in_channels];
+    let mut tbufs = vec![vec![0f32; BLOCK_FRAMES]; if transform.is_some() { channels } else { 0 }];
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * channels * ty.bytes());
     let mut at = 0u64;
     while at < frames {
         let n = (frames - at).min(BLOCK_FRAMES as u64) as usize;
-        for (ch, buf) in bufs.iter_mut().enumerate() {
+        for (ch, buf) in inbufs.iter_mut().enumerate() {
             let got = doc.read(ch, at, &mut buf[..n])?;
             if got != n {
                 return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("channel {ch} gave {got} of {n} frames at {at}")));
             }
         }
+        if let Some(t) = transform.as_mut() {
+            (t.apply)(&inbufs, n, &mut tbufs)?;
+        }
+        let bufs = if transform.is_some() { &tbufs } else { &inbufs };
         bytes.clear();
         for i in 0..n {
-            for buf in &bufs {
+            for buf in bufs.iter() {
                 let x = buf[i];
                 match ty {
                     SampleType::Int16 => bytes.extend_from_slice(&(quantize(x, 16) as i16).to_le_bytes()),
