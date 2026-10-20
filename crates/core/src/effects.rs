@@ -175,9 +175,11 @@ pub fn fade(doc: &DocState, range: Range<u64>, channels: ChannelMask, dir: FadeD
     })
 }
 
+mod dynamics;
 mod eq;
 mod gain;
 mod noise_reduction;
+pub use dynamics::{Compressor, DeEsser, HardLimiter};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
 pub use noise_reduction::NoiseReduction;
@@ -369,6 +371,13 @@ pub trait Effect: Sync {
     fn stream(&self, _params: &[f64], _channels: usize, _rate: u32) -> Option<Box<dyn EffectStream>> {
         None
     }
+    /// For an effect that keeps state from one chunk to the next (a dynamics envelope, a filter,
+    /// a look-ahead window; f28): a processor for one run over a range, at the document's
+    /// sample rate and with `channels` active channels. When this returns `Some`, [`apply`] uses
+    /// it and never calls [`Effect::process`] (which such an effect may refuse).
+    fn run_stream(&self, _params: &[f64], _sample_rate: u32, _channels: usize) -> Option<Box<dyn Stream>> {
+        None
+    }
 }
 
 /// What a stateful effect is told when a run starts (see [`Effect::begin`]).
@@ -417,12 +426,43 @@ impl EffectStream for Stateless {
     }
 }
 
+/// An offline [`Stream`] (an effect with `run_stream`, f28) driven block by block for the rack:
+/// the block is copied to the output and processed there in place. Its [`Stream::latency`] is not
+/// compensated live.
+struct RunAdapter {
+    run: Box<dyn Stream>,
+}
+
+impl EffectStream for RunAdapter {
+    fn process_block(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
+        for (i, o) in input.iter().zip(output.iter_mut()) {
+            o.copy_from_slice(i);
+        }
+        self.run.process(output);
+    }
+}
+
 /// Open `effect` for streaming over `channels` channels at `rate` Hz with these settings
 /// (checked first). An effect with its own state supplies it through [`Effect::stream`]; the
 /// others run block by block through [`Effect::process`].
 pub fn open_stream(effect: &'static dyn Effect, params: &[f64], channels: usize, rate: u32) -> Result<Box<dyn EffectStream>, String> {
     validate(effect, params)?;
+    if let Some(run) = effect.run_stream(params, rate, channels) {
+        return Ok(Box::new(RunAdapter { run }));
+    }
     Ok(effect.stream(params, channels, rate).unwrap_or_else(|| Box::new(Stateless { effect, params: params.to_vec(), frame: 0 })))
+}
+
+/// One run of a stateful effect (see [`Effect::run_stream`]). It sees the range's audio in order,
+/// in blocks of any size, and works in place. With a [`latency`](Stream::latency) of `L` frames
+/// the audio it hands back in a call is the input of `L` frames earlier; [`apply`] feeds it
+/// `L` frames ahead (read from the document, zeros past the end) so the result lines up.
+pub trait Stream: Send {
+    fn latency(&self) -> usize {
+        0
+    }
+    /// Process one block in place; one slice per active channel, all the same length.
+    fn process(&mut self, io: &mut [&mut [f32]]);
 }
 
 /// Polarity inversion: every sample times -1. The reference effect.
@@ -446,7 +486,8 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &NoiseReduction];
+pub static REGISTRY: &[&dyn Effect] =
+    &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &NoiseReduction, &Compressor, &HardLimiter, &DeEsser];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
@@ -476,6 +517,11 @@ pub fn apply(
     let active = channels.active(doc.channel_count());
     let ctx = RunContext { doc, range: range.clone(), channels: active.clone(), sample_rate: rate };
     let mut run = effect.begin(params, &ctx).map_err(EditError::Io)?;
+    if run.is_none()
+        && let Some(stream) = effect.run_stream(params, rate, active.len())
+    {
+        return apply_stream(stream, doc, range, channels, &active, effect.name(), xf, cancel);
+    }
     let lead = effect.context_frames(params, rate);
     // A stateful run (#135) takes the chunks in order; otherwise a stateless effect that wants no
     // context gets the chunk alone; one that wants context (#139) reads it itself.
@@ -505,5 +551,44 @@ pub fn apply(
         let ins: Vec<&[f32]> = bufs.iter().map(|b| &b[..]).collect();
         let ctx = ChunkCtx { first_frame: first, range_start: range.start, lead, channels: &active, sample_rate: rate };
         effect.process_in_context(params, &ctx, &ins, output)
+    })
+}
+
+/// [`apply`] for a [`Stream`]: one pass over the range, each chunk read `latency` frames ahead.
+#[allow(clippy::too_many_arguments)]
+fn apply_stream(
+    mut stream: Box<dyn Stream>,
+    doc: &DocState,
+    range: Range<u64>,
+    channels: ChannelMask,
+    active: &[usize],
+    label: &str,
+    xf: Crossfades,
+    cancel: &AtomicBool,
+) -> Result<Edit, EditError> {
+    let len = doc.len_frames();
+    let lat = stream.latency() as u64;
+    // Read `buf.len()` frames from `from`, zeros past the end of the document.
+    let fill = |c: usize, from: u64, buf: &mut [f32]| -> io::Result<()> {
+        let got = if from < len { doc.read(c, from, buf)? } else { 0 };
+        buf[got..].fill(0.0);
+        Ok(())
+    };
+    if lat > 0 && range.start < range.end && !active.is_empty() {
+        // Prime: the first `lat` frames go in and their (empty-window) output is dropped.
+        let mut warm: Vec<Vec<f32>> = vec![vec![0.0; lat as usize]; active.len()];
+        for (buf, &c) in warm.iter_mut().zip(active) {
+            fill(c, range.start, buf)?;
+        }
+        let mut views: Vec<&mut [f32]> = warm.iter_mut().map(|b| b.as_mut_slice()).collect();
+        stream.process(&mut views);
+    }
+    let active = active.to_vec();
+    edit::replace_range(doc, range, channels, label, xf, cancel, move |at, _input, output| {
+        for (buf, &c) in output.iter_mut().zip(&active) {
+            fill(c, at + lat, buf)?;
+        }
+        stream.process(output);
+        Ok(())
     })
 }
