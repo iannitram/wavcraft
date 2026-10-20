@@ -556,6 +556,20 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
                     src.bwf = parse_bext(&raw);
                     src.meta.bext = crate::meta::Bext::parse(&raw);
                 }
+                b"_PMX" if src.meta.xmp.is_none() && src.meta.xmp_problem.is_none() => {
+                    let read = if declared <= crate::xmp::MAX_XMP_BYTES {
+                        crate::xmp::Xmp::parse(&job.read_at(body, declared)?)
+                    } else {
+                        Err("the packet is larger than 4 MiB".to_string())
+                    };
+                    match read {
+                        Ok(x) => src.meta.xmp = Some(x),
+                        Err(e) => {
+                            src.warnings.push(format!("the XMP packet could not be read ({e}); it is kept as it is"));
+                            src.meta.xmp_problem = Some(e);
+                        }
+                    }
+                }
                 b"LIST" if declared <= crate::meta::MAX_META_BYTES && src.meta.info.0.is_empty() => {
                     if let Some(tags) = crate::meta::InfoTags::parse(&job.read_at(body, declared)?) {
                         src.meta.info = tags;

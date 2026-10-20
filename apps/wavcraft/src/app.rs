@@ -507,25 +507,41 @@ impl WaveApp {
             return;
         };
         let src = editor.history.current().source().clone();
-        if self.meta_for.as_ref().is_none_or(|a| !Arc::ptr_eq(a, &src)) || self.meta_draft.len() != meta::FIELDS.len() {
-            self.meta_draft = meta::FIELDS.iter().map(|f| src.meta.get(f).unwrap_or_default()).collect();
+        let fields = meta::Metadata::panel_fields();
+        if self.meta_for.as_ref().is_none_or(|a| !Arc::ptr_eq(a, &src)) || self.meta_draft.len() != fields.len() {
+            self.meta_draft = fields.iter().map(|f| src.meta.get(f).unwrap_or_default()).collect();
             self.meta_for = Some(src.clone());
         }
         let mut apply = false;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (field, text) in meta::FIELDS.iter().zip(self.meta_draft.iter_mut()) {
-                ui.label(field.replace('_', " "));
+            for (field, text) in fields.iter().zip(self.meta_draft.iter_mut()) {
+                let label =
+                    wavcraft_core::xmp::FIELDS.iter().find(|f| f.name == *field).map_or_else(|| field.replace('_', " "), |f| f.label.to_string());
+                ui.label(label);
                 if *field == "coding_history" {
                     ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY));
                 } else {
                     ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
                 }
             }
+            if let Some(why) = &src.meta.xmp_problem {
+                ui.add_space(4.0);
+                ui.colored_label(
+                    Color32::LIGHT_RED,
+                    format!("The XMP packet could not be read ({why}). It is kept as it is and cannot be edited here."),
+                );
+            } else if let Some(x) = &src.meta.xmp {
+                let unknown = x.properties().iter().filter(|p| !p.known).count();
+                if unknown > 0 {
+                    ui.add_space(4.0);
+                    ui.label(format!("{unknown} other XMP properties are kept as they are."));
+                }
+            }
             ui.add_space(6.0);
             apply = ui.button("Apply").clicked();
         });
         if apply {
-            let changes: Vec<(String, String)> = meta::FIELDS.iter().map(|f| f.to_string()).zip(self.meta_draft.iter().cloned()).collect();
+            let changes: Vec<(String, String)> = fields.iter().map(|f| f.to_string()).zip(self.meta_draft.iter().cloned()).collect();
             match self.apply_metadata(&changes) {
                 Ok(_) => self.meta_for = None,
                 Err(e) => self.error = Some(format!("Metadata: {e}")),
@@ -832,6 +848,44 @@ impl WaveApp {
                         }
                     }
                     _ => "ERR META get [field] | META set <field> <value>".to_string(),
+                }
+            }
+            // XMP get [<ns>:<prop>] | XMP set <ns>:<prop> <value>: the XMP packet of the current step.
+            "XMP" => {
+                let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
+                let meta = &editor.history.current().source().meta;
+                match (verb, rest.trim()) {
+                    ("get", "") => {
+                        let props = meta.xmp.as_ref().map(|x| x.properties()).unwrap_or_default();
+                        let status = match (&meta.xmp_problem, &meta.xmp) {
+                            (Some(_), _) => "malformed",
+                            (None, Some(_)) => "ok",
+                            _ => "none",
+                        };
+                        let list: Vec<String> = props
+                            .iter()
+                            .map(|p| {
+                                format!("{}:{}{}={}", p.ns, p.name, if p.known { "" } else { "?" }, meta::escape_lines(&p.value).replace(' ', "_"))
+                            })
+                            .collect();
+                        format!("OK status={status} props={} {}", props.len(), list.join(" ")).trim_end().to_string()
+                    }
+                    ("get", key) => match meta.get(&format!("xmp:{key}")) {
+                        Some(v) if meta.xmp.as_ref().and_then(|x| x.split_key(key).ok().and_then(|(n, p)| x.get(&n, &p))).is_some() => {
+                            format!("OK {}", meta::escape_lines(&v))
+                        }
+                        Some(_) => "ERR no such XMP property".to_string(),
+                        None => format!("ERR {key:?} is not <namespace>:<property>"),
+                    },
+                    ("set", args) => {
+                        let (key, value) = args.split_once(' ').unwrap_or((args, ""));
+                        match self.apply_metadata(&[(format!("xmp:{key}"), meta::unescape_lines(value))]) {
+                            Ok(changed) => format!("OK changed={}", u8::from(changed)),
+                            Err(e) => format!("ERR {e}"),
+                        }
+                    }
+                    _ => "ERR XMP get [<ns>:<prop>] | XMP set <ns>:<prop> <value>".to_string(),
                 }
             }
             "SAVE" => {

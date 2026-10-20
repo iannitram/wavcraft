@@ -27,6 +27,7 @@ pub mod space;
 pub mod spectrogram;
 pub mod store;
 pub mod view;
+pub mod xmp;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;

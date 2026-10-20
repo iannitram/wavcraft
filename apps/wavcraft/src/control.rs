@@ -13,6 +13,7 @@
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `META get [field]` / `META set <field> <value>` → `OK <value>` / `OK changed=<0|1>` (one undo step "Edit Metadata" per set; `\r` and `\n` in a value are line breaks)
+//! - `XMP get [<ns>:<prop>]` / `XMP set <ns>:<prop> <value>` → `OK status=<ok|none|malformed> props=<n> …` / `OK <value>` / `OK changed=<0|1>` (`<ns>` is a namespace URI or a prefix such as `dc`; one undo step "Edit Metadata" per set; an empty value removes the property)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
