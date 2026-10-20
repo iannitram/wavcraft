@@ -751,7 +751,9 @@ pub fn mix_paste(doc: &DocState, at: u64, clip: &Clip, channels: ChannelMask, op
     }
     // A grown file has every channel rebuilt (Insert on all of them); otherwise only the active ones changed.
     let change = if grows { Change::LengthFrom { frame: at } } else { Change::SameLength { range: at..at + total, channels: mask } };
-    finish(doc, out, MIX_PASTE, change)
+    // A grown file inserted `total` frames at `at` (later markers move); otherwise nothing moved.
+    let shift = if grows { Shift::Insert { at, len: total } } else { Shift::None };
+    finish(doc, out, MIX_PASTE, change, shift)
 }
 
 /// Generated audio (f21): `frames` of new samples inserted at `range.start`, replacing `range`
@@ -792,7 +794,9 @@ where
         let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(new, 0, frames, 0), Seg::new(ch, range.end, len - range.end, 0)];
         out.push(Arc::new(build(store, &segs)?));
     }
-    finish(doc, out, label, Change::LengthFrom { frame: range.start })
+    // The range was replaced by `frames` generated frames (an insert when the range is empty).
+    let shift = Shift::Replace { range: range.clone(), len: frames };
+    finish(doc, out, label, Change::LengthFrom { frame: range.start }, shift)
 }
 
 // ---------------------------------------------------------------------------------------------
