@@ -17,6 +17,7 @@
 
 pub mod actions;
 pub mod convert;
+pub mod dither;
 pub mod doc;
 pub mod document;
 pub mod io;

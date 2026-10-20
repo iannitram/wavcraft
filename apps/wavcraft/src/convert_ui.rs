@@ -3,6 +3,7 @@
 
 use egui::vec2;
 use wavcraft_core::convert::{ConvertSettings, PresetFile, Quality};
+use wavcraft_core::dither::{DitherSettings, DitherType, Shaping};
 use wavcraft_core::save::SampleType;
 
 /// Rates offered in the list; any other whole number can be typed.
@@ -37,6 +38,7 @@ pub struct ConvertDialog {
     /// Percent of each source channel in a mix to mono.
     mix: Vec<f32>,
     bits: Bits,
+    dither: DitherSettings,
     quality: Quality,
     preset_name: String,
     message: Option<String>,
@@ -51,6 +53,7 @@ impl ConvertDialog {
             chans: Chans::Keep,
             mix: vec![100.0 / src_channels.max(1) as f32; src_channels],
             bits: Bits::Keep,
+            dither: DitherSettings::default(),
             quality: Quality::default(),
             preset_name: String::new(),
             message: None,
@@ -76,6 +79,7 @@ impl ConvertDialog {
             Some(SampleType::Int24) => Bits::B24,
             Some(SampleType::Int32 | SampleType::Float32) => Bits::F32,
         };
+        self.dither = s.dither.unwrap_or_default();
         self.quality = s.quality;
     }
 
@@ -94,7 +98,14 @@ impl ConvertDialog {
             Bits::F32 => Some(SampleType::Float32),
         };
         let mix_pct = if self.chans == Chans::Mono && self.src_channels > 1 { self.mix.clone() } else { Vec::new() };
-        Ok(ConvertSettings { rate: (rate != self.src_rate).then_some(rate), channels, mix_pct, bits, quality: self.quality })
+        Ok(ConvertSettings {
+            rate: (rate != self.src_rate).then_some(rate),
+            channels,
+            mix_pct,
+            bits,
+            dither: Some(self.dither),
+            quality: self.quality,
+        })
     }
 
     pub fn show(&mut self, ctx: &egui::Context, presets: &mut PresetFile) -> Outcome {
@@ -163,7 +174,21 @@ impl ConvertDialog {
                     ui.selectable_value(&mut self.bits, Bits::B24, "24-bit");
                     ui.selectable_value(&mut self.bits, Bits::F32, "32-bit float");
                 });
-                ui.label("The depth is used when the file is saved. Dither is off.");
+                ui.horizontal(|ui| {
+                    ui.label("Dither:");
+                    egui::ComboBox::from_id_salt("convert-dither").selected_text(self.dither.dither.name()).show_ui(ui, |ui| {
+                        for d in DitherType::ALL {
+                            ui.selectable_value(&mut self.dither.dither, d, d.name());
+                        }
+                    });
+                    ui.label("Noise shaping:");
+                    egui::ComboBox::from_id_salt("convert-shaping").selected_text(self.dither.shaping.name()).show_ui(ui, |ui| {
+                        for sh in Shaping::ALL {
+                            ui.selectable_value(&mut self.dither.shaping, sh, sh.name());
+                        }
+                    });
+                });
+                ui.label("The depth and dither are used when the file is saved to 16 or 24 bits. Dither is off unless you choose it.");
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Preset name:");

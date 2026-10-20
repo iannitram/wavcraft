@@ -1,7 +1,9 @@
 //! Save (task 06, first part: WAV). The document is streamed out 64 K frames at a time with
 //! [`DocState::read`], never flattened, so a three-hour file saves on an 8 GB machine. Integer
-//! samples are `round(x · 2^(bits−1))`, clamped, with no dither: the exact inverse of how they
-//! are read, so untouched audio saves bit for bit. Above 4 GiB the file is RF64.
+//! samples are `round(x · 2^(bits−1))`, clamped: the exact inverse of how they are read, so
+//! untouched audio saves bit for bit. Dither and noise shaping ([`crate::dither`]) are applied
+//! only when the document's [`SourceFormat::dither`] asks for them (Convert Sample Type), and
+//! only to the integer depths. Above 4 GiB the file is RF64.
 //!
 //! **A save never damages the target:** it writes a temporary file in the same folder, syncs it,
 //! and renames it over the target only when it is complete. Any failure removes that temporary
@@ -21,6 +23,7 @@ use std::time::{Duration, SystemTime};
 
 use soundcraft_audio_io::SampleFormat;
 
+use crate::dither::Ditherer;
 use crate::doc::{DocState, SourceFormat};
 use crate::store::BLOCK_FRAMES;
 
@@ -210,6 +213,8 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
     let mut out = BufWriter::with_capacity(1 << 20, file);
     let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames)?;
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
+    // One quantiser per channel for the whole file: its noise and filter state carry across blocks.
+    let mut dithers: Vec<Ditherer> = (0..channels).map(|ch| Ditherer::new(&doc.source().dither, ch)).collect();
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * channels * ty.bytes());
     let mut at = 0u64;
     while at < frames {
@@ -222,12 +227,12 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
         }
         bytes.clear();
         for i in 0..n {
-            for buf in &bufs {
+            for (buf, dither) in bufs.iter().zip(dithers.iter_mut()) {
                 let x = buf[i];
                 match ty {
-                    SampleType::Int16 => bytes.extend_from_slice(&(quantize(x, 16) as i16).to_le_bytes()),
-                    SampleType::Int24 => bytes.extend_from_slice(&quantize(x, 24).to_le_bytes()[..3]),
-                    SampleType::Int32 => bytes.extend_from_slice(&quantize(x, 32).to_le_bytes()),
+                    SampleType::Int16 => bytes.extend_from_slice(&(dither.quantize(x, 16) as i16).to_le_bytes()),
+                    SampleType::Int24 => bytes.extend_from_slice(&dither.quantize(x, 24).to_le_bytes()[..3]),
+                    SampleType::Int32 => bytes.extend_from_slice(&dither.quantize(x, 32).to_le_bytes()),
                     SampleType::Float32 => bytes.extend_from_slice(&x.to_le_bytes()),
                 }
             }

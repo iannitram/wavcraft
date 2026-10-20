@@ -238,6 +238,9 @@ pub struct SourceFormat {
     pub chunks: Vec<ChunkInfo>,
     /// What was wrong with the file but still opened: truncation, damaged packets.
     pub warnings: Vec<String>,
+    /// Dither and noise shaping a save applies when it reduces the depth (off unless Convert
+    /// Sample Type turned it on).
+    pub dither: crate::dither::DitherSettings,
 }
 
 impl SourceFormat {
@@ -253,6 +256,7 @@ impl SourceFormat {
             bwf: None,
             chunks: Vec::new(),
             warnings: Vec::new(),
+            dither: crate::dither::DitherSettings::default(),
         }
     }
 

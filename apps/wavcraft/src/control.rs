@@ -12,7 +12,7 @@
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
-//! - `CONVERT rate=44100 channels=1 bits=16 quality=high mix=50,50` or `CONVERT preset=<name>` → `OK`
+//! - `CONVERT rate=44100 channels=1 bits=16 dither=tpdf shaping=light quality=high mix=50,50` or `CONVERT preset=<name>` → `OK`
 //!   (Convert Sample Type, in the background; poll `STATE` until `busy=0`; `ERR` for a bad setting)
 //! - `INTERPRET <hz>` → `OK` (Interpret Sample Rate: relabel the rate, no resampling)
 //! - `PRESET list` | `PRESET save <name> | <settings>` | `PRESET delete <name>` → `OK …` (conversion presets)

@@ -248,7 +248,14 @@ fn settings_text_round_trips_and_rejects_nonsense() {
     let s = ConvertSettings::parse("rate=44100 channels=1 bits=24 quality=best mix=30,70").unwrap();
     assert_eq!(
         s,
-        ConvertSettings { rate: Some(44_100), channels: Some(1), mix_pct: vec![30.0, 70.0], bits: Some(SampleType::Int24), quality: Quality::Best }
+        ConvertSettings {
+            rate: Some(44_100),
+            channels: Some(1),
+            mix_pct: vec![30.0, 70.0],
+            bits: Some(SampleType::Int24),
+            dither: None,
+            quality: Quality::Best
+        }
     );
     assert_eq!(ConvertSettings::parse(&s.to_text()).unwrap(), s);
     for bad in ["rate=fast", "bits=12", "quality=ultra", "colour=red", "rate"] {

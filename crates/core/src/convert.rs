@@ -18,8 +18,8 @@
 //!   change of count is refused. A mix is plain addition in `f32`, so 100 % + 100 % can exceed
 //!   full scale: nothing clips until a save does (float headroom is its own row).
 //! - **Bit depth:** a label, not a rewrite. It sets the sample format of the new state's
-//!   [`SourceFormat`], which [`SampleType::for_source`] reads at save time. Dither is off (a later
-//!   row). 32-bit integer is saved as 32-bit float (samples are held as `f32`), so the choices are
+//!   [`SourceFormat`], which [`SampleType::for_source`] reads at save time. The dither settings ride
+//!   along the same way (`SourceFormat::dither`, see [`crate::dither`]); off unless asked for. 32-bit integer is saved as 32-bit float (samples are held as `f32`), so the choices are
 //!   16-bit, 24-bit and 32-bit float.
 //! - **Interpret Sample Rate** ([`interpret_rate`]) only relabels the rate: no sample changes, so
 //!   the audio plays faster or slower and is longer or shorter in time.
@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rayon::prelude::*;
 use soundcraft_audio_io::SampleFormat;
 
+use crate::dither::{DEFAULT_SEED, DitherSettings, DitherType, Shaping};
 use crate::doc::edit::{Change, Edit, EditError};
 use crate::doc::{Channel, DocState, Piece, SourceFormat};
 use crate::io::MAX_SAMPLE_RATE_HZ;
@@ -128,6 +129,9 @@ pub struct ConvertSettings {
     pub mix_pct: Vec<f32>,
     /// The sample type a save will use.
     pub bits: Option<SampleType>,
+    /// Dither and noise shaping a save uses when it reduces the depth; `None` keeps the
+    /// document's own (off for a file just opened).
+    pub dither: Option<DitherSettings>,
     pub quality: Quality,
 }
 
@@ -136,6 +140,7 @@ impl ConvertSettings {
     /// `bits` is 16, 24 or 32 (32-bit float); `mix` is percent per source channel.
     pub fn parse(text: &str) -> Result<ConvertSettings, String> {
         let mut s = ConvertSettings::default();
+        let mut dither: Option<DitherSettings> = None;
         for word in text.split_whitespace() {
             let (k, v) = word.split_once('=').ok_or_else(|| format!("{word:?} is not key=value"))?;
             match k {
@@ -149,6 +154,15 @@ impl ConvertSettings {
                         _ => return Err(format!("bits={v}: use 16, 24 or 32 (32-bit float)")),
                     })
                 }
+                "dither" => {
+                    dither.get_or_insert_with(DitherSettings::default).dither =
+                        DitherType::parse(v).ok_or_else(|| format!("dither={v}: use none, triangular (tpdf) or rectangular"))?
+                }
+                "shaping" => {
+                    dither.get_or_insert_with(DitherSettings::default).shaping =
+                        Shaping::parse(v).ok_or_else(|| format!("shaping={v}: use none, light or strong"))?
+                }
+                "seed" => dither.get_or_insert_with(DitherSettings::default).seed = v.parse().map_err(|_| format!("seed={v}: not a number"))?,
                 "quality" => s.quality = Quality::parse(v).ok_or_else(|| format!("quality={v}: use draft, normal, high or best"))?,
                 "mix" => {
                     s.mix_pct = v
@@ -159,6 +173,7 @@ impl ConvertSettings {
                 _ => return Err(format!("unknown setting {k:?}")),
             }
         }
+        s.dither = dither;
         Ok(s)
     }
 
@@ -173,6 +188,13 @@ impl ConvertSettings {
         }
         if let Some(b) = self.bits {
             parts.push(format!("bits={}", bits_word(b)));
+        }
+        if let Some(d) = self.dither {
+            parts.push(format!("dither={}", d.dither.name()));
+            parts.push(format!("shaping={}", d.shaping.name()));
+            if d.seed != DEFAULT_SEED {
+                parts.push(format!("seed={}", d.seed));
+            }
         }
         parts.push(format!("quality={}", self.quality.name()));
         if !self.mix_pct.is_empty() {
@@ -254,7 +276,8 @@ fn plan(src: usize, s: &ConvertSettings) -> Result<Plan, EditError> {
 /// The settings change nothing about `doc`.
 fn is_identity(doc: &DocState, s: &ConvertSettings) -> bool {
     let fmt_same = s.bits.is_none_or(|b| format_for(b) == doc.source().sample_format);
-    s.rate.is_none_or(|r| r == doc.sample_rate()) && s.channels.is_none_or(|c| usize::from(c) == doc.channel_count()) && fmt_same
+    let dither_same = s.dither.is_none_or(|d| d == doc.source().dither);
+    s.rate.is_none_or(|r| r == doc.sample_rate()) && s.channels.is_none_or(|c| usize::from(c) == doc.channel_count()) && fmt_same && dither_same
 }
 
 /// Disk the result would take, for an up-front space check (4 bytes a sample, before the
@@ -304,6 +327,9 @@ pub fn convert(doc: &DocState, s: &ConvertSettings, cancel: &AtomicBool, progres
     source.channels = plan.out_channels as u16;
     if let Some(b) = s.bits {
         source.sample_format = format_for(b);
+    }
+    if let Some(d) = s.dither {
+        source.dither = d;
     }
     let state = DocState::from_shared(doc.store().clone(), channels, out_rate, Arc::new(source))?;
     progress(1.0);
