@@ -547,6 +547,35 @@ impl WaveApp {
         }
     }
 
+    /// Run DeClicker (`[sensitivity, max_width_ms]`) or Automatic Click Remover
+    /// (`[threshold, complexity]`) on the selection (the whole file when none).
+    fn run_declick(&mut self, params: Vec<f64>, auto: bool, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let sel = self.selection_range();
+        let name = if auto { "Automatic Click Remover" } else { "DeClicker" };
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let result = if auto { editor.run_auto_click(params, sel) } else { editor.run_declick(params, sel) };
+        match result {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.error = None;
+                self.notice = out.message;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                let why = format!("{name}: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
         if !self.confirm_clear_history {
             return;
@@ -837,6 +866,22 @@ impl WaveApp {
                     Err(e) => format!("ERR {e}"),
                 },
             },
+            // `DECLICK [sensitivity=.. max_width_ms=..]` and `AUTOCLICK [threshold=.. complexity=..]`
+            // scan the selection (the whole file when none) and repair clicks as one undo step.
+            "DECLICK" => match wavcraft_core::diagnostics::declick::Params::parse(rest) {
+                Err(e) => format!("ERR {e}"),
+                Ok(params) => match self.run_declick(params, false, ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+            },
+            "AUTOCLICK" => match wavcraft_core::diagnostics::declick::AutoParams::parse(rest) {
+                Err(e) => format!("ERR {e}"),
+                Ok(params) => match self.run_declick(params, true, ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+            },
             // The effect dialog: `EFFECT_DIALOG <name> [key=value ...]` opens it on those values,
             // `EFFECT_DIALOG` says what is open, `EFFECT_DIALOG OK|CANCEL` presses the button.
             "EFFECT_DIALOG" => match rest.trim() {
@@ -942,6 +987,12 @@ impl WaveApp {
         let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(ActionId::DeClip, &sel)) && self.saving.is_none();
         if ui.add_enabled(enabled, egui::Button::new("DeClipper (defaults)")).clicked() {
             chosen = Some((ActionId::DeClip, false));
+        }
+        for (id, text) in [(ActionId::DeClick, "DeClicker (defaults)"), (ActionId::AutoClick, "Automatic Click Remover (defaults)")] {
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(id, &sel)) && self.saving.is_none();
+            if ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
+                chosen = Some((id, false));
+            }
         }
         match chosen {
             Some((ActionId::Effect(i), true)) => {

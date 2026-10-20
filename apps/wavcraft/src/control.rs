@@ -14,6 +14,8 @@
 //! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
 //! - `EFFECT_DIALOG <name> [key=value ...]` opens the effect's dialog on those values; `EFFECT_DIALOG` → `OK open=<id|none> values=[..]`; `EFFECT_DIALOG OK|CANCEL` presses the button
 //! - `DECLIP [threshold_db=-0.1 min_run=3]` → `OK selection=<a>-<b> changed=<0|1>` (DeClipper on the selection, the whole file when none; one undo step "DeClipper"; `ACTION diagnostics.declip` runs it with the defaults)
+//! - `DECLICK [sensitivity=50 max_width_ms=1]` → `OK selection=<a>-<b> changed=<0|1>` (DeClicker on the selection, the whole file when none; one undo step "DeClicker"; `ACTION diagnostics.declick` runs it with the defaults)
+//! - `AUTOCLICK [threshold=50 complexity=20]` → same reply (Automatic Click Remover, scan and repair in one command; one undo step "Automatic Click Remover"; `ACTION diagnostics.autoClickRemover`)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
