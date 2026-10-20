@@ -425,6 +425,24 @@ pub fn open_stream(effect: &'static dyn Effect, params: &[f64], channels: usize,
     Ok(effect.stream(params, channels, rate).unwrap_or_else(|| Box::new(Stateless { effect, params: params.to_vec(), frame: 0 })))
 }
 
+/// What a stateful effect is told when a run starts (see [`Effect::begin`]).
+pub struct RunContext<'a> {
+    /// The document being processed (its state before the edit).
+    pub doc: &'a DocState,
+    /// The frames to process.
+    pub range: Range<u64>,
+    /// The document channels being processed, in the order the chunks present them.
+    pub channels: Vec<usize>,
+    pub sample_rate: u32,
+}
+
+/// One run of a stateful effect: it sees the chunks of a range in order, so a filter can carry
+/// its memory from one 64 K-frame chunk into the next (no click at the join).
+pub trait Run {
+    /// Same contract as [`Effect::process`]; `first_frame` is within the document.
+    fn process(&mut self, first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()>;
+}
+
 /// Polarity inversion: every sample times -1. The reference effect.
 pub struct Invert;
 
