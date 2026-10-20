@@ -10,8 +10,27 @@ use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::AudioBuffer;
 
+/// The stereo fold-down of the playing file (A134), a fixed table so the callback never
+/// allocates. `gains[c]` is file channel `c`'s `[left, right]` gain; see `core::channels`.
+#[derive(Clone, Copy)]
+struct Downmix {
+    gains: [[f32; 2]; wavcraft_core::channels::MAX_CHANNELS],
+}
+
+impl Downmix {
+    fn for_file(mask: Option<u32>, channels: usize) -> Downmix {
+        let mut gains = [[0.0; 2]; wavcraft_core::channels::MAX_CHANNELS];
+        for (slot, g) in gains.iter_mut().zip(wavcraft_core::channels::stereo_downmix(mask, channels)) {
+            *slot = g;
+        }
+        Downmix { gains }
+    }
+}
+
 struct Shared {
     audio: Mutex<Option<Arc<AudioBuffer>>>,
+    /// How files of more than two channels fold to a stereo (or mono) device.
+    downmix: Mutex<Downmix>,
     /// Play position in file frames, an `f64` stored as bits.
     pos: AtomicU64,
     /// Frame to stop at, an `f64` stored as bits.
@@ -36,6 +55,7 @@ impl Player {
     pub fn new() -> Player {
         let shared = Arc::new(Shared {
             audio: Mutex::new(None),
+            downmix: Mutex::new(Downmix::for_file(None, 2)),
             pos: AtomicU64::new(0f64.to_bits()),
             end: AtomicU64::new(0f64.to_bits()),
             playing: AtomicBool::new(false),
@@ -70,6 +90,14 @@ impl Player {
         self.stop();
         if let Ok(mut slot) = self.shared.audio.lock() {
             *slot = audio;
+        }
+    }
+
+    /// Say how the audio handed over by [`set_audio`](Self::set_audio) folds down to the device:
+    /// its speaker mask (`None` when unlabelled). Files of one or two channels need no layout.
+    pub fn set_layout(&self, mask: Option<u32>, channels: usize) {
+        if let Ok(mut slot) = self.shared.downmix.lock() {
+            *slot = Downmix::for_file(mask, channels);
         }
     }
 
@@ -149,6 +177,7 @@ fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T
     }
     let Ok(slot) = shared.audio.try_lock() else { return };
     let Some(audio) = slot.as_ref() else { return };
+    let Ok(downmix) = shared.downmix.try_lock().map(|d| *d) else { return };
     let file_channels = audio.num_channels();
     if file_channels == 0 || audio.sample_rate == 0 {
         return;
@@ -168,7 +197,27 @@ fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T
             let b = source.get(i + 1).copied().unwrap_or(a);
             a + (b - a) * frac
         };
-        if channels == 1 && file_channels > 1 {
+        if file_channels > 2 {
+            // Many channels fold to left and right by the layout's table (documented in
+            // core::channels): 5.1 and 7.1 properly, anything else its first two channels.
+            let (mut left, mut right) = (0.0f32, 0.0f32);
+            for (source, g) in audio.channels.iter().zip(downmix.gains.iter()) {
+                if g[0] != 0.0 || g[1] != 0.0 {
+                    let v = sample(source);
+                    left += v * g[0];
+                    right += v * g[1];
+                }
+            }
+            if channels == 1 {
+                if let Some(slot) = frame.first_mut() {
+                    *slot = T::from_sample((left + right) * 0.5);
+                }
+            } else {
+                for (c, slot) in frame.iter_mut().take(2).enumerate() {
+                    *slot = T::from_sample(if c == 0 { left } else { right });
+                }
+            }
+        } else if channels == 1 && file_channels > 1 {
             // A one-channel device gets the average of the file's channels, not just the left
             // one (a host-left, guest-right recording would lose the guest).
             let sum: f32 = audio.channels.iter().map(sample).sum();
@@ -195,6 +244,7 @@ mod tests {
     fn shared_with(audio: AudioBuffer) -> Shared {
         Shared {
             audio: Mutex::new(Some(Arc::new(audio))),
+            downmix: Mutex::new(Downmix::for_file(None, 2)),
             pos: AtomicU64::new(0f64.to_bits()),
             end: AtomicU64::new(0f64.to_bits()),
             playing: AtomicBool::new(false),
@@ -253,6 +303,39 @@ mod tests {
         let mut out = vec![9.0f32; 16];
         render(&shared, &mut out, 1, 48_000.0);
         assert!(out.iter().all(|v| *v == 0.25), "left silent, right at 0.5: {out:?}");
+    }
+
+    /// A134: a 5.1 file folds to stereo by the documented table; an unlabelled many-channel
+    /// file plays its first two channels.
+    #[test]
+    fn many_channels_fold_down_to_two() {
+        // Channel c holds the constant (c + 1) / 100.
+        let file = |n: usize| AudioBuffer { sample_rate: 48_000, channels: (0..n).map(|c| vec![(c + 1) as f32 / 100.0; 64]).collect() };
+        let shared = shared_with(file(6));
+        *shared.downmix.lock().unwrap() = Downmix::for_file(Some(0x3F), 6);
+        play(&shared, 0.0, 64.0);
+        let mut out = vec![0.0f32; 8];
+        render(&shared, &mut out, 2, 48_000.0);
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let left = (0.01 + s * 0.03 + s * 0.05) / (1.0 + 2.0 * s);
+        let right = (0.02 + s * 0.03 + s * 0.06) / (1.0 + 2.0 * s);
+        assert!((out[0] - left).abs() < 1e-6 && (out[1] - right).abs() < 1e-6, "{out:?} vs {left} {right}");
+        // Mono device: the mean of the two sides. A 4-channel device keeps 2 and 3 silent.
+        play(&shared, 0.0, 64.0);
+        let mut mono = vec![0.0f32; 4];
+        render(&shared, &mut mono, 1, 48_000.0);
+        assert!((mono[0] - (left + right) * 0.5).abs() < 1e-6);
+        play(&shared, 0.0, 64.0);
+        let mut four = vec![9.0f32; 8];
+        render(&shared, &mut four, 4, 48_000.0);
+        assert_eq!(four[2..4], [0.0, 0.0]);
+        // 32 unlabelled channels: the first two.
+        let shared = shared_with(file(32));
+        *shared.downmix.lock().unwrap() = Downmix::for_file(None, 32);
+        play(&shared, 0.0, 64.0);
+        let mut out = vec![0.0f32; 8];
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(out[..2], [0.01, 0.02]);
     }
 
     #[test]

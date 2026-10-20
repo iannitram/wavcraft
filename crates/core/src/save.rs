@@ -208,7 +208,12 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
     let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
-    let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames)?;
+    // More than two channels, or a speaker mask the file came with, is written as
+    // WAVE_FORMAT_EXTENSIBLE with that mask (0 for an unlabelled file), so the count and the
+    // labels survive a save (A134).
+    let mask = crate::channels::usable_mask(doc.source().channel_mask, channels);
+    let extensible = (channels > 2 || mask.is_some()).then(|| mask.unwrap_or(0));
+    let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames, extensible)?;
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * channels * ty.bytes());
     let mut at = 0u64;
@@ -248,11 +253,17 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
 }
 
 /// The RIFF (or, above 4 GiB, RF64) header and the `data` chunk's header; returns the data size.
-fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
+fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64, extensible: Option<u32>) -> io::Result<u64> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(u64::from(channels)).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("WAV too long"))?;
     let float = ty == SampleType::Float32;
-    let fmt_len: u32 = if float { 18 } else { 16 };
+    let fmt_len: u32 = if extensible.is_some() {
+        40
+    } else if float {
+        18
+    } else {
+        16
+    };
     let fact = if float { 12 } else { 0 };
     let riff_len = 4 + (8 + u64::from(fmt_len)) + fact + 8 + data_len + (data_len & 1);
     let rf64 = u32::try_from(riff_len).is_err();
@@ -274,15 +285,26 @@ fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: Sampl
         out.write_all(b"WAVEfmt ")?;
     }
     out.write_all(&fmt_len.to_le_bytes())?;
-    out.write_all(&(if float { 3u16 } else { 1u16 }).to_le_bytes())?;
+    let format_tag: u16 = if float { 3 } else { 1 };
+    out.write_all(&(if extensible.is_some() { 0xFFFEu16 } else { format_tag }).to_le_bytes())?;
     out.write_all(&channels.to_le_bytes())?;
     out.write_all(&sample_rate.to_le_bytes())?;
     let byte_rate = sample_rate.checked_mul(u32::from(block_align)).ok_or_else(|| invalid("sample rate too high"))?;
     out.write_all(&byte_rate.to_le_bytes())?;
     out.write_all(&block_align.to_le_bytes())?;
     out.write_all(&(bytes as u16 * 8).to_le_bytes())?;
-    if float {
+    if let Some(mask) = extensible {
+        // cbSize 22: valid bits, speaker mask, and the sub-format GUID (the format tag, then
+        // the fixed tail of the KSDATAFORMAT_SUBTYPE GUIDs).
+        out.write_all(&22u16.to_le_bytes())?;
+        out.write_all(&(bytes as u16 * 8).to_le_bytes())?;
+        out.write_all(&mask.to_le_bytes())?;
+        out.write_all(&format_tag.to_le_bytes())?;
+        out.write_all(&[0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71])?;
+    } else if float {
         out.write_all(&0u16.to_le_bytes())?;
+    }
+    if float {
         out.write_all(b"fact")?;
         out.write_all(&4u32.to_le_bytes())?;
         out.write_all(&u32::try_from(frames).unwrap_or(u32::MAX).to_le_bytes())?;

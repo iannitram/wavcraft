@@ -234,6 +234,9 @@ pub struct SourceFormat {
     /// The WAV header was RF64 / BW64.
     pub rf64: bool,
     pub bwf: Option<BwfInfo>,
+    /// The speaker mask (`dwChannelMask`) of a `WAVE_FORMAT_EXTENSIBLE` WAV, kept so a save
+    /// writes it back; `None` for an unlabelled or non-extensible file (A134).
+    pub channel_mask: Option<u32>,
     /// Every chunk of a WAV or AIFF file, in file order (empty for other formats).
     pub chunks: Vec<ChunkInfo>,
     /// What was wrong with the file but still opened: truncation, damaged packets.
@@ -251,6 +254,7 @@ impl SourceFormat {
             channels,
             rf64: false,
             bwf: None,
+            channel_mask: None,
             chunks: Vec::new(),
             warnings: Vec::new(),
         }

@@ -8,6 +8,8 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
+use wavcraft_core::channels;
+use wavcraft_core::doc::edit::ChannelMask;
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
@@ -212,6 +214,7 @@ impl WaveApp {
         match result {
             Ok(doc) => {
                 self.player.set_audio(Some(doc.audio.clone()));
+                self.player.set_layout(doc.state.as_ref().and_then(|st| st.source().channel_mask), doc.channels());
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
@@ -519,6 +522,7 @@ impl WaveApp {
         match result {
             Ok(doc) => {
                 self.player.set_audio(Some(doc.audio.clone()));
+                self.player.set_layout(doc.state.as_ref().and_then(|st| st.source().channel_mask), doc.channels());
                 self.doc = Some(doc);
                 self.generation += 1;
                 self.spectrum = None;
@@ -677,7 +681,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} labels={} active={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -685,17 +689,43 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            channels::labels(doc.source().channel_mask, doc.channel_count()).join(","),
+                            e.channels.active(doc.channel_count()).iter().map(usize::to_string).collect::<Vec<_>>().join(","),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 labels=- active=- undo=- redo=-",
+                        u8::from(busy)
+                    ),
                 }
             }
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
             }
+            // Which channels edits act on: `CHANNELS all` or `CHANNELS 0,2,5` (0-based).
+            "CHANNELS" => match self.editor.as_mut() {
+                Some(e) => {
+                    let n = e.history.current().channel_count();
+                    let mask = if rest.trim() == "all" {
+                        Some(ChannelMask::ALL)
+                    } else {
+                        rest.split(',')
+                            .map(|t| t.trim().parse::<usize>().ok().filter(|c| *c < n))
+                            .try_fold(ChannelMask::NONE, |m, c| c.map(|c| m.with(c)))
+                    };
+                    match mask.filter(|m| *m != ChannelMask::NONE) {
+                        Some(m) => {
+                            e.channels = m;
+                            "OK".to_string()
+                        }
+                        None => format!("ERR CHANNELS all | <0-based channel>,… below {n}"),
+                    }
+                }
+                None => "ERR CHANNELS needs a file open".to_string(),
+            },
             "SELECT" => {
                 let mut it = rest.split_whitespace().map(str::parse::<usize>);
                 match (it.next(), it.next()) {
@@ -973,15 +1003,50 @@ impl WaveApp {
 
         if let Some(area) = wave_area {
             let cols = area.width().round().max(1.0) as usize;
+            let names = channels::labels(doc.state.as_ref().and_then(|st| st.source().channel_mask), channels);
+            let editing = self.editor.as_ref().map_or(ChannelMask::ALL, |e| e.channels.within(channels));
             for ch in 0..channels {
                 let lane = lane(area, ch, channels);
+                let wave_color = if editing.covers_all(channels) || editing.contains(ch) { WAVE } else { WAVE.gamma_multiply(0.4) };
                 let mid = lane.center().y;
                 painter.line_segment([pos2(lane.left(), mid), pos2(lane.right(), mid)], Stroke::new(1.0, Color32::from_gray(50)));
                 let half = lane.height() * 0.5 - 2.0;
                 for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
                     let x = lane.left() + i as f32 + 0.5;
                     let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);
-                    painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, WAVE));
+                    painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, wave_color));
+                }
+                if channels > 1 {
+                    // The channel's label; a click picks it as the only channel edits act on
+                    // (again: all channels), Shift or Ctrl adds or removes it.
+                    let name = names.get(ch).map_or("", String::as_str);
+                    let chip = Rect::from_min_size(pos2(lane.left() + 2.0, lane.top() + 1.0), vec2(34.0, 14.0)).intersect(lane);
+                    let hit = ui.interact(chip, ui.id().with(("lane-label", ch)), Sense::click());
+                    let lit = editing.contains(ch);
+                    painter.rect_filled(chip, 2.0, Color32::from_black_alpha(if lit { 170 } else { 90 }));
+                    painter.text(
+                        chip.center(),
+                        egui::Align2::CENTER_CENTER,
+                        name,
+                        egui::FontId::monospace(10.0),
+                        if lit { Color32::WHITE } else { Color32::GRAY },
+                    );
+                    if hit.clicked() {
+                        let multi = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+                        if let Some(e) = self.editor.as_mut() {
+                            let now = e.channels.within(channels);
+                            e.channels = if multi {
+                                ChannelMask::from_bits(now.bits() ^ ChannelMask::only(ch).bits()).within(channels)
+                            } else if now == ChannelMask::only(ch) {
+                                ChannelMask::ALL
+                            } else {
+                                ChannelMask::only(ch)
+                            };
+                            if e.channels.within(channels) == ChannelMask::NONE {
+                                e.channels = ChannelMask::ALL;
+                            }
+                        }
+                    }
                 }
             }
         }
