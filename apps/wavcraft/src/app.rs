@@ -8,6 +8,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
+use wavcraft_core::export::{self, DEFAULT_CHANNEL_PATTERN, DEFAULT_RANGE_PATTERN, ExportOptions};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
@@ -49,6 +50,14 @@ struct Saving {
     /// Which open document it saves ([`WaveApp::doc_id`] when it started): a save that finishes
     /// after another file was opened must not give that file its path (Codex review CX-W1).
     doc_id: u64,
+}
+
+/// Extract Channels or Export Range Markers running on a worker thread (f79). The document is
+/// not changed; the files are new ones beside it or in the chosen folder.
+struct Batch {
+    what: &'static str,
+    result: Receiver<Result<Vec<PathBuf>, String>>,
+    progress: Arc<AtomicU32>,
 }
 
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
@@ -95,6 +104,8 @@ pub struct WaveApp {
     /// current step is this one; undoing back to it clears the mark, as in Audition).
     saved: Option<Arc<DocState>>,
     saving: Option<Saving>,
+    /// Extract Channels / Export Range Markers (f79).
+    batch: Option<Batch>,
     /// The "save changes before closing?" prompt is up.
     confirm_close: bool,
     /// Closing was confirmed (or nothing was unsaved): let the next close request through.
@@ -151,6 +162,7 @@ impl WaveApp {
             title: String::new(),
             editor: None,
             doc_path: PathBuf::new(),
+            batch: None,
             doc_id: 0,
             rebuilding: None,
             saved: None,
@@ -355,6 +367,9 @@ impl WaveApp {
                 let start = self.selection.start().min(playhead);
                 self.selection = Selection { anchor: start, head: playhead };
             }
+            // f79: next to the file, as <name>_L.wav, <name>_R.wav (the menu and the control channel).
+            ActionId::ExtractChannels => return self.start_extract(ctx).map(|()| false),
+            ActionId::ExportRanges => return Err("Export Audio of Range Markers needs a folder: use the menu, or EXPORT_RANGES <folder>".to_string()),
             ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
             // Repeat Last Command with its dialog: Insert Silence opens its dialog with the last
             // length; the other repeatable commands have no dialog and simply run again.
@@ -373,6 +388,87 @@ impl WaveApp {
             _ => return Err(format!("{} is not available now", actions::action(id).menu)),
         }
         Ok(false)
+    }
+
+    /// The open file's name without its folder and extension, for the names of files made from it.
+    fn base_name(&self) -> String {
+        self.doc_path.file_stem().map_or_else(|| "Untitled".to_string(), |s| s.to_string_lossy().into_owned())
+    }
+
+    /// Edit › Extract Channels to Mono Files: one mono WAV per channel, in the file's own folder.
+    fn start_extract(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        let Some(folder) = self.doc_path.parent().filter(|d| !d.as_os_str().is_empty()).map(PathBuf::from) else {
+            return Err("Save the file first: the channels are written beside it".to_string());
+        };
+        let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
+        let state = editor.history.current().clone();
+        if state.channel_count() < 2 {
+            return Err("the file has one channel already; there is nothing to extract".to_string());
+        }
+        let (base, ty) = (self.base_name(), SampleType::for_source(state.source()));
+        self.start_batch(ctx, "Extracting channels", move |progress| {
+            export::extract_channels(&state, &folder, &base, &ExportOptions::new(ty, DEFAULT_CHANNEL_PATTERN), progress)
+        })
+    }
+
+    /// Export Audio of Range Markers: each range marker (only those the selection touches when
+    /// `only_selected`) as its own WAV in `folder`, named by `pattern`.
+    fn start_export_ranges(&mut self, ctx: &egui::Context, folder: PathBuf, pattern: String, only_selected: bool) -> Result<(), String> {
+        let sel = self.selection_range();
+        let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
+        let state = editor.history.current().clone();
+        let ids = (only_selected && sel.start < sel.end).then(|| state.markers().touched_kind(&sel, false));
+        let (base, ty) = (self.base_name(), SampleType::for_source(state.source()));
+        self.start_batch(ctx, "Exporting ranges", move |progress| {
+            export::export_ranges(&state, &folder, ids.as_deref(), &base, &ExportOptions::new(ty, &pattern), progress)
+        })
+    }
+
+    fn start_batch(
+        &mut self,
+        ctx: &egui::Context,
+        what: &'static str,
+        job: impl FnOnce(&mut dyn FnMut(f64)) -> Result<Vec<PathBuf>, export::ExportError> + Send + 'static,
+    ) -> Result<(), String> {
+        if self.batch.is_some() {
+            return Err("a batch write is already running".to_string());
+        }
+        let (tx, rx) = channel();
+        let progress = Arc::new(AtomicU32::new(0));
+        let (job_progress, ctx) = (progress.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let mut report = |p: f64| {
+                job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+                ctx.request_repaint();
+            };
+            let _ = tx.send(job(&mut report).map_err(|e| e.to_string()));
+            ctx.request_repaint();
+        });
+        self.batch = Some(Batch { what, result: rx, progress });
+        Ok(())
+    }
+
+    fn finish_batch(&mut self) {
+        let Some(batch) = &self.batch else { return };
+        let result = match batch.result.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the batch write stopped unexpectedly".to_string()),
+        };
+        let what = batch.what;
+        self.batch = None;
+        match result {
+            Ok(files) => {
+                log::info!(target: "wavcraft", "{what}: wrote {} file(s)", files.len());
+                let dir = files.first().and_then(|f| f.parent()).map_or_else(String::new, |d| d.display().to_string());
+                self.error = None;
+                self.notice = Some(format!("{what}: wrote {} file(s) to {dir}", files.len()));
+            }
+            Err(e) => {
+                log::warn!(target: "wavcraft", "{what} failed: {e}");
+                self.error = Some(format!("{what} failed: {e}"));
+            }
+        }
     }
 
     /// Insert › Silence…: a length in seconds, inserted at the cursor on every channel.
@@ -676,7 +772,7 @@ impl WaveApp {
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
             "STATE" => {
-                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
+                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() || self.batch.is_some();
                 let unsaved = u8::from(self.unsaved());
                 match &self.editor {
                     Some(e) => {
@@ -758,6 +854,21 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
+            // `EXPORT_RANGES <folder> [pattern=<p>]`: every range marker as its own WAV (f79).
+            "EXPORT_RANGES" => {
+                let (folder, pattern) = match rest.split_once(" pattern=") {
+                    Some((f, p)) => (f.trim(), p.trim()),
+                    None => (rest.trim(), DEFAULT_RANGE_PATTERN),
+                };
+                if folder.is_empty() {
+                    "ERR EXPORT_RANGES <folder> [pattern=<p>]".to_string()
+                } else {
+                    match self.start_export_ranges(ctx, PathBuf::from(folder), pattern.to_string(), false) {
+                        Ok(()) => "OK".to_string(),
+                        Err(e) => format!("ERR {e}"),
+                    }
+                }
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -800,7 +911,17 @@ impl WaveApp {
                 chosen = Some(a.id);
             }
         }
-        if let Some(id) = chosen {
+        if chosen == Some(ActionId::ExportRanges) {
+            let mut dialog = rfd::FileDialog::new().set_title("Export range markers to folder");
+            if let Some(dir) = self.doc_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                dialog = dialog.set_directory(dir);
+            }
+            if let Some(folder) = dialog.pick_folder()
+                && let Err(e) = self.start_export_ranges(ui.ctx(), folder, DEFAULT_RANGE_PATTERN.to_string(), true)
+            {
+                self.error = Some(e);
+            }
+        } else if let Some(id) = chosen {
             let _ = self.run_action(id, ui.ctx());
         }
     }
@@ -876,6 +997,9 @@ impl WaveApp {
             } else if let Some(s) = &self.saving {
                 ui.spinner();
                 ui.label(format!("Saving {}… {}%", s.path.display(), s.progress.load(Ordering::Relaxed) / 10));
+            } else if let Some(b) = &self.batch {
+                ui.spinner();
+                ui.label(format!("{}… {}%", b.what, b.progress.load(Ordering::Relaxed) / 10));
             } else if self.rebuilding.is_some() {
                 ui.spinner();
                 ui.label("Updating the view…");
@@ -1068,6 +1192,7 @@ impl eframe::App for WaveApp {
         self.finish_opening();
         self.finish_rebuild();
         self.finish_saving(ctx);
+        self.finish_batch();
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);

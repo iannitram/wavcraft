@@ -50,6 +50,8 @@ pub enum ActionId {
     MarkerDelete,
     MarkerToRange,
     MarkerToPoint,
+    ExtractChannels,
+    ExportRanges,
 }
 
 /// Which part of the program carries an action out.
@@ -175,6 +177,9 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::MarkerDelete, "marker.delete", "Delete Marker", &[]),
     edit(ActionId::MarkerToRange, "marker.toRange", "Convert Marker to Range", &[]),
     edit(ActionId::MarkerToPoint, "marker.toPoint", "Convert Marker to Point", &[]),
+    // f79: batch writes of parts of the file; the window picks the folder and writes them.
+    window(ActionId::ExtractChannels, "edit.extract_channels", "Extract Channels to Mono Files…", &[]),
+    window(ActionId::ExportRanges, "marker.exportRanges", "Export Audio of Range Markers…", &[]),
     window(ActionId::ZoomIn, "view.zoomIn", "Zoom In", &[key("Equals")]),
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
@@ -314,6 +319,8 @@ impl Editor {
             ActionId::MarkerToPoint => !self.history.current().markers().touched_kind(selection, false).is_empty(),
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
+            ActionId::ExtractChannels => self.channel_count() >= 2 && self.len() > 0,
+            ActionId::ExportRanges => !crate::export::exportable_ranges(self.history.current(), None).is_empty(),
             ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -510,6 +517,8 @@ impl Editor {
             | ActionId::ZoomOut
             | ActionId::ZoomToSelection
             | ActionId::ZoomOutFull
+            | ActionId::ExtractChannels
+            | ActionId::ExportRanges
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast

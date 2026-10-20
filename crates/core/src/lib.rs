@@ -18,6 +18,7 @@
 pub mod actions;
 pub mod doc;
 pub mod document;
+pub mod export;
 pub mod io;
 pub mod markers;
 pub mod random;

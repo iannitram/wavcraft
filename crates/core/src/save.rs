@@ -16,6 +16,7 @@
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -164,26 +165,58 @@ pub fn remove_leftover_temps(target: &Path) -> usize {
 /// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically.
 /// `progress` gets 0 to 1 as the samples go out.
 pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
-    save_wav_inner(doc, target, ty, progress, None)
+    let slice = Slice { channels: (0..doc.channel_count()).collect(), range: 0..doc.len_frames(), markers: doc.markers().to_wav_chunks() };
+    save_slice(doc, &slice, target, ty, progress, None)
+}
+
+/// A part of a document to write as a WAV file: some channels (in this order), a frame range,
+/// and the bytes of the `cue `/`LIST` chunks to put after the audio (empty for none).
+/// Used by Extract Channels and by exporting ranges (f79); the whole-file save is the slice of
+/// every channel and every frame.
+pub struct Slice {
+    pub channels: Vec<usize>,
+    pub range: Range<u64>,
+    pub markers: Vec<u8>,
+}
+
+/// [`save_wav`] for a [`Slice`] of `doc`: the same temporary file, sync and atomic rename, and a
+/// failure leaves no temporary file and the target as it was.
+pub fn save_slice(
+    doc: &DocState,
+    slice: &Slice,
+    target: &Path,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+) -> Result<(), SaveError> {
+    save_wav_inner(doc, slice, target, ty, progress, fail_after)
 }
 
 /// [`save_wav`] that fails with an I/O error once `fail_after` frames are out (tests: a save
 /// that dies halfway must leave the target whole).
 #[doc(hidden)]
 pub fn save_wav_failing_after(doc: &DocState, target: &Path, ty: SampleType, fail_after: u64) -> Result<(), SaveError> {
-    save_wav_inner(doc, target, ty, &mut |_| {}, Some(fail_after))
+    let slice = Slice { channels: (0..doc.channel_count()).collect(), range: 0..doc.len_frames(), markers: doc.markers().to_wav_chunks() };
+    save_wav_inner(doc, &slice, target, ty, &mut |_| {}, Some(fail_after))
 }
 
-fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> Result<(), SaveError> {
-    let frames = doc.len_frames();
-    if frames == 0 {
+fn save_wav_inner(
+    doc: &DocState,
+    slice: &Slice,
+    target: &Path,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+) -> Result<(), SaveError> {
+    let frames = slice.range.end.min(doc.len_frames()).saturating_sub(slice.range.start);
+    if frames == 0 || slice.channels.is_empty() || slice.channels.iter().any(|&c| c >= doc.channel_count()) {
         return Err(SaveError::Empty);
     }
     remove_leftover_temps(target);
     let tmp = TempFile::create(target).map_err(SaveError::Io)?;
     let TempFile { path: tmp, file } = tmp;
     // Written through the handle made by the exclusive create, never reopened by name.
-    let file = match write_wav(doc, file, ty, progress, fail_after) {
+    let file = match write_wav(doc, slice, frames, file, ty, progress, fail_after) {
         Ok(file) => file,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
@@ -204,12 +237,20 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
     Ok(())
 }
 
-fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> io::Result<File> {
-    let (frames, channels) = (doc.len_frames(), doc.channel_count());
+fn write_wav(
+    doc: &DocState,
+    slice: &Slice,
+    frames: u64,
+    file: File,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+) -> io::Result<File> {
+    let channels = slice.channels.len();
     let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     // Markers go after the audio as `cue ` and `LIST`/`adtl` chunks (A183).
-    let marker_chunks = doc.markers().to_wav_chunks();
+    let marker_chunks = &slice.markers;
     let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames, marker_chunks.len() as u64)?;
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * channels * ty.bytes());
@@ -217,7 +258,7 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
     while at < frames {
         let n = (frames - at).min(BLOCK_FRAMES as u64) as usize;
         for (ch, buf) in bufs.iter_mut().enumerate() {
-            let got = doc.read(ch, at, &mut buf[..n])?;
+            let got = doc.read(slice.channels[ch], slice.range.start + at, &mut buf[..n])?;
             if got != n {
                 return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("channel {ch} gave {got} of {n} frames at {at}")));
             }
@@ -244,7 +285,7 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
     if data_len & 1 == 1 {
         out.write_all(&[0])?;
     }
-    out.write_all(&marker_chunks)?;
+    out.write_all(marker_chunks)?;
     let file = out.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
     Ok(file)
