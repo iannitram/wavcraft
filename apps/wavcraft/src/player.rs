@@ -19,6 +19,8 @@ struct Shared {
     /// Frame to stop at, an `f64` stored as bits.
     end: AtomicU64,
     playing: AtomicBool,
+    /// Nothing plays while this is set (a take is being recorded; roadmap C024).
+    muted: AtomicBool,
     /// Set by the stream's error callback (the device went away, for example).
     failed: AtomicBool,
     /// The peaks of what is sent, for the Levels panel (lock-free; see `wavcraft_core::levels`).
@@ -46,6 +48,7 @@ impl Player {
             pos: AtomicU64::new(0f64.to_bits()),
             end: AtomicU64::new(0f64.to_bits()),
             playing: AtomicBool::new(false),
+            muted: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             levels: LevelTap::default(),
         });
@@ -93,6 +96,9 @@ impl Player {
     /// has since failed) the device is tried again first; if there still is none, nothing starts,
     /// so the playhead does not sit there "playing" with no callback to move it.
     pub fn play(&mut self, from: usize, to: usize) {
+        if self.is_muted() {
+            return;
+        }
         if self.stream.is_none() || self.failed() {
             self.reopen();
         }
@@ -102,6 +108,18 @@ impl Player {
         self.shared.pos.store((from as f64).to_bits(), Ordering::Relaxed);
         self.shared.end.store((to as f64).to_bits(), Ordering::Relaxed);
         self.shared.playing.store(to > from, Ordering::Relaxed);
+    }
+
+    /// Mute or unmute: while muted, nothing starts and a running play stops (recording a take).
+    pub fn set_muted(&self, muted: bool) {
+        self.shared.muted.store(muted, Ordering::Relaxed);
+        if muted {
+            self.stop();
+        }
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.shared.muted.load(Ordering::Relaxed)
     }
 
     pub fn stop(&self) {
@@ -230,7 +248,7 @@ where
 fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T], channels: usize, device_rate: f64) {
     let silence = T::from_sample(0.0f32);
     out.iter_mut().for_each(|s| *s = silence);
-    if !shared.playing.load(Ordering::Relaxed) {
+    if !shared.playing.load(Ordering::Relaxed) || shared.muted.load(Ordering::Relaxed) {
         return;
     }
     let Ok(slot) = shared.audio.try_lock() else { return };
@@ -293,6 +311,7 @@ mod tests {
             pos: AtomicU64::new(0f64.to_bits()),
             end: AtomicU64::new(0f64.to_bits()),
             playing: AtomicBool::new(false),
+            muted: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             levels: LevelTap::default(),
         }
@@ -375,6 +394,21 @@ mod tests {
         assert_eq!(shared.levels.take(), [0.75, 0.75]);
         render(&shared, &mut out, 2, 48_000.0);
         assert_eq!(shared.levels.take(), [0.0, 0.0]);
+    }
+
+    /// C024: while muted (recording) the callback writes silence even if a play was started.
+    #[test]
+    fn muted_is_silence() {
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 100]] });
+        play(&shared, 0.0, 100.0);
+        shared.muted.store(true, Ordering::Relaxed);
+        let mut out = vec![1.0f32; 16];
+        render(&shared, &mut out, 2, 48_000.0);
+        assert!(out.iter().all(|v| *v == 0.0));
+        assert_eq!(f64::from_bits(shared.pos.load(Ordering::Relaxed)), 0.0, "the playhead does not move");
+        shared.muted.store(false, Ordering::Relaxed);
+        render(&shared, &mut out, 2, 48_000.0);
+        assert!(out.iter().any(|v| *v != 0.0));
     }
 
     #[test]
