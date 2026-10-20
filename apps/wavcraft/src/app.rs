@@ -16,6 +16,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
+use crate::effect_dialog::{Answer, EffectDialog};
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 
@@ -107,6 +108,8 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// The effect parameter dialog (f14), while it is up.
+    effect_dialog: Option<EffectDialog>,
 }
 
 impl WaveApp {
@@ -161,6 +164,7 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            effect_dialog: None,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -361,6 +365,9 @@ impl WaveApp {
                 if let Some(Repeat::InsertSilence(frames)) = editor.last {
                     let secs = frames as f64 / f64::from(editor.history.current().sample_rate().max(1));
                     self.insert_silence = Some(format!("{secs:.3}"));
+                } else if let Some(Repeat::Effect(i, params)) = editor.last.clone().filter(|r| matches!(r, Repeat::Effect(_, p) if !p.is_empty())) {
+                    // An effect with settings reopens its dialog on the last values.
+                    self.effect_dialog = EffectDialog::new(i, Some(params));
                 } else {
                     return self.run_action(ActionId::RepeatLast, ctx);
                 }
@@ -463,6 +470,54 @@ impl WaveApp {
             let len = editor.history.current().len_frames() as usize;
             self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
             self.rebuild(ui.ctx());
+        }
+    }
+
+    /// Draw the effect dialog, if up, and carry out its answer.
+    fn effect_dialog_ui(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.effect_dialog.as_mut() else { return };
+        if let Some(answer) = dialog.show(ctx) {
+            let _ = self.finish_effect_dialog(answer == Answer::Ok, ctx);
+        }
+    }
+
+    /// Close the effect dialog; on OK apply the effect with the dialog's values. Returns whether
+    /// the document changed.
+    fn finish_effect_dialog(&mut self, ok: bool, ctx: &egui::Context) -> Result<bool, String> {
+        let Some(dialog) = self.effect_dialog.take() else { return Err("no effect dialog is open".to_string()) };
+        if !ok {
+            return Ok(false);
+        }
+        self.run_effect(dialog.index, dialog.values, ctx)
+    }
+
+    /// Run the effect at `index` with `params` on the selection (the whole file when none).
+    fn run_effect(&mut self, index: u16, params: Vec<f64>, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let sel = self.selection_range();
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let name = wavcraft_core::effects::all().get(usize::from(index)).map_or("Effect", |e| e.name());
+        if !editor.enabled(ActionId::Effect(index), &sel) {
+            return Err(format!("{name} is not available now"));
+        }
+        match editor.run_effect(index, params, sel) {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.error = None;
+                self.notice = out.message;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                let why = format!("{name}: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
         }
     }
 
@@ -726,6 +781,53 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
+            // `EFFECT` lists the effects and their settings; `EFFECT <name> key=value ...` runs one
+            // on the selection (the whole file when none), the unset keys at their defaults.
+            "EFFECT" if rest.is_empty() => {
+                let all: Vec<String> =
+                    wavcraft_core::effects::all().iter().map(|e| format!("{} [{}]", e.id(), wavcraft_core::effects::describe(*e))).collect();
+                format!("OK {}", all.join("; "))
+            }
+            "EFFECT" => {
+                let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                let name = name.strip_prefix("effect.").unwrap_or(name);
+                match wavcraft_core::effects::all().iter().position(|e| e.id() == name) {
+                    None => format!("ERR no effect named {name:?}"),
+                    Some(i) => match wavcraft_core::effects::parse_params(wavcraft_core::effects::all()[i], args) {
+                        Err(e) => format!("ERR {e}"),
+                        Ok(params) => match self.run_effect(i as u16, params, ctx) {
+                            Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                            Err(e) => format!("ERR {e}"),
+                        },
+                    },
+                }
+            }
+            // The effect dialog: `EFFECT_DIALOG <name> [key=value ...]` opens it on those values,
+            // `EFFECT_DIALOG` says what is open, `EFFECT_DIALOG OK|CANCEL` presses the button.
+            "EFFECT_DIALOG" => match rest.trim() {
+                "" => match &self.effect_dialog {
+                    Some(d) => format!("OK open={} values={:?}", d.effect().id(), d.values),
+                    None => "OK open=none".to_string(),
+                },
+                "OK" | "CANCEL" => match self.finish_effect_dialog(rest.trim() == "OK", ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+                _ => {
+                    let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                    let name = name.strip_prefix("effect.").unwrap_or(name);
+                    match wavcraft_core::effects::all().iter().position(|e| e.id() == name) {
+                        Some(i) if self.editor.is_some() => match wavcraft_core::effects::parse_params(wavcraft_core::effects::all()[i], args) {
+                            Err(e) => format!("ERR {e}"),
+                            Ok(v) => {
+                                self.effect_dialog = EffectDialog::new(i as u16, Some(v));
+                                "OK".to_string()
+                            }
+                        },
+                        _ => format!("ERR no effect named {name:?}, or no file is open"),
+                    }
+                }
+            },
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
@@ -792,12 +894,28 @@ impl WaveApp {
         let mut chosen = None;
         for a in actions::all_actions().filter(|a| a.name.starts_with("effect.")) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
-            if ui.add_enabled(enabled, egui::Button::new(a.menu)).clicked() {
-                chosen = Some(a.id);
+            // An effect with settings opens its dialog (a "…" entry); one without runs at once.
+            let has_dialog =
+                matches!(a.id, ActionId::Effect(i) if wavcraft_core::effects::all().get(usize::from(i)).is_some_and(|e| !e.parameters().is_empty()));
+            let text = if has_dialog { format!("{}…", a.menu) } else { a.menu.to_string() };
+            if ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
+                chosen = Some((a.id, has_dialog));
             }
         }
-        if let Some(id) = chosen {
-            let _ = self.run_action(id, ui.ctx());
+        match chosen {
+            Some((ActionId::Effect(i), true)) => {
+                // Start from the settings this effect last ran with, if it was the last command.
+                let last = self.editor.as_ref().and_then(|e| match &e.last {
+                    Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
+                    _ => None,
+                });
+                self.effect_dialog = EffectDialog::new(i, last);
+                ui.close();
+            }
+            Some((id, _)) => {
+                let _ = self.run_action(id, ui.ctx());
+            }
+            None => {}
         }
     }
 
@@ -1114,6 +1232,7 @@ impl eframe::App for WaveApp {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
         self.insert_silence_dialog(&ctx);
+        self.effect_dialog_ui(&ctx);
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
     }

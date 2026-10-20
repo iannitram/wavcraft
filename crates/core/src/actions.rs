@@ -224,12 +224,14 @@ pub struct Editor {
 }
 
 /// A command Repeat Last Command can run again, with its settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Repeat {
     /// An action from the table, on the selection at the time of the repeat.
     Action(ActionId),
     /// Insert › Silence of this many frames, at the cursor.
     InsertSilence(u64),
+    /// A registered effect (its index in [`effects::all`]) with the settings it last ran with.
+    Effect(u16, Vec<f64>),
 }
 
 /// Whether Repeat Last Command may run `id` again. Delete is not repeatable (Audition), nor are
@@ -237,8 +239,7 @@ pub enum Repeat {
 fn repeatable(id: ActionId) -> bool {
     matches!(
         id,
-        ActionId::Effect(_)
-            | ActionId::Silence
+        ActionId::Silence
             | ActionId::Paste
             | ActionId::Crop
             | ActionId::ZeroInward
@@ -329,7 +330,7 @@ impl Editor {
             ActionId::Effect(_) => self.len() > 0,
             ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
                 Some(Repeat::Action(last)) => self.enabled(last, selection),
-                Some(Repeat::InsertSilence(_)) => true,
+                Some(Repeat::InsertSilence(_) | Repeat::Effect(..)) => self.len() > 0,
                 None => false,
             },
         }
@@ -345,6 +346,12 @@ impl Editor {
             ActionId::RightChannel if self.channels == ChannelMask::only(1) => "Both Channels".to_string(),
             ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
                 Some(Repeat::Action(last)) => format!("Repeat {}", action(last).menu),
+                Some(Repeat::Effect(i, _)) => {
+                    let name = effects::all().get(usize::from(i)).map_or("Effect", |e| e.name());
+                    // "Repeat Gain" runs at once; the dialog version keeps the "…" when it has one.
+                    let has_dialog = effects::all().get(usize::from(i)).is_some_and(|e| !e.parameters().is_empty());
+                    if id == ActionId::RepeatLastDialog && has_dialog { format!("Repeat {name}…") } else { format!("Repeat {name}") }
+                }
                 // "Repeat Insert Silence" runs it at once; the dialog version keeps the "…".
                 Some(Repeat::InsertSilence(_)) if id == ActionId::RepeatLast => "Repeat Insert Silence".to_string(),
                 Some(Repeat::InsertSilence(_)) => format!("Repeat {}", action(ActionId::InsertSilence).menu),
@@ -357,8 +364,9 @@ impl Editor {
     /// Repeat Last Command: the last repeatable command again, with the same settings, on
     /// `selection` (Insert Silence: the same length at the cursor).
     pub fn repeat(&mut self, selection: Range<u64>) -> Result<Outcome, EditError> {
-        match self.last {
+        match self.last.clone() {
             Some(Repeat::Action(id)) => self.run(id, selection),
+            Some(Repeat::Effect(i, params)) => self.run_effect(i, params, selection),
             Some(Repeat::InsertSilence(frames)) => self.insert_silence(selection.start, frames),
             None => Ok(Outcome { doc_changed: false, selection, message: Some("There is no command to repeat yet".to_string()) }),
         }
@@ -416,6 +424,17 @@ impl Editor {
 
     /// Run `id` on `selection`. A disabled action does nothing and says why.
     pub fn run(&mut self, id: ActionId, selection: Range<u64>) -> Result<Outcome, EditError> {
+        self.run_with(id, selection, None)
+    }
+
+    /// Run the effect at index `i` of [`effects::all`] with these settings on `selection` (the
+    /// whole file when empty), and remember both for Repeat Last Command. Settings outside the
+    /// effect's ranges are refused and nothing changes.
+    pub fn run_effect(&mut self, i: u16, params: Vec<f64>, selection: Range<u64>) -> Result<Outcome, EditError> {
+        self.run_with(ActionId::Effect(i), selection, Some(params))
+    }
+
+    fn run_with(&mut self, id: ActionId, selection: Range<u64>, params: Option<Vec<f64>>) -> Result<Outcome, EditError> {
         let len = self.len();
         let sel = selection.start.min(len)..selection.end.min(len);
         let unchanged = |selection: Range<u64>| Ok(Outcome { doc_changed: false, selection, message: None });
@@ -479,7 +498,9 @@ impl Editor {
             ActionId::Effect(i) => {
                 let Some(effect) = effects::all().get(usize::from(i)) else { return unchanged(sel) };
                 let cancel = std::sync::atomic::AtomicBool::new(false);
-                let e = effects::apply(*effect, &effects::Params::defaults(*effect), &doc, sel.clone(), channels, xf, &cancel)?;
+                let params = params.unwrap_or_else(|| effects::Params::defaults(*effect));
+                let e = effects::apply(*effect, &params, &doc, sel.clone(), channels, xf, &cancel)?;
+                self.last = Some(Repeat::Effect(i, params));
                 (e, sel.clone())
             }
             ActionId::SelectAll => return unchanged(0..len),
