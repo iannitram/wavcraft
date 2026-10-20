@@ -20,6 +20,7 @@ pub mod doc;
 pub mod document;
 pub mod io;
 pub mod meta;
+pub mod meta_view;
 pub mod random;
 pub mod save;
 pub mod settings;

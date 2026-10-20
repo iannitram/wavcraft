@@ -114,6 +114,10 @@ pub struct WaveApp {
     /// from: refilled whenever the current step's metadata is another one.
     meta_draft: Vec<String>,
     meta_for: Option<Arc<wavcraft_core::SourceFormat>>,
+    /// The Metadata panel's filter text, and the display sets (which fields it shows).
+    meta_filter: String,
+    meta_sets: wavcraft_core::meta_view::DisplaySets,
+    meta_set_name: String,
 }
 
 impl WaveApp {
@@ -171,6 +175,11 @@ impl WaveApp {
             show_metadata: false,
             meta_draft: Vec::new(),
             meta_for: None,
+            meta_filter: String::new(),
+            meta_sets: wavcraft_core::meta_view::DisplaySets::default_path()
+                .map(|p| wavcraft_core::meta_view::DisplaySets::load_file(&p))
+                .unwrap_or_default(),
+            meta_set_name: String::new(),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -498,6 +507,56 @@ impl WaveApp {
         Ok(true)
     }
 
+    fn save_meta_sets(&self) {
+        if let Some(p) = wavcraft_core::meta_view::DisplaySets::default_path()
+            && let Err(e) = self.meta_sets.save_file(&p)
+        {
+            log::warn!("could not save the metadata sets: {e}");
+        }
+    }
+
+    fn all_meta_keys() -> Vec<String> {
+        meta::Metadata::panel_fields().iter().map(|f| f.to_string()).collect()
+    }
+
+    /// `METASET save|load|delete <name>`, `METASET fields <key,key|all>`, `METASET list`.
+    fn metaset_command(&mut self, rest: &str) -> String {
+        let (verb, name) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+        let r = match verb {
+            "save" => self.meta_sets.save(name, &Self::all_meta_keys()),
+            "load" => self.meta_sets.load(name),
+            "delete" => self.meta_sets.delete(name),
+            "fields" => {
+                let valid = Self::all_meta_keys();
+                let keys: Vec<String> = name.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect();
+                match keys.iter().find(|k| name.trim() != "all" && !valid.contains(k)) {
+                    Some(bad) => Err(format!("no panel field {bad:?}")),
+                    None => {
+                        self.meta_sets.show_only(if name.trim() == "all" { None } else { Some(keys) });
+                        Ok(())
+                    }
+                }
+            }
+            "list" => {
+                let names: Vec<_> = self.meta_sets.sets.keys().map(|n| n.replace(' ', "_")).collect();
+                let shown = self.meta_sets.shown.as_ref().map_or_else(|| "all".to_string(), |s| s.join(","));
+                return format!(
+                    "OK sets={} active={} shown={shown}",
+                    names.join(","),
+                    self.meta_sets.active.clone().unwrap_or_default().replace(' ', "_")
+                );
+            }
+            _ => Err("METASET save|load|delete <name> | fields <key,key|all> | list".to_string()),
+        };
+        match r {
+            Ok(()) => {
+                self.save_meta_sets();
+                "OK".to_string()
+            }
+            Err(e) => format!("ERR {e}"),
+        }
+    }
+
     /// Window › Metadata: the Broadcast Wave fields and the INFO title, artist and comment of the
     /// current step. Apply makes one history step.
     fn metadata_panel(&mut self, ui: &mut egui::Ui) {
@@ -513,8 +572,72 @@ impl WaveApp {
             self.meta_for = Some(src.clone());
         }
         let mut apply = false;
+        let mut sets_changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Filter");
+            ui.add(egui::TextEdit::singleline(&mut self.meta_filter).hint_text("name or value").desired_width(f32::INFINITY));
+        });
+        let all_keys: Vec<String> = fields.iter().map(|f| f.to_string()).collect();
+        ui.horizontal(|ui| {
+            let shown = self.meta_sets.active.clone().unwrap_or_else(|| "All fields".to_string());
+            egui::ComboBox::from_id_salt("metaset").selected_text(shown).show_ui(ui, |ui| {
+                if ui.selectable_label(false, "All fields").clicked() {
+                    self.meta_sets.show_only(None);
+                    sets_changed = true;
+                }
+                for name in self.meta_sets.sets.keys().cloned().collect::<Vec<_>>() {
+                    if ui.selectable_label(false, &name).clicked() {
+                        let _ = self.meta_sets.load(&name);
+                        sets_changed = true;
+                    }
+                }
+            });
+            ui.add(egui::TextEdit::singleline(&mut self.meta_set_name).hint_text("set name").desired_width(80.0));
+            if ui.button("Save").clicked() && self.meta_sets.save(&self.meta_set_name, &all_keys).is_ok() {
+                sets_changed = true;
+            }
+            if ui.button("Delete").clicked() && self.meta_sets.delete(&self.meta_set_name).is_ok() {
+                sets_changed = true;
+            }
+        });
+        ui.collapsing("Fields shown", |ui| {
+            for key in &all_keys {
+                let mut on = self.meta_sets.is_shown(key);
+                if ui.checkbox(&mut on, key.replace('_', " ")).changed() {
+                    let mut now: Vec<String> = all_keys.iter().filter(|k| self.meta_sets.is_shown(k)).cloned().collect();
+                    now.retain(|k| k != key);
+                    if on {
+                        now.push(key.clone());
+                    }
+                    self.meta_sets.show_only(Some(now));
+                    sets_changed = true;
+                }
+            }
+        });
+        if sets_changed {
+            self.save_meta_sets();
+        }
+        let needle = self.meta_filter.trim().to_lowercase();
+        let visible: Vec<bool> = {
+            let rows = wavcraft_core::meta_view::rows(&src.meta);
+            fields
+                .iter()
+                .zip(self.meta_draft.iter())
+                .map(|(f, draft)| {
+                    let label = rows.iter().find(|r| r.key == *f).map(|r| r.label.to_lowercase()).unwrap_or_default();
+                    self.meta_sets.is_shown(f)
+                        && (needle.is_empty()
+                            || f.to_lowercase().contains(&needle)
+                            || label.contains(&needle)
+                            || draft.to_lowercase().contains(&needle))
+                })
+                .collect()
+        };
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (field, text) in fields.iter().zip(self.meta_draft.iter_mut()) {
+            for ((field, text), show) in fields.iter().zip(self.meta_draft.iter_mut()).zip(visible.iter()) {
+                if !*show {
+                    continue;
+                }
                 let label =
                     wavcraft_core::xmp::FIELDS.iter().find(|f| f.name == *field).map_or_else(|| field.replace('_', " "), |f| f.label.to_string());
                 ui.label(label);
@@ -535,6 +658,15 @@ impl WaveApp {
                 if unknown > 0 {
                     ui.add_space(4.0);
                     ui.label(format!("{unknown} other XMP properties are kept as they are."));
+                }
+            }
+            if !needle.is_empty() {
+                let others: Vec<_> = wavcraft_core::meta_view::filter_rows(wavcraft_core::meta_view::rows(&src.meta), &needle)
+                    .into_iter()
+                    .filter(|r| r.key.starts_with("xmp:"))
+                    .collect();
+                for r in others {
+                    ui.label(format!("{} = {}", r.label, r.value));
                 }
             }
             ui.add_space(6.0);
@@ -829,6 +961,7 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
+            "METASET" => self.metaset_command(rest),
             // META get [field] | META set <field> <value>: the metadata of the current step.
             "META" => {
                 let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
@@ -847,7 +980,14 @@ impl WaveApp {
                             Err(e) => format!("ERR {e}"),
                         }
                     }
-                    _ => "ERR META get [field] | META set <field> <value>".to_string(),
+                    // META filter <text>: the rows whose name, label or value contains the text; also sets the panel's filter.
+                    ("filter", text) => {
+                        let hits = wavcraft_core::meta_view::filter_rows(wavcraft_core::meta_view::rows(meta), text);
+                        let names: Vec<String> = hits.iter().map(|r| r.key.replace(' ', "_")).collect();
+                        self.meta_filter = text.to_string();
+                        format!("OK {} {}", names.len(), names.join(" "))
+                    }
+                    _ => "ERR META get [field] | META set <field> <value> | META filter <text>".to_string(),
                 }
             }
             // XMP get [<ns>:<prop>] | XMP set <ns>:<prop> <value>: the XMP packet of the current step.
