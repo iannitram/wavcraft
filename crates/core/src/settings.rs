@@ -21,12 +21,32 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_PREROLL: &str = "preroll_secs";
+const KEY_POSTROLL: &str = "postroll_secs";
+/// Pre-roll and post-roll default to this many seconds each.
+pub const DEFAULT_ROLL_SECS: f64 = 1.0;
+/// ... and are kept within this.
+pub const MAX_ROLL_SECS: f64 = 30.0;
 
 /// What the settings file holds.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// Seconds played before a selection when pre/post-roll is on.
+    pub preroll_secs: f64,
+    /// Seconds played after it.
+    pub postroll_secs: f64,
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings { session_folder: None, preroll_secs: DEFAULT_ROLL_SECS, postroll_secs: DEFAULT_ROLL_SECS }
+    }
+}
+
+fn roll_secs(value: &str) -> Option<f64> {
+    value.parse::<f64>().ok().filter(|v| v.is_finite()).map(|v| v.clamp(0.0, MAX_ROLL_SECS))
 }
 
 impl Settings {
@@ -59,8 +79,11 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
-            if key.trim() == KEY_SESSION_FOLDER {
-                s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            match key.trim() {
+                KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+                KEY_PREROLL => s.preroll_secs = roll_secs(value).unwrap_or(DEFAULT_ROLL_SECS),
+                KEY_POSTROLL => s.postroll_secs = roll_secs(value).unwrap_or(DEFAULT_ROLL_SECS),
+                _ => {}
             }
         }
         s
@@ -72,6 +95,8 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        out.push_str("# preroll_secs, postroll_secs: how long Pre/Post-Roll plays before and after a selection.\n");
+        out.push_str(&format!("{KEY_PREROLL} = {}\n{KEY_POSTROLL} = {}\n", self.preroll_secs, self.postroll_secs));
         out
     }
 
@@ -168,5 +193,21 @@ pub fn resolve_session_folder(
             log::warn!("{warning}");
             SessionFolder { path: default, source: FolderSource::Default, warning: Some(warning) }
         }
+    }
+}
+
+#[cfg(test)]
+mod roll_tests {
+    use super::*;
+
+    #[test]
+    fn roll_times_default_parse_clamp_and_round_trip() {
+        let d = Settings::default();
+        assert_eq!((d.preroll_secs, d.postroll_secs), (DEFAULT_ROLL_SECS, DEFAULT_ROLL_SECS));
+        let s = Settings::parse("preroll_secs = 2.5\npostroll_secs = 900\n");
+        assert_eq!((s.preroll_secs, s.postroll_secs), (2.5, MAX_ROLL_SECS), "kept within the limit");
+        let bad = Settings::parse("preroll_secs = soon\npostroll_secs = -3\n");
+        assert_eq!((bad.preroll_secs, bad.postroll_secs), (DEFAULT_ROLL_SECS, 0.0));
+        assert_eq!(Settings::parse(&s.to_text()), s);
     }
 }

@@ -141,6 +141,226 @@ impl Plan {
         }
         Some(pos)
     }
+
+    /// Like [`Plan::normalize`] for playing backwards: valid positions are `[start, end)`; one
+    /// at or past the end is brought just inside it, one inside the skipped part moves to just
+    /// before it, and one before the start wraps to the end in a loop or is `None` (finished).
+    pub fn normalize_rev(&self, pos: f64) -> Option<f64> {
+        if !pos.is_finite() || self.period() <= 0.0 {
+            return None;
+        }
+        let mut pos = pos.min(self.end - REV_EPS);
+        for _ in 0..4 {
+            if let Some((a, b)) = self.skip()
+                && pos >= a
+                && pos < b
+            {
+                pos = a - REV_EPS;
+            }
+            if pos < self.start {
+                if !self.looping {
+                    return None;
+                }
+                let span = self.end - self.start;
+                pos = self.end - (self.start - pos) % span;
+                if pos >= self.end {
+                    pos = self.end - REV_EPS;
+                }
+                continue;
+            }
+            return Some(pos);
+        }
+        None
+    }
+
+    /// Move `delta` frames from `pos`: forward for a positive `delta` (as [`Plan::advance`]),
+    /// backward for a negative one, jumping the skipped part and wrapping in a loop. `None` when
+    /// playback finishes on the way.
+    pub fn advance_signed(&self, pos: f64, delta: f64, wraps: &mut u32) -> Option<f64> {
+        if delta >= 0.0 {
+            return self.advance(pos, delta, wraps);
+        }
+        let mut pos = self.normalize_rev(pos)?;
+        let mut left = -delta;
+        if self.looping {
+            let period = self.period();
+            let passes = (left / period).floor();
+            if passes >= 1.0 {
+                *wraps = wraps.saturating_add(passes.min(f64::from(u32::MAX)) as u32);
+                left -= passes * period;
+            }
+        }
+        for _ in 0..8 {
+            let boundary = match self.skip() {
+                Some((_, b)) if pos >= b => b,
+                _ => self.start,
+            };
+            if pos - left >= boundary {
+                return Some(pos - left);
+            }
+            left -= pos - boundary;
+            let wrapped = boundary <= self.start;
+            pos = self.normalize_rev(boundary - REV_EPS)?;
+            if wrapped {
+                *wraps = wraps.saturating_add(1);
+            }
+        }
+        Some(pos)
+    }
+}
+
+/// A hair, so a backward position just inside a boundary is not read as on the other side.
+const REV_EPS: f64 = 1e-6;
+
+/// Shuttle speeds, one per press of L (or J): 1x, 2x, 4x, 8x.
+pub const SHUTTLE_SPEEDS: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
+/// The slow speed of K+J / K+L (held).
+pub const NUDGE_SPEED: f64 = 0.25;
+/// Rewind and Fast Forward move the playhead this far at a click.
+pub const STEP_SECS: f64 = 1.0;
+/// Held longer than this, the Rewind / Fast Forward buttons shuttle instead of stepping.
+pub const HOLD_SECS: f64 = 0.35;
+/// ... at this level of [`SHUTTLE_SPEEDS`] (4x).
+pub const HOLD_LEVEL: i8 = 3;
+
+/// The JKL shuttle: `level` runs from -4 (8x backward) to 4 (8x forward), 0 is stopped; `nudge`
+/// is -1 or +1 while K+J or K+L is held (a slow crawl that wins over the level).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Shuttle {
+    pub level: i8,
+    pub nudge: i8,
+}
+
+impl Shuttle {
+    /// L: play forward; each further press goes up a speed (the top one stays). Coming from
+    /// backward it starts forward at 1x.
+    pub fn forward(&mut self) {
+        self.nudge = 0;
+        self.level = if self.level >= 1 { (self.level + 1).min(SHUTTLE_SPEEDS.len() as i8) } else { 1 };
+    }
+
+    /// J: the same, backward.
+    pub fn backward(&mut self) {
+        self.nudge = 0;
+        self.level = if self.level <= -1 { (self.level - 1).max(-(SHUTTLE_SPEEDS.len() as i8)) } else { -1 };
+    }
+
+    /// K: stop.
+    pub fn stop(&mut self) {
+        *self = Shuttle::default();
+    }
+
+    /// K+L (`dir` 1) or K+J (`dir` -1) held.
+    pub fn nudge_held(&mut self, dir: i8) {
+        self.level = 0;
+        self.nudge = dir.signum();
+    }
+
+    /// The signed speed, 0 when stopped.
+    pub fn speed(&self) -> f64 {
+        if self.nudge != 0 {
+            return f64::from(self.nudge.signum()) * NUDGE_SPEED;
+        }
+        let i = usize::from(self.level.unsigned_abs());
+        match i {
+            0 => 0.0,
+            _ => f64::from(self.level.signum()) * SHUTTLE_SPEEDS[(i - 1).min(SHUTTLE_SPEEDS.len() - 1)],
+        }
+    }
+
+    /// Whether anything is shuttling.
+    pub fn active(&self) -> bool {
+        self.level != 0 || self.nudge != 0
+    }
+}
+
+/// The readout in the Transport panel: "1x", "-2x", "0.25x".
+pub fn speed_label(speed: f64) -> String {
+    let mut s = format!("{speed:.2}");
+    while s.contains('.') && (s.ends_with('0') || s.ends_with('.')) {
+        s.pop();
+    }
+    format!("{s}x")
+}
+
+/// What a shuttle starts playing from a stop: the selection if there is one, else the whole file
+/// (so it can run both ways), from the cursor going forward, or from the selection's end / the
+/// cursor going backward. `None` when there is nothing to play that way.
+pub fn shuttle_plan(selection: &Range<usize>, cursor: usize, frames: usize, looping: bool, backward: bool) -> Option<(Plan, f64)> {
+    let total = frames as f64;
+    let (sel_a, sel_b) = (selection.start.min(frames) as f64, selection.end.min(frames) as f64);
+    let (mut plan, from) = if sel_b > sel_a {
+        (Plan::new(sel_a, sel_b), if backward { sel_b - 1.0 } else { sel_a })
+    } else {
+        let c = (cursor as f64).min(total);
+        (Plan::new(0.0, total), if backward { c - 1.0 } else { c })
+    };
+    plan.looping = looping;
+    let ok = if backward { plan.normalize_rev(from).is_some() } else { plan.normalize(from).is_some() };
+    ok.then_some((plan, from))
+}
+
+/// Scrubbing grains: each drag step plays this much of the file (times the speed).
+pub const GRAIN_SECS: f64 = 0.08;
+/// The speed of a scrub grain never goes beyond this, either way.
+pub const SCRUB_MAX_SPEED: f64 = 4.0;
+/// ... or below this (a slow drag still sounds).
+pub const SCRUB_MIN_SPEED: f64 = 0.25;
+/// The fade at each end of a grain, so it does not click.
+pub const GRAIN_FADE_SECS: f64 = 0.006;
+
+/// Follows a drag of the playhead: the speed of each step comes from how far and how fast it moved.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Scrub {
+    last: Option<(f64, f64)>,
+}
+
+impl Scrub {
+    /// The playhead is at `frame` at time `now` (seconds). Returns the signed speed of the grain
+    /// to play there: the drag's speed in file-seconds per second, clamped; 1x for the first.
+    pub fn touch(&mut self, frame: f64, now: f64, rate: u32) -> f64 {
+        let speed = match self.last {
+            Some((f0, t0)) if now > t0 && frame != f0 => {
+                let v = (frame - f0) / ((now - t0) * f64::from(rate.max(1)));
+                v.signum() * v.abs().clamp(SCRUB_MIN_SPEED, SCRUB_MAX_SPEED)
+            }
+            // Not moving: keep the direction it last had, forward at the start.
+            Some((f0, _)) if frame == f0 => SCRUB_MIN_SPEED,
+            _ => 1.0,
+        };
+        self.last = Some((frame, now));
+        speed
+    }
+
+    pub fn end(&mut self) {
+        self.last = None;
+    }
+}
+
+/// The grain to play for the playhead at `frame` going at `speed`: a plan and the frame to
+/// start at (backward grains run from `frame` down).
+pub fn grain_plan(frame: f64, speed: f64, rate: u32, frames: usize) -> Option<(Plan, f64)> {
+    let total = frames as f64;
+    let len = (GRAIN_SECS * f64::from(rate.max(1)) * speed.abs()).max(2.0);
+    let frame = frame.clamp(0.0, total);
+    if speed >= 0.0 {
+        let plan = Plan::new(frame, (frame + len).min(total));
+        plan.normalize(frame).map(|from| (plan, from))
+    } else {
+        let plan = Plan::new((frame - len).max(0.0), frame);
+        let from = frame - 1.0;
+        plan.normalize_rev(from).map(|from| (plan, from))
+    }
+}
+
+/// The gain of a grain at `pos`: a short fade in at the start and out at the end of `[start, end)`.
+pub fn grain_gain(pos: f64, start: f64, end: f64, fade_frames: f64) -> f32 {
+    let fade = fade_frames.max(1.0).min((end - start) * 0.5);
+    if fade <= 0.0 {
+        return 1.0;
+    }
+    let edge = (pos - start).min(end - pos);
+    (edge / fade).clamp(0.0, 1.0) as f32
 }
 
 /// What Play is asked to play.
@@ -154,13 +374,17 @@ pub struct Request {
     pub rate: u32,
     pub looping: bool,
     pub skip_selection: bool,
+    /// Frames to start before a selection and to carry on after it (0: off).
+    pub preroll: usize,
+    pub postroll: usize,
 }
 
 /// The plan for `req` and the frame to start at, or `None` when there is nothing to play.
 ///
 /// - Skip Selection with a selection: from [`SKIP_PREROLL_SECS`] before it to
 ///   [`SKIP_POSTROLL_SECS`] after it, jumping over the selection;
-/// - a selection: just the selection;
+/// - a selection: just the selection, or with pre/post-roll from `preroll` before it to
+///   `postroll` after it;
 /// - Loop with no selection: the view, from the cursor if it is in view;
 /// - otherwise: from the cursor to the end of the file.
 pub fn plan_for(req: &Request) -> Option<(Plan, f64)> {
@@ -176,7 +400,8 @@ pub fn plan_for(req: &Request) -> Option<(Plan, f64)> {
         p.skip_end = sel_b;
         (p, start)
     } else if has_sel {
-        (Plan::new(sel_a, sel_b), sel_a)
+        let start = (sel_a - req.preroll as f64).max(0.0);
+        (Plan::new(start, (sel_b + req.postroll as f64).min(frames)), start)
     } else if req.looping {
         let (a, b) = (req.view.start.max(0.0), req.view.end.min(frames));
         let cursor = req.cursor as f64;
@@ -217,6 +442,10 @@ pub struct Transport {
     pub auto_scroll: bool,
     /// Where the current or last play started.
     pub play_start: usize,
+    /// Play a selection with its pre-roll and post-roll.
+    pub roll: bool,
+    /// The JKL shuttle.
+    pub shuttle: Shuttle,
 }
 
 impl Default for Transport {
@@ -229,6 +458,8 @@ impl Default for Transport {
             follow: Follow::Page,
             auto_scroll: true,
             play_start: 0,
+            roll: false,
+            shuttle: Shuttle::default(),
         }
     }
 }
@@ -320,7 +551,17 @@ mod tests {
     }
 
     fn req() -> Request {
-        Request { selection: 0..0, cursor: 0, frames: 1_000_000, view: 0.0..1000.0, rate: 48_000, looping: false, skip_selection: false }
+        Request {
+            selection: 0..0,
+            cursor: 0,
+            frames: 1_000_000,
+            view: 0.0..1000.0,
+            rate: 48_000,
+            looping: false,
+            skip_selection: false,
+            preroll: 0,
+            postroll: 0,
+        }
     }
 
     #[test]
@@ -389,5 +630,126 @@ mod tests {
         assert_eq!(v.start, 400_000.0 - 5000.0);
         follow_view(Follow::Center, &mut v, 100.0, width, total);
         assert_eq!(v.start, 0.0, "centred at the start: clamped to the file");
+    }
+
+    #[test]
+    fn backward_play_walks_down_wraps_and_finishes() {
+        let p = Plan::new(100.0, 200.0);
+        let mut w = 0;
+        assert_eq!(p.advance_signed(150.0, -20.0, &mut w), Some(130.0));
+        assert_eq!(p.advance_signed(150.0, -50.0, &mut w), Some(100.0), "the start itself is still played");
+        assert_eq!(p.advance_signed(150.0, -51.0, &mut w), None, "going past it finishes");
+        assert_eq!(p.normalize_rev(200.0), Some(200.0 - 1e-6), "the end itself is just inside");
+        let l = looped(100.0, 200.0);
+        assert!(l.advance_signed(110.0, -25.0, &mut w).is_some_and(|v| (v - 185.0).abs() < 1e-3));
+        assert_eq!(w, 1);
+        let mut w = 0;
+        assert_eq!(l.advance_signed(150.0, -1020.0, &mut w).map(|v| v.round()), Some(130.0));
+        assert_eq!(w, 10);
+        assert_eq!(p.advance_signed(120.0, 5.0, &mut w), Some(125.0), "a positive delta is forward");
+    }
+
+    #[test]
+    fn backward_play_jumps_the_skipped_part() {
+        let p = skipping(0.0, 100.0, 40.0, 60.0);
+        let mut w = 0;
+        assert_eq!(p.advance_signed(70.0, -5.0, &mut w), Some(65.0));
+        let at = p.advance_signed(70.0, -15.0, &mut w).unwrap_or(-1.0);
+        assert!((at - 35.0).abs() < 1e-3, "10 down to the skip's end, 5 more below its start: {at}");
+        assert!(p.normalize_rev(50.0).is_some_and(|v| v < 40.0), "starting inside the skip");
+        for pos in 0..100 {
+            let n = p.normalize_rev(f64::from(pos));
+            assert!(n.is_some_and(|n| !(40.0..60.0).contains(&n)), "{pos} -> {n:?}");
+        }
+    }
+
+    #[test]
+    fn l_steps_the_speed_up_j_the_same_backwards_k_stops() {
+        let mut s = Shuttle::default();
+        assert_eq!(s.speed(), 0.0);
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            s.forward();
+            seen.push(s.speed());
+        }
+        assert_eq!(seen, [1.0, 2.0, 4.0, 8.0, 8.0, 8.0], "the top speed stays");
+        s.backward();
+        assert_eq!(s.speed(), -1.0, "from forward, J starts backward at 1x");
+        s.backward();
+        s.backward();
+        assert_eq!(s.speed(), -4.0);
+        s.stop();
+        assert!(!s.active() && s.speed() == 0.0);
+        s.nudge_held(1);
+        assert_eq!(s.speed(), NUDGE_SPEED);
+        s.nudge_held(-1);
+        assert_eq!(s.speed(), -NUDGE_SPEED);
+        s.forward();
+        assert_eq!((s.speed(), s.nudge), (1.0, 0), "a plain L ends the nudge");
+    }
+
+    #[test]
+    fn the_speed_readout() {
+        assert_eq!(speed_label(1.0), "1x");
+        assert_eq!(speed_label(-2.0), "-2x");
+        assert_eq!(speed_label(0.25), "0.25x");
+        assert_eq!(speed_label(0.0), "0x");
+        assert_eq!(speed_label(8.0), "8x");
+    }
+
+    #[test]
+    fn a_shuttle_starts_from_the_selection_or_the_whole_file() {
+        let none = 500..500;
+        let (p, from) = shuttle_plan(&none, 500, 1000, false, false).expect("plan");
+        assert_eq!((p.start, p.end, from), (0.0, 1000.0, 500.0));
+        let (p, from) = shuttle_plan(&none, 500, 1000, false, true).expect("plan");
+        assert_eq!((p.start, p.end, from), (0.0, 1000.0, 499.0), "backward runs down to the file's start");
+        let (p, from) = shuttle_plan(&(200..300), 0, 1000, true, true).expect("plan");
+        assert_eq!((p.start, p.end, from, p.looping), (200.0, 300.0, 299.0, true));
+        assert!(shuttle_plan(&(0..0), 0, 1000, false, true).is_none(), "nothing before the start");
+        assert!(shuttle_plan(&(1000..1000), 1000, 1000, false, false).is_none(), "nothing after the end");
+    }
+
+    #[test]
+    fn scrub_speed_follows_the_drag() {
+        let mut s = Scrub::default();
+        assert_eq!(s.touch(1000.0, 0.0, 1000), 1.0, "the first touch plays at 1x");
+        assert!((s.touch(1100.0, 0.1, 1000) - 1.0).abs() < 1e-9, "100 frames in 0.1 s at 1 kHz");
+        assert_eq!(s.touch(1500.0, 0.2, 1000), SCRUB_MAX_SPEED.min(4.0), "4x, clamped");
+        assert!((s.touch(1400.0, 0.3, 1000) + 1.0).abs() < 1e-9, "backward");
+        assert_eq!(s.touch(1399.0, 0.4, 1000), -SCRUB_MIN_SPEED, "a crawl is still heard");
+        assert_eq!(s.touch(1399.0, 0.5, 1000), SCRUB_MIN_SPEED, "held still");
+        s.end();
+        assert_eq!(s.touch(0.0, 9.0, 1000), 1.0);
+    }
+
+    #[test]
+    fn grains_run_forward_or_down_from_the_playhead() {
+        let (p, from) = grain_plan(1000.0, 1.0, 48_000, 100_000).expect("grain");
+        assert_eq!((p.start, from), (1000.0, 1000.0));
+        assert!((p.end - p.start - 3840.0).abs() < 1.0, "80 ms at 48 kHz");
+        let (p, from) = grain_plan(10_000.0, -2.0, 48_000, 100_000).expect("grain");
+        assert_eq!(p.end, 10_000.0);
+        assert_eq!(from, 9999.0);
+        assert!((p.end - p.start - 7680.0).abs() < 1.0, "twice as much file");
+        assert!(grain_plan(0.0, -1.0, 48_000, 100_000).is_none(), "nothing behind the start");
+        assert!(grain_plan(100_000.0, 1.0, 48_000, 100_000).is_none(), "nothing after the end");
+        assert_eq!(grain_gain(0.0, 0.0, 1000.0, 100.0), 0.0);
+        assert_eq!(grain_gain(50.0, 0.0, 1000.0, 100.0), 0.5);
+        assert_eq!(grain_gain(500.0, 0.0, 1000.0, 100.0), 1.0);
+        assert_eq!(grain_gain(975.0, 0.0, 1000.0, 100.0), 0.25);
+    }
+
+    #[test]
+    fn pre_and_post_roll_widen_a_selection_but_not_past_the_file() {
+        let r = Request { selection: 5000..9000, cursor: 5000, preroll: 2000, postroll: 1000, ..req() };
+        assert_eq!(plan_for(&r), Some((Plan::new(3000.0, 10_000.0), 3000.0)));
+        let edge = Request { selection: 500..999_500, cursor: 500, preroll: 2000, postroll: 1000, ..req() };
+        assert_eq!(plan_for(&edge), Some((Plan::new(0.0, 1_000_000.0), 0.0)));
+        let off = Request { selection: 5000..9000, cursor: 5000, ..req() };
+        assert_eq!(plan_for(&off), Some((Plan::new(5000.0, 9000.0), 5000.0)), "off: just the selection");
+        // No selection: roll changes nothing.
+        let cur = Request { cursor: 7, preroll: 2000, postroll: 1000, ..req() };
+        assert_eq!(plan_for(&cur), Some((Plan::new(7.0, 1_000_000.0), 7.0)));
     }
 }

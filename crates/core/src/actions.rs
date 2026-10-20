@@ -53,6 +53,10 @@ pub enum ActionId {
     ToggleAutoScroll,
     FollowPage,
     FollowCenter,
+    /// Transport (task f36).
+    Rewind,
+    FastForward,
+    ToggleRoll,
 }
 
 /// Which part of the program carries an action out.
@@ -181,6 +185,9 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ToggleAutoScroll, "transport.autoScroll", "Auto-Scroll", &[]),
     window(ActionId::FollowPage, "transport.followPage", "Auto-Scroll Pagewise", &[]),
     window(ActionId::FollowCenter, "transport.followCenter", "Auto-Scroll Centered", &[]),
+    window(ActionId::Rewind, "transport.rewind", "Rewind", &[]),
+    window(ActionId::FastForward, "transport.fastForward", "Fast Forward", &[]),
+    window(ActionId::ToggleRoll, "transport.roll", "Pre/Post-Roll", &[]),
 ];
 
 /// The table row for `id`.
@@ -318,7 +325,10 @@ impl Editor {
             | ActionId::ToggleReturnOnStop
             | ActionId::ToggleAutoScroll
             | ActionId::FollowPage
-            | ActionId::FollowCenter => true,
+            | ActionId::FollowCenter
+            | ActionId::Rewind
+            | ActionId::FastForward
+            | ActionId::ToggleRoll => true,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -494,6 +504,9 @@ impl Editor {
             | ActionId::ToggleAutoScroll
             | ActionId::FollowPage
             | ActionId::FollowCenter
+            | ActionId::Rewind
+            | ActionId::FastForward
+            | ActionId::ToggleRoll
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast

@@ -8,6 +8,8 @@
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
+//! - `KEYJKL l|j|k|k+l|k+j|up` (task f36) → `OK speed=<n>x level=<n>`: the JKL shuttle (`k+l`/`k+j` crawl until `up`)
+//! - `SCRUB <frame>` / `SCRUB end` (task f36) → `OK pos=<frame> speed=<signed>`: drag the playhead, hearing a grain
 //! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)

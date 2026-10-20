@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::AudioBuffer;
-use wavcraft_core::transport::Plan;
+use wavcraft_core::transport::{self, Plan};
 
 struct Shared {
     audio: Mutex<Option<Arc<AudioBuffer>>>,
@@ -27,6 +27,10 @@ struct Shared {
     /// Times a loop has gone round since the last `start`.
     wraps: AtomicU32,
     playing: AtomicBool,
+    /// Playback speed, an `f64` stored as bits: 1 is normal, negative is backward.
+    speed: AtomicU64,
+    /// The plan is a scrub grain: fade its ends.
+    grain: AtomicBool,
     /// Set by the stream's error callback (the device went away, for example).
     failed: AtomicBool,
 }
@@ -62,6 +66,8 @@ impl Shared {
             looping: AtomicBool::new(false),
             wraps: AtomicU32::new(0),
             playing: AtomicBool::new(false),
+            speed: AtomicU64::new(1f64.to_bits()),
+            grain: AtomicBool::new(false),
             failed: AtomicBool::new(false),
         }
     }
@@ -143,8 +149,55 @@ impl Player {
         self.shared.set_plan(plan);
         self.shared.wraps.store(0, Ordering::Relaxed);
         self.shared.pos.store(from.to_bits(), Ordering::Relaxed);
+        self.shared.speed.store(1f64.to_bits(), Ordering::Relaxed);
+        self.shared.grain.store(false, Ordering::Relaxed);
         self.begin();
         true
+    }
+
+    /// Play a short scrub grain: `plan` from `from` at `speed` (negative runs backward), with
+    /// faded ends. Replaces whatever was playing.
+    pub fn grain(&mut self, plan: &Plan, from: f64, speed: f64) -> bool {
+        if self.stream.is_none() || self.failed() {
+            self.reopen();
+        }
+        let has_audio = self.shared.audio.lock().is_ok_and(|a| a.is_some());
+        let ok = if speed < 0.0 { plan.normalize_rev(from).is_some() } else { plan.normalize(from).is_some() };
+        if !has_audio || !ok {
+            return false;
+        }
+        self.shared.playing.store(false, Ordering::Relaxed);
+        self.shared.set_plan(plan);
+        self.shared.wraps.store(0, Ordering::Relaxed);
+        self.shared.pos.store(from.to_bits(), Ordering::Relaxed);
+        self.shared.speed.store(speed.to_bits(), Ordering::Relaxed);
+        self.shared.grain.store(true, Ordering::Relaxed);
+        self.begin();
+        true
+    }
+
+    /// Change the speed (negative: backward), taking effect at once while playing.
+    pub fn set_speed(&self, speed: f64) {
+        if speed.is_finite() {
+            self.shared.speed.store(speed.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    pub fn speed(&self) -> f64 {
+        f64::from_bits(self.shared.speed.load(Ordering::Relaxed))
+    }
+
+    /// Swap the plan while playing or paused, keeping the position (a shuttle that changes
+    /// direction needs the other half of the file).
+    pub fn replace_plan(&self, plan: &Plan) {
+        self.shared.set_plan(plan);
+    }
+
+    /// Move the play position (Rewind / Fast Forward while playing or paused).
+    pub fn seek(&self, frame: f64) {
+        if frame.is_finite() {
+            self.shared.pos.store(frame.max(0.0).to_bits(), Ordering::Relaxed);
+        }
     }
 
     fn begin(&mut self) {
@@ -161,7 +214,9 @@ impl Player {
     /// Carry on from the place `pause` left. False when there is nothing to resume.
     pub fn resume(&mut self) -> bool {
         let plan = self.shared.plan();
-        if plan.normalize(self.position_f64()).is_none() {
+        let at = self.position_f64();
+        let ok = if self.speed() < 0.0 { plan.normalize_rev(at) } else { plan.normalize(at) };
+        if ok.is_none() {
             return false;
         }
         self.begin();
@@ -201,13 +256,15 @@ impl Player {
         }
         let now = Instant::now();
         self.sim_last = Some(now);
-        let delta = now.duration_since(last).as_secs_f64() * f64::from(self.rate);
+        let speed = self.speed();
+        let delta = now.duration_since(last).as_secs_f64() * f64::from(self.rate) * speed;
         let plan = self.shared.plan();
         let mut wraps = self.shared.wraps.load(Ordering::Relaxed);
-        match plan.advance(self.position_f64(), delta, &mut wraps) {
+        match plan.advance_signed(self.position_f64(), delta, &mut wraps) {
             Some(pos) => self.shared.pos.store(pos.to_bits(), Ordering::Relaxed),
             None => {
-                self.shared.pos.store(plan.end.to_bits(), Ordering::Relaxed);
+                let at = if speed < 0.0 { plan.start } else { plan.end };
+                self.shared.pos.store(at.to_bits(), Ordering::Relaxed);
                 self.shared.playing.store(false, Ordering::Relaxed);
             }
         }
@@ -275,22 +332,27 @@ fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T
     if file_channels == 0 || audio.sample_rate == 0 {
         return;
     }
-    let step = f64::from(audio.sample_rate) / device_rate;
+    let speed = f64::from_bits(shared.speed.load(Ordering::Relaxed));
+    let backward = speed < 0.0;
+    let step = f64::from(audio.sample_rate) / device_rate * speed;
+    let grain = shared.grain.load(Ordering::Relaxed);
+    let fade = transport::GRAIN_FADE_SECS * f64::from(audio.sample_rate);
     let mut plan = shared.plan();
     plan.end = plan.end.min(audio.frames() as f64);
     let mut pos = f64::from_bits(shared.pos.load(Ordering::Relaxed)).max(0.0);
     let mut wraps = 0u32;
     for frame in out.chunks_mut(channels) {
         // The loop's wrap and the skipped part are settled here, a frame at a time.
-        let Some(at) = plan.normalize(pos) else {
+        let Some(at) = (if backward { plan.normalize_rev(pos) } else { plan.normalize(pos) }) else {
             shared.playing.store(false, Ordering::Relaxed);
-            pos = plan.end;
+            pos = if backward { plan.start } else { plan.end };
             break;
         };
-        if at < pos {
+        if (!backward && at < pos) || (backward && at > pos) {
             wraps += 1;
         }
         pos = at;
+        let gain = if grain { transport::grain_gain(pos, plan.start, plan.end, fade) } else { 1.0 };
         let i = pos as usize;
         let frac = (pos - i as f64) as f32;
         let sample = |source: &Vec<f32>| {
@@ -303,14 +365,14 @@ fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T
             // one (a host-left, guest-right recording would lose the guest).
             let sum: f32 = audio.channels.iter().map(sample).sum();
             if let Some(slot) = frame.first_mut() {
-                *slot = T::from_sample(sum / file_channels as f32);
+                *slot = T::from_sample(gain * sum / file_channels as f32);
             }
         } else {
             for (c, slot) in frame.iter_mut().enumerate() {
                 // Mono plays on both speakers; a stereo file leaves any further device channels silent.
                 let source = if file_channels == 1 { audio.channels.first() } else { audio.channels.get(c) };
                 let Some(source) = source.filter(|_| c < file_channels.max(2)) else { continue };
-                *slot = T::from_sample(sample(source));
+                *slot = T::from_sample(gain * sample(source));
             }
         }
         pos += step;
@@ -318,9 +380,9 @@ fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T
     // A step that ended exactly on the end or the skip is settled now, so the position shown
     // never sits in the skipped part or past the end of a loop.
     if shared.playing.load(Ordering::Relaxed)
-        && let Some(at) = plan.normalize(pos)
+        && let Some(at) = (if backward { plan.normalize_rev(pos) } else { plan.normalize(pos) })
     {
-        if at < pos {
+        if (!backward && at < pos) || (backward && at > pos) {
             wraps += 1;
         }
         pos = at;
@@ -467,5 +529,65 @@ mod tests {
         assert!(p.position() > held, "resumed from the same place");
         p.stop();
         assert!(!p.is_playing());
+    }
+
+    #[test]
+    fn backward_playback_reads_the_file_in_reverse() {
+        let ramp: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        play_plan(&shared, &Plan::new(10.0, 20.0), 19.0);
+        shared.speed.store((-1f64).to_bits(), Ordering::Relaxed);
+        let mut out = vec![0.0f32; 2 * 14];
+        render(&shared, &mut out, 2, 48_000.0);
+        let left: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
+        assert_eq!(&left[..10], [19.0, 18.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0]);
+        assert!(left[10..].iter().all(|v| *v == 0.0), "then silence at the start");
+        render(&shared, &mut out, 2, 48_000.0);
+        assert!(!shared.playing.load(Ordering::Relaxed), "stopped at the start");
+        assert_eq!(f64::from_bits(shared.pos.load(Ordering::Relaxed)), 10.0);
+    }
+
+    #[test]
+    fn double_speed_skips_every_other_frame_and_a_half_speed_interpolates() {
+        let ramp: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        play_plan(&shared, &Plan::new(0.0, 100.0), 0.0);
+        shared.speed.store(2f64.to_bits(), Ordering::Relaxed);
+        let mut out = vec![0.0f32; 2 * 4];
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(out.chunks(2).map(|f| f[0]).collect::<Vec<_>>(), [0.0, 2.0, 4.0, 6.0]);
+        play_plan(&shared, &Plan::new(0.0, 100.0), 0.0);
+        shared.speed.store(0.5f64.to_bits(), Ordering::Relaxed);
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(out.chunks(2).map(|f| f[0]).collect::<Vec<_>>(), [0.0, 0.5, 1.0, 1.5]);
+    }
+
+    #[test]
+    fn a_backward_loop_wraps_to_the_end() {
+        let ramp: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        play_plan(&shared, &Plan { looping: true, ..Plan::new(10.0, 14.0) }, 11.0);
+        shared.speed.store((-1f64).to_bits(), Ordering::Relaxed);
+        let mut out = vec![0.0f32; 2 * 6];
+        render(&shared, &mut out, 2, 48_000.0);
+        let left: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
+        assert_eq!(left, [11.0, 10.0, 13.0, 12.0, 11.0, 10.0]);
+        assert!(shared.playing.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_grain_fades_in_and_out() {
+        let shared = shared_with(AudioBuffer { sample_rate: 1000, channels: vec![vec![1.0; 2000]] });
+        shared.set_plan(&Plan::new(100.0, 400.0));
+        shared.pos.store(100f64.to_bits(), Ordering::Relaxed);
+        shared.grain.store(true, Ordering::Relaxed);
+        shared.playing.store(true, Ordering::Relaxed);
+        let mut out = vec![0.0f32; 2 * 300];
+        render(&shared, &mut out, 2, 1000.0);
+        let left: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
+        assert_eq!(left[0], 0.0, "starts silent");
+        assert!(left[3] > 0.0 && left[3] < 1.0, "fading in: {}", left[3]);
+        assert_eq!(left[150], 1.0);
+        assert!(left[298] < 1.0, "fading out");
     }
 }
