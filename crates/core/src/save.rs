@@ -18,12 +18,14 @@
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use soundcraft_audio_io::SampleFormat;
 
 use crate::dither::Ditherer;
+use crate::doc::edit::ChannelMask;
 use crate::doc::{ChunkInfo, DocState, SourceFormat};
 use crate::meta::Bext;
 use crate::store::BLOCK_FRAMES;
@@ -168,6 +170,49 @@ pub fn remove_leftover_temps(target: &Path) -> usize {
     removed
 }
 
+/// What a write takes from the document: a frame range and some channels (f43: Save Selection
+/// As and Export write part of a document; Save writes all of it).
+#[derive(Debug, Clone)]
+pub struct Part {
+    pub frames: Range<u64>,
+    pub channels: Vec<usize>,
+}
+
+impl Part {
+    /// All frames and channels of `doc`.
+    pub fn whole(doc: &DocState) -> Part {
+        Part { frames: 0..doc.len_frames(), channels: (0..doc.channel_count()).collect() }
+    }
+
+    /// `frames` of the channels in `mask` (clamped to the document).
+    pub fn range(doc: &DocState, frames: Range<u64>, mask: ChannelMask) -> Part {
+        let end = frames.end.min(doc.len_frames());
+        Part { frames: frames.start.min(end)..end, channels: mask.active(doc.channel_count()) }
+    }
+}
+
+/// The file formats a write can produce. **The one place the format is chosen**: a new format
+/// is a variant here and an arm in [`write_file`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    Wav(SampleType),
+}
+
+impl FileKind {
+    pub fn describe(self) -> String {
+        match self {
+            FileKind::Wav(ty) => format!("{} WAV", ty.describe()),
+        }
+    }
+}
+
+impl Part {
+    /// Whether this is all frames and all channels of `doc` (a plain Save).
+    pub fn is_whole(&self, doc: &DocState) -> bool {
+        self.frames == (0..doc.len_frames()) && self.channels.iter().copied().eq(0..doc.channel_count())
+    }
+}
+
 /// The file formats a save can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveFormat {
@@ -235,9 +280,12 @@ impl SaveFormat {
 struct Hooks {
     fail_after: Option<u64>,
     rf64_over: u64,
+    /// Later saves copy the source's chunks from the file just written (false for a copy of the
+    /// document written elsewhere: Export, Save Selection As).
+    relocate: bool,
 }
 
-const NO_HOOKS: Hooks = Hooks { fail_after: None, rf64_over: u32::MAX as u64 };
+const NO_HOOKS: Hooks = Hooks { fail_after: None, rf64_over: u32::MAX as u64, relocate: true };
 
 /// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically.
 /// `progress` gets 0 to 1 as the samples go out.
@@ -248,7 +296,7 @@ pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dy
 /// Save `doc` to `target` in `format` with `ty` samples, replacing it atomically. A failure of
 /// any kind removes this save's temporary file and leaves `target` as it was.
 pub fn save(doc: &DocState, target: &Path, format: SaveFormat, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
-    save_inner(doc, target, format, ty, progress, NO_HOOKS)
+    save_inner(doc, target, format, ty, &Part::whole(doc), progress, NO_HOOKS)
 }
 
 /// [`save_wav`] that fails with an I/O error once `fail_after` frames are out (tests: a save
@@ -258,17 +306,33 @@ pub fn save_wav_failing_after(doc: &DocState, target: &Path, ty: SampleType, fai
     save_failing_after(doc, target, SaveFormat::Wav, ty, fail_after)
 }
 
+/// Write `part` of `doc` to `target` as `kind`, through the save path's safety: an exclusive
+/// owner-only temporary file beside the target, synced before the rename, the target never
+/// lost. The document itself is only read, and what was saved is not remembered as the source
+/// of later saves (a copy, not the document's file).
+pub fn write_file(doc: &DocState, target: &Path, kind: FileKind, part: &Part, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
+    match kind {
+        FileKind::Wav(ty) => save_inner(doc, target, SaveFormat::Wav, ty, part, progress, Hooks { relocate: false, ..NO_HOOKS }),
+    }
+}
+
+/// [`write_file`] for WAV that fails with an I/O error once `fail_after` frames are out (tests).
+#[doc(hidden)]
+pub fn write_failing_after(doc: &DocState, target: &Path, ty: SampleType, part: &Part, fail_after: u64) -> Result<(), SaveError> {
+    save_inner(doc, target, SaveFormat::Wav, ty, part, &mut |_| {}, Hooks { fail_after: Some(fail_after), relocate: false, ..NO_HOOKS })
+}
+
 /// [`save`] that fails with an I/O error once `fail_after` frames are out.
 #[doc(hidden)]
 pub fn save_failing_after(doc: &DocState, target: &Path, format: SaveFormat, ty: SampleType, fail_after: u64) -> Result<(), SaveError> {
-    save_inner(doc, target, format, ty, &mut |_| {}, Hooks { fail_after: Some(fail_after), ..NO_HOOKS })
+    save_inner(doc, target, format, ty, &Part::whole(doc), &mut |_| {}, Hooks { fail_after: Some(fail_after), ..NO_HOOKS })
 }
 
 /// [`save_wav`] with the RIFF size above which the file is written as RF64 set to `threshold`
 /// bytes instead of 4 GiB (tests: the RF64 writer without an 8 GB file).
 #[doc(hidden)]
 pub fn save_wav_rf64_over(doc: &DocState, target: &Path, ty: SampleType, threshold: u64) -> Result<(), SaveError> {
-    save_inner(doc, target, SaveFormat::Wav, ty, &mut |_| {}, Hooks { rf64_over: threshold, ..NO_HOOKS })
+    save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), &mut |_| {}, Hooks { rf64_over: threshold, ..NO_HOOKS })
 }
 
 fn save_inner(
@@ -276,11 +340,12 @@ fn save_inner(
     target: &Path,
     format: SaveFormat,
     ty: SampleType,
+    part: &Part,
     progress: &mut dyn FnMut(f64),
     hooks: Hooks,
 ) -> Result<(), SaveError> {
-    let frames = doc.len_frames();
-    if frames == 0 {
+    let frames = part.frames.end.saturating_sub(part.frames.start);
+    if frames == 0 || part.channels.is_empty() {
         return Err(SaveError::Empty);
     }
     if !format.accepts(ty) {
@@ -290,8 +355,12 @@ fn save_inner(
     let tmp = TempFile::create(target).map_err(SaveError::Io)?;
     let TempFile { path: tmp, file } = tmp;
     // Written through the handle made by the exclusive create, never reopened by name.
+    if format != SaveFormat::Wav && !part.is_whole(doc) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(SaveError::Unsupported(format!("{} can only be written whole", format.name())));
+    }
     let (file, written) = match if format == SaveFormat::Wav {
-        write_wav(doc, file, ty, progress, hooks).map(|(f, table)| (f, Some(table)))
+        write_wav(doc, file, ty, part, progress, hooks).map(|(f, table)| (f, Some(table)))
     } else {
         write_stream(doc, file, format, ty, progress, hooks).map(|f| (f, None))
     } {
@@ -311,7 +380,7 @@ fn save_inner(
         return Err(SaveError::Io(io::Error::new(e.kind(), format!("could not replace the file ({e}); it is unchanged"))));
     }
     drop(file);
-    if let Some(table) = written {
+    if let (Some(table), true) = (written, hooks.relocate && part.is_whole(doc)) {
         // The file on disk now holds the chunks at new places: later saves copy from there.
         doc.source().relocated.set(target.to_path_buf(), table);
     }
@@ -425,13 +494,23 @@ fn is_list(f: &mut File, c: &ChunkInfo, form: &[u8; 4]) -> bool {
     c.size >= 4 && f.seek(SeekFrom::Start(c.offset + 8)).is_ok() && f.read_exact(&mut t).is_ok() && &t == form
 }
 
-fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMut(f64), hooks: Hooks) -> io::Result<(File, Vec<ChunkInfo>)> {
-    let (frames, channels) = (doc.len_frames(), doc.channel_count());
+fn write_wav(
+    doc: &DocState,
+    file: File,
+    ty: SampleType,
+    part: &Part,
+    progress: &mut dyn FnMut(f64),
+    hooks: Hooks,
+) -> io::Result<(File, Vec<ChunkInfo>)> {
+    // A part (Save Selection As) carries none of the source's other chunks or markers: they
+    // describe the whole file.
+    let whole = part.is_whole(doc);
+    let (frames, channels) = (part.frames.end - part.frames.start, part.channels.len());
     let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
-    let (plan, mut source) = plan_chunks(doc, ty);
+    let (plan, mut source) = if whole { plan_chunks(doc, ty) } else { (vec![Item::Data], None) };
     // Markers go after everything else as `cue ` and `LIST`/`adtl` chunks (A183); the source's own
     // copies are not carried over (see `NOT_COPIED`, `plan_chunks`).
-    let marker_chunks = doc.markers().to_wav_chunks();
+    let marker_chunks = if whole { doc.markers().to_wav_chunks() } else { Vec::new() };
     let extra: u64 = marker_chunks.len() as u64
         + plan
             .iter()
@@ -450,7 +529,7 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
                 table.push(ChunkInfo { id: *b"data", offset: pos, size: data_len });
                 out.write_all(b"data")?;
                 out.write_all(&u32::try_from(data_len).unwrap_or(u32::MAX).to_le_bytes())?;
-                write_samples(&mut out, doc, ty, SaveFormat::Wav, None, progress, hooks.fail_after)?;
+                write_samples(&mut out, doc, ty, part, SaveFormat::Wav, None, progress, hooks.fail_after)?;
                 if data_len & 1 == 1 {
                     out.write_all(&[0])?;
                 }
@@ -511,7 +590,7 @@ fn write_stream(doc: &DocState, file: File, format: SaveFormat, ty: SampleType, 
             0
         }
     };
-    write_samples(&mut out, doc, ty, format, flac.as_mut(), progress, hooks.fail_after)?;
+    write_samples(&mut out, doc, ty, &Part::whole(doc), format, flac.as_mut(), progress, hooks.fail_after)?;
     if data_len & 1 == 1 {
         out.write_all(&[0])?;
     }
@@ -525,12 +604,14 @@ fn write_samples(
     out: &mut impl Write,
     doc: &DocState,
     ty: SampleType,
+    part: &Part,
     format: SaveFormat,
     mut flac: Option<&mut crate::flac_enc::Encoder>,
     progress: &mut dyn FnMut(f64),
     fail_after: Option<u64>,
 ) -> io::Result<()> {
-    let (frames, channels) = (doc.len_frames(), doc.channel_count());
+    let (first, frames, chans) = (part.frames.start, part.frames.end - part.frames.start, &part.channels);
+    let channels = chans.len();
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
     // One quantiser per channel for the whole file: its noise and filter state carry across blocks.
     let mut dithers: Vec<Ditherer> = (0..channels).map(|ch| Ditherer::new(&doc.source().dither, ch)).collect();
@@ -538,8 +619,8 @@ fn write_samples(
     let mut at = 0u64;
     while at < frames {
         let n = (frames - at).min(BLOCK_FRAMES as u64) as usize;
-        for (ch, buf) in bufs.iter_mut().enumerate() {
-            let got = doc.read(ch, at, &mut buf[..n])?;
+        for (&ch, buf) in chans.iter().zip(bufs.iter_mut()) {
+            let got = doc.read(ch, first + at, &mut buf[..n])?;
             if got != n {
                 return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("channel {ch} gave {got} of {n} frames at {at}")));
             }

@@ -6,6 +6,7 @@
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> unsaved=<0|1> snap=<0|1> snapzero=<0|1> enabled=<one 0|1 per channel> clipboard=<1-5> clip_frames=<n> undo=<label> redo=<label>`
+//!   (`path=<the document's own path>` is last: it may hold spaces; Save Selection As and Export do not change it)
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
 //! - `OPEN <path>` → `OK` (the open runs in the background and adds a document; poll `STATE` until `busy=0`)
@@ -64,6 +65,9 @@
 //!   → `OK gain=<dB> limited=<0|1> on_target=<0|1> before=<LUFS> after=<LUFS> true_peak=<dBTP> changed=<0|1>` (Match
 //!   Loudness on the whole file as one undoable step, default the podcast preset; runs on the window's thread;
 //!   poll `STATE` until `busy=0`, then `LOUDNESS` reads the result back)
+//! - `SAVE_SELECTION <path>` → `OK` (File › Save Selection As: only the selected range of the enabled
+//!   channels, to a new WAV; the open document keeps its own path and unsaved mark)
+//! - `EXPORT <path>` → `OK` (File › Export › File: the whole document to another WAV, same promise)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
