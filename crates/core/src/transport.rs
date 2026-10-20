@@ -157,6 +157,16 @@ pub fn marker_jump(markers: &crate::Markers, playhead: u64, forward: bool) -> Op
     if forward { markers.next_after(playhead) } else { markers.prev_before(playhead) }
 }
 
+/// How far back (seconds) a marker must be for "previous marker" during play to count it as
+/// the previous one; a marker the playhead has only just passed is the one being left.
+pub const PREV_MARKER_GRACE_SECS: f64 = 0.5;
+
+/// The playhead position "previous marker" searches back from during play: a little before the
+/// playhead, so pressing it just after a marker goes to the marker before that one.
+pub fn prev_search_from(playhead: u64, rate: u32) -> u64 {
+    playhead.saturating_sub((f64::from(rate) * PREV_MARKER_GRACE_SECS) as u64)
+}
+
 /// What Play is asked to play.
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -295,6 +305,17 @@ mod tests {
         assert_eq!(marker_jump(&m, 300, true), None);
         assert_eq!(marker_jump(&m, 300, false), Some(100));
         assert_eq!(marker_jump(&m, 100, false), None);
+    }
+
+    #[test]
+    fn previous_marker_during_play_skips_the_marker_just_passed() {
+        let m = crate::Markers::new().with_added(100..100, None).unwrap().with_added(48_100..48_100, None).unwrap();
+        // 14 frames past the second marker: the grace puts the search before it, so the first is found.
+        let from = prev_search_from(48_114, 48_000);
+        assert_eq!(marker_jump(&m, from, false), Some(100));
+        // Well past it: that marker is the previous one.
+        assert_eq!(marker_jump(&m, prev_search_from(96_000, 48_000), false), Some(48_100));
+        assert_eq!(prev_search_from(10, 48_000), 0);
     }
 
     #[test]

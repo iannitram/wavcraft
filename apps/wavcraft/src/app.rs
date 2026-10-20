@@ -377,7 +377,10 @@ impl WaveApp {
         let on_air = self.transport.mode != Mode::Stopped;
         if matches!(id, ActionId::MarkerAdd | ActionId::MarkerNext | ActionId::MarkerPrev) && on_air {
             let at = self.player.position() as u64;
-            sel = at..at;
+            // Previous marker steps back past a marker the playhead has only just passed.
+            let from =
+                if id == ActionId::MarkerPrev { transport::prev_search_from(at, self.doc.as_ref().map_or(0, Document::sample_rate)) } else { at };
+            sel = from..from;
         }
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         match editor.run(id, sel) {
@@ -1214,6 +1217,7 @@ impl WaveApp {
     /// when there is no marker that way), the options and the current time.
     fn transport_panel(&mut self, ui: &mut egui::Ui) {
         let mut chosen: Option<ActionId> = None;
+        let mut marker_chosen: Option<ActionId> = None;
         let rate = self.doc.as_ref().map_or(0, Document::sample_rate);
         let enabled = self.doc.is_some() && self.saving.is_none();
         let t = self.transport;
@@ -1230,16 +1234,17 @@ impl WaveApp {
                     let m = e.history.current().markers();
                     (transport::marker_jump(m, at, false).is_some(), transport::marker_jump(m, at, true).is_some())
                 });
-                let marker_button = |ui: &mut egui::Ui, label: &str, tip: &str, id: ActionId, on: bool, chosen: &mut Option<ActionId>| {
-                    if ui.add_enabled(on, egui::Button::new(label)).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
-                        *chosen = Some(id);
-                    }
+                let marker_button = |ui: &mut egui::Ui, label: &str, tip: &str, id: ActionId, on: bool| -> Option<ActionId> {
+                    let r = ui.add_enabled(on, egui::Button::new(label)).on_hover_text(tip).on_disabled_hover_text(tip);
+                    r.clicked().then_some(id)
                 };
-                marker_button(ui, "◀ Marker", "Previous marker (Ctrl+Alt+Left)", ActionId::TransportPrevMarker, has_prev, &mut chosen);
+                marker_chosen =
+                    marker_chosen.or(marker_button(ui, "◀ Marker", "Previous marker (Ctrl+Alt+Left)", ActionId::TransportPrevMarker, has_prev));
                 button(ui, "▶ Play", "Play (Space)", ActionId::Play, t.mode == Mode::Playing);
                 button(ui, "❚❚ Pause", "Pause; again to resume", ActionId::Pause, t.mode == Mode::Paused);
                 button(ui, "■ Stop", "Stop", ActionId::Stop, false);
-                marker_button(ui, "Marker ▶", "Next marker (Ctrl+Alt+Right)", ActionId::TransportNextMarker, has_next, &mut chosen);
+                marker_chosen =
+                    marker_chosen.or(marker_button(ui, "Marker ▶", "Next marker (Ctrl+Alt+Right)", ActionId::TransportNextMarker, has_next));
                 button(ui, "End ▶|", "Go to end (End)", ActionId::TransportEnd, false);
                 ui.separator();
                 button(ui, "Loop", "Repeat the selection, or the view with nothing selected", ActionId::ToggleLoop, t.looping);
@@ -1277,7 +1282,7 @@ impl WaveApp {
             ui.monospace(format_time(frame, rate.max(1)));
             ui.label(t.mode.name());
         });
-        if let Some(id) = chosen {
+        if let Some(id) = chosen.or(marker_chosen) {
             let _ = self.run_action(id, ui.ctx());
         }
     }
