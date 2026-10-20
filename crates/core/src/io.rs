@@ -101,11 +101,11 @@ impl From<io::Error> for OpenError {
     }
 }
 
-fn malformed(what: impl std::fmt::Display) -> OpenError {
+pub(crate) fn malformed(what: impl std::fmt::Display) -> OpenError {
     OpenError::Decode(format!("malformed audio: {what}"))
 }
 
-fn unsupported(what: impl std::fmt::Display) -> OpenError {
+pub(crate) fn unsupported(what: impl std::fmt::Display) -> OpenError {
     OpenError::Decode(format!("unsupported audio: {what}"))
 }
 
@@ -115,7 +115,7 @@ fn unsupported(what: impl std::fmt::Display) -> OpenError {
 pub const MAX_SAMPLE_RATE_HZ: u32 = 768_000;
 
 /// Refuse a sample rate of 0 or above [`MAX_SAMPLE_RATE_HZ`]; `what` names the file's kind.
-fn check_rate(rate: u32, what: &str) -> Result<(), OpenError> {
+pub(crate) fn check_rate(rate: u32, what: &str) -> Result<(), OpenError> {
     if rate == 0 {
         return Err(malformed(format!("{what} declares a zero sample rate")));
     }
@@ -476,53 +476,53 @@ fn stream_pcm(job: &mut Job<'_>, store: &Store, data_start: u64, frames: u64, ki
 // ---------------------------------------------------------------------------------------------
 // WAV
 
-const WAVE_FORMAT_PCM: u16 = 1;
-const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
+pub(crate) const WAVE_FORMAT_PCM: u16 = 1;
+pub(crate) const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 
-fn tag(b: &[u8], pos: usize) -> Option<[u8; 4]> {
+pub(crate) fn tag(b: &[u8], pos: usize) -> Option<[u8; 4]> {
     b.get(pos..pos.checked_add(4)?)?.try_into().ok()
 }
 
-fn le_u16(b: &[u8], pos: usize) -> Option<u16> {
+pub(crate) fn le_u16(b: &[u8], pos: usize) -> Option<u16> {
     Some(u16::from_le_bytes(b.get(pos..pos.checked_add(2)?)?.try_into().ok()?))
 }
 
-fn le_u32(b: &[u8], pos: usize) -> Option<u32> {
+pub(crate) fn le_u32(b: &[u8], pos: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(pos..pos.checked_add(4)?)?.try_into().ok()?))
 }
 
-fn le_u64(b: &[u8], pos: usize) -> Option<u64> {
+pub(crate) fn le_u64(b: &[u8], pos: usize) -> Option<u64> {
     Some(u64::from_le_bytes(b.get(pos..pos.checked_add(8)?)?.try_into().ok()?))
 }
 
-fn be_u16(b: &[u8], pos: usize) -> Option<u16> {
+pub(crate) fn be_u16(b: &[u8], pos: usize) -> Option<u16> {
     Some(u16::from_be_bytes(b.get(pos..pos.checked_add(2)?)?.try_into().ok()?))
 }
 
-fn be_u32(b: &[u8], pos: usize) -> Option<u32> {
+pub(crate) fn be_u32(b: &[u8], pos: usize) -> Option<u32> {
     Some(u32::from_be_bytes(b.get(pos..pos.checked_add(4)?)?.try_into().ok()?))
 }
 
-fn is_wav(b: &[u8]) -> bool {
+pub(crate) fn is_wav(b: &[u8]) -> bool {
     matches!(tag(b, 0), Some(t) if &t == b"RIFF" || &t == b"RF64" || &t == b"BW64") && tag(b, 8).is_some_and(|t| &t == b"WAVE")
 }
 
-fn is_aiff(b: &[u8]) -> bool {
+pub(crate) fn is_aiff(b: &[u8]) -> bool {
     tag(b, 0).is_some_and(|t| &t == b"FORM") && tag(b, 8).is_some_and(|t| &t == b"AIFF" || &t == b"AIFC")
 }
 
-struct Fmt {
-    tag: u16,
-    channels: u16,
-    sample_rate: u32,
-    bits: u16,
-    valid_bits: u16,
+pub(crate) struct Fmt {
+    pub(crate) tag: u16,
+    pub(crate) channels: u16,
+    pub(crate) sample_rate: u32,
+    pub(crate) bits: u16,
+    pub(crate) valid_bits: u16,
     /// Bytes a frame takes, as the header says (checked against the format before use).
-    block_align: u16,
+    pub(crate) block_align: u16,
 }
 
-fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
+pub(crate) fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
     let short = || malformed("fmt chunk too short");
     let mut fmt = Fmt {
         tag: le_u16(c, 0).ok_or_else(short)?,
@@ -547,7 +547,7 @@ fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
     Ok(fmt)
 }
 
-fn fixed_str(b: &[u8]) -> String {
+pub(crate) fn fixed_str(b: &[u8]) -> String {
     let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
     String::from_utf8_lossy(b.get(..end).unwrap_or_default()).trim_end().to_string()
 }
@@ -704,7 +704,7 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
 const MAX_SAMPLE_RATE: f64 = MAX_SAMPLE_RATE_HZ as f64;
 
 /// An 80-bit IEEE 754 extended float.
-fn extended_to_f64(b: &[u8]) -> Option<f64> {
+pub(crate) fn extended_to_f64(b: &[u8]) -> Option<f64> {
     let se = be_u16(b, 0)?;
     let hi = u64::from(be_u32(b, 2)?);
     let lo = u64::from(be_u32(b, 6)?);
@@ -852,7 +852,7 @@ impl MediaSource for CountingFile {
     }
 }
 
-fn format_from_codec(codec: CodecType, detected: FileFormat) -> FileFormat {
+pub(crate) fn format_from_codec(codec: CodecType, detected: FileFormat) -> FileFormat {
     if detected != FileFormat::Other {
         return detected;
     }
@@ -866,7 +866,7 @@ fn format_from_codec(codec: CodecType, detected: FileFormat) -> FileFormat {
     }
 }
 
-fn sample_format_of(p: &CodecParameters) -> SampleFormat {
+pub(crate) fn sample_format_of(p: &CodecParameters) -> SampleFormat {
     let c = p.codec;
     if c == sc::CODEC_TYPE_PCM_F32LE || c == sc::CODEC_TYPE_PCM_F32BE {
         return SampleFormat::Float32;
@@ -899,7 +899,7 @@ fn sample_format_of(p: &CodecParameters) -> SampleFormat {
     }
 }
 
-fn sym_err(e: SymError) -> OpenError {
+pub(crate) fn sym_err(e: SymError) -> OpenError {
     match e {
         SymError::Unsupported(m) => unsupported(m),
         SymError::LimitError(m) => OpenError::Decode(format!("audio too large: {m}")),

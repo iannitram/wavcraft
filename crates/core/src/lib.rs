@@ -7,6 +7,8 @@
 //!   (pure functions from one state to the next), and [`doc::history`], undo with a disk cap.
 //! - [`autosave`]: the journal of the piece table and history, and crash recovery from it.
 //! - [`io`]: streamed open into the store.
+//! - [`probe`]: a file's format, length and title from its header alone (no store).
+//! - [`recent`]: the Open Recent list and the config folder's small files.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`record`]: recording a take: the ring buffer, the crash-safe WAV writer, the fake input.
 //! - [`take_recovery`]: finding and repairing takes a crash left unfinished.
@@ -41,8 +43,10 @@ pub mod meta;
 pub mod noise;
 pub mod panels;
 pub mod presets;
+pub mod probe;
 pub mod rack;
 pub mod random;
+pub mod recent;
 pub mod record;
 pub mod save;
 pub mod settings;
