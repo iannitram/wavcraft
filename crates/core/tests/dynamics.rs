@@ -263,3 +263,13 @@ fn out_of_range_settings_are_refused() {
     assert!(effects::apply(&Dynamics, &p, &d, 0..0, ChannelMask::ALL, Crossfades::NONE, &cancel).is_err());
     assert!(p.len() == Dynamics.parameters().len());
 }
+
+#[test]
+fn the_limiter_is_the_final_ceiling_even_with_makeup() {
+    let p = params("makeup_db=12");
+    assert!(static_curve(&p, -6.0) <= -1.0 + 1e-9, "the curve ends at the ceiling");
+    let x = sine(-6.0, 1000.0, RATE as usize);
+    let out = run("ceiling", "makeup_db=12 lookahead_ms=5", std::slice::from_ref(&x), 0..0);
+    let top = db(peak(&out[0]));
+    assert!(top <= -1.0 + 0.1, "peak {top} dB above the -1 dB ceiling");
+}

@@ -4,7 +4,8 @@
 //! The static curve ([`static_curve`], in dB) has four regions: below `gate_db` the level is
 //! expanded by `expand_ratio`; between the gate and `comp_db` it is left alone; above `comp_db`
 //! it is compressed by `comp_ratio` through a soft knee `knee_db` wide; and nothing leaves above
-//! `limit_db` (a ratio of infinity). `makeup_db` is added at the end, after the limiter.
+//! `limit_db` (a ratio of infinity). `makeup_db` is added before the limiter, so the limiter is the
+//! final ceiling whatever the makeup.
 //!
 //! The detector is a peak follower in the log domain: the level in dB rises and falls through
 //! one-pole smoothers (`attack_ms`, `release_ms`), and the gain applied is the curve's output
@@ -17,7 +18,7 @@
 //! when the loud part arrives. The first lookahead frames of the range are therefore silence
 //! (the delay line starts empty) and the last lookahead frames of the audio are lost off the end.
 //! With a lookahead, a final per-sample ceiling keeps every output sample at or below
-//! `limit_db` (before makeup), whatever the attack time; with none, the limiter is only as fast
+//! `limit_db`, whatever the attack time; with none, the limiter is only as fast
 //! as the attack.
 
 use std::io;
@@ -41,7 +42,7 @@ const FLOOR_DB: f64 = -140.0;
 
 pub struct Dynamics;
 
-/// The curve without the makeup.
+/// The curve before the makeup and the limiter.
 fn curve_core(p: &[f64], x: f64) -> f64 {
     let y = if x < p[GATE] {
         p[GATE] + (x - p[GATE]) * p[EXPAND]
@@ -61,13 +62,14 @@ fn curve_core(p: &[f64], x: f64) -> f64 {
     } else {
         x
     };
-    y.min(p[LIMIT])
+    y
 }
 
 /// The output level in dB for an input level in dB under `params` (in the order of
-/// [`Effect::parameters`]), makeup included. A later curve editor draws this.
+/// [`Effect::parameters`]), makeup included. The limiter comes last, so the output never
+/// exceeds `limit_db` whatever the makeup. A later curve editor draws this.
 pub fn static_curve(params: &[f64], in_db: f64) -> f64 {
-    curve_core(params, in_db) + params[MAKEUP]
+    (curve_core(params, in_db) + params[MAKEUP]).min(params[LIMIT])
 }
 
 impl Effect for Dynamics {
@@ -158,11 +160,11 @@ impl DynamicsRun {
     /// The gain in dB for a detector level, with the ceiling for `delayed_peak` when there is a
     /// lookahead.
     fn gain_db(&self, level: f64, delayed_peak: Option<f32>) -> f64 {
-        let mut g = curve_core(&self.p, level) - level;
+        let mut g = static_curve(&self.p, level) - level;
         if let Some(d) = delayed_peak.filter(|d| *d > 0.0) {
             g = g.min(self.p[LIMIT] - level_db(d));
         }
-        g + self.p[MAKEUP]
+        g
     }
 }
 
