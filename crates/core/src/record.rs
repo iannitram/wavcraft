@@ -87,6 +87,11 @@ impl RecFormat {
         f.validate()
     }
 
+    /// The 44-byte header for a take holding `data_bytes` of audio.
+    pub fn header_for(self, data_bytes: u64) -> [u8; HEADER_BYTES as usize] {
+        self.header(data_bytes)
+    }
+
     fn header(self, data_bytes: u64) -> [u8; HEADER_BYTES as usize] {
         let data = data_bytes.min(u64::from(u32::MAX) - 36) as u32;
         let float = self.bits == 32;
@@ -229,6 +234,26 @@ pub struct TakeWriter {
     /// The data size the header on disk holds now.
     header_bytes: u64,
     scratch: Vec<u8>,
+    /// The marker beside the take, held (locked) until the take is finished cleanly.
+    marker: Option<Marker>,
+}
+
+/// Suffix of the marker file beside a take that has not been finished: `Take ….wav.recording`.
+/// It is made with the take and removed only when the header is final, so a crashed take is the
+/// one that still has it (see `take_recovery`). It holds the format as text and is locked by the
+/// recording process while the take runs, which tells a live take from a dead one.
+pub const MARKER_SUFFIX: &str = ".recording";
+
+/// The marker's path for a take.
+pub fn marker_path(take: &Path) -> PathBuf {
+    let mut name = take.as_os_str().to_os_string();
+    name.push(MARKER_SUFFIX);
+    PathBuf::from(name)
+}
+
+struct Marker {
+    file: File,
+    path: PathBuf,
 }
 
 impl TakeWriter {
@@ -238,7 +263,19 @@ impl TakeWriter {
         let mut file = std::fs::OpenOptions::new().write(true).read(true).create_new(true).open(path)?;
         file.write_all(&fmt.header(0))?;
         file.sync_all()?;
-        Ok(TakeWriter { file, path: path.to_path_buf(), fmt, data_bytes: 0, header_bytes: 0, scratch: Vec::new() })
+        let marker = make_marker(path, fmt);
+        Ok(TakeWriter { file, path: path.to_path_buf(), fmt, data_bytes: 0, header_bytes: 0, scratch: Vec::new(), marker })
+    }
+
+    /// The take is finished and its header final: remove the marker. Without this call (a crash)
+    /// the marker stays and the next start-up offers the take for recovery. Never fails the take.
+    pub fn finish_clean(&mut self) {
+        if let Some(m) = self.marker.take() {
+            drop(m.file);
+            if let Err(e) = std::fs::remove_file(&m.path) {
+                log::warn!(target: "wavcraft", "recording: cannot remove {}: {e}", m.path.display());
+            }
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -298,6 +335,27 @@ impl TakeWriter {
     /// The data size the header holds on disk.
     pub fn header_data_bytes(&self) -> u64 {
         self.header_bytes
+    }
+}
+
+/// Make the marker for a take just created and lock it. A take whose marker cannot be made is
+/// still recorded (it is logged), it just is not offered after a crash.
+fn make_marker(take: &Path, fmt: RecFormat) -> Option<Marker> {
+    let path = marker_path(take);
+    let text = format!("WavCraft unfinished take\nrate={}\nch={}\nbits={}\n", fmt.rate, fmt.channels, fmt.bits);
+    let made = std::fs::OpenOptions::new().write(true).read(true).create(true).truncate(true).open(&path).and_then(|mut f| {
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+        // Held until the process ends; a refused lock only means the take looks live to others.
+        let _ = f.try_lock();
+        Ok(f)
+    });
+    match made {
+        Ok(file) => Some(Marker { file, path }),
+        Err(e) => {
+            log::warn!(target: "wavcraft", "recording: cannot make {}: {e}; this take will not be offered for recovery after a crash", path.display());
+            None
+        }
     }
 }
 
@@ -476,8 +534,9 @@ fn write_loop(mut w: TakeWriter, shared: &Shared, stall: Duration) -> TakeWriter
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    if let Err(e) = w.update_header() {
-        fail(format!("finishing the take's header failed: {e}"));
+    match w.update_header() {
+        Ok(()) => w.finish_clean(),
+        Err(e) => fail(format!("finishing the take's header failed: {e}")),
     }
     w
 }
