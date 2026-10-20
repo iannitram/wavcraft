@@ -9,6 +9,7 @@ use std::ops::Range;
 
 use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, PasteAt};
 use crate::doc::history::History;
+use crate::effects::{self, EffectParams, FadeCurve, FadeDir};
 
 /// An action's id, as the menu, the keys and the control channel name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,6 +44,13 @@ pub enum ActionId {
     ZeroRightToRight,
     RepeatLast,
     RepeatLastDialog,
+    Reverse,
+    Amplify,
+    Normalize,
+    FadeInLinear,
+    FadeInCosine,
+    FadeOutLinear,
+    FadeOutCosine,
 }
 
 /// Which part of the program carries an action out.
@@ -161,6 +169,15 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
+    // One-shot effects on the selection (the whole file with none). Amplify and Normalize use the
+    // editor's `params` (control verb `PARAM`).
+    edit(ActionId::Reverse, "effect.reverse", "Reverse", &[]),
+    edit(ActionId::Amplify, "effect.amplify", "Amplify", &[]),
+    edit(ActionId::Normalize, "effect.normalize", "Normalize", &[]),
+    edit(ActionId::FadeInLinear, "effect.fadeIn.linear", "Fade In (Linear)", &[]),
+    edit(ActionId::FadeInCosine, "effect.fadeIn.cosine", "Fade In (Raised Cosine)", &[]),
+    edit(ActionId::FadeOutLinear, "effect.fadeOut.linear", "Fade Out (Linear)", &[]),
+    edit(ActionId::FadeOutCosine, "effect.fadeOut.cosine", "Fade Out (Raised Cosine)", &[]),
 ];
 
 /// The table row for `id`.
@@ -193,6 +210,8 @@ pub struct Editor {
     pub crossfades: Crossfades,
     /// What Repeat Last Command runs again (None until a repeatable command has run).
     pub last: Option<Repeat>,
+    /// The numbers Amplify and Normalize use.
+    pub params: EffectParams,
 }
 
 /// A command Repeat Last Command can run again, with its settings.
@@ -218,6 +237,13 @@ fn repeatable(id: ActionId) -> bool {
             | ActionId::ZeroLeftToRight
             | ActionId::ZeroRightToLeft
             | ActionId::ZeroRightToRight
+            | ActionId::Reverse
+            | ActionId::Amplify
+            | ActionId::Normalize
+            | ActionId::FadeInLinear
+            | ActionId::FadeInCosine
+            | ActionId::FadeOutLinear
+            | ActionId::FadeOutCosine
     )
 }
 
@@ -263,7 +289,14 @@ pub fn zero_crossing(doc: &crate::doc::DocState, channels: ChannelMask, frame: u
 
 impl Editor {
     pub fn new(history: History) -> Editor {
-        Editor { history, channels: ChannelMask::ALL, clipboard: None, crossfades: Crossfades::default(), last: None }
+        Editor {
+            history,
+            channels: ChannelMask::ALL,
+            clipboard: None,
+            crossfades: Crossfades::default(),
+            last: None,
+            params: EffectParams::default(),
+        }
     }
 
     fn len(&self) -> u64 {
@@ -284,6 +317,14 @@ impl Editor {
             ActionId::Cut | ActionId::Copy => self.len() > 0,
             ActionId::Paste => self.clipboard.is_some(),
             ActionId::Delete | ActionId::Silence | ActionId::Crop => has_sel,
+            // Like Copy: with no selection the effects take the whole file.
+            ActionId::Reverse
+            | ActionId::Amplify
+            | ActionId::Normalize
+            | ActionId::FadeInLinear
+            | ActionId::FadeInCosine
+            | ActionId::FadeOutLinear
+            | ActionId::FadeOutCosine => self.len() > 0,
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
@@ -370,6 +411,20 @@ impl Editor {
         Ok(Outcome { doc_changed: false, selection, message })
     }
 
+    /// Set a number the effects use: `amplify.db` or `normalize.db`.
+    pub fn set_param(&mut self, name: &str, value: f32) -> Result<(), String> {
+        if !value.is_finite() {
+            return Err(format!("{name}: {value} is not a number"));
+        }
+        match name {
+            "amplify.db" if value <= effects::MAX_GAIN_DB => self.params.amplify_db = value,
+            "normalize.db" if (-144.0..=24.0).contains(&value) => self.params.normalize_db = value,
+            "amplify.db" | "normalize.db" => return Err(format!("{name}: {value} is out of range")),
+            _ => return Err(format!("no parameter named {name:?} (amplify.db, normalize.db)")),
+        }
+        Ok(())
+    }
+
     /// Insert › Silence: `frames` of silence at `at` on every channel (Audition inserts across
     /// all channels); the inserted range ends up selected.
     pub fn insert_silence(&mut self, at: u64, frames: u64) -> Result<Outcome, EditError> {
@@ -444,6 +499,25 @@ impl Editor {
                 let new_len = e.state.len_frames();
                 let at = if new_len < len { 0..new_len } else { sel.clone() };
                 (e, at)
+            }
+            ActionId::Reverse
+            | ActionId::Amplify
+            | ActionId::Normalize
+            | ActionId::FadeInLinear
+            | ActionId::FadeInCosine
+            | ActionId::FadeOutLinear
+            | ActionId::FadeOutCosine => {
+                let range = whole_if_empty(&sel);
+                let e = match id {
+                    ActionId::Reverse => effects::reverse(&doc, range, channels, xf)?,
+                    ActionId::Amplify => effects::amplify(&doc, range, channels, self.params.amplify_db, xf)?,
+                    ActionId::Normalize => effects::normalize(&doc, range, channels, self.params.normalize_db, xf)?,
+                    ActionId::FadeInLinear => effects::fade(&doc, range, channels, FadeDir::In, FadeCurve::Linear, xf)?,
+                    ActionId::FadeInCosine => effects::fade(&doc, range, channels, FadeDir::In, FadeCurve::RaisedCosine, xf)?,
+                    ActionId::FadeOutLinear => effects::fade(&doc, range, channels, FadeDir::Out, FadeCurve::Linear, xf)?,
+                    _ => effects::fade(&doc, range, channels, FadeDir::Out, FadeCurve::RaisedCosine, xf)?,
+                };
+                (e, sel.clone())
             }
             ActionId::SelectAll => return unchanged(0..len),
             ActionId::DeselectAll | ActionId::ClearTimeSelection => return unchanged(sel.start..sel.start),
