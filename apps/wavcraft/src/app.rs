@@ -2093,6 +2093,8 @@ impl WaveApp {
             _ => egui::Panel::right("zone-right"),
         };
         let shown = panel.resizable(false).exact_size(size).show(ui, |ui| {
+            // Fill the size the zone was given, so a short panel doesn't shrink the zone (the size is part of the layout).
+            ui.set_min_height(ui.available_height());
             let mut wheel = 0.0f32;
             let strip = egui::ScrollArea::horizontal().id_salt(("tabs", zone.name())).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -2287,7 +2289,7 @@ impl WaveApp {
             done = true;
         }
         ui.menu_button("Delete Workspace", |ui| {
-            let others: Vec<String> = self.workspaces.names().into_iter().filter(|n| *n != current && n != workspaces::DEFAULT).collect();
+            let others: Vec<String> = self.workspaces.names().into_iter().filter(|n| *n != current && !workspaces::is_builtin(n)).collect();
             if others.is_empty() {
                 ui.add_enabled(false, egui::Label::new("No other saved workspaces"));
             }
@@ -5398,9 +5400,15 @@ impl WaveApp {
             ui.menu_button("Window", |ui| {
                 for p in panels::REGISTRY {
                     let mut shown = self.panels.is_shown(p.id);
-                    if ui.checkbox(&mut shown, p.title).changed() {
+                    // The Editor is always shown: its entry is a fixed tick, and below it maximises.
+                    if ui.add_enabled(panels::is_closable(p.id), egui::Checkbox::new(&mut shown, p.title)).changed() {
                         self.set_panel(p.id, shown);
                     }
+                }
+                let editor_max = self.layout.maximized(&self.panels) == Some(panels::EDITOR);
+                if ui.button(if editor_max { "Restore Editor" } else { "Maximize Editor" }).clicked() {
+                    self.layout.toggle_maximize(panels::EDITOR);
+                    ui.close();
                 }
                 ui.separator();
                 ui.menu_button("Workspace", |ui| self.workspace_menu(ui));
@@ -5683,7 +5691,7 @@ impl WaveApp {
     /// panel being maximised.
     fn editor_shows(&self, id: &str) -> bool {
         match self.layout.maximized(&self.panels) {
-            Some(m) if !panels::is_movable(m) => m == id,
+            Some(m) if !panels::is_movable(m) => m == id || m == panels::EDITOR,
             Some(_) => false,
             None => self.panels.is_shown(id),
         }
@@ -5870,6 +5878,9 @@ impl WaveApp {
                 self.hover_next = Some("waveform");
             } else if spectrum_area.is_some_and(|a| a.contains(pos)) {
                 self.hover_next = Some("spectral");
+            } else if rect.contains(pos) {
+                // The ruler and the empty parts of the Editor: the Editor itself (maximise, never close).
+                self.hover_next = Some(panels::EDITOR);
             }
         }
 

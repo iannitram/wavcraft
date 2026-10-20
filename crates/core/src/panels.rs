@@ -58,11 +58,21 @@ pub struct PanelInfo {
 
 /// Every panel, in Window menu order.
 pub const REGISTRY: &[PanelInfo] = &[
+    PanelInfo { id: EDITOR, title: "Editor", default_dock: DockSide::Center },
     PanelInfo { id: "waveform", title: "Waveform", default_dock: DockSide::Center },
     PanelInfo { id: "spectral", title: "Spectral Frequency Display", default_dock: DockSide::Center },
     PanelInfo { id: "history", title: "History", default_dock: DockSide::Right },
-    PanelInfo { id: "selection", title: "Selection", default_dock: DockSide::Right },
+    PanelInfo { id: "selection", title: "Selection", default_dock: DockSide::Bottom },
 ];
+
+/// The Editor panel (roadmap A029): the area in the centre that holds the waveform and spectral
+/// displays. It is always shown, cannot be closed, and can be maximised.
+pub const EDITOR: &str = "editor";
+
+/// Whether a panel can be closed (hidden): every panel but the Editor.
+pub fn is_closable(id: &str) -> bool {
+    by_id(id).is_some() && id != EDITOR
+}
 
 /// The registered panel with this id.
 pub fn by_id(id: &str) -> Option<&'static PanelInfo> {
@@ -87,9 +97,7 @@ impl PanelSet {
     pub fn from_hidden<S: AsRef<str>>(hidden: &[S]) -> PanelSet {
         let mut set = PanelSet::default();
         for h in hidden {
-            if let Some(i) = REGISTRY.iter().position(|p| p.id == h.as_ref().trim()) {
-                set.shown[i] = false;
-            }
+            set.set(h.as_ref().trim(), false);
         }
         set
     }
@@ -104,8 +112,12 @@ impl PanelSet {
         REGISTRY.iter().position(|p| p.id == id).is_some_and(|i| self.shown[i])
     }
 
-    /// Show or hide a panel. Returns false for an id that is not registered.
+    /// Show or hide a panel. Returns false for an id that is not registered, and for hiding the
+    /// Editor (it can't be closed).
     pub fn set(&mut self, id: &str, shown: bool) -> bool {
+        if !shown && !is_closable(id) {
+            return false;
+        }
         match REGISTRY.iter().position(|p| p.id == id) {
             Some(i) => {
                 self.shown[i] = shown;
@@ -129,6 +141,9 @@ impl PanelSet {
         let (verb, id) = rest.split_once('.')?;
         if !matches!(verb, "toggle" | "show" | "hide") {
             return None;
+        }
+        if verb != "show" && !is_closable(id) && by_id(id).is_some() {
+            return Some(Err("the Editor is always shown and can't be closed".into()));
         }
         let result = match verb {
             "toggle" => self.toggle(id),
@@ -635,6 +650,9 @@ impl Layout {
             }
             "close" => {
                 known(id)?;
+                if !is_closable(id) {
+                    return Err("the Editor can't be closed; maximize it instead".into());
+                }
                 set.set(id, false);
                 if self.maximized.as_deref() == Some(id) {
                     self.maximized = None;
@@ -690,9 +708,9 @@ mod tests {
     #[test]
     fn actions_toggle_show_hide_and_report() {
         let mut s = PanelSet::default();
-        assert_eq!(s.report(), "waveform=1 spectral=1 history=1 selection=1");
+        assert_eq!(s.report(), "editor=1 waveform=1 spectral=1 history=1 selection=1");
         assert_eq!(s.apply_action("window.toggle.history"), Some(Ok(false)));
-        assert_eq!(s.report(), "waveform=1 spectral=1 history=0 selection=1");
+        assert_eq!(s.report(), "editor=1 waveform=1 spectral=1 history=0 selection=1");
         assert_eq!(s.apply_action("window.show.history"), Some(Ok(true)));
         assert_eq!(s.apply_action("window.hide.spectral"), Some(Ok(false)));
         assert!(matches!(s.apply_action("window.toggle.nope"), Some(Err(_))));
@@ -706,9 +724,10 @@ mod tests {
     #[test]
     fn the_default_layout_follows_the_registry() {
         let (l, set) = (Layout::default(), all());
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "selection"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["history"]);
+        assert_eq!(l.visible(DockSide::Bottom, &set), vec!["selection"]);
         assert!(l.visible(DockSide::Left, &set).is_empty());
-        assert_eq!(l.visible(DockSide::Center, &set), vec!["waveform", "spectral"]);
+        assert_eq!(l.visible(DockSide::Center, &set), vec!["editor", "waveform", "spectral"]);
         assert_eq!(l.zone_of("history"), Some(DockSide::Right));
         assert_eq!(l.zone_of("waveform"), Some(DockSide::Center));
         assert_eq!(l.zone_of("nope"), None);
@@ -716,11 +735,30 @@ mod tests {
     }
 
     #[test]
+    fn the_editor_is_a_panel_that_cannot_be_closed_but_can_be_maximised() {
+        let (mut l, mut set) = (Layout::default(), all());
+        assert_eq!(by_id(EDITOR).map(|p| (p.title, p.default_dock)), Some(("Editor", DockSide::Center)));
+        assert!(!is_closable(EDITOR) && is_closable("history") && !is_closable("nope"));
+        assert!(!set.set(EDITOR, false) && set.is_shown(EDITOR));
+        assert_eq!(set.toggle(EDITOR), None);
+        assert!(matches!(set.apply_action("window.hide.editor"), Some(Err(_))));
+        assert!(matches!(set.apply_action("window.toggle.editor"), Some(Err(_))));
+        assert_eq!(set.apply_action("window.show.editor"), Some(Ok(true)));
+        assert!(PanelSet::from_hidden(&["editor"]).is_shown(EDITOR), "a settings file can't hide it");
+        assert!(l.apply_command(&mut set, "close editor").unwrap_err().contains("can't be closed"));
+        assert!(l.apply_command(&mut set, "move editor left").is_err());
+        l.apply_command(&mut set, "maximize editor").unwrap();
+        assert_eq!(l.maximized(&set), Some("editor"));
+        l.apply_command(&mut set, "maximize editor").unwrap();
+        assert_eq!(l.maximized(&set), None);
+    }
+
+    #[test]
     fn a_panel_moves_between_zones_and_into_a_tab_position() {
         let (mut l, set) = (Layout::default(), all());
         l.move_to("history", DockSide::Left, None).unwrap();
         assert_eq!(l.visible(DockSide::Left, &set), vec!["history"]);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["selection"]);
+        assert_eq!(l.visible(DockSide::Bottom, &set), vec!["selection"]);
         l.move_to("selection", DockSide::Left, Some(0)).unwrap();
         assert_eq!(l.visible(DockSide::Left, &set), vec!["selection", "history"]);
         assert_eq!(l.active_in(DockSide::Left, &set), Some("selection"));
@@ -734,6 +772,7 @@ mod tests {
     #[test]
     fn hidden_tabs_are_skipped_but_keep_their_place() {
         let (mut l, mut set) = (Layout::default(), all());
+        l.move_to("selection", DockSide::Right, None).unwrap();
         l.activate("selection");
         set.set("selection", false);
         assert_eq!(l.visible(DockSide::Right, &set), vec!["history"]);
@@ -746,6 +785,8 @@ mod tests {
     #[test]
     fn cycling_wraps_over_the_shown_tabs() {
         let (mut l, set) = (Layout::default(), all());
+        l.move_to("selection", DockSide::Right, None).unwrap();
+        l.activate("history");
         l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
         l.cycle(DockSide::Right, &set, 1);
@@ -789,7 +830,7 @@ mod tests {
         let l = Layout::decode("left:waveform,history,history,gone;moon:selection;right:", "left:5,bottom:abc,right:nan,x:1");
         let set = all();
         assert_eq!(l.visible(DockSide::Left, &set), vec!["history"]);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["selection"], "the missing panel returns to its default zone");
+        assert_eq!(l.visible(DockSide::Bottom, &set), vec!["selection"], "the missing panel returns to its default zone");
         assert_eq!(l.size(DockSide::Left), Some(220.0), "out of range: default");
         assert_eq!(Layout::decode("", ""), Layout::default());
         assert_eq!(Layout::decode("garbage", ",,"), Layout::default());
@@ -819,7 +860,7 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         assert_eq!(
             l.report(&set),
-            "zone.left=- zone.right=history,selection zone.bottom=- zone.center=waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=- front.right=history front.bottom=- maximized=- floating=-"
+            "zone.left=- zone.right=history zone.bottom=selection zone.center=editor,waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=- front.right=history front.bottom=selection maximized=- floating=-"
         );
         l.apply_command(&mut set, "move selection left").unwrap();
         l.apply_command(&mut set, "maximize selection").unwrap();

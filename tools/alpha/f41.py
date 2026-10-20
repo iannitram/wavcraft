@@ -94,7 +94,7 @@ def main():
 
     def run1(c):
         w = ws(c)
-        check("a fresh run: Default is the only workspace and the one in use", w == {"current": "Default", "modified": "0", "workspaces": "Default"}, w)
+        check("a fresh run: Default is in use, with the other built-ins and the one in use", w == {"current": "Default", "modified": "0", "workspaces": "Default|Editing|Recording|Repair"}, w)
         base = zones(c)
         c.ask("PANEL move history left")
         check("a change makes the workspace modified", ws(c)["modified"] == "1", ws(c))
@@ -104,7 +104,7 @@ def main():
         c.ask("PANEL close selection")
         b = zones(c)
         check("WORKSPACE save Mix down (a name with a space)", c.ask("WORKSPACE save Mix down").startswith("OK current=Mix_down modified=0"), ws(c))
-        check("both are listed, Default first", ws(c)["workspaces"] == "Default|Edit|Mix_down", ws(c))
+        check("both are listed, Default first", ws(c)["workspaces"] == "Default|Editing|Recording|Repair|Edit|Mix_down", ws(c))
         c.ask("WORKSPACE switch Edit")
         check("switch restores the layout and shown panels", zones(c) == a and ws(c)["current"] == "Edit", (zones(c), a))
         c.ask("WORKSPACE switch mix down")
@@ -123,14 +123,14 @@ def main():
         check("the workspace in use can't be deleted", c.ask("WORKSPACE delete Edit").startswith("ERR") and "Edit" in ws(c)["workspaces"])
         check("an unknown workspace is refused", c.ask("WORKSPACE switch Nope").startswith("ERR") and c.ask("WORKSPACE delete Nope").startswith("ERR"))
         check("a bad name is refused", c.ask("WORKSPACE save a/b").startswith("ERR") and c.ask("WORKSPACE save").startswith("ERR"))
-        check("WORKSPACE delete Mix down", c.ask("WORKSPACE delete Mix down").startswith("OK") and ws(c)["workspaces"] == "Default|Edit", ws(c))
+        check("WORKSPACE delete Mix down", c.ask("WORKSPACE delete Mix down").startswith("OK") and ws(c)["workspaces"] == "Default|Editing|Recording|Repair|Edit", ws(c))
         files = sorted(f for d, _, fs in os.walk(home) for f in fs if f.endswith(".workspace"))
         check("one file per saved workspace in the config folder", files == ["edit.workspace"], files)
         run1.a = a
 
     def run2(c):
         w = ws(c)
-        check("after a restart Edit is still in use and listed with Default", w == {"current": "Edit", "modified": "0", "workspaces": "Default|Edit"}, w)
+        check("after a restart Edit is still in use and listed with Default", w == {"current": "Edit", "modified": "0", "workspaces": "Default|Editing|Recording|Repair|Edit"}, w)
         check("and its layout is back", zones(c)["zone.left"] == "history", zones(c))
         c.ask("PANEL close history")
         check("a change after the restart shows as modified", ws(c)["modified"] == "1")
