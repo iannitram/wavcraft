@@ -17,6 +17,8 @@ use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
 mod gain;
 pub use gain::Gain;
+mod time_shift;
+pub use time_shift::TimeShift;
 
 /// What a setting means, so a dialog can pick the right control and units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +204,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &TimeShift];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
