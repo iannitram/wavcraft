@@ -7,6 +7,7 @@
 //! holds the session folder and the preferences of the Preferences dialog (see [`KEYS`]); a file
 //! from an older build, with fewer keys, loads with the defaults for the rest, and an older build
 //! reading a newer file ignores the keys it doesn't know.
+//! holds `session_folder`, `hidden_panels`, `panel_layout` and `zone_sizes`.
 //!
 //! The **session folder** is where opening a file writes its session store (one subfolder per
 //! open file). The first of these that is set wins: the `--session-dir` command-line flag, the
@@ -45,6 +46,8 @@ pub const DEFAULT_CUT_JOIN_MS: u32 = 2;
 pub const DEFAULT_EDGE_MS: u32 = 5;
 /// The longest crossfade the preferences accept.
 pub const MAX_CROSSFADE_MS: u32 = 1000;
+const KEY_PANEL_LAYOUT: &str = "panel_layout";
+const KEY_ZONE_SIZES: &str = "zone_sizes";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +77,10 @@ impl Default for Settings {
     fn default() -> Self {
         Settings { session_folder: None, cut_join_ms: DEFAULT_CUT_JOIN_MS, edge_ms: DEFAULT_EDGE_MS, output_device: None, input_device: None }
     }
+    /// Where the panels are docked, as `crate::panels::Layout::encode` writes it (empty: default).
+    pub panel_layout: String,
+    /// The dock zones' sizes, as `Layout::encode` writes them (empty: default).
+    pub zone_sizes: String,
 }
 
 impl Settings {
@@ -111,6 +118,8 @@ impl Settings {
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
                 KEY_TIME_DISPLAY => s.time_display = crate::view::TimeFormat::from_name(value).unwrap_or_default(),
                 KEY_RIGHT_CLICK => s.right_click_menu = value.eq_ignore_ascii_case("menu"),
+                KEY_PANEL_LAYOUT => s.panel_layout = value.to_string(),
+                KEY_ZONE_SIZES => s.zone_sizes = value.to_string(),
                 _ => {}
             }
             if key.trim() == KEY_SESSION_FOLDER {
@@ -180,6 +189,8 @@ impl Settings {
         out.push_str("# output_device, input_device: a device name from the Audio Hardware page (empty: the system default).\n");
         out.push_str(&format!("{KEY_OUTPUT} = {}\n", self.output_device.as_deref().unwrap_or_default()));
         out.push_str(&format!("{KEY_INPUT} = {}\n", self.input_device.as_deref().unwrap_or_default()));
+        out.push_str("# panel_layout: dock zones and tab order, `zone:id,id;zone:id` (a * marks the front tab); zone_sizes: points.\n");
+        out.push_str(&format!("{KEY_PANEL_LAYOUT} = {}\n{KEY_ZONE_SIZES} = {}\n", self.panel_layout, self.zone_sizes));
         out
     }
 

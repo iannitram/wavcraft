@@ -59,6 +59,21 @@ fn the_amplitude_scale_is_saved_and_a_bad_value_is_the_default() {
 }
 
 #[test]
+fn the_panel_layout_is_kept_in_the_settings_file() {
+    use wavcraft_core::panels::{DockSide, Layout};
+    let dir = TempDir::new("layout");
+    let file = dir.0.join("settings.txt");
+    let mut layout = Layout::default();
+    layout.move_to("history", DockSide::Bottom, None).unwrap();
+    layout.set_size(DockSide::Bottom, 310.0);
+    let (panel_layout, zone_sizes) = layout.encode();
+    Settings { panel_layout, zone_sizes, ..Settings::default() }.save(&file).unwrap();
+    let back = Settings::load(&file);
+    assert_eq!(Layout::decode(&back.panel_layout, &back.zone_sizes), layout);
+    assert!(std::fs::read_to_string(&file).unwrap().contains("panel_layout = left:;right:selection;bottom:history*"));
+}
+
+#[test]
 fn the_flag_beats_the_environment_beats_the_settings_file_beats_the_default() {
     let default = PathBuf::from("/default/sessions");
     let settings = Settings { session_folder: Some(PathBuf::from("/from/settings")), ..Settings::default() };

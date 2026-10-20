@@ -23,6 +23,8 @@
 //! - `MARKERS` → `OK count=<n> <id>,<start>,<end>,<name>;…` (the markers of the current state; a point has start = end)
 //! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `MIXPASTE mode=insert|overlap|overwrite|modulate [copied=<pct>[,<pct>]] [existing=<pct>[,<pct>]] [invert=0|1] [fade=<ms>] [loops=<n>] [file=<path>]` → `OK selection=<a>-<b>` (Edit › Mix Paste at the cursor; the clipboard unless `file=`)
+//! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1> selection=<0|1> zone.left=<ids|-> zone.right=… zone.bottom=… zone.center=… front.left=<id|-> front.right=… front.bottom=… maximized=<id|->` (which panels are shown, then the shown tabs of each dock zone in order, the front tab of each, and the maximised panel)
+//! - `PANEL move <id> <left|right|bottom>` | `PANEL maximize <id>` (again restores) | `PANEL close <id>` | `PANEL activate <id>` → the same line as `PANELS`; the layout is saved in the settings file
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
 //! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
