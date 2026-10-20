@@ -835,6 +835,43 @@ impl WaveApp {
                 },
                 _ => "ERR INSERT_SILENCE <seconds>, above 0".to_string(),
             },
+            // Delete Silence with settings: one undo step; answers the count and seconds removed.
+            "DELETE_SILENCE" => {
+                use wavcraft_core::diagnostics::silence::SilenceParams;
+                let mut p = SilenceParams::default();
+                for kv in rest.split_whitespace() {
+                    let ok = match kv.split_once('=') {
+                        Some(("threshold_db", v)) => v.parse().map(|x| p.threshold_db = x).is_ok(),
+                        Some(("min_len_ms", v)) => v.parse().map(|x| p.min_len_ms = x).is_ok(),
+                        Some(("keep_ms", v)) => v.parse().map(|x| p.keep_ms = x).is_ok(),
+                        _ => false,
+                    };
+                    if !ok {
+                        return format!("ERR DELETE_SILENCE [threshold_db=<dB>] [min_len_ms=<ms>] [keep_ms=<ms>]; cannot use {kv:?}");
+                    }
+                }
+                if self.saving.is_some() {
+                    return "ERR wait for the save to finish".to_string();
+                }
+                let selection = self.selection_range();
+                let Some(editor) = self.editor.as_mut() else { return "ERR no file is open".to_string() };
+                let rate = f64::from(editor.history.current().sample_rate().max(1));
+                match editor.delete_silence(selection, &p) {
+                    Ok(done) => {
+                        self.selection = Selection { anchor: done.outcome.selection.start as usize, head: done.outcome.selection.end as usize };
+                        self.error = None;
+                        self.notice = done.outcome.message;
+                        if done.outcome.doc_changed {
+                            self.rebuild(ctx);
+                        }
+                        format!("OK stretches={} removed_s={:.3} selection={}", done.stretches, done.removed_frames as f64 / rate, sel(self))
+                    }
+                    Err(e) => {
+                        log::warn!(target: "wavcraft", "Delete Silence: {e}");
+                        format!("ERR Delete Silence: {e}")
+                    }
+                }
+            }
             // The History panel's click: go to step <index> (0 is Open).
             "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.as_mut()) {
                 (Ok(i), Some(e)) if self.saving.is_none() => match e.history.go_to(i) {
