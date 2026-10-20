@@ -521,6 +521,32 @@ impl WaveApp {
         }
     }
 
+    /// Run DeClipper with `[threshold_db, min_run]` on the selection (the whole file when none).
+    fn run_declip(&mut self, params: Vec<f64>, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let sel = self.selection_range();
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        match editor.run_declip(params, sel) {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.error = None;
+                self.notice = out.message;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                let why = format!("DeClipper: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
         if !self.confirm_clear_history {
             return;
@@ -802,6 +828,15 @@ impl WaveApp {
                     },
                 }
             }
+            // `DECLIP [threshold_db=.. min_run=..]` scans the selection (the whole file when none)
+            // and repairs clipped peaks as one undo step "DeClipper".
+            "DECLIP" => match wavcraft_core::diagnostics::declip::Params::parse(rest) {
+                Err(e) => format!("ERR {e}"),
+                Ok(params) => match self.run_declip(params, ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+            },
             // The effect dialog: `EFFECT_DIALOG <name> [key=value ...]` opens it on those values,
             // `EFFECT_DIALOG` says what is open, `EFFECT_DIALOG OK|CANCEL` presses the button.
             "EFFECT_DIALOG" => match rest.trim() {
@@ -901,6 +936,12 @@ impl WaveApp {
             if ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
                 chosen = Some((a.id, has_dialog));
             }
+        }
+        // Diagnostics: DeClipper runs at once with its defaults (no dialog yet).
+        ui.separator();
+        let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(ActionId::DeClip, &sel)) && self.saving.is_none();
+        if ui.add_enabled(enabled, egui::Button::new("DeClipper (defaults)")).clicked() {
+            chosen = Some((ActionId::DeClip, false));
         }
         match chosen {
             Some((ActionId::Effect(i), true)) => {
