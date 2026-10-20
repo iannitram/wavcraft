@@ -18,6 +18,7 @@
 pub mod actions;
 pub mod doc;
 pub mod document;
+pub mod effects;
 pub mod io;
 pub mod panels;
 pub mod random;

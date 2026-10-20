@@ -816,6 +816,17 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
+            // A number the effects use: `PARAM amplify.db 6`, `PARAM normalize.db -1`.
+            "PARAM" => {
+                let mut it = rest.split_whitespace();
+                match (it.next(), it.next().and_then(|v| v.parse::<f32>().ok()), self.editor.as_mut()) {
+                    (Some(name), Some(v), Some(e)) => match e.set_param(name, v) {
+                        Ok(()) => "OK".to_string(),
+                        Err(why) => format!("ERR {why}"),
+                    },
+                    _ => "ERR PARAM <amplify.db|normalize.db> <number>, with a file open".to_string(),
+                }
+            }
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
@@ -875,6 +886,22 @@ impl WaveApp {
         }
     }
 
+    /// The Effects menu: the one-shot effects from the action table (`effect.*`), run on the
+    /// selection (the whole file with none). Amplify and Normalize use the numbers set by `PARAM`.
+    fn effects_menu(&mut self, ui: &mut egui::Ui) {
+        let sel = self.selection_range();
+        let mut chosen = None;
+        for a in TABLE.iter().filter(|a| a.name.starts_with("effect.")) {
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
+            if ui.add_enabled(enabled, egui::Button::new(a.menu)).clicked() {
+                chosen = Some(a.id);
+            }
+        }
+        if let Some(id) = chosen {
+            let _ = self.run_action(id, ui.ctx());
+        }
+    }
+
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -916,6 +943,7 @@ impl WaveApp {
                     }
                 }
             });
+            ui.menu_button("Effects", |ui| self.effects_menu(ui));
             ui.menu_button("View", |ui| {
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
                     self.spectrum = None;

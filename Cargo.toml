@@ -20,6 +20,8 @@ craft-log = { path = "crates/craft-log" }
 # app's old name (WaveCraft, renamed WavCraft 2026-10-15) on purpose: it lives on another repo,
 # and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
 soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
+# B002: the same commit also gives the offline DSP (reverse, gain, fade curves, dB maths).
+soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
 
 rustfft = "6"
 rayon = "1"
