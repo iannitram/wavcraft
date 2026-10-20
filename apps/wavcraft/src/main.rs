@@ -14,6 +14,7 @@ mod multitrack_ui;
 mod player;
 mod selflog;
 mod spectrum;
+mod video;
 #[cfg(windows)]
 mod win_acl;
 

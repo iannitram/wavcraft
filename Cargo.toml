@@ -28,6 +28,10 @@ soundcraft-model = { git = "https://github.com/iannitram/soundcraft", rev = "734
 soundcraft-model-audio = { package = "soundcraft-audio-io", git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
 # Session state for the control channel and tests (already in the tree through the model). MIT OR Apache-2.0.
 serde_json = "1"
+# f122 (the Video panel): SoundCraft's `soundcraft-video` (MIT OR Apache-2.0: pure Rust H.264, ProRes
+# and Motion JPEG decode, ISO base media demux), from the head of our fork's `ours` branch. It brings
+# the `image` crate (MIT OR Apache-2.0) with its jpeg feature, for Motion JPEG.
+soundcraft-video = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
 
 rustfft = "6"
 rayon = "1"

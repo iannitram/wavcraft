@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use wavcraft_core::Document;
-use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, TrackId};
-use wavcraft_core::multitrack::{MtError, Multitrack, bit_depth_from_bits, bits_of};
+use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, TrackId, TrackKind};
+use wavcraft_core::multitrack::{MtError, Multitrack, VideoMeta, bit_depth_from_bits, bits_of};
 
 const HEADER_W: f32 = 230.0;
 const ROW_H: f32 = 64.0;
@@ -35,6 +35,8 @@ pub struct MtView {
     px_per_sec: f32,
     import_at: f64,
     sessions_made: u32,
+    /// The session playhead in seconds (f129): the Video panel shows the picture under it.
+    pub playhead: f64,
 }
 
 impl Default for MtView {
@@ -49,6 +51,7 @@ impl Default for MtView {
             px_per_sec: 60.0,
             import_at: 0.0,
             sessions_made: 0,
+            playhead: 0.0,
         }
     }
 }
@@ -311,6 +314,10 @@ impl MtView {
             ("TRACK", verb) => {
                 let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
                 match verb {
+                    "add" if word(1).eq_ignore_ascii_case("video") => {
+                        mt.add_video_track(Some(word(2)).filter(|n| !n.is_empty()))?;
+                        Ok(format!("OK tracks={}", mt.session.tracks.iter().filter(|t| t.kind != TrackKind::Master).count()))
+                    }
                     "add" => {
                         let channels = match word(2) {
                             "" | "stereo" | "2" => 2,
@@ -355,7 +362,14 @@ impl MtView {
                 let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
                 let id = mt.find_track(word(1))?;
                 let at: f64 = word(3).parse().map_err(|_| MtError("<at_seconds> is a number".into()))?;
-                mt.add_clip_file(id, &PathBuf::from(word(2)), at)?;
+                if mt.session.track(id).is_some_and(|t| t.kind == TrackKind::Video) {
+                    let path = PathBuf::from(word(2));
+                    let i = crate::video::probe(&path).map_err(MtError)?;
+                    let meta = VideoMeta { width: i.width, height: i.height, fps: i.fps, duration: i.duration, codec: i.codec };
+                    mt.add_clip_video(id, &path.to_string_lossy(), &meta, at)?;
+                } else {
+                    mt.add_clip_file(id, &PathBuf::from(word(2)), at)?;
+                }
                 Ok(format!("OK clips={}", mt.clip_count()))
             }
             ("CLIP", "adddoc") if w.len() == 3 => {
