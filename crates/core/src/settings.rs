@@ -13,6 +13,7 @@
 //! ([`default_sessions_root`](crate::store::default_sessions_root)). A folder that can't be made
 //! or written falls back to the default, with a message saying why.
 
+use crate::appearance::{self, Colors, Preset};
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -53,9 +54,13 @@ const KEY_CONTEXT_CHANNELS: &str = "context_channel_editing";
 const KEY_THEME: &str = "theme";
 const KEY_WAVE_COLOUR: &str = "waveform_colour";
 const KEY_BRIGHTNESS: &str = "ui_brightness";
+const KEY_SPEC_PALETTE: &str = "spec_palette";
+const KEY_CONTRAST: &str = "ui_contrast";
+/// The settings-file key that holds one appearance preset per line.
+const KEY_PRESET: &str = "appearance_preset";
 
 /// Every preference key, in the order the file lists them.
-pub const KEYS: [&str; 28] = [
+pub const KEYS: [&str; 35] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
@@ -84,6 +89,13 @@ pub const KEYS: [&str; 28] = [
     KEY_THEME,
     KEY_WAVE_COLOUR,
     KEY_BRIGHTNESS,
+    "color.waveform",
+    "color.selection",
+    "color.cursor",
+    "color.playhead",
+    "color.background",
+    KEY_SPEC_PALETTE,
+    KEY_CONTRAST,
 ];
 
 /// Spectral display resolutions (FFT lengths in frames) the page offers, and the default.
@@ -112,6 +124,10 @@ pub const DEFAULT_ZOOM_FACTOR: f32 = 2.0;
 pub const MIN_BRIGHTNESS: f32 = 0.5;
 pub const MAX_BRIGHTNESS: f32 = 1.5;
 pub const DEFAULT_BRIGHTNESS: f32 = 1.0;
+/// Interface contrast (1 is the theme as drawn): limits and default.
+pub const MIN_CONTRAST: f32 = 0.5;
+pub const MAX_CONTRAST: f32 = 1.5;
+pub const DEFAULT_CONTRAST: f32 = 1.0;
 
 /// A preference that is one of a few named choices: `ALL`, `name`, `from_name`, `NAMES`.
 macro_rules! choice {
@@ -178,6 +194,22 @@ choice! {
         System = "system",
         Light = "light",
         Dark = "dark",
+    }
+}
+
+choice! {
+    /// The spectrogram's colour ramp (quiet to loud); the stops are in [`appearance`].
+    SpecPalette {
+        /// Black through violet and orange to pale yellow.
+        Ember = "ember",
+        /// Black through deep blue and teal to ice white.
+        Glacier = "glacier",
+        /// Black to white.
+        Mono = "mono",
+        /// Black through dark green to pale lime.
+        Forest = "forest",
+        /// Navy through plum and rose to cream.
+        Dusk = "dusk",
     }
 }
 
@@ -335,6 +367,11 @@ pub struct Settings {
     pub theme: Theme,
     pub waveform_colour: WaveColour,
     pub ui_brightness: f32,
+    /// Colour overrides (`color.<item>`), the spectrogram palette, contrast, and the named presets.
+    pub colors: Colors,
+    pub spec_palette: SpecPalette,
+    pub ui_contrast: f32,
+    pub presets: Vec<Preset>,
 }
 
 impl Default for Settings {
@@ -368,6 +405,10 @@ impl Default for Settings {
             theme: Theme::Dark,
             waveform_colour: WaveColour::Green,
             ui_brightness: DEFAULT_BRIGHTNESS,
+            colors: Colors::default(),
+            spec_palette: SpecPalette::Ember,
+            ui_contrast: DEFAULT_CONTRAST,
+            presets: Vec::new(),
         }
     }
 }
@@ -402,6 +443,14 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
+            if key.trim() == KEY_PRESET {
+                if let Some(p) =
+                    Preset::from_value(value, |b| (MIN_BRIGHTNESS..=MAX_BRIGHTNESS).contains(&b), |c| (MIN_CONTRAST..=MAX_CONTRAST).contains(&c))
+                {
+                    s.store_preset(p);
+                }
+                continue;
+            }
             // A value that doesn't fit its key leaves the default, as an unknown key is ignored.
             let _ = s.set(key.trim(), value);
         }
@@ -494,6 +543,12 @@ impl Settings {
             KEY_THEME => self.theme.name().to_string(),
             KEY_WAVE_COLOUR => self.waveform_colour.name().to_string(),
             KEY_BRIGHTNESS => self.ui_brightness.to_string(),
+            KEY_SPEC_PALETTE => self.spec_palette.name().to_string(),
+            KEY_CONTRAST => self.ui_contrast.to_string(),
+            _ if key.starts_with("color.") => match self.colors.get(&key[6..]) {
+                Some(c) => appearance::colour_text(c),
+                None => return Err(unknown_key(key)),
+            },
             _ => return Err(unknown_key(key)),
         })
     }
@@ -562,8 +617,61 @@ impl Settings {
             KEY_THEME => self.theme = choose(key, value, Theme::from_name, Theme::NAMES)?,
             KEY_WAVE_COLOUR => self.waveform_colour = choose(key, value, WaveColour::from_name, WaveColour::NAMES)?,
             KEY_BRIGHTNESS => self.ui_brightness = parse_range(key, value, MIN_BRIGHTNESS, MAX_BRIGHTNESS, "(1 is normal)")?,
+            KEY_SPEC_PALETTE => self.spec_palette = choose(key, value, SpecPalette::from_name, SpecPalette::NAMES)?,
+            KEY_CONTRAST => self.ui_contrast = parse_range(key, value, MIN_CONTRAST, MAX_CONTRAST, "(1 is normal)")?,
+            _ if key.starts_with("color.") => {
+                let colour = appearance::parse_colour(key, value)?;
+                match self.colors.slot(&key[6..]) {
+                    Some(slot) => *slot = colour,
+                    None => return Err(unknown_key(key)),
+                }
+            }
             _ => return Err(unknown_key(key)),
         }
+        Ok(())
+    }
+
+    fn store_preset(&mut self, p: Preset) {
+        match self.presets.iter_mut().find(|q| q.name == p.name) {
+            Some(q) => *q = p,
+            None => {
+                if self.presets.len() < appearance::MAX_PRESETS {
+                    self.presets.push(p);
+                }
+            }
+        }
+    }
+
+    /// The saved appearance presets' names, in the order saved.
+    pub fn preset_names(&self) -> Vec<String> {
+        self.presets.iter().map(|p| p.name.clone()).collect()
+    }
+
+    /// Save the current colours, palette, brightness and contrast as preset `name` (replacing one of that name).
+    pub fn save_preset(&mut self, name: &str) -> Result<(), String> {
+        let name = appearance::check_name(name)?;
+        if self.presets.len() >= appearance::MAX_PRESETS && !self.presets.iter().any(|p| p.name == name) {
+            return Err(format!("at most {} presets; delete one first", appearance::MAX_PRESETS));
+        }
+        let p = Preset { name, colors: self.colors, spec_palette: self.spec_palette, brightness: self.ui_brightness, contrast: self.ui_contrast };
+        self.store_preset(p);
+        Ok(())
+    }
+
+    /// Make preset `name` the current appearance.
+    pub fn load_preset(&mut self, name: &str) -> Result<(), String> {
+        let p = self.presets.iter().find(|p| p.name == name.trim()).ok_or_else(|| format!("no preset named {:?}", name.trim()))?.clone();
+        self.colors = p.colors;
+        self.spec_palette = p.spec_palette;
+        self.ui_brightness = p.brightness;
+        self.ui_contrast = p.contrast;
+        Ok(())
+    }
+
+    /// Delete preset `name`.
+    pub fn delete_preset(&mut self, name: &str) -> Result<(), String> {
+        let at = self.presets.iter().position(|p| p.name == name.trim()).ok_or_else(|| format!("no preset named {:?}", name.trim()))?;
+        self.presets.remove(at);
         Ok(())
     }
 
@@ -602,8 +710,15 @@ impl Settings {
         out.push_str("# Appearance page: theme (system, light, dark), waveform_colour (");
         out.push_str(WaveColour::NAMES.trim_end_matches(", "));
         out.push_str("), ui_brightness (0.5 to 1.5).\n");
+        out.push_str("# Appearance colours: color.<waveform|selection|cursor|playhead|background> is #rrggbb or default;\n");
+        out.push_str("# spec_palette (");
+        out.push_str(SpecPalette::NAMES.trim_end_matches(", "));
+        out.push_str("); ui_contrast (0.5 to 1.5). Each appearance_preset line is one named preset.\n");
         for k in &KEYS[14..] {
             out.push_str(&format!("{k} = {}\n", self.get(k).unwrap_or_default()));
+        }
+        for p in &self.presets {
+            out.push_str(&format!("{KEY_PRESET} = {}\n", p.to_value()));
         }
         out
     }

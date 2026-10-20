@@ -8,6 +8,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
+use wavcraft_core::appearance;
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
@@ -72,6 +73,7 @@ impl PrefPage {
 enum PrefAction {
     Set(&'static str, String),
     ChooseSessionFolder,
+    Preset(&'static str, String),
     RefreshDevices,
     ResetAll,
 }
@@ -163,11 +165,16 @@ pub struct WaveApp {
     /// Edit › Preferences…: the page showing while the dialog is up.
     prefs: Option<PrefPage>,
     /// The look last given to egui: (dark, brightness in thousandths); `None` until the first frame.
-    applied_look: Option<(bool, i32)>,
+    applied_look: Option<(bool, i32, i32)>,
+    /// The spectrogram palette in use (name, brightness, contrast, as thousandths).
+    applied_palette: Option<(settings::SpecPalette, i32, i32)>,
     /// Whether the dark theme is in force (from the Theme preference, or the system's), and the
     /// brightness: what the editor's own painting uses.
     dark: bool,
     brightness: f32,
+    contrast: f32,
+    /// The Appearance page's preset name box.
+    preset_name: String,
     /// The devices the Audio Hardware page lists (read when the dialog opens or on Refresh).
     devices: Devices,
     /// The device list being read (the system can be slow to answer).
@@ -200,6 +207,8 @@ impl WaveApp {
                 wavcraft_core::store::sweep_stale_sessions(Some(&root));
             }
         });
+        let initial_palette = (settings.spec_palette, milli(settings.ui_brightness), milli(settings.ui_contrast));
+        let initial_colours = palette(settings.spec_palette, settings.ui_brightness, settings.ui_contrast);
         let mut app = WaveApp {
             doc: None,
             generation: 0,
@@ -214,7 +223,7 @@ impl WaveApp {
             show_waveform: true,
             show_spectrum: true,
             spectrum: None,
-            renderer: Renderer::new(&cc.egui_ctx, palette()),
+            renderer: Renderer::new(&cc.egui_ctx, initial_colours),
             opening: None,
             error: sessions.warning.clone(),
             notice: reset_note,
@@ -237,8 +246,11 @@ impl WaveApp {
             confirm_clear_history: false,
             prefs: None,
             applied_look: None,
+            applied_palette: Some(initial_palette),
             dark: true,
             brightness: 1.0,
+            contrast: 1.0,
+            preset_name: String::new(),
             devices: Devices::default(),
             devices_rx: None,
             shift_frames: SHIFT_RESET_FRAMES,
@@ -261,22 +273,30 @@ impl WaveApp {
             settings::Theme::Light => false,
             settings::Theme::System => ctx.system_theme().is_none_or(|t| t == egui::Theme::Dark),
         };
-        let key = (dark, (self.settings.ui_brightness * 1000.0).round() as i32);
+        let key = (dark, milli(self.settings.ui_brightness), milli(self.settings.ui_contrast));
         self.dark = dark;
         self.brightness = self.settings.ui_brightness;
+        self.contrast = self.settings.ui_contrast;
+        let pal = (self.settings.spec_palette, key.1, key.2);
+        if self.applied_palette != Some(pal) {
+            self.applied_palette = Some(pal);
+            self.renderer = Renderer::new(ctx, palette(pal.0, self.brightness, self.contrast));
+            self.spectrum = None;
+        }
         if self.applied_look == Some(key) {
             return;
         }
         self.applied_look = Some(key);
-        let b = self.brightness;
+        let (b, k) = (self.brightness, self.contrast);
+        let tint = |c: Color32| contrast(brighten(c, b), k);
         ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
         let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
         for c in [&mut v.panel_fill, &mut v.window_fill, &mut v.extreme_bg_color, &mut v.faint_bg_color, &mut v.code_bg_color] {
-            *c = brighten(*c, b);
+            *c = tint(*c);
         }
         for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
-            w.bg_fill = brighten(w.bg_fill, b);
-            w.weak_bg_fill = brighten(w.weak_bg_fill, b);
+            w.bg_fill = tint(w.bg_fill);
+            w.weak_bg_fill = tint(w.weak_bg_fill);
         }
         ctx.set_visuals(v);
     }
@@ -319,6 +339,18 @@ impl WaveApp {
                 self.spectrum = None;
             }
             _ => {}
+        }
+        self.save_settings()
+    }
+
+    /// `APPEARANCE preset save|load|delete <name>` and the page's buttons: change the presets
+    /// (and, for load, the live appearance, which `apply_look` picks up) and save the file.
+    fn preset_do(&mut self, verb: &str, name: &str) -> Result<(), String> {
+        match verb {
+            "save" => self.settings.save_preset(name)?,
+            "load" => self.settings.load_preset(name)?,
+            "delete" => self.settings.delete_preset(name)?,
+            _ => return Err("APPEARANCE preset save|load|delete <name>".to_string()),
         }
         self.save_settings()
     }
@@ -506,7 +538,43 @@ impl WaveApp {
                             pref_choice(ui, "Theme", "theme", self.settings.theme.name(), settings::Theme::ALL.iter().map(|c| c.name()), &mut action);
                             pref_choice(ui, "Waveform colour", "waveform_colour", self.settings.waveform_colour.name(), settings::WaveColour::ALL.iter().map(|c| c.name()), &mut action);
                             pref_number(ui, "UI brightness", "ui_brightness", self.settings.ui_brightness, settings::MIN_BRIGHTNESS..=settings::MAX_BRIGHTNESS, "x", &mut action);
-                            ui.label("Theme, waveform colour and brightness apply at once.");
+                            pref_number(ui, "UI contrast", "ui_contrast", self.settings.ui_contrast, settings::MIN_CONTRAST..=settings::MAX_CONTRAST, "x", &mut action);
+                            pref_choice(ui, "Spectrogram palette", "spec_palette", self.settings.spec_palette.name(), settings::SpecPalette::ALL.iter().map(|c| c.name()), &mut action);
+                            ui.separator();
+                            ui.label("Colours (a pick overrides the theme's own):");
+                            for (item, key) in appearance::ITEMS.iter().zip(COLOR_KEYS) {
+                                ui.horizontal(|ui| {
+                                    let now = self.settings.colors.get(item).flatten();
+                                    let mut rgb = now.unwrap_or_else(|| default_rgb(item, &self.settings, self.dark));
+                                    if ui.color_edit_button_srgb(&mut rgb).changed() {
+                                        action = Some(PrefAction::Set(key, appearance::format_hex(rgb)));
+                                    }
+                                    ui.label(format!("{item} ({})", appearance::colour_text(now)));
+                                    if now.is_some() && ui.small_button("Default").clicked() {
+                                        action = Some(PrefAction::Set(key, "default".to_string()));
+                                    }
+                                });
+                            }
+                            ui.separator();
+                            ui.label("Presets:");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(&mut self.preset_name).hint_text("preset name").desired_width(140.0));
+                                if ui.button("Save").clicked() {
+                                    action = Some(PrefAction::Preset("save", self.preset_name.clone()));
+                                }
+                            });
+                            for name in self.settings.preset_names() {
+                                ui.horizontal(|ui| {
+                                    ui.label(&name);
+                                    if ui.small_button("Load").clicked() {
+                                        action = Some(PrefAction::Preset("load", name.clone()));
+                                    }
+                                    if ui.small_button("Delete").clicked() {
+                                        action = Some(PrefAction::Preset("delete", name.clone()));
+                                    }
+                                });
+                            }
+                            ui.label("Everything on this page applies at once.");
                         }
                         PrefPage::SpectralDisplays => {
                             let res: Vec<String> = settings::SPEC_RESOLUTIONS.iter().map(u32::to_string).collect();
@@ -578,6 +646,7 @@ impl WaveApp {
                 .set_directory(&self.sessions.path)
                 .pick_folder()
                 .map_or(Ok(()), |p| self.pref_set("session_folder", &p.to_string_lossy())),
+            Some(PrefAction::Preset(verb, name)) => self.preset_do(verb, &name),
             Some(PrefAction::RefreshDevices) => {
                 self.devices_rx = Some(crate::player::list_devices_in_background());
                 Ok(())
@@ -1178,6 +1247,16 @@ impl WaveApp {
                     _ => "ERR PREF get <key> | PREF set <key> <value>".to_string(),
                 }
             }
+            // `APPEARANCE preset save|load|delete <name>`, `APPEARANCE preset list`.
+            "APPEARANCE" => {
+                let (what, args) = rest.split_once(' ').unwrap_or((rest, ""));
+                let (verb, name) = args.trim().split_once(' ').unwrap_or((args.trim(), ""));
+                match (what, verb) {
+                    ("preset", "list") => format!("OK {}", self.settings.preset_names().join("|")),
+                    ("preset", _) => self.preset_do(verb, name).map_or_else(|e| format!("ERR {e}"), |()| "OK".to_string()),
+                    _ => "ERR APPEARANCE preset save|load|delete <name> | APPEARANCE preset list".to_string(),
+                }
+            }
             // The devices the system offers, and the one the player is on.
             "DEVICES" => {
                 let d = crate::player::list_devices();
@@ -1344,7 +1423,15 @@ impl WaveApp {
     fn editor(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
-        painter.rect_filled(rect, 0.0, brighten(if self.dark { BACKGROUND } else { BACKGROUND_LIGHT }, self.brightness));
+        let c = &self.settings.colors;
+        let ground = c.background.map_or(if self.dark { BACKGROUND } else { BACKGROUND_LIGHT }, |[r, g, b]| Color32::from_rgb(r, g, b));
+        painter.rect_filled(rect, 0.0, contrast(brighten(ground, self.brightness), self.contrast));
+        let rgb = |o: Option<[u8; 3]>, d: Color32| o.map_or(d, |[r, g, b]| Color32::from_rgb(r, g, b));
+        let (selection_colour, cursor_colour, playhead_colour) = (
+            c.selection.map_or(SELECTION, |[r, g, b]| Color32::from_rgba_unmultiplied(r, g, b, 90)),
+            rgb(c.cursor, CURSOR),
+            rgb(c.playhead, PLAYHEAD),
+        );
         let Some(doc) = &self.doc else { return };
         let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
         let width = rect.width().max(1.0);
@@ -1414,7 +1501,7 @@ impl WaveApp {
 
         if let Some(area) = wave_area {
             let cols = area.width().round().max(1.0) as usize;
-            let [r, g, b] = self.settings.waveform_rgb();
+            let [r, g, b] = self.settings.colors.waveform.unwrap_or_else(|| self.settings.waveform_rgb());
             let wave = Color32::from_rgb(r, g, b);
             for ch in 0..channels {
                 let lane = lane(area, ch, channels);
@@ -1466,7 +1553,11 @@ impl WaveApp {
         // Selection, cursor and playhead over everything.
         if !self.selection.is_empty() {
             let (a, b) = (rect.left() + self.view.x_of(self.selection.start() as f64), rect.left() + self.view.x_of(self.selection.end() as f64));
-            painter.rect_filled(Rect::from_min_max(pos2(a.max(rect.left()), body.top()), pos2(b.min(rect.right()), body.bottom())), 0.0, SELECTION);
+            painter.rect_filled(
+                Rect::from_min_max(pos2(a.max(rect.left()), body.top()), pos2(b.min(rect.right()), body.bottom())),
+                0.0,
+                selection_colour,
+            );
         }
         let line = |frame: usize, color: Color32| {
             let x = rect.left() + self.view.x_of(frame as f64);
@@ -1474,9 +1565,9 @@ impl WaveApp {
                 painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(1.0, color));
             }
         };
-        line(self.selection.start(), CURSOR);
+        line(self.selection.start(), cursor_colour);
         if self.player.is_playing() {
-            line(self.player.position(), PLAYHEAD);
+            line(self.player.position(), playhead_colour);
             ui.ctx().request_repaint();
         }
     }
@@ -1696,24 +1787,44 @@ fn ruler_step(min_seconds: f64) -> f64 {
     STEPS.iter().copied().find(|s| *s >= min_seconds).unwrap_or(3600.0)
 }
 
-/// 256 colours from black through blue, magenta and orange to pale yellow.
-fn palette() -> Vec<Color32> {
-    const STOPS: [(f32, [f32; 3]); 6] = [
-        (0.0, [0.0, 0.0, 0.0]),
-        (0.3, [20.0, 12.0, 80.0]),
-        (0.55, [140.0, 30.0, 120.0]),
-        (0.75, [235.0, 90.0, 40.0]),
-        (0.9, [250.0, 200.0, 60.0]),
-        (1.0, [255.0, 250.0, 215.0]),
-    ];
+/// The keys of the colour items, in the order of [`appearance::ITEMS`].
+const COLOR_KEYS: [&str; 5] = ["color.waveform", "color.selection", "color.cursor", "color.playhead", "color.background"];
+
+/// The colour an item has when nothing overrides it, as red, green, blue.
+fn default_rgb(item: &str, settings: &Settings, dark: bool) -> [u8; 3] {
+    let c = match item {
+        "waveform" => return settings.waveform_rgb(),
+        "selection" => SELECTION,
+        "cursor" => CURSOR,
+        "playhead" => PLAYHEAD,
+        _ if dark => BACKGROUND,
+        _ => BACKGROUND_LIGHT,
+    };
+    [c.r(), c.g(), c.b()]
+}
+
+/// `v` in thousandths, for comparing settings that are floats.
+fn milli(v: f32) -> i32 {
+    (v * 1000.0).round() as i32
+}
+
+/// `c` with its distance from mid grey multiplied by `k` (1: unchanged), kept in range.
+fn contrast(c: Color32, k: f32) -> Color32 {
+    let m = |v: u8| ((f32::from(v) - 128.0) * k + 128.0).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgba_unmultiplied(m(c.r()), m(c.g()), m(c.b()), c.a())
+}
+
+/// 256 colours along `which`'s ramp (quiet to loud), with brightness and contrast applied.
+fn palette(which: settings::SpecPalette, brightness: f32, contrast_k: f32) -> Vec<Color32> {
+    let stops = which.stops();
     (0..256)
         .map(|i| {
             let t = i as f32 / 255.0;
-            let hi = STOPS.iter().position(|s| s.0 >= t).unwrap_or(STOPS.len() - 1).max(1);
-            let (a, b) = (STOPS.get(hi - 1).copied().unwrap_or(STOPS[0]), STOPS.get(hi).copied().unwrap_or(STOPS[5]));
+            let hi = stops.iter().position(|s| s.0 >= t).unwrap_or(stops.len() - 1).max(1);
+            let (a, b) = (stops[hi - 1], stops[hi]);
             let f = ((t - a.0) / (b.0 - a.0).max(1e-6)).clamp(0.0, 1.0);
             let mix = |k: usize| (a.1[k] + (b.1[k] - a.1[k]) * f).round() as u8;
-            Color32::from_rgb(mix(0), mix(1), mix(2))
+            contrast(brighten(Color32::from_rgb(mix(0), mix(1), mix(2)), brightness), contrast_k)
         })
         .collect()
 }
@@ -1748,12 +1859,24 @@ mod tests {
 
     #[test]
     fn the_palette_runs_dark_to_light() {
-        let p = palette();
+        let p = palette(settings::SpecPalette::Ember, 1.0, 1.0);
         assert_eq!(p.len(), 256);
         assert_eq!(p[0], Color32::from_rgb(0, 0, 0));
         assert_eq!(p[255], Color32::from_rgb(255, 250, 215));
         let brightness = |c: Color32| u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b());
         assert!(p.windows(2).all(|w| brightness(w[1]) + 3 >= brightness(w[0])), "brightness never drops");
+    }
+
+    #[test]
+    fn every_palette_is_256_colours_and_contrast_widens() {
+        for which in settings::SpecPalette::ALL {
+            assert_eq!(palette(*which, 1.0, 1.0).len(), 256, "{}", which.name());
+        }
+        assert_eq!(contrast(Color32::from_rgb(100, 128, 200), 1.0), Color32::from_rgb(100, 128, 200));
+        assert_eq!(contrast(Color32::from_rgb(100, 128, 200), 2.0), Color32::from_rgb(72, 128, 255));
+        let mono = palette(settings::SpecPalette::Mono, 1.0, 1.0);
+        assert_eq!((mono[0], mono[255]), (Color32::BLACK, Color32::WHITE));
+        assert_ne!(palette(settings::SpecPalette::Glacier, 1.0, 1.0), palette(settings::SpecPalette::Ember, 1.0, 1.0));
     }
 
     #[test]
