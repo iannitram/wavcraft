@@ -821,7 +821,7 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
-            // RECORD start [rate=48000 ch=1 bits=24] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop
+            // RECORD start [rate=48000 ch=1 bits=24] [inputs=1,2,3,4] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop
             "RECORD" => {
                 let (verb, args) = rest.split_once(' ').unwrap_or((rest, ""));
                 match verb {
@@ -861,7 +861,7 @@ impl WaveApp {
                         Some(t) => format!("ERR the take stopped early: {} (kept at {})", t.error.unwrap_or_default(), t.path.display()),
                         None => "ERR not recording".to_string(),
                     },
-                    _ => "ERR RECORD start [rate=48000 ch=1 bits=24] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop"
+                    _ => "ERR RECORD start [rate=48000 ch=1 bits=24] [inputs=1,2,3,4] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop"
                         .to_string(),
                 }
             }
