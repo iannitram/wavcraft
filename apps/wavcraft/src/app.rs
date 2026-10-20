@@ -16,6 +16,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
+use crate::meters_ui::{self, MetersUi};
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 
@@ -107,6 +108,8 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Window › Levels and the statistics window (f26).
+    meters: MetersUi,
 }
 
 impl WaveApp {
@@ -161,6 +164,7 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            meters: MetersUi::new(),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -212,6 +216,7 @@ impl WaveApp {
         match result {
             Ok(doc) => {
                 self.player.set_audio(Some(doc.audio.clone()));
+                self.meters.new_file();
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
@@ -746,6 +751,39 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
+            // f26: the bars as numbers; `METERS PUSH <l> <r>` feeds the tap as the audio callback
+            // would (linear peaks), for a run without an output device; `METERS RESET` clears the lights.
+            "METERS" => {
+                let mut words = rest.split_whitespace();
+                match words.next() {
+                    Some("PUSH") => match (words.next().map(str::parse::<f32>), words.next().map(str::parse::<f32>)) {
+                        (Some(Ok(l)), Some(Ok(r))) => self.player.push_levels([l, r]),
+                        _ => return "ERR METERS PUSH <left> <right>, linear peaks".to_string(),
+                    },
+                    Some("RESET") => self.meters.levels.reset_clip(),
+                    Some(_) => return "ERR METERS [PUSH <l> <r> | RESET]".to_string(),
+                    None => {}
+                }
+                self.meters.update(self.player.take_levels());
+                meters_ui::readings_line(&self.meters.levels)
+            }
+            // f26: loudness of the selection (the whole file when none), or of `<start> <end>` frames.
+            "LOUDNESS" => {
+                let Some(e) = &self.editor else { return "ERR LOUDNESS needs a file".to_string() };
+                let state = e.history.current().clone();
+                let len = state.len_frames();
+                let mut it = rest.split_whitespace().map(str::parse::<u64>);
+                let (range, scope) = match (it.next(), it.next()) {
+                    (Some(Ok(a)), Some(Ok(b))) => (a..b, "range"),
+                    (None, _) if self.selection.is_empty() => (0..len, "file"),
+                    (None, _) => (self.selection.start() as u64..self.selection.end() as u64, "selection"),
+                    _ => return "ERR LOUDNESS [<start> <end>], in frames".to_string(),
+                };
+                match wavcraft_core::loudness::measure(&state, range, &AtomicBool::new(false), &mut |_| {}) {
+                    Ok(m) => format!("OK scope={scope} {}", m.line()),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -839,6 +877,8 @@ impl WaveApp {
                 }
                 ui.separator();
                 ui.checkbox(&mut self.show_history, "History panel");
+                ui.checkbox(&mut self.meters.show_levels, "Levels");
+                ui.checkbox(&mut self.meters.show_stats, "Amplitude/Loudness Statistics");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -1045,6 +1085,10 @@ impl eframe::App for WaveApp {
         self.finish_opening();
         self.finish_rebuild();
         self.finish_saving(ctx);
+        self.meters.update(self.player.take_levels());
+        if self.meters.animating() || self.player.is_playing() {
+            ctx.request_repaint();
+        }
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
@@ -1093,6 +1137,21 @@ impl eframe::App for WaveApp {
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
+        if self.meters.show_levels {
+            egui::Panel::bottom("levels").show(ui, |ui| self.meters.panel(ui));
+        }
+        if self.meters.show_stats {
+            let target = self.editor.as_ref().map(|e| {
+                let state = e.history.current().clone();
+                let (range, scope) = if self.selection.is_empty() {
+                    (0..state.len_frames(), "the whole file")
+                } else {
+                    (self.selection.start() as u64..self.selection.end() as u64, "the selection")
+                };
+                (state, range, scope.to_string())
+            });
+            self.meters.stats_window(&ctx, target);
+        }
         if self.show_history {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
