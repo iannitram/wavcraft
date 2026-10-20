@@ -42,7 +42,15 @@ pub fn read() -> Memory {
     Memory { peak: field("VmHWM:"), now: field("VmRSS:") }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+/// macOS: the resident size now, from `ps` (the peak is not known; `/usr/bin/time -l` has it).
+#[cfg(target_os = "macos")]
+pub fn read() -> Memory {
+    let out = std::process::Command::new("ps").args(["-o", "rss=", "-p", &std::process::id().to_string()]).output();
+    let now = out.ok().and_then(|o| String::from_utf8(o.stdout).ok()).and_then(|t| t.trim().parse::<u64>().ok()).map(|kb| kb * 1024);
+    Memory { peak: None, now }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn read() -> Memory {
     Memory::default()
 }

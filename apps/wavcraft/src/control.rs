@@ -6,6 +6,7 @@
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
+//! - `PLAY <from> <to>` (frames) → `OK`; `PLAYBACK` → `OK playing=<0|1> pos=<frame> underruns=<n> output=<ok|none>`
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`

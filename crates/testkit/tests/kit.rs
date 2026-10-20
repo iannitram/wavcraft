@@ -40,6 +40,11 @@ fn open(dir: &Path, name: &str) -> Document {
     Document::open(&dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"))
 }
 
+/// The whole document as one buffer, to compare its content (the app never does this).
+fn audio(doc: &Document) -> wavcraft_core::AudioBuffer {
+    doc.audio_buffer().unwrap()
+}
+
 /// Acceptance test 1: two runs into two folders give byte-identical files.
 #[test]
 fn the_kit_is_the_same_bytes_every_time() {
@@ -79,7 +84,8 @@ fn every_kit_file_opens_in_wavcrafts_open_path() {
 fn the_ramp_reads_back_as_its_formula() {
     let dir = kit("ramp");
     let doc = open(&dir.0, RAMP);
-    let samples = &doc.audio.channels[0];
+    let whole = audio(&doc);
+    let samples = &whole.channels[0];
     assert_eq!(samples.len(), 480_000);
     for (n, v) in samples.iter().enumerate() {
         let want = ramp_value(n as u64);
@@ -95,7 +101,7 @@ fn the_ramp_reads_back_as_its_formula() {
 fn the_tone_is_1_khz_at_minus_20_dbfs_and_its_copies_hold_the_same_samples() {
     let dir = kit("tone");
     let wav = open(&dir.0, TONE);
-    for ch in &wav.audio.channels {
+    for ch in &audio(&wav).channels {
         let peak = ch.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         assert!((20.0 * f64::from(peak).log10() + 20.0).abs() < 0.01, "peak {peak}");
         // 1 kHz at 48 kHz: 48 samples a cycle, so 10 s holds 10,000 cycles: 9,999 upward zero
@@ -103,9 +109,9 @@ fn the_tone_is_1_khz_at_minus_20_dbfs_and_its_copies_hold_the_same_samples() {
         let ups = ch.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
         assert_eq!(ups, 9_999);
     }
-    assert_eq!(wav.audio.channels[0], wav.audio.channels[1]);
+    assert_eq!(audio(&wav).channels[0], audio(&wav).channels[1]);
     for copy in [TONE_AIFF, TONE_FLAC] {
-        assert_eq!(*open(&dir.0, copy).audio, *wav.audio, "{copy}");
+        assert_eq!(audio(&open(&dir.0, copy)), audio(&wav), "{copy}");
     }
 }
 
@@ -113,7 +119,7 @@ fn the_tone_is_1_khz_at_minus_20_dbfs_and_its_copies_hold_the_same_samples() {
 fn pink_is_at_minus_30_dbfs_and_falls_with_frequency() {
     let dir = kit("pink");
     let doc = open(&dir.0, PINK);
-    let x: Vec<f64> = doc.audio.channels[0].iter().map(|v| f64::from(*v)).collect();
+    let x: Vec<f64> = audio(&doc).channels[0].iter().map(|v| f64::from(*v)).collect();
     assert!((rms_dbfs(&x) + 30.0).abs() < 0.05, "{} dBFS", rms_dbfs(&x));
     // Pink: the first difference (a rough high-pass) holds less power than the signal. White
     // noise would hold twice as much (+3 dB).
@@ -127,8 +133,8 @@ fn left_and_right_hold_different_tones() {
     let doc = open(&dir.0, LR);
     let ups = |ch: &[f32]| ch.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
     // 30 s of 440 Hz and 660 Hz, give or take the first crossing.
-    assert!(ups(&doc.audio.channels[0]).abs_diff(30 * 440) <= 1);
-    assert!(ups(&doc.audio.channels[1]).abs_diff(30 * 660) <= 1);
+    assert!(ups(&audio(&doc).channels[0]).abs_diff(30 * 440) <= 1);
+    assert!(ups(&audio(&doc).channels[1]).abs_diff(30 * 660) <= 1);
     assert_eq!(doc.info.sample_format, wavcraft_core::SampleFormat::Float32);
 }
 
@@ -147,7 +153,7 @@ fn the_clicks_are_where_the_sidecar_says_and_nowhere_else() {
         .collect();
     assert!(listed.len() > 40);
     let found: Vec<(usize, i32)> =
-        doc.audio.channels[0].iter().enumerate().filter(|(_, v)| **v != 0.0).map(|(n, v)| (n, (*v * 32_768.0) as i32)).collect();
+        audio(&doc).channels[0].iter().enumerate().filter(|(_, v)| **v != 0.0).map(|(n, v)| (n, (*v * 32_768.0) as i32)).collect();
     assert_eq!(found, listed);
     // The waveform overview keeps a one-sample click visible when zoomed all the way out.
     let cols = doc.waveform_columns(0, 0.0, doc.frames() as f64, 1000);
@@ -158,7 +164,8 @@ fn the_clicks_are_where_the_sidecar_says_and_nowhere_else() {
 fn the_ten_minute_file_holds_its_four_tones() {
     let dir = kit("tones");
     let doc = open(&dir.0, TONES);
-    let x = &doc.audio.channels[0];
+    let whole = audio(&doc);
+    let x = &whole.channels[0];
     for (start, len, _) in TONE_LIST {
         let mid = ((start + len / 2.0) * 48_000.0) as usize;
         let around = &x[mid - 100..mid + 100];
@@ -191,8 +198,8 @@ fn speech_and_noise_mix_at_the_snr_asked_for() {
     for (name, snr) in [(SPEECH_SNR10, 10.0), (SPEECH_SNR20, 20.0)] {
         let mixed = open(&dir.0, name);
         assert_eq!(mixed.frames(), 32_000);
-        let noise: Vec<f32> = mixed.audio.channels[0].iter().zip(&clean.audio.channels[0]).map(|(m, c)| m - c).collect();
-        let got = 10.0 * (power(&clean.audio.channels[0]) / power(&noise)).log10();
+        let noise: Vec<f32> = audio(&mixed).channels[0].iter().zip(&audio(&clean).channels[0]).map(|(m, c)| m - c).collect();
+        let got = 10.0 * (power(&audio(&clean).channels[0]) / power(&noise)).log10();
         assert!((got - snr).abs() < 0.05, "{name}: {got} dB");
     }
     // Without both inputs nothing is mixed.

@@ -211,9 +211,9 @@ impl WaveApp {
         };
         match result {
             Ok(doc) => {
-                self.player.set_audio(Some(doc.audio.clone()));
+                self.player.set_audio(Some(doc.state.clone()));
                 let cap = History::default_cap(&self.sessions.path);
-                self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
+                self.editor = Some(Editor::new(History::new(doc.state.clone(), cap)));
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
                 self.doc_id += 1;
@@ -494,8 +494,8 @@ impl WaveApp {
         }
     }
 
-    /// Read the current step back for the views and the player on a worker thread (task 05
-    /// replaces this with views that read the document directly).
+    /// Show the current step: build its peaks (reading the store a chunk at a time) on a worker
+    /// thread. No samples are copied; the views and the player read the step from the store.
     fn rebuild(&mut self, ctx: &egui::Context) {
         let Some(editor) = &self.editor else { return };
         let (tx, rx) = channel();
@@ -518,7 +518,7 @@ impl WaveApp {
         self.rebuilding = None;
         match result {
             Ok(doc) => {
-                self.player.set_audio(Some(doc.audio.clone()));
+                self.player.set_audio(Some(doc.state.clone()));
                 self.doc = Some(doc);
                 self.generation += 1;
                 self.spectrum = None;
@@ -692,6 +692,24 @@ impl WaveApp {
                     None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
                 }
             }
+            // Play frames <from> <to> (scripted checks of playback from the store).
+            "PLAY" => {
+                let mut it = rest.split_whitespace().map(str::parse::<usize>);
+                match (it.next(), it.next(), &self.doc) {
+                    (Some(Ok(a)), Some(Ok(b)), Some(doc)) => {
+                        self.player.play(a.min(doc.frames()), b.min(doc.frames()));
+                        "OK".to_string()
+                    }
+                    _ => "ERR PLAY <from> <to>, in frames, with a file open".to_string(),
+                }
+            }
+            "PLAYBACK" => format!(
+                "OK playing={} pos={} underruns={} output={}",
+                u8::from(self.player.is_playing()),
+                self.player.position(),
+                self.player.underruns(),
+                if self.player.error.is_some() { "none" } else { "ok" }
+            ),
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -992,7 +1010,7 @@ impl WaveApp {
             let cols = (area.width() * 0.5).round().clamp(1.0, 2048.0);
             let rows = (area.height() / channels as f32).round().clamp(1.0, 384.0) as usize;
             let columns = Columns::covering(start, end, self.view.frames_per_px * f64::from(area.width() / cols), &self.params);
-            self.renderer.ask(Job { generation: self.generation, columns, rows, params: self.params }, &doc.audio);
+            self.renderer.ask(Job { generation: self.generation, columns, rows, params: self.params }, &doc.state);
             if let Some(picture) = self.renderer.take()
                 && picture.job.generation == self.generation
                 && picture.job.params == self.params

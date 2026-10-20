@@ -164,6 +164,35 @@ impl Analysis {
     }
 }
 
+/// Where one channel's samples come from: a slice in memory, or the document store read a
+/// chunk at a time (so an hour of audio never has to sit in RAM to be analysed).
+pub trait Samples: Sync {
+    /// Length in frames.
+    fn len(&self) -> usize;
+
+    /// Whether there are no frames.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Fill `out` with the frames from `start`. The caller keeps `start + out.len()` within
+    /// [`len`](Self::len). A source that cannot read should fill with silence.
+    fn read(&self, start: usize, out: &mut [f32]);
+}
+
+impl Samples for [f32] {
+    fn len(&self) -> usize {
+        <[f32]>::len(self)
+    }
+
+    fn read(&self, start: usize, out: &mut [f32]) {
+        match self.get(start..start.saturating_add(out.len())) {
+            Some(src) => out.copy_from_slice(src),
+            None => out.fill(0.0),
+        }
+    }
+}
+
 /// How many FFTs of the grid one block of an [`Overview`] holds.
 ///
 /// A block costs one byte per frequency bin, which comes to one byte per 16 frames at any FFT
@@ -196,6 +225,12 @@ impl Overview {
     /// Analyse all of `samples` with `p`'s FFT length and dB scale. This runs every FFT a view of
     /// the whole file would, once.
     pub fn build(samples: &[f32], p: &SpectrogramParams) -> Overview {
+        Overview::build_from(samples, p)
+    }
+
+    /// [`build`](Self::build) over any [`Samples`]: the same overview, reading the audio in
+    /// windows as it goes.
+    pub fn build_from<S: Samples + ?Sized>(samples: &S, p: &SpectrogramParams) -> Overview {
         let analysis = Analysis::new(p);
         let hop = analysis.hop() as i64;
         let bins = analysis.window.len() / 2 + 1;
@@ -249,6 +284,8 @@ struct Analyser<'a> {
     fft: Arc<dyn Fft<f32>>,
     window: &'a [f32],
     frame: Vec<Complex32>,
+    /// The window's samples as read, before the Hann window.
+    input: Vec<f32>,
     scratch: Vec<Complex32>,
     /// The largest squared magnitude seen in each bin, 0 Hz to Nyquist, since it was last cleared.
     peaks: Vec<f32>,
@@ -257,24 +294,32 @@ struct Analyser<'a> {
 impl<'a> Analyser<'a> {
     fn new(fft: Arc<dyn Fft<f32>>, window: &'a [f32]) -> Analyser<'a> {
         let (n, scratch) = (window.len(), fft.get_inplace_scratch_len());
-        Analyser { fft, window, frame: vec![Complex32::default(); n], scratch: vec![Complex32::default(); scratch], peaks: vec![0.0; n / 2 + 1] }
+        Analyser {
+            fft,
+            window,
+            frame: vec![Complex32::default(); n],
+            input: vec![0.0; n],
+            scratch: vec![Complex32::default(); scratch],
+            peaks: vec![0.0; n / 2 + 1],
+        }
     }
 
     /// Analyse the window of frames that begins at `first` and fold it into `peaks`. Frames
     /// outside the file, and samples that are not numbers, count as silence.
-    fn add(&mut self, samples: &[f32], first: i64) {
+    fn add<S: Samples + ?Sized>(&mut self, samples: &S, first: i64) {
         let n = self.window.len();
-        let whole = usize::try_from(first).ok().and_then(|at| samples.get(at..at.checked_add(n)?));
-        if let Some(whole) = whole {
-            for ((slot, w), v) in self.frame.iter_mut().zip(self.window).zip(whole) {
-                *slot = Complex32::new(if v.is_finite() { v * w } else { 0.0 }, 0.0);
+        // The part of the window inside the file is read; the rest stays silence.
+        let lo = first.max(0);
+        let hi = first.saturating_add(n as i64).min(samples.len() as i64);
+        self.input.fill(0.0);
+        if lo < hi {
+            let (from, to) = ((lo - first) as usize, (hi - first) as usize);
+            if let Some(dst) = self.input.get_mut(from..to) {
+                samples.read(lo as usize, dst);
             }
-        } else {
-            for (i, (slot, w)) in self.frame.iter_mut().zip(self.window).enumerate() {
-                let at = first.saturating_add(i as i64);
-                let v = usize::try_from(at).ok().and_then(|at| samples.get(at)).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
-                *slot = Complex32::new(v * w, 0.0);
-            }
+        }
+        for ((slot, w), v) in self.frame.iter_mut().zip(self.window).zip(&self.input) {
+            *slot = Complex32::new(if v.is_finite() { v * w } else { 0.0 }, 0.0);
         }
         self.fft.process_with_scratch(&mut self.frame, &mut self.scratch);
         for (peak, bin) in self.peaks.iter_mut().zip(&self.frame) {
@@ -298,6 +343,18 @@ pub fn render(samples: &[f32], sample_rate: u32, start: f64, end: f64, cols: usi
 /// `samples`; one built for another length, FFT length or dB scale is left unused.
 pub fn render_columns(
     samples: &[f32],
+    sample_rate: u32,
+    columns: Columns,
+    rows: usize,
+    p: &SpectrogramParams,
+    overview: Option<&Overview>,
+) -> Vec<u8> {
+    render_columns_from(samples, sample_rate, columns, rows, p, overview)
+}
+
+/// [`render_columns`] over any [`Samples`]: only the windows the picture needs are read.
+pub fn render_columns_from<S: Samples + ?Sized>(
+    samples: &S,
     sample_rate: u32,
     columns: Columns,
     rows: usize,

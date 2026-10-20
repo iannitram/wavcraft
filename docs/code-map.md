@@ -17,7 +17,7 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | | `space.rs` (item 03b) | `store_bytes(frames, channels)` (4 bytes a sample + 1 % + `MARGIN_BYTES` 64 MiB), `frames_from_file_size` (at `ASSUMED_BITRATE` 128 kbit/s), `free_space(path)` (since W7, 2026-10-16: on Unix `statvfs` of the folder itself through `rustix`, so a tmpfs `/tmp` or `/dev/shm` reports its own figure; on Windows, or if that fails, sysinfo's disk list, longest mount point; Linux-only test `a_tmpfs_folder_reports_its_own_free_space`), `FreeSpaceFn`, `format_bytes` |
 | | `settings.rs` (item 03b) | `Settings` (`settings.txt` in `dirs::config_dir()/wavcraft`: `session_folder = …`), `check_folder` (make it, write a probe), `resolve_session_folder` (flag > `WAVCRAFT_SESSION_DIR` > settings file > default; a folder that fails falls back to the default with a warning), `HOW_TO_CHANGE` |
 | | `io.rs` (task 03) | `open(path, opts, progress, cancel) -> DocState`: our own WAV/RF64/AIFF chunk reader converting exactly as audio-io, `symphonia` packet by packet for the rest; `OpenError`. Since item 03b: `OpenOptions::free_space` (injectable), a space check before the first block is written (`OpenError::NoSpace`), a full disk while writing (`OpenError::DiskFull`, session removed). Since the Legion Go review (W8a, 2026-10-16): a session folder that can't be made or written is `OpenError::SessionFolder { folder, reason }`, which names the folder and `HOW_TO_CHANGE`, not "cannot read the file" (tests: `crates/testkit/tests/hostile.rs`). W8b: numbers from the header are checked before anything is written: a sample rate of 0 or above `MAX_SAMPLE_RATE_HZ` (768,000) is refused (`check_rate`, all three readers), a WAV block-align that isn't channels × bytes a sample is refused (PCM and float only), a sample size under 8 bits opens as whole bytes with a warning (`small_sample_warning`); data shorter than the header claims already opened what is there with a warning in `SourceFormat::warnings`, now also shown by the app |
-| | `document.rs` | `Document`: the open file as the app sees it: streamed open, then read back whole (`audio`) until task 05, the `DocState` kept in `state`, per-channel waveform peaks, `waveform_columns()` for drawing, `warnings()` (the open's `SourceFormat::warnings`, since W8b) |
+| | `document.rs` | `Document`: the open file as the app sees it: streamed open, the `DocState` kept in `state` (no whole-file copy since task 05), per-channel `WavePeaks` built from chunked reads, `StoreChannel` (a channel as `spectrogram::Samples`), `waveform_columns()` for drawing, `warnings()` (the open's `SourceFormat::warnings`, since W8b) |
 | | `spectrogram.rs` | The spectral display maths: `SpectrogramParams`, `Columns` (file-fixed column grid), `Overview` (coarse per-channel cache), `render()` / `render_columns()`. Private: `Analysis` (FFT plan, Hann window, dB→level table), `Analyser` (FFT scratch, per-bin max) |
 | | `view.rs` | `Viewport` (zoom/scroll in frames), `Selection` (anchor/head), `format_time` |
 | | `examples/spectrogram_cost.rs` | Measures overview build and far-view render times on a synthetic 3-hour mono file |
@@ -51,30 +51,43 @@ Result, has what was seen):
 
 ## Where the samples live after open
 
-*Since task 03 (2026-10-15):* `Document::open` streams the file into a session store
-(`core::io::open`, see `store.rs`/`doc.rs` above) and keeps the `DocState` in `Document.state`.
-It then reads the whole document back into the `AudioBuffer` below, because every consumer
-listed here still wants whole channels. Task 05 moves them onto `DocState::read` and drops the
-copy. What follows describes those consumers, unchanged.
+*Since task 05 (f05):* nothing holds the whole file in RAM. `Document::open` streams the file into
+the session store (`core::io::open`, see `store.rs`/`doc.rs` above); `Document.state` is the
+`DocState`, the only copy of the samples. Every consumer reads it in bounded chunks through
+`DocState::read`, which goes through the store's block cache (positioned reads of 64 K-frame
+blocks).
 
-- Type: `soundcraft_audio_io::AudioBuffer { sample_rate: u32, channels: Vec<Vec<f32>> }`: planar
-  `f32`, **one contiguous `Vec<f32>` per channel for the whole file**. No chunks or blocks.
-- Owner: `Document.audio: Arc<AudioBuffer>`; the app keeps `WaveApp.doc: Option<Document>`.
-- Opening (`Document::open_with`): stream into the store (a few MB of RAM), read it back into one
-  `Vec<f32>` per channel, then one `Peaks` per channel on scoped threads. (`Document::from_bytes`
-  still decodes bytes with audio-io; tests use it.) The app runs it on a `std::thread::spawn` worker
-  with a cancel flag and progress, cancels it when another file is opened, and polls an `mpsc`
-  channel each frame (`finish_opening`).
+- Owner: `Document { path, info, state: DocState, peaks: Vec<WavePeaks> }`; the app keeps
+  `WaveApp.doc: Option<Document>`. `Document::audio_buffer()` still reads everything into an
+  `AudioBuffer`, for tests and the bench only; the app never calls it.
+- Opening (`Document::from_state`): one `WavePeaks` per channel on scoped threads, each reading
+  its channel 64 K frames at a time. The app runs it on a worker thread with a cancel flag and
+  progress, and again after every edit, undo and redo (`rebuild`). (`from_bytes`/`from_buffer`
+  write decoded audio into a store under the system temp folder; tests use them.)
 - How the parts reach the samples:
-  - **UI (waveform):** `doc.waveform_columns(ch, start, end, cols)` borrows
-    `self.audio.channels[ch]` and `self.peaks[ch]` directly, every frame.
-  - **Spectrogram worker:** `Renderer::ask` sends `(Job, Arc<AudioBuffer>)` (an `Arc` clone, no
-    copy) down an `mpsc` channel; the worker passes `&audio.channels[ch]` (a whole-channel
-    `&[f32]`) to `Overview::build` and `render_columns`.
-  - **Playback:** `Player::set_audio(Some(doc.audio.clone()))` puts the `Arc` into a
-    `Mutex<Option<Arc<AudioBuffer>>>`. The audio callback `try_lock`s it (silence if the UI holds
-    it) and only borrows; it never owns or drops a reference.
-- There is **no single read function**: each consumer indexes the channel `Vec`s itself.
+  - **UI (waveform):** `doc.waveform_columns(ch, start, end, cols)` uses `peaks[ch]` when a column
+    spans 64 frames or more; closer in it reads just the frames on screen (at most
+    `cols * 64`) from the store. A read that fails draws silence and logs once.
+  - **Spectrogram worker:** `Renderer::ask(Job, &DocState)` sends a cheap `DocState` clone
+    (`Arc`s) down the channel; the worker wraps each channel as `document::StoreChannel`
+    (`spectrogram::Samples`) and calls `Overview::build_from` and `render_columns_from`, which read
+    one FFT window at a time. The slice functions (`Overview::build`, `render_columns`) remain and
+    give the same pictures.
+  - **Playback:** `Player::set_audio(Some(doc.state.clone()))`. A `wavcraft-readahead` thread owns
+    the `DocState` and keeps a ring of 2^17 frames (2.7 s at 48 kHz), 8 channels, filled with
+    `DocState::read` in 8,192-frame chunks. The audio callback takes no lock, reads no disk and
+    allocates nothing: it reads the ring through atomics, and if the ring is short it plays
+    silence for that buffer and counts an underrun (`Player::underruns`). A play bumps an epoch;
+    the callback sounds only once the thread has primed the ring for that epoch (16,384 frames), and
+    its write-back of the position is a compare-and-swap, so a play started meanwhile is not
+    overwritten. Files with more than 8 channels play their first 8.
+- Memory that is still O(file): the peaks (`WavePeaks`, about 0.33 byte a sample, built by us now
+  because audio-io's `Peaks::build` needs the whole channel as one slice) and the spectrogram
+  overviews (1 byte per 16 frames per channel). The store's block cache is bounded by its byte
+  budget.
+- Not done: peaks are rebuilt in full after every edit (a read of the whole document, on a worker),
+  and the UI thread can read a block from disk when it draws a zoomed-in waveform that is not in
+  the cache.
 
 ## Waveform peaks
 
@@ -84,7 +97,7 @@ each 32 samples (`BLOCK`), each further level merges 4 (`FANOUT`), up to one blo
 bytes per sample (a 3-hour stereo file: about 345 MB). `waveform_columns` asks
 `Peaks::columns(start, end, cols)` when a column spans 64 frames or more, and folds the samples
 itself when zoomed closer. Nothing is cached per view; columns are recomputed every frame
-(O(log n) per column). `Peaks::build` needs the whole channel as one slice.
+(O(log n) per column). `Peaks::build` needs the whole channel as one slice, so since task 05 the document uses its own `WavePeaks` (same layout and answers, built from chunked reads).
 
 ## Spectrogram and its overview
 
@@ -109,7 +122,7 @@ itself when zoomed closer. Nothing is cached per view; columns are recomputed ev
   channel length, so an overview of a different-length buffer is ignored (falls back to full FFTs).
 - **The app's picture cache:** `SpectrumCache { job, textures }`, the last picture, drawn at its own
   frame range until the next one arrives. Cleared on open and on a log/linear axis change.
-- Everything takes the whole channel as one `&[f32]` (`Analyser::add` slices `samples[at..at+n]`).
+- Since task 05 everything takes a `spectrogram::Samples` (a slice, or `StoreChannel` over the store); `Analyser::add` reads one window into a scratch buffer.
 
 ## Playback
 
@@ -117,7 +130,7 @@ itself when zoomed closer. Nothing is cached per view; columns are recomputed ev
   used, and can't be on its own: its `Player::new` takes a SoundCraft `Session` (engine/mix model).
 - Default host, default output device, its default config (f32, i16, u16 or i32 samples). The
   stream is opened at start-up and reopened on Play after an error or when there was none.
-- Shared state: `Mutex<Option<Arc<AudioBuffer>>>`, `pos` and `end` as `f64` bits in `AtomicU64`
+- Shared state (task 05): the read-ahead ring and its atomics (see above), `pos` and `end` as `f64` bits in `AtomicU64`
   (file frames), `playing` and `failed` as `AtomicBool`.
 - The callback converts the file's rate to the device's by linear interpolation, averages all
   channels onto a mono device, writes the new `pos` back and clears `playing` at `end`.

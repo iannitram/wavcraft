@@ -8,12 +8,12 @@
 //! from which a far view takes a few milliseconds. It builds them before the file's first
 //! picture: that picture shows the whole file, so it would run the same FFTs anyway.
 
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use egui::{Color32, ColorImage};
+use wavcraft_core::document::StoreChannel;
 use wavcraft_core::spectrogram::{self, Columns, Overview};
-use wavcraft_core::{AudioBuffer, SpectrogramParams};
+use wavcraft_core::{DocState, SpectrogramParams};
 
 /// Which picture: of which file, which columns of it, how tall, analysed how.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,7 +32,7 @@ pub struct Picture {
 }
 
 pub struct Renderer {
-    jobs: Sender<(Job, Arc<AudioBuffer>)>,
+    jobs: Sender<(Job, DocState)>,
     pictures: Receiver<Picture>,
     /// The job last sent, so each one is asked for once.
     asked: Option<Job>,
@@ -57,7 +57,7 @@ impl Overviews {
 impl Renderer {
     /// Start the worker. It colours levels with `palette` and wakes `ctx` when a picture is ready.
     pub fn new(ctx: &egui::Context, palette: Vec<Color32>) -> Renderer {
-        let (jobs, inbox) = channel::<(Job, Arc<AudioBuffer>)>();
+        let (jobs, inbox) = channel::<(Job, DocState)>();
         let (outbox, pictures) = channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -67,17 +67,18 @@ impl Renderer {
                 while let Ok(newer) = inbox.try_recv() {
                     request = newer;
                 }
-                let (job, audio) = request;
+                let (job, state) = request;
+                let sources: Vec<StoreChannel> = (0..state.channel_count()).map(|ch| StoreChannel::new(&state, ch)).collect();
                 if !overviews.as_ref().is_some_and(|o| o.serve(&job)) {
                     // Drop the last file's before building this one's.
                     drop(overviews.take());
-                    let channels = audio.channels.iter().map(|samples| Overview::build(samples, &job.params)).collect();
+                    let channels = sources.iter().map(|samples| Overview::build_from(samples, &job.params)).collect();
                     overviews = Some(Overviews { generation: job.generation, params: job.params, channels });
                 }
                 let cols = job.columns.cols;
-                let images = audio.channels.iter().enumerate().map(|(ch, samples)| {
+                let images = sources.iter().enumerate().map(|(ch, samples)| {
                     let overview = overviews.as_ref().and_then(|o| o.channels.get(ch));
-                    let levels = spectrogram::render_columns(samples, audio.sample_rate, job.columns, job.rows, &job.params, overview);
+                    let levels = spectrogram::render_columns_from(samples, state.sample_rate(), job.columns, job.rows, &job.params, overview);
                     let pixels: Vec<Color32> = levels.iter().map(|l| palette.get(usize::from(*l)).copied().unwrap_or(Color32::BLACK)).collect();
                     // `render_columns` clamps what it is asked for; an image must be exactly its stated size.
                     if pixels.len() == cols * job.rows {
@@ -95,9 +96,10 @@ impl Renderer {
         Renderer { jobs, pictures, asked: None }
     }
 
-    /// Ask for `job`'s picture of `audio`, unless it is the one already asked for.
-    pub fn ask(&mut self, job: Job, audio: &Arc<AudioBuffer>) {
-        if self.asked != Some(job) && job.columns.cols > 0 && job.rows > 0 && self.jobs.send((job, audio.clone())).is_ok() {
+    /// Ask for `job`'s picture of `state` (the worker reads it from the store, a window at a
+    /// time), unless it is the one already asked for.
+    pub fn ask(&mut self, job: Job, state: &DocState) {
+        if self.asked != Some(job) && job.columns.cols > 0 && job.rows > 0 && self.jobs.send((job, state.clone())).is_ok() {
             self.asked = Some(job);
         }
     }
@@ -112,10 +114,11 @@ impl Renderer {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+    use wavcraft_core::{AudioBuffer, Document};
 
     /// Ask for `job` and wait for its picture.
-    fn picture(renderer: &mut Renderer, job: Job, audio: &Arc<AudioBuffer>) -> Picture {
-        renderer.ask(job, audio);
+    fn picture(renderer: &mut Renderer, job: Job, state: &DocState) -> Picture {
+        renderer.ask(job, state);
         let asked = Instant::now();
         loop {
             match renderer.take() {
@@ -132,12 +135,13 @@ mod tests {
         // Two files of the same length: an overview kept from the first would be wrong for the second.
         let file = |seed: u32| {
             let wave = |ch: u32| (0..600_000u32).map(|i| ((i / (997 + 131 * ch + seed) % 7) as f32 / 7.0 - 0.4) * (i as f32 * 0.37).sin()).collect();
-            Arc::new(AudioBuffer { sample_rate: rate, channels: vec![wave(0), wave(1)] })
+            AudioBuffer { sample_rate: rate, channels: vec![wave(0), wave(1)] }
         };
         let palette: Vec<Color32> = (0..=255).map(Color32::from_gray).collect();
         let mut renderer = Renderer::new(&egui::Context::default(), palette);
         let params = SpectrogramParams { fft_size: 256, ..SpectrogramParams::default() };
         for (generation, audio) in [(1, file(0)), (2, file(40))] {
+            let state = Document::from_buffer(audio.clone()).unwrap().state;
             // The whole file (37 FFTs a column), a closer view, the other frequency axis, one FFT a column.
             for (start, end, per_col, log_freq) in [
                 (0.0, 600_000.0, 4_700.0, true),
@@ -147,7 +151,7 @@ mod tests {
             ] {
                 let params = SpectrogramParams { log_freq, ..params };
                 let columns = Columns::covering(start, end, per_col, &params);
-                let got = picture(&mut renderer, Job { generation, columns, rows: 48, params }, &audio);
+                let got = picture(&mut renderer, Job { generation, columns, rows: 48, params }, &state);
                 assert_eq!(got.images.len(), 2);
                 for (samples, image) in audio.channels.iter().zip(&got.images) {
                     let alone = spectrogram::render(samples, rate, columns.start, columns.end, columns.cols, 48, &params);

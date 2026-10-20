@@ -8,8 +8,8 @@
 //! - [`io`]: streamed open into the store.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`settings`]: the settings file and where the session folder is.
-//! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
-//!   and its waveform peaks.
+//! - [`Document`]: the open file as the app sees it: the document in the store, read in
+//!   chunks (no whole-file copy since task 05), and its waveform peaks.
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
 //! - [`view`]: zoom and scroll arithmetic, selections and time formatting.
 
