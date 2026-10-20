@@ -23,6 +23,7 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | | `examples/spectrogram_cost.rs` | Measures overview build and far-view render times on a synthetic 3-hour mono file |
 | `apps/wavcraft` (`wavcraft`, binary, egui/eframe 0.36, wgpu DX12 on Windows) | `main.rs` | Window options, DX12-only wgpu on Windows, `parse_args` (`[--session-dir DIR] [FILE]`), runs `WaveApp` |
 | | `app.rs` | `WaveApp`: menu (File › Session Folder… / Use the Default Session Folder since item 03b), status bar, the editor painter (ruler, waveform lanes, spectral lanes, selection, cursor, playhead), input (wheel zoom, drag select, Space, Home, `\`, Ctrl+O, drop), opening on a worker thread; the status bar shows the open's first warning (all of them on hover) since W8b |
+| | `doclist.rs` (f04) | `DocList<T>`: order of the open documents. The current one lives in `WaveApp`'s own fields; the others are parked as `DocSlot`s and switching swaps them (`take_slot`/`put_slot`). Control: `DOCS`, `SWITCH <i>`, `CLOSE [discard]`; `QUIT` refuses while any document is unsaved |
 | | `player.rs` | `Player`: cpal output stream, play/stop, playhead position |
 | | `spectrum.rs` | `Renderer`: the spectrogram worker thread and its overview cache |
 

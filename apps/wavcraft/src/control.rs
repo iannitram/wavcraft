@@ -6,14 +6,17 @@
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
-//! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
+//! - `OPEN <path>` → `OK` (the open runs in the background and adds a document; poll `STATE` until `busy=0`)
+//! - `DOCS` → `OK count=<n> current=<i> | <i> unsaved=<0|1> frames=<n> <name> | …` (the open documents, in the order opened)
+//! - `SWITCH <i>` → `OK current=<i>` (every other verb acts on the current document)
+//! - `CLOSE` → `OK count=<n>` (closes the current document); with unsaved changes `ERR …` unless `CLOSE discard`
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
-//! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
+//! - `QUIT` → `OK`, then the window closes; with unsaved changes in any document `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
 
