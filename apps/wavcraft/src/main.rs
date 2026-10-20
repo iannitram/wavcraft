@@ -13,6 +13,7 @@ mod control;
 mod convert_ui;
 mod doclist;
 mod effect_dialog;
+mod meters_ui;
 mod mixpaste;
 mod oscb;
 mod player;

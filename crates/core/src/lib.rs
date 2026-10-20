@@ -26,6 +26,8 @@ pub mod document;
 pub mod effects;
 pub mod generate;
 pub mod io;
+pub mod levels;
+pub mod loudness;
 pub mod markers;
 pub mod panels;
 pub mod random;
