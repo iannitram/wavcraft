@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
+use wavcraft_core::panels::{self, PanelSet};
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
@@ -65,8 +66,8 @@ pub struct WaveApp {
     selection: Selection,
     player: Player,
     params: SpectrogramParams,
-    show_waveform: bool,
-    show_spectrum: bool,
+    /// Which registered panels are shown (Window menu; kept in the settings file).
+    panels: PanelSet,
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
@@ -101,8 +102,6 @@ pub struct WaveApp {
     allow_close: bool,
     /// The editor's width last frame, for zoom keys (which have no pointer to zoom around).
     editor_width: f32,
-    /// Window › History.
-    show_history: bool,
     /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
@@ -137,8 +136,7 @@ impl WaveApp {
             selection: Selection::default(),
             player: Player::new(),
             params: SpectrogramParams::default(),
-            show_waveform: true,
-            show_spectrum: true,
+            panels: PanelSet::from_hidden(&settings.hidden_panels),
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
@@ -158,7 +156,6 @@ impl WaveApp {
             confirm_close: false,
             allow_close: false,
             editor_width: 800.0,
-            show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
             control: {
@@ -269,6 +266,19 @@ impl WaveApp {
         }
         self.error = None;
         self.notice = Some(msg);
+    }
+
+    /// Show or hide a registered panel and keep the choice in the settings file.
+    fn set_panel(&mut self, id: &str, shown: bool) {
+        if !self.panels.set(id, shown) {
+            return;
+        }
+        self.settings.hidden_panels = self.panels.hidden_ids();
+        if let Some(file) = &self.settings_path
+            && let Err(e) = self.settings.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not save the panel choice to {}: {e}", file.display());
+        }
     }
 
     fn toggle_play(&mut self) {
@@ -707,6 +717,24 @@ impl WaveApp {
                     _ => "ERR SELECT <start> <end>, in frames".to_string(),
                 }
             }
+            // Window › <panel>: `window.toggle.<id>`, `window.show.<id>`, `window.hide.<id>`.
+            "ACTION" if rest.starts_with("window.") => {
+                let mut next = self.panels.clone();
+                match next.apply_action(rest.trim()) {
+                    Some(Ok(_)) => {
+                        let ids: Vec<&str> =
+                            panels::REGISTRY.iter().map(|p| p.id).filter(|id| next.is_shown(id) != self.panels.is_shown(id)).collect();
+                        for id in ids {
+                            self.set_panel(id, next.is_shown(id));
+                        }
+                        format!("OK selection={} changed=0 {}", sel(self), self.panels.report())
+                    }
+                    Some(Err(e)) => format!("ERR {e}"),
+                    None => format!("ERR no action named {rest:?}"),
+                }
+            }
+            // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
+            "PANELS" => format!("OK {}", self.panels.report()),
             "ACTION" => match actions::by_name(rest) {
                 Some(a) => match self.run_action(a.id, ctx) {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
@@ -818,9 +846,15 @@ impl WaveApp {
                 }
             });
             ui.menu_button("Edit", |ui| self.edit_menu(ui));
+            ui.menu_button("Window", |ui| {
+                for p in panels::REGISTRY {
+                    let mut shown = self.panels.is_shown(p.id);
+                    if ui.checkbox(&mut shown, p.title).changed() {
+                        self.set_panel(p.id, shown);
+                    }
+                }
+            });
             ui.menu_button("View", |ui| {
-                ui.checkbox(&mut self.show_waveform, "Waveform");
-                ui.checkbox(&mut self.show_spectrum, "Spectral frequency display");
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
                     self.spectrum = None;
                 }
@@ -837,8 +871,6 @@ impl WaveApp {
                 if let Some(id) = chosen {
                     let _ = self.run_action(id, ui.ctx());
                 }
-                ui.separator();
-                ui.checkbox(&mut self.show_history, "History panel");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -961,7 +993,7 @@ impl WaveApp {
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate);
 
-        let (wave_area, spectrum_area) = match (self.show_waveform, self.show_spectrum) {
+        let (wave_area, spectrum_area) = match (self.panels.is_shown("waveform"), self.panels.is_shown("spectral")) {
             (true, true) => {
                 let split = body.top() + body.height() * 0.5;
                 (Some(Rect::from_min_max(body.min, pos2(body.right(), split))), Some(Rect::from_min_max(pos2(body.left(), split), body.max)))
@@ -1093,7 +1125,7 @@ impl eframe::App for WaveApp {
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
-        if self.show_history {
+        if self.panels.is_shown("history") {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
         self.insert_silence_dialog(&ctx);
