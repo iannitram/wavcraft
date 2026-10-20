@@ -21,6 +21,7 @@
 //! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
 //! - `EFFECT_DIALOG <name> [key=value ...]` opens the effect's dialog on those values; `EFFECT_DIALOG` → `OK open=<id|none> values=[..]`; `EFFECT_DIALOG OK|CANCEL` presses the button
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
+//! - `INSERT_FILE <path>` → `OK` (Edit › Insert › Audio from File at the cursor, or over the selection; poll `STATE` until `busy=0`; a refused file shows in the app's log, not here)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
 //! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)

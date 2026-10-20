@@ -37,6 +37,7 @@ pub enum ActionId {
     LeftChannel,
     RightChannel,
     InsertSilence,
+    InsertFile,
     CursorToStart,
     CursorToEnd,
     SetIn,
@@ -179,6 +180,8 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::Silence, "edit.silence", "Silence", &[]),
     // Insert › Silence… asks for a length (the window's dialog), then runs `Editor::insert_silence`.
     window(ActionId::InsertSilence, "edit.insertSilence", "Insert Silence…", &[]),
+    // Insert > Audio from File… picks a file (the window's dialog), then `Editor::insert_file`.
+    window(ActionId::InsertFile, "edit.insertFile", "Insert Audio from File…", &[]),
     edit(ActionId::Crop, "edit.crop", "Crop", &[cmd("T")]),
     edit(ActionId::SelectAll, "edit.selectAll", "Select All", &[cmd("A")]),
     edit(ActionId::DeselectAll, "edit.deselectAll", "Deselect All", &[cmd_shift("A"), cmd("D")]),
@@ -442,7 +445,7 @@ impl Editor {
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
-            ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::InsertSilence | ActionId::InsertFile | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::SnapToggle | ActionId::SnapZeroToggle => true,
             ActionId::ToggleChannel(n) => usize::from(n) < self.channel_count(),
             ActionId::MarkerAdd => self.len() > 0,
@@ -606,6 +609,31 @@ impl Editor {
         Ok(Outcome { doc_changed: changed, selection: at..at + frames, message: changed.then_some(label) })
     }
 
+    /// Insert > Audio from File: `file` (opened into this document's store with
+    /// `OpenOptions::into_store`) goes in at the cursor, or in place of the selection, as one
+    /// step. The inserted audio ends up selected. The errors are messages for the status bar.
+    pub fn insert_file(&mut self, file: &crate::doc::DocState, selection: Range<u64>) -> Result<Outcome, String> {
+        let doc = self.history.current().clone();
+        let len = doc.len_frames();
+        let sel = selection.start.min(len)..selection.end.min(len);
+        if !doc.store().same_store(file.store()) {
+            return Err("the file was not opened into this document's session store".to_string());
+        }
+        let at = if sel.start < sel.end { PasteAt::Replace(sel.clone()) } else { PasteAt::Insert(sel.start) };
+        let edit = edit::insert_file(&doc, at, file, self.crossfades).map_err(|e| match e {
+            EditError::SampleRate { clip, doc } => format!(
+                "the file is at {clip} Hz and this document at {doc} Hz; converting sample rates is not supported yet, so nothing was inserted"
+            ),
+            EditError::Channels { clip, doc } => format!("a {clip}-channel file can't be inserted into a {doc}-channel document"),
+            e => e.to_string(),
+        })?;
+        let changed = !edit.is_noop();
+        let label = edit.label.clone();
+        self.history.push_edit(edit);
+        let end = (sel.start + file.len_frames()).min(self.len());
+        Ok(Outcome { doc_changed: changed, selection: sel.start..end, message: changed.then_some(label) })
+    }
+
     /// Run `id` on `selection`. A disabled action does nothing and says why.
     pub fn run(&mut self, id: ActionId, selection: Range<u64>) -> Result<Outcome, EditError> {
         self.run_with(id, selection, None)
@@ -738,6 +766,7 @@ impl Editor {
                 return unchanged(to.map_or(sel.clone(), |f| f..f));
             }
             ActionId::InsertSilence
+            | ActionId::InsertFile
             | ActionId::SetIn
             | ActionId::SetOut
             | ActionId::ZoomIn

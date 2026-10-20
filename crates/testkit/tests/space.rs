@@ -143,6 +143,7 @@ fn a_disk_that_fills_up_part_way_gives_an_error_and_leaves_nothing() {
             sessions_root: Some(root.0.clone()),
             store: StoreOptions { max_bytes: Some(1 << 20), ..StoreOptions::default() },
             free_space: Some(|_| Some(u64::MAX)),
+            ..OpenOptions::default()
         };
         let err = open(&path, &opts, &mut |_| {}, &AtomicBool::new(false)).unwrap_err();
         assert_eq!(err, OpenError::DiskFull { folder: root.0.clone() }, "{name}");
