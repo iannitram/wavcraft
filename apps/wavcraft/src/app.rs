@@ -184,10 +184,91 @@ impl WaveApp {
                 control::start_from_env(move || ctx.request_repaint())
             },
         };
+        app.rec.monitor_default = app.settings.monitor_input;
         if let Some(path) = file {
             app.open(path, &cc.egui_ctx);
         }
         app
+    }
+
+    /// Hear the take's input through the output when it is being monitored (C025); say so if the
+    /// output cannot (the take is recorded either way).
+    fn attach_monitor(&mut self) {
+        let Some(m) = self.rec.monitor_for_output() else { return };
+        if let Err(why) = self.player.set_monitor(Some(m)) {
+            log::warn!(target: "wavcraft", "recording: {why}");
+            self.rec.set_monitor_audible(false);
+            self.notice = Some(why);
+        }
+    }
+
+    /// The record offset for a take that just ended: the preference, else what the device
+    /// reported, else 0 (C010). Returns (ms, frames at `rate`).
+    fn record_offset(&mut self, rate: u32) -> (u32, u64) {
+        let ms = rec_edit::resolve_offset_ms(self.settings.record_offset_ms, self.rec.last_reported_latency_us());
+        let frames = rec_edit::offset_frames(ms, rate);
+        let from = match (self.settings.record_offset_ms, self.rec.last_reported_latency_us()) {
+            (Some(_), _) => "the preference",
+            (None, Some(_)) => "the device's reported latency",
+            (None, None) => "no preference and none reported",
+        };
+        log::info!(target: "wavcraft", "record offset {ms} ms = {frames} frames at {rate} Hz ({from})");
+        self.rec.last_offset = Some((ms, frames));
+        (ms, frames)
+    }
+
+    /// `PREF` on the control channel: `PREF get <key>`, `PREF set <key> <value>`, `PREF` alone lists.
+    fn pref_command(&mut self, args: &str) -> String {
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let show = |s: &Settings| {
+            format!(
+                "record_offset_ms={} monitor_input={}",
+                s.record_offset_ms.map_or("default".to_string(), |v| v.to_string()),
+                u8::from(s.monitor_input)
+            )
+        };
+        match words.as_slice() {
+            [] | ["get"] => format!("OK {}", show(&self.settings)),
+            ["get", key] => {
+                let all = show(&self.settings);
+                match all.split(' ').find(|kv| kv.split('=').next() == Some(*key)) {
+                    Some(kv) => format!("OK {kv}"),
+                    None => format!("ERR unknown preference {key:?}"),
+                }
+            }
+            ["set", "record_offset_ms", v] => {
+                let parsed = if *v == "default" { Ok(None) } else { v.parse::<u32>().map(Some) };
+                match parsed {
+                    Ok(Some(ms)) if ms > rec_edit::MAX_OFFSET_MS => {
+                        format!("ERR record_offset_ms: at most {} (or `default`)", rec_edit::MAX_OFFSET_MS)
+                    }
+                    Ok(ms) => {
+                        self.settings.record_offset_ms = ms;
+                        self.save_settings()
+                    }
+                    Err(_) => "ERR record_offset_ms: a whole number of milliseconds, or `default`".to_string(),
+                }
+            }
+            ["set", "monitor_input", v] => match crate::recording::parse_flag(v) {
+                Some(on) => {
+                    self.settings.monitor_input = on;
+                    self.rec.monitor_default = on;
+                    self.save_settings()
+                }
+                None => "ERR monitor_input: 1 or 0".to_string(),
+            },
+            _ => "ERR PREF [get [key]] | set record_offset_ms <ms>|default | set monitor_input 1|0".to_string(),
+        }
+    }
+
+    fn save_settings(&mut self) -> String {
+        match &self.settings_path {
+            Some(file) => match self.settings.save(file) {
+                Ok(()) => "OK".to_string(),
+                Err(e) => format!("ERR could not save the setting to {}: {e}", file.display()),
+            },
+            None => "OK (this system has no settings folder: kept until WavCraft closes)".to_string(),
+        }
     }
 
     /// Stream `path` into a session store on a worker thread; the window stays responsive for
@@ -312,6 +393,7 @@ impl WaveApp {
             Ok(path) => {
                 self.error = None;
                 self.notice = None;
+                self.attach_monitor();
                 Ok(path)
             }
             Err(e) => {
@@ -359,7 +441,9 @@ impl WaveApp {
         }
         let fmt = wavcraft_core::record::RecFormat { rate: base.sample_rate(), channels: plan.take_channels(&base), bits: want.bits };
         let punch = mode == RecMode::Punch;
-        let limit = plan.limit_frames().map(Max::Frames);
+        // A punch-in's take runs the preference's offset longer, so the range is still filled to its end.
+        let pref_frames = rec_edit::offset_frames(self.settings.record_offset_ms.unwrap_or(0), base.sample_rate());
+        let limit = plan.limit_frames_with_offset(pref_frames).map(Max::Frames);
         let from = sel.start.saturating_sub(preroll_ms * u64::from(base.sample_rate()) / 1000);
         self.player.set_muted(!punch);
         match self.rec.start_with(fmt, limit, punch) {
@@ -371,6 +455,7 @@ impl WaveApp {
                 }
                 self.error = None;
                 self.notice = None;
+                self.attach_monitor();
                 Ok(path)
             }
             Err(e) => {
@@ -382,7 +467,7 @@ impl WaveApp {
 
     /// Open the finished take by the normal streamed open and build the one edit that puts it in
     /// the document; `finish_integration` applies it.
-    fn integrate_take(&mut self, take: &wavcraft_core::record::Take, into: crate::recording::IntoDoc, ctx: &egui::Context) {
+    fn integrate_take(&mut self, take: &wavcraft_core::record::Take, into: crate::recording::IntoDoc, offset_frames: u64, ctx: &egui::Context) {
         let Some(editor) = self.editor.as_ref() else { return };
         let (tx, rx) = channel();
         let (ctx, path, base, plan, xf) = (ctx.clone(), take.path.clone(), into.base.clone(), into.plan.clone(), editor.crossfades);
@@ -391,7 +476,7 @@ impl WaveApp {
             let cancel = AtomicBool::new(false);
             let result = wavcraft_core::io::open(&path, &opts, &mut |_| {}, &cancel)
                 .map_err(|e| e.to_string())
-                .and_then(|take| rec_edit::apply_take(&base, &take, &plan, xf).map_err(|e| e.to_string()));
+                .and_then(|take| rec_edit::apply_take_with_offset(&base, &take, &plan, xf, offset_frames).map_err(|e| e.to_string()));
             let _ = tx.send(result);
             ctx.request_repaint();
         });
@@ -449,6 +534,7 @@ impl WaveApp {
     fn finish_recording(&mut self, open: bool, ctx: &egui::Context) -> Option<wavcraft_core::record::Take> {
         let take = self.rec.stop()?;
         let into = self.rec.take_into();
+        let _ = self.player.set_monitor(None);
         self.player.set_muted(false);
         if into.is_some() {
             self.player.stop();
@@ -468,7 +554,8 @@ impl WaveApp {
         }
         if let Some(into) = into {
             if open && take.frames > 0 {
-                self.integrate_take(&take, into, ctx);
+                let (_, frames) = self.record_offset(take.fmt.rate);
+                self.integrate_take(&take, into, frames, ctx);
             } else {
                 log::info!(target: "wavcraft", "the take {} was not put in the file ({} frames); it is kept", take.path.display(), take.frames);
                 if take.frames == 0 {
@@ -987,7 +1074,9 @@ impl WaveApp {
                 match verb {
                     "start" => {
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                        match crate::recording::parse_start_args(args, now) {
+                        let parsed = crate::recording::parse_start_args(args, now);
+                        self.rec.monitor_override = parsed.as_ref().ok().and_then(|(_, o)| o.monitor);
+                        match parsed {
                             Ok((f, o)) if o.delay_secs.is_some_and(|d| d > 0) => {
                                 match self.rec.arm(f, std::time::Duration::from_secs(o.delay_secs.unwrap_or(0)), o.max_secs) {
                                     Ok(()) => format!("OK armed in={}", o.delay_secs.unwrap_or(0)),
@@ -1032,6 +1121,8 @@ impl WaveApp {
                         .to_string(),
                 }
             }
+            // PREF [get [key]] | set record_offset_ms <ms>|default | set monitor_input 1|0
+            "PREF" => self.pref_command(rest),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {

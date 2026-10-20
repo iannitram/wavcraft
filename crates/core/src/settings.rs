@@ -21,12 +21,19 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_RECORD_OFFSET_MS: &str = "record_offset_ms";
+const KEY_MONITOR_INPUT: &str = "monitor_input";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// Record offset in milliseconds (C010): how much of the start of a take is left out when it
+    /// is put into a document. `None`: use the input latency the device reports, else 0.
+    pub record_offset_ms: Option<u32>,
+    /// Hear the input through the output while recording (C025). Off by default.
+    pub monitor_input: bool,
 }
 
 impl Settings {
@@ -59,8 +66,11 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
-            if key.trim() == KEY_SESSION_FOLDER {
-                s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            match key.trim() {
+                KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+                KEY_RECORD_OFFSET_MS => s.record_offset_ms = value.parse::<u32>().ok().map(|v| v.min(crate::doc::rec_edit::MAX_OFFSET_MS)),
+                KEY_MONITOR_INPUT => s.monitor_input = matches!(value, "1" | "true" | "on" | "yes"),
+                _ => {}
             }
         }
         s
@@ -72,6 +82,10 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        out.push_str("# record_offset_ms: milliseconds left out of the start of a take put into a file, to line it up with what was heard (empty: the input latency the device reports, else 0).\n");
+        out.push_str(&format!("{KEY_RECORD_OFFSET_MS} = {}\n", self.record_offset_ms.map_or(String::new(), |v| v.to_string())));
+        out.push_str("# monitor_input: 1 to hear the input through the output while recording (default 0).\n");
+        out.push_str(&format!("{KEY_MONITOR_INPUT} = {}\n", u8::from(self.monitor_input)));
         out
     }
 

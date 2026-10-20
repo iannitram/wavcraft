@@ -125,11 +125,22 @@ pub struct Ring {
     /// Largest absolute sample since the last [`Ring::take_peak`], as the bits of a non-negative
     /// `f32` (which order like integers).
     peak: AtomicU32,
+    /// Software input monitoring (C025): every frame the input callback pushes is also copied
+    /// here, before the pause check, so the performer hears the input while a punch-in waits.
+    monitor: Option<Arc<MonitorRing>>,
+    /// The input latency the device reported, in microseconds (0: it did not say). Set by the
+    /// input callback from the stream timestamps (C010).
+    reported_latency_us: AtomicU64,
 }
 
 impl Ring {
     /// A ring holding up to `frames` frames of `channels` samples.
     pub fn new(frames: usize, channels: u16) -> Arc<Ring> {
+        Ring::with_monitor(frames, channels, None)
+    }
+
+    /// [`Ring::new`] that also feeds `monitor` (its channel count must be `channels`).
+    pub fn with_monitor(frames: usize, channels: u16, monitor: Option<Arc<MonitorRing>>) -> Arc<Ring> {
         let channels = usize::from(channels.max(1));
         let slots = (0..frames.max(1) * channels).map(|_| AtomicU32::new(0)).collect();
         Arc::new(Ring {
@@ -140,7 +151,19 @@ impl Ring {
             dropped_frames: AtomicU64::new(0),
             paused: AtomicBool::new(false),
             peak: AtomicU32::new(0),
+            monitor: monitor.filter(|m| m.channels() == channels),
+            reported_latency_us: AtomicU64::new(0),
         })
+    }
+
+    /// Producer side: the latency the device reports for this input, in microseconds.
+    pub fn set_reported_latency_us(&self, us: u64) {
+        self.reported_latency_us.store(us, Ordering::Relaxed);
+    }
+
+    /// The input latency the device reported, if it did (C010).
+    pub fn reported_latency_us(&self) -> Option<u64> {
+        Some(self.reported_latency_us.load(Ordering::Relaxed)).filter(|v| *v > 0)
     }
 
     /// Producer side: queue whole frames from `samples` (a trailing partial frame is ignored).
@@ -148,6 +171,9 @@ impl Ring {
     pub fn push(&self, samples: &[f32]) -> usize {
         let ch = self.channels;
         let frames = samples.len() / ch;
+        if let Some(m) = &self.monitor {
+            m.push(samples);
+        }
         if self.paused.load(Ordering::Relaxed) {
             return 0;
         }
@@ -217,6 +243,117 @@ impl Ring {
 
     pub fn channels(&self) -> usize {
         self.channels
+    }
+}
+
+/// The path from the input callback to the output callback for software input monitoring (C025):
+/// a lock-free single-producer, single-consumer queue of interleaved `f32` frames in atomics (no
+/// `unsafe`). Neither side blocks, locks or allocates. It is small on purpose, so the delay it
+/// can add is bounded: when the producer finds it full it drops the new frames, and when the
+/// consumer finds more than three quarters of it waiting it skips the oldest down to a quarter;
+/// both count as overflow. When the consumer wants more than is there it gets silence for the
+/// rest and the shortfall is counted as an underrun (only once the input has started).
+pub struct MonitorRing {
+    slots: Box<[AtomicU32]>,
+    channels: usize,
+    /// Next sample the consumer reads. Written by the consumer only.
+    head: AtomicU64,
+    /// Next sample the producer writes. Written by the producer only.
+    tail: AtomicU64,
+    overflow_frames: AtomicU64,
+    underrun_frames: AtomicU64,
+    /// Frames the consumer has taken for playing (not counting silence).
+    played_frames: AtomicU64,
+}
+
+impl MonitorRing {
+    /// A ring of `frames` frames of `channels` samples (at least 4 frames).
+    pub fn new(frames: usize, channels: u16) -> Arc<MonitorRing> {
+        let channels = usize::from(channels.max(1));
+        let slots = (0..frames.max(4) * channels).map(|_| AtomicU32::new(0)).collect();
+        Arc::new(MonitorRing {
+            slots,
+            channels,
+            head: AtomicU64::new(0),
+            tail: AtomicU64::new(0),
+            overflow_frames: AtomicU64::new(0),
+            underrun_frames: AtomicU64::new(0),
+            played_frames: AtomicU64::new(0),
+        })
+    }
+
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// The capacity in frames.
+    pub fn capacity_frames(&self) -> usize {
+        self.slots.len() / self.channels
+    }
+
+    /// Producer side: queue whole frames; what does not fit is dropped and counted. Returns the
+    /// frames queued.
+    pub fn push(&self, samples: &[f32]) -> usize {
+        let ch = self.channels;
+        let frames = samples.len() / ch;
+        let cap = self.slots.len() as u64;
+        let (tail, head) = (self.tail.load(Ordering::Relaxed), self.head.load(Ordering::Acquire));
+        let take = frames.min((cap - (tail - head)) as usize / ch);
+        for (i, s) in samples[..take * ch].iter().enumerate() {
+            self.slots[((tail + i as u64) % cap) as usize].store(s.to_bits(), Ordering::Relaxed);
+        }
+        self.tail.store(tail + (take * ch) as u64, Ordering::Release);
+        if take < frames {
+            self.overflow_frames.fetch_add((frames - take) as u64, Ordering::Relaxed);
+        }
+        take
+    }
+
+    /// Consumer side: fill `out` (whole frames; a trailing partial frame is zeroed) and return
+    /// the frames that came from the queue; the rest of `out` is silence.
+    pub fn pop_into(&self, out: &mut [f32]) -> usize {
+        let ch = self.channels;
+        let cap = self.slots.len() as u64;
+        let (mut head, tail) = (self.head.load(Ordering::Relaxed), self.tail.load(Ordering::Acquire));
+        let cap_frames = self.slots.len() / ch;
+        let waiting = ((tail - head) as usize) / ch;
+        if waiting > cap_frames * 3 / 4 {
+            let skip = waiting - cap_frames / 4;
+            head += (skip * ch) as u64;
+            self.overflow_frames.fetch_add(skip as u64, Ordering::Relaxed);
+        }
+        let want = out.len() / ch;
+        let got = (((tail - head) as usize) / ch).min(want);
+        for (i, o) in out[..got * ch].iter_mut().enumerate() {
+            *o = f32::from_bits(self.slots[((head + i as u64) % cap) as usize].load(Ordering::Relaxed));
+        }
+        out[got * ch..].iter_mut().for_each(|o| *o = 0.0);
+        self.head.store(head + (got * ch) as u64, Ordering::Release);
+        if got < want && tail > 0 {
+            self.underrun_frames.fetch_add((want - got) as u64, Ordering::Relaxed);
+        }
+        self.played_frames.fetch_add(got as u64, Ordering::Relaxed);
+        got
+    }
+
+    /// Frames waiting for the output.
+    pub fn waiting_frames(&self) -> usize {
+        ((self.tail.load(Ordering::Acquire) - self.head.load(Ordering::Acquire)) as usize) / self.channels
+    }
+
+    /// Frames dropped or skipped because the output did not keep up.
+    pub fn overflow_frames(&self) -> u64 {
+        self.overflow_frames.load(Ordering::Relaxed)
+    }
+
+    /// Frames the output asked for that had not arrived yet (heard as silence).
+    pub fn underrun_frames(&self) -> u64 {
+        self.underrun_frames.load(Ordering::Relaxed)
+    }
+
+    /// Frames handed to the output so far.
+    pub fn played_frames(&self) -> u64 {
+        self.played_frames.load(Ordering::Relaxed)
     }
 }
 
@@ -595,6 +732,100 @@ mod tests {
         let u32at = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
         assert_eq!(u32at(4), 36 + u32at(40), "RIFF size matches the data size");
         (u16at(22), u32at(24), u16at(34), u32at(40), b.len() as u64)
+    }
+
+    #[test]
+    fn monitor_ring_passes_frames_in_order_and_zero_fills() {
+        let m = MonitorRing::new(8, 2);
+        assert_eq!(m.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 3);
+        let mut out = [9.0f32; 8];
+        assert_eq!(m.pop_into(&mut out), 3);
+        assert_eq!(out, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0, 0.0]);
+        assert_eq!(m.played_frames(), 3);
+        assert_eq!(m.underrun_frames(), 1, "asked for four frames, three were there");
+        assert_eq!(m.overflow_frames(), 0);
+    }
+
+    #[test]
+    fn monitor_ring_underrun_is_silence_and_not_counted_before_the_input_starts() {
+        let m = MonitorRing::new(16, 1);
+        let mut out = [7.0f32; 4];
+        assert_eq!(m.pop_into(&mut out), 0);
+        assert_eq!(out, [0.0; 4]);
+        assert_eq!(m.underrun_frames(), 0, "the input has not started");
+        m.push(&[0.5]);
+        let mut one = [0.0f32; 1];
+        m.pop_into(&mut one);
+        m.pop_into(&mut out);
+        assert_eq!(m.underrun_frames(), 4, "now the output is ahead of the input");
+    }
+
+    #[test]
+    fn monitor_ring_overflow_drops_new_frames_and_counts_them() {
+        let m = MonitorRing::new(4, 1);
+        assert_eq!(m.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 4);
+        assert_eq!(m.overflow_frames(), 2);
+        assert_eq!(m.push(&[7.0]), 0, "full: nothing waits for room");
+        assert_eq!(m.overflow_frames(), 3);
+    }
+
+    #[test]
+    fn monitor_ring_skips_the_oldest_when_the_output_stalls_so_the_delay_stays_bounded() {
+        let m = MonitorRing::new(8, 1);
+        let ramp: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        m.push(&ramp);
+        let mut out = [0.0f32; 2];
+        // Eight waiting is above three quarters (6): skip down to a quarter (2), then play them.
+        assert_eq!(m.pop_into(&mut out), 2);
+        assert_eq!(out, [6.0, 7.0], "the newest frames are the ones kept");
+        assert_eq!(m.overflow_frames(), 6);
+    }
+
+    #[test]
+    fn monitor_ring_between_two_threads_keeps_order() {
+        let m = MonitorRing::new(64, 1);
+        let producer = {
+            let m = m.clone();
+            std::thread::spawn(move || {
+                let mut next = 0u32;
+                while next < 20_000 {
+                    if m.push(&[next as f32]) == 1 {
+                        next += 1;
+                    } else {
+                        std::thread::yield_now();
+                    }
+                }
+            })
+        };
+        let (mut last, mut out) = (-1.0f32, [0.0f32; 16]);
+        let started = std::time::Instant::now();
+        while last < 19_999.0 && started.elapsed() < Duration::from_secs(20) {
+            let got = m.pop_into(&mut out);
+            for v in &out[..got] {
+                assert!(*v > last, "order kept (skips allowed, repeats and reorders not): {v} after {last}");
+                last = *v;
+            }
+            std::thread::yield_now();
+        }
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn a_ring_with_a_monitor_copies_even_while_paused_and_reports_latency() {
+        let m = MonitorRing::new(16, 2);
+        let ring = Ring::with_monitor(16, 2, Some(m.clone()));
+        ring.set_paused(true);
+        assert_eq!(ring.push(&[0.1, 0.2, 0.3, 0.4]), 0, "the take discards while paused");
+        let mut out = [0.0f32; 4];
+        assert_eq!(m.pop_into(&mut out), 2, "the monitor still hears the input");
+        assert_eq!(out, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(ring.reported_latency_us(), None);
+        ring.set_reported_latency_us(12_500);
+        assert_eq!(ring.reported_latency_us(), Some(12_500));
+        // A monitor with the wrong channel count is not attached.
+        let odd = Ring::with_monitor(16, 1, Some(m.clone()));
+        odd.push(&[0.9]);
+        assert_eq!(m.pop_into(&mut out), 0);
     }
 
     #[test]

@@ -13,6 +13,8 @@
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `PREF [get [key]]` / `PREF set record_offset_ms <ms>|default` / `PREF set monitor_input 1|0` → `OK …` (preferences, saved)
+//! - `RECORD start [mode=… monitor=1|0 …]` etc. (see `recording.rs`); `STATE` carries `mon_*` and `rec_offset_*`
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

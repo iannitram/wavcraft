@@ -4,11 +4,12 @@
 //! silence if the UI holds it. The file's rate is converted to the device's with linear
 //! interpolation, which is fine for auditioning (an edit never goes through this path).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::AudioBuffer;
+use wavcraft_core::record::MonitorRing;
 
 struct Shared {
     audio: Mutex<Option<Arc<AudioBuffer>>>,
@@ -21,6 +22,11 @@ struct Shared {
     muted: AtomicBool,
     /// Set by the stream's error callback (the device went away, for example).
     failed: AtomicBool,
+    /// The input being heard through the output while recording (C025). The callback only
+    /// `try_lock`s it; the UI thread swaps it in and out.
+    monitor: Mutex<Option<Arc<MonitorRing>>>,
+    /// The output device's sample rate (0 until a stream is open).
+    device_rate: AtomicU32,
 }
 
 /// The output stream and the play state shared with its callback.
@@ -43,6 +49,8 @@ impl Player {
             playing: AtomicBool::new(false),
             muted: AtomicBool::new(false),
             failed: AtomicBool::new(false),
+            monitor: Mutex::new(None),
+            device_rate: AtomicU32::new(0),
         });
         let mut player = Player { shared, stream: None, error: None, device: String::new() };
         player.reopen();
@@ -61,6 +69,32 @@ impl Player {
             }
             Err(e) => self.error = Some(e),
         }
+    }
+
+    /// Hear `ring` (input at `rate` Hz) through the output (C025), or stop hearing it with
+    /// `None`. Refused, with the reason, when there is no working output or its rate differs from
+    /// the input's (no resampling here); the recording itself is not affected.
+    pub fn set_monitor(&mut self, ring: Option<(Arc<MonitorRing>, u32)>) -> Result<(), String> {
+        let Some((ring, rate)) = ring else {
+            if let Ok(mut slot) = self.shared.monitor.lock() {
+                *slot = None;
+            }
+            return Ok(());
+        };
+        if self.stream.is_none() || self.failed() {
+            self.reopen();
+        }
+        if self.stream.is_none() {
+            return Err(format!("input monitoring needs an output device: {}", self.error.as_deref().unwrap_or("none")));
+        }
+        let out = self.shared.device_rate.load(Ordering::Relaxed);
+        if out != rate {
+            return Err(format!("input monitoring needs the input and output at the same rate (input {rate} Hz, output {out} Hz)"));
+        }
+        if let Ok(mut slot) = self.shared.monitor.lock() {
+            *slot = Some(ring);
+        }
+        Ok(())
     }
 
     /// Whether the output stream has reported an error since it was opened.
@@ -133,12 +167,14 @@ fn open_stream(shared: &Arc<Shared>) -> Result<(cpal::Stream, String), String> {
         other => Err(format!("unsupported output sample format {other:?}")),
     }?;
     stream.play().map_err(|e| e.to_string())?;
+    shared.device_rate.store(config.sample_rate.0, Ordering::Relaxed);
     Ok((stream, name))
 }
 
 fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, shared: &Arc<Shared>) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
+    f32: cpal::FromSample<T>,
 {
     let on_error = Arc::clone(shared);
     let shared = Arc::clone(shared);
@@ -158,8 +194,58 @@ where
         .map_err(|e| e.to_string())
 }
 
-/// Fill one device buffer. Runs on the audio thread.
-fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T], channels: usize, device_rate: f64) {
+/// Fill one device buffer: the file being played, plus the input when it is being monitored. Runs
+/// on the audio thread.
+fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T], channels: usize, device_rate: f64)
+where
+    f32: cpal::FromSample<T>,
+{
+    render_playback(shared, out, channels, device_rate);
+    if let Ok(slot) = shared.monitor.try_lock()
+        && let Some(ring) = slot.as_ref()
+    {
+        mix_monitor(ring, out, channels);
+    }
+}
+
+/// What output channel `c` of `out_channels` hears of one input frame: a mono input on every
+/// output channel, otherwise channel for channel (a one-channel output gets the average).
+fn monitor_sample(input: &[f32], c: usize, out_channels: usize) -> f32 {
+    match input.len() {
+        0 => 0.0,
+        1 => input[0],
+        n if out_channels == 1 => input.iter().sum::<f32>() / n as f32,
+        _ => input.get(c).copied().unwrap_or(0.0),
+    }
+}
+
+/// Add the monitored input to `out` (already holding the file's playback). Takes the frames the
+/// ring has; the rest of the buffer hears silence from it. Stack space only.
+fn mix_monitor<T: cpal::Sample + cpal::FromSample<f32>>(ring: &MonitorRing, out: &mut [T], channels: usize)
+where
+    f32: cpal::FromSample<T>,
+{
+    let in_ch = ring.channels();
+    let mut tmp = [0.0f32; 2048];
+    let per_chunk = (tmp.len() / in_ch).max(1);
+    if in_ch > tmp.len() {
+        return;
+    }
+    for chunk in out.chunks_mut(per_chunk * channels) {
+        let frames = chunk.len() / channels;
+        let got = ring.pop_into(&mut tmp[..frames * in_ch]);
+        for (f, frame) in chunk.chunks_mut(channels).take(got).enumerate() {
+            let input = &tmp[f * in_ch..(f + 1) * in_ch];
+            for (c, slot) in frame.iter_mut().enumerate() {
+                let mixed = cpal::Sample::to_sample::<f32>(*slot) + monitor_sample(input, c, channels);
+                *slot = T::from_sample(mixed.clamp(-1.0, 1.0));
+            }
+        }
+    }
+}
+
+/// The file's playback alone.
+fn render_playback<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T], channels: usize, device_rate: f64) {
     let silence = T::from_sample(0.0f32);
     out.iter_mut().for_each(|s| *s = silence);
     if !shared.playing.load(Ordering::Relaxed) || shared.muted.load(Ordering::Relaxed) {
@@ -218,6 +304,8 @@ mod tests {
             playing: AtomicBool::new(false),
             muted: AtomicBool::new(false),
             failed: AtomicBool::new(false),
+            monitor: Mutex::new(None),
+            device_rate: AtomicU32::new(0),
         }
     }
 
@@ -287,6 +375,49 @@ mod tests {
         shared.muted.store(false, Ordering::Relaxed);
         render(&shared, &mut out, 2, 48_000.0);
         assert!(out.iter().any(|v| *v != 0.0));
+    }
+
+    /// C025: the input is added to the output; a mono input is on every channel.
+    #[test]
+    fn the_monitored_input_is_heard_with_the_playback_and_never_blocks() {
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 100]] });
+        let ring = MonitorRing::new(64, 1);
+        ring.push(&[0.5, 0.5, 0.5]);
+        *shared.monitor.lock().unwrap() = Some(ring.clone());
+        let mut out = vec![9.0f32; 8];
+        render(&shared, &mut out, 2, 48_000.0);
+        // Nothing plays, so the first three frames are the input alone, then silence (underrun).
+        assert_eq!(out, [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(ring.underrun_frames(), 1);
+        // Playing and monitoring add; stereo input goes channel for channel.
+        let st = MonitorRing::new(64, 2);
+        st.push(&[0.1, 0.2, 0.1, 0.2]);
+        *shared.monitor.lock().unwrap() = Some(st);
+        play(&shared, 0.0, 100.0);
+        let mut out = vec![0.0f32; 4];
+        render(&shared, &mut out, 2, 48_000.0);
+        for (got, want) in out.iter().zip([0.35, 0.45, 0.35, 0.45]) {
+            assert!((got - want).abs() < 1e-6, "{out:?}");
+        }
+        // A busy slot (the UI is swapping the monitor) is skipped, not waited for.
+        let _held = shared.monitor.lock().unwrap();
+        let mut out = vec![0.0f32; 4];
+        render(&shared, &mut out, 2, 48_000.0);
+    }
+
+    #[test]
+    fn monitoring_maps_channels_and_clamps_integer_output() {
+        assert_eq!(monitor_sample(&[0.5], 3, 4), 0.5);
+        assert_eq!(monitor_sample(&[0.2, 0.4], 0, 1), (0.2 + 0.4) / 2.0);
+        assert_eq!(monitor_sample(&[0.2, 0.4, 0.6], 2, 2), 0.6);
+        assert_eq!(monitor_sample(&[0.2, 0.4], 3, 4), 0.0, "no input channel for an output channel");
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 10]] });
+        let ring = MonitorRing::new(16, 1);
+        ring.push(&[2.0]);
+        *shared.monitor.lock().unwrap() = Some(ring);
+        let mut out = vec![0i16; 2];
+        render(&shared, &mut out, 1, 48_000.0);
+        assert_eq!(out[0], i16::MAX, "clamped, not wrapped");
     }
 
     #[test]

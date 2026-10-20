@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use wavcraft_core::EditError;
 use wavcraft_core::doc::edit::{Change, ChannelMask, Crossfades};
 use wavcraft_core::doc::history::History;
-use wavcraft_core::doc::rec_edit::{RecMode, RecPlan, RecTarget, apply_take};
+use wavcraft_core::doc::rec_edit::{RecMode, RecPlan, RecTarget, apply_take, apply_take_with_offset, offset_frames, resolve_offset_ms};
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
@@ -256,4 +256,88 @@ fn an_empty_take_changes_nothing() {
     let edit = apply_take(&doc, &take, &plan(RecMode::Insert, RecTarget::Both, 10, 0..0), NONE).unwrap();
     assert!(edit.is_noop());
     let _ = ChannelMask::ALL;
+}
+
+// C010, C050: latency compensation.
+
+#[test]
+fn an_offset_in_milliseconds_is_a_frame_count_at_each_rate() {
+    assert_eq!(offset_frames(0, 48_000), 0);
+    assert_eq!(offset_frames(10, 48_000), 480);
+    assert_eq!(offset_frames(10, 44_100), 441);
+    assert_eq!(offset_frames(10, 96_000), 960);
+    assert_eq!(offset_frames(25, 22_050), 551, "rounded to the nearest frame (551.25)");
+    assert_eq!(offset_frames(1, 8_000), 8);
+    assert_eq!(offset_frames(2000, 192_000), 384_000);
+}
+
+#[test]
+fn the_offset_is_the_preference_else_what_the_device_reported_else_nothing() {
+    assert_eq!(resolve_offset_ms(Some(35), Some(12_000)), 35, "the preference wins");
+    assert_eq!(resolve_offset_ms(Some(0), Some(12_000)), 0, "an explicit zero is a choice");
+    assert_eq!(resolve_offset_ms(None, Some(12_400)), 12);
+    assert_eq!(resolve_offset_ms(None, Some(12_500)), 13);
+    assert_eq!(resolve_offset_ms(None, None), 0);
+    assert_eq!(resolve_offset_ms(Some(99_999), None), 2000, "capped");
+    assert_eq!(resolve_offset_ms(None, Some(u64::MAX / 2)), 2000, "capped");
+}
+
+#[test]
+fn insert_with_an_offset_leaves_out_the_take_s_first_frames() {
+    for (rate_ms, rate) in [(10u32, 48_000u32), (10, 44_100), (25, 96_000), (7, 22_050)] {
+        let off = offset_frames(rate_ms, rate);
+        let (a, b) = (TempDir::new(&format!("off-ins-{rate}-doc")), TempDir::new(&format!("off-ins-{rate}-take")));
+        let (dd, td) = (music(2, 20_000), take_data(2, 5000));
+        let (doc, take) = (doc_in(&a.0, rate, &dd), doc_in(&b.0, rate, &td));
+        let p = plan(RecMode::Insert, RecTarget::Both, 3000, 0..0);
+        let edit = apply_take_with_offset(&doc, &take, &p, NONE, off).unwrap();
+        let n = 5000 - off as usize;
+        assert_eq!(edit.state.len_frames(), (20_000 + n) as u64, "rate {rate}: the file grows by the take less the offset");
+        assert_eq!(edit.change, Change::LengthFrom { frame: 3000 });
+        let out = content(&edit.state);
+        for (c, o) in out.iter().enumerate() {
+            assert_eq!(o[..3000], dd[c][..3000]);
+            assert_eq!(o[3000..3000 + n], td[c][off as usize..], "rate {rate}: the take starts {off} frames in");
+            assert_eq!(o[3000 + n..], dd[c][3000..]);
+        }
+        // The take is not touched.
+        assert_eq!(content(&take), td);
+    }
+}
+
+#[test]
+fn a_zero_offset_is_exactly_apply_take() {
+    let s = setup("off-zero", 2, 5000, 2, 700);
+    let p = plan(RecMode::Insert, RecTarget::Both, 1200, 0..0);
+    let (x, y) = (apply_take(&s.doc, &s.take, &p, NONE).unwrap(), apply_take_with_offset(&s.doc, &s.take, &p, NONE, 0).unwrap());
+    assert_eq!(content(&x.state), content(&y.state));
+}
+
+#[test]
+fn punch_in_with_an_offset_still_fills_the_selection_to_its_end() {
+    let s = setup("off-punch", 2, 6000, 2, 1480);
+    let p = plan(RecMode::Punch, RecTarget::Both, 0, 2000..3000);
+    assert_eq!(p.limit_frames_with_offset(480), Some(1480), "the take runs the offset longer");
+    let edit = apply_take_with_offset(&s.doc, &s.take, &p, NONE, 480).unwrap();
+    assert_eq!(edit.state.len_frames(), 6000);
+    let out = content(&edit.state);
+    for (c, o) in out.iter().enumerate() {
+        assert_eq!(o[..2000], s.doc_data[c][..2000]);
+        assert_eq!(o[2000..3000], s.take_data[c][480..1480], "the punch holds what was played, lined up");
+        assert_eq!(o[3000..], s.doc_data[c][3000..]);
+    }
+}
+
+#[test]
+fn replace_over_a_cursor_with_an_offset_and_a_take_shorter_than_the_offset() {
+    let s = setup("off-rep", 1, 4000, 1, 900);
+    let p = plan(RecMode::Replace, RecTarget::Both, 1000, 1000..1000);
+    let edit = apply_take_with_offset(&s.doc, &s.take, &p, NONE, 300).unwrap();
+    let out = content(&edit.state);
+    assert_eq!(edit.state.len_frames(), 4000);
+    assert_eq!(out[0][1000..1600], s.take_data[0][300..]);
+    assert_eq!(out[0][1600..], s.doc_data[0][1600..]);
+    // A take that is all latency places nothing.
+    let none = apply_take_with_offset(&s.doc, &s.take, &p, NONE, 5000).unwrap();
+    assert!(none.is_noop());
 }

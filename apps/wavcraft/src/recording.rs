@@ -4,12 +4,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use egui::vec2;
 use wavcraft_core::DocState;
 use wavcraft_core::doc::rec_edit::{RecMode, RecPlan, RecTarget};
-use wavcraft_core::record::{self, FakeInput, FakeSpec, RecFormat, Recorder, Ring, Take};
+use wavcraft_core::record::{self, FakeInput, FakeSpec, MonitorRing, RecFormat, Recorder, Ring, Take};
 use wavcraft_core::space::{format_bytes, free_space};
 
 /// Where the audio comes from while a take runs.
@@ -18,7 +19,71 @@ enum Source {
     Device(cpal::Stream),
 }
 
+/// Software input monitoring for the take that is running (C025).
+struct Mon {
+    ring: Arc<MonitorRing>,
+    rate: u32,
+    /// False when the output could not take it (`set_monitor_audible`).
+    audible: bool,
+    /// With `WAVCRAFT_MONITOR_SINK=null`, a thread that drains the queue instead of the output
+    /// device, so a scripted run hears nothing.
+    sink: Option<NullSink>,
+}
+
+/// Drains a [`MonitorRing`] in real time into nowhere.
+struct NullSink {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl NullSink {
+    fn spawn(ring: Arc<MonitorRing>) -> NullSink {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let handle = std::thread::spawn(move || {
+            let mut buf = vec![0.0f32; ring.capacity_frames() * ring.channels()];
+            while !flag.load(Ordering::Relaxed) {
+                let n = ring.waiting_frames();
+                if n > 0 {
+                    ring.pop_into(&mut buf[..n * ring.channels()]);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        NullSink { stop, handle: Some(handle) }
+    }
+}
+
+impl Drop for NullSink {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// What monitoring did during a take.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MonStats {
+    on: bool,
+    played: u64,
+    overflow: u64,
+    underrun: u64,
+}
+
+impl MonStats {
+    fn of(m: &Mon) -> MonStats {
+        MonStats { on: m.audible, played: m.ring.played_frames(), overflow: m.ring.overflow_frames(), underrun: m.ring.underrun_frames() }
+    }
+
+    fn fields(&self) -> String {
+        format!(" mon={} mon_played={} mon_overflow={} mon_underrun={}", u8::from(self.on), self.played, self.overflow, self.underrun)
+    }
+}
+
 struct Active {
+    monitor: Option<Mon>,
     recorder: Recorder,
     source: Source,
     ring: Arc<Ring>,
@@ -75,6 +140,9 @@ pub struct StartOpts {
     pub target: Option<RecTarget>,
     /// `preroll=<ms>`: how long a punch-in plays before the selection (default 2000).
     pub preroll_ms: Option<u64>,
+    /// `monitor=1|0`: hear the input through the output during this take, whatever the
+    /// preference says (C025).
+    pub monitor: Option<bool>,
 }
 
 /// How long a punch-in plays before the selection, unless `preroll=` says otherwise.
@@ -99,6 +167,15 @@ struct Punch {
     open: bool,
 }
 
+/// `1`/`on`/`true`/`yes` and `0`/`off`/`false`/`no`.
+pub fn parse_flag(v: &str) -> Option<bool> {
+    match v {
+        "1" | "on" | "true" | "yes" => Some(true),
+        "0" | "off" | "false" | "no" => Some(false),
+        _ => None,
+    }
+}
+
 /// Split `max=<s>`, `in=<s>`, `at=<unix s>`, `mode=`, `channel=` and `preroll=<ms>` off a `RECORD start` argument line; the rest is
 /// the format's arguments. `now_unix` turns `at=` into a delay.
 pub fn parse_start_args(args: &str, now_unix: u64) -> Result<(RecFormat, StartOpts), String> {
@@ -111,6 +188,7 @@ pub fn parse_start_args(args: &str, now_unix: u64) -> Result<(RecFormat, StartOp
             Some(("mode", v)) => opts.mode = Some(RecMode::parse(v).ok_or_else(|| format!("{w:?}: expected mode=insert, replace or punch"))?),
             Some(("channel", v)) => opts.target = Some(RecTarget::parse(v).ok_or_else(|| format!("{w:?}: expected channel=L, R or both"))?),
             Some(("preroll", v)) => opts.preroll_ms = Some(num(v)?),
+            Some(("monitor", v)) => opts.monitor = Some(parse_flag(v).ok_or_else(|| format!("{w:?}: expected monitor=1 or monitor=0"))?),
             Some(("at", v)) => opts.delay_secs = Some(num(v)?.saturating_sub(now_unix)),
             _ => rest.push(w),
         }
@@ -137,6 +215,15 @@ pub struct Recording {
     pub dialog_target: RecTarget,
     /// Set while a take is being recorded into the open document.
     into: Option<IntoDoc>,
+    /// The preference: hear the input while recording (C025). Off unless the owner turns it on.
+    pub monitor_default: bool,
+    /// `RECORD start monitor=`: this take only; taken by the next start.
+    pub monitor_override: Option<bool>,
+    /// What monitoring did during the last take, and the input latency the device reported for it.
+    last_monitor: MonStats,
+    last_latency_us: Option<u64>,
+    /// The record offset applied to the last take put into a document: (ms, frames).
+    pub last_offset: Option<(u32, u64)>,
 }
 
 /// The folder takes go in: `WAVCRAFT_RECORD_DIR`, else `WavCraft Recordings` in the system's
@@ -277,10 +364,14 @@ impl Recording {
         let dir = record_dir()?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let make = |fmt: RecFormat| record::create_take(&dir, fmt, now).map_err(|e| format!("cannot make a take in {}: {e}", dir.display()));
+        let want_monitor = self.monitor_override.take().unwrap_or(self.monitor_default);
+        let monitor;
         let (recorder, source, ring, device) = match FakeSpec::from_env()? {
             Some(spec) => {
                 let ring_frames = spec.ring_ms.map_or(want.rate as usize * 2, |ms| (want.rate as usize * ms as usize / 1000).max(1));
-                let ring = Ring::new(ring_frames, want.channels);
+                let mon = want_monitor.then(|| MonitorRing::new(crate::input::monitor_frames(want.rate), want.channels));
+                let ring = Ring::with_monitor(ring_frames, want.channels, mon.clone());
+                monitor = mon.map(|ring| (ring, want.rate));
                 ring.set_paused(held);
                 let recorder =
                     Recorder::start_stalled(make(want)?, ring.clone(), Duration::from_millis(u64::from(spec.stall_ms))).map_err(|e| e.to_string())?;
@@ -288,7 +379,8 @@ impl Recording {
                 (recorder, Source::Fake(fake), ring, format!("fake sine {} Hz", spec.hz))
             }
             None => {
-                let opened = crate::input::open(want)?;
+                let opened = crate::input::open(want, want_monitor)?;
+                monitor = opened.monitor.clone().map(|m| (m, opened.fmt.rate));
                 opened.ring.set_paused(held);
                 let recorder = Recorder::start(make(opened.fmt)?, opened.ring.clone()).map_err(|e| e.to_string())?;
                 cpal::traits::StreamTrait::play(&opened.stream).map_err(|e| format!("cannot start the input: {e}"))?;
@@ -299,7 +391,13 @@ impl Recording {
         let fmt = recorder.format();
         self.last_fmt = Some(fmt);
         log::info!(target: "wavcraft", "recording {} from {device}: {fmt:?}{}", path.display(), max.map_or(String::new(), |m| format!(", stops after {m}")));
+        let null_sink = std::env::var("WAVCRAFT_MONITOR_SINK").is_ok_and(|v| v == "null");
+        let monitor = monitor.map(|(ring, rate)| Mon { sink: null_sink.then(|| NullSink::spawn(ring.clone())), ring, rate, audible: true });
+        if monitor.is_some() {
+            log::info!(target: "wavcraft", "input monitoring on{}", if null_sink { " (to a null sink)" } else { "" });
+        }
         self.active = Some(Active {
+            monitor,
             recorder,
             source,
             ring,
@@ -321,9 +419,34 @@ impl Recording {
         Ok(path)
     }
 
+    /// The monitoring queue and its rate when the output should play it (not with the null sink).
+    pub fn monitor_for_output(&self) -> Option<(Arc<MonitorRing>, u32)> {
+        let m = self.active.as_ref()?.monitor.as_ref()?;
+        (m.audible && m.sink.is_none()).then(|| (m.ring.clone(), m.rate))
+    }
+
+    /// The output could not take the monitor: say it is not heard.
+    pub fn set_monitor_audible(&mut self, audible: bool) {
+        if let Some(m) = self.active.as_mut().and_then(|a| a.monitor.as_mut()) {
+            m.audible = audible;
+        }
+    }
+
+    /// The input latency the device reported for the last take, if it did (C010).
+    pub fn last_reported_latency_us(&self) -> Option<u64> {
+        self.last_latency_us
+    }
+
     /// Stop the input, then finish the take (queue drained, header final, file synced).
     pub fn stop(&mut self) -> Option<Take> {
         let a = self.active.take()?;
+        self.last_latency_us = a.ring.reported_latency_us();
+        if let Some(m) = &a.monitor {
+            self.last_monitor = MonStats::of(m);
+            log::info!(target: "wavcraft", "input monitoring: {} frames heard, {} dropped, {} underrun", self.last_monitor.played, self.last_monitor.overflow, self.last_monitor.underrun);
+        } else {
+            self.last_monitor = MonStats::default();
+        }
         match a.source {
             Source::Fake(f) => f.stop(),
             Source::Device(s) => drop(s),
@@ -371,14 +494,17 @@ impl Recording {
     pub fn state_fields(&self) -> String {
         match &self.active {
             None => format!(
-                " recording=0 rec_frames=0 rec_bytes=0 rec_dropped=0 rec_left_s=-1 rec_paused=0 rec_resumes=0 rec_max_s=-1 rec_armed={} rec_mode=none rec_target=- rec_gate=-1",
-                self.armed_in()
+                " recording=0 rec_frames=0 rec_bytes=0 rec_dropped=0 rec_left_s=-1 rec_paused=0 rec_resumes=0 rec_max_s=-1 rec_armed={} rec_mode=none rec_target=- rec_gate=-1{} rec_offset_ms={} rec_offset_frames={}",
+                self.armed_in(),
+                self.last_monitor.fields(),
+                self.last_offset.map_or(-1, |o| i64::from(o.0)),
+                self.last_offset.map_or(-1, |o| o.1 as i64)
             ),
             Some(a) => {
                 let s = a.recorder.status();
                 let left = Self::left_secs(a).map_or(-1, |l| l.min(i64::MAX as u64) as i64);
                 format!(
-                    " recording=1 rec_frames={} rec_bytes={} rec_dropped={} rec_left_s={left} rec_paused={} rec_resumes={} rec_resume_at={} rec_max_s={} rec_armed=-1 rec_rate={} rec_ch={} rec_bits={} rec_mode={} rec_target={} rec_gate={}",
+                    " recording=1 rec_frames={} rec_bytes={} rec_dropped={} rec_left_s={left} rec_paused={} rec_resumes={} rec_resume_at={} rec_max_s={} rec_armed=-1 rec_rate={} rec_ch={} rec_bits={} rec_mode={} rec_target={} rec_gate={}{} rec_offset_ms=-1 rec_offset_frames=-1",
                     s.frames,
                     s.file_bytes,
                     s.dropped_frames,
@@ -391,7 +517,8 @@ impl Recording {
                     a.recorder.format().bits,
                     self.into.as_ref().map_or("none", |i| i.plan.mode.name()),
                     self.into.as_ref().map_or("-", |i| i.plan.target.name()),
-                    self.into.as_ref().and_then(|i| i.punch.as_ref()).map_or(-1, |p| i64::from(p.open))
+                    self.into.as_ref().and_then(|i| i.punch.as_ref()).map_or(-1, |p| i64::from(p.open)),
+                    a.monitor.as_ref().map_or(MonStats::default(), MonStats::of).fields()
                 )
             }
         }
@@ -418,6 +545,7 @@ impl Recording {
             None if a.ring.is_paused() => "❚❚ PAUSED".to_string(),
             None => "● REC".to_string(),
         };
+        let state = if a.monitor.as_ref().is_some_and(|m| m.audible) { format!("{state} (monitoring)") } else { state };
         let limit = a.max_frames.map_or(String::new(), |m| format!(" of {}", clock(m / u64::from(fmt.rate.max(1)))));
         let mut text = format!(
             "{warn}{state} {}{limit} · {} · {left} left on disk · peak {db}{} · {} Hz {} ch {}-bit · {}",
@@ -527,9 +655,9 @@ impl Recording {
 
 #[cfg(test)]
 mod tests {
-    use super::{StartOpts, clock, parse_start_args};
+    use super::{Duration, Instant, NullSink, StartOpts, clock, parse_start_args};
     use wavcraft_core::doc::rec_edit::{RecMode, RecTarget};
-    use wavcraft_core::record::RecFormat;
+    use wavcraft_core::record::{MonitorRing, RecFormat};
 
     #[test]
     fn start_arguments_split_the_timer_from_the_format() {
@@ -556,6 +684,28 @@ mod tests {
         assert!(parse_start_args("channel=L", 0).is_err(), "a channel without a mode means nothing");
         assert!(parse_start_args("mode=insert max=2", 0).is_err());
         assert!(parse_start_args("mode=replace in=3", 0).is_err());
+    }
+
+    #[test]
+    fn start_arguments_take_monitor_on_or_off() {
+        assert_eq!(parse_start_args("mode=punch monitor=1", 0).unwrap().1.monitor, Some(true));
+        assert_eq!(parse_start_args("monitor=0 rate=44100", 0).unwrap().1.monitor, Some(false));
+        assert_eq!(parse_start_args("", 0).unwrap().1.monitor, None);
+        assert!(parse_start_args("monitor=maybe", 0).is_err());
+    }
+
+    #[test]
+    fn the_null_sink_drains_the_monitor_queue_and_stops() {
+        let ring = MonitorRing::new(4800, 1);
+        let sink = NullSink::spawn(ring.clone());
+        ring.push(&[0.5; 1000]);
+        let t = Instant::now();
+        while ring.played_frames() < 1000 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(ring.played_frames(), 1000);
+        assert_eq!((ring.overflow_frames(), ring.underrun_frames()), (0, 0));
+        drop(sink);
     }
 
     #[test]
