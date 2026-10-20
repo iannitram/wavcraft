@@ -58,7 +58,9 @@ refuses with the size needed and the space free if not.
 | Shift+S | zoom to the selection |
 | Click | place the cursor |
 | Drag | select a range |
-| Space | play from the cursor (or play the selection); again to stop |
+| Space | play from the cursor (or play the selection); again to stop; resumes after Pause |
+| Transport panel | Play, Pause, Stop, Loop (selection, or the view), Skip Selection (play around the selection to hear a cut), go to start / end; marker buttons are off until markers exist; Auto-Scroll (pagewise or centred; moving the view by hand turns it off) |
+| Shift+X | Return to Start Position on Stop on / off (on: Stop puts the cursor back where play started) |
 | Home / End | cursor to the start / end |
 | I / O | selection start / end at the playhead (the cursor when stopped) |
 | Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y | undo, redo (the Edit menu names the step) |

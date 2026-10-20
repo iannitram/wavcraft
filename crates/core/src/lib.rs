@@ -11,6 +11,7 @@
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
 //!   and its waveform peaks.
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
+//! - [`transport`]: play modes, loop and skip arithmetic, and the view following the playhead.
 //! - [`view`]: zoom and scroll arithmetic, selections and time formatting.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -25,6 +26,7 @@ pub mod settings;
 pub mod space;
 pub mod spectrogram;
 pub mod store;
+pub mod transport;
 pub mod view;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
