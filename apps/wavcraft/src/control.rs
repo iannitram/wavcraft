@@ -10,6 +10,7 @@
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `ACTION <name>` (an action table name, `edit.delete`; `view.snap.toggle`, `view.snap.zero.toggle`, `channel.toggle.<n>` with n from 0) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `SNAP <frame> [frames_per_px]` → `OK frame=<snapped>` (the snap step selection gestures call, with the selection's edges as targets)
+//! - `MARKERS` → `OK count=<n> <id>,<start>,<end>,<name>;…` (the markers of the current state; a point has start = end)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
