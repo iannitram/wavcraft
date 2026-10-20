@@ -65,6 +65,8 @@ pub fn bits_of(d: BitDepthSetting) -> u32 {
 /// A multitrack session being edited.
 pub struct Multitrack {
     pub session: Session,
+    /// The session file this was opened from or last saved to (f117).
+    pub file: Option<std::path::PathBuf>,
 }
 
 impl Multitrack {
@@ -74,7 +76,7 @@ impl Multitrack {
         let rate = SampleRate::new(rate_hz).map_err(|_| MtError(format!("a session's sample rate must be 8000 to 768000 Hz, not {rate_hz}")))?;
         let mut session = Session::new(name, rate);
         session.bit_depth = depth;
-        Ok(Multitrack { session })
+        Ok(Multitrack { session, file: None })
     }
 
     pub fn name(&self) -> &str {
@@ -246,6 +248,17 @@ impl Multitrack {
     /// Import an audio file as a clip. The file is probed first (rate, length) and read whole
     /// only when it is under the caps.
     pub fn add_clip_file(&mut self, track: TrackId, path: &Path, at_seconds: f64) -> Result<soundcraft_model::ClipId, MtError> {
+        let audio = read_audio_file(path)?;
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Clip").to_string();
+        // The source's path is the file's absolute path, so a saved session can find it again.
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        self.add_clip_buffer(track, &name, &abs.to_string_lossy(), audio, at_seconds)
+    }
+}
+
+/// Decode an audio file whole for a clip, under the size caps.
+pub(crate) fn read_audio_file(path: &Path) -> Result<ModelBuffer, MtError> {
+    {
         let meta = std::fs::metadata(path).map_err(|e| MtError(format!("cannot read {}: {e}", path.display())))?;
         if meta.len() > MAX_IMPORT_FILE_BYTES {
             return err(format!(
@@ -265,11 +278,11 @@ impl Multitrack {
         }
         let (_, audio) = soundcraft_model_audio::decode(&bytes, ext).map_err(|e| MtError(format!("cannot decode {}: {e}", path.display())))?;
         drop(bytes);
-        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Clip").to_string();
-        let file = path.file_name().and_then(|s| s.to_str()).unwrap_or("clip").to_string();
-        self.add_clip_buffer(track, &name, &file, audio, at_seconds)
+        Ok(audio)
     }
+}
 
+impl Multitrack {
     /// Put an open document on a track as a clip (its audio is copied; the document is untouched).
     pub fn add_clip_document(&mut self, track: TrackId, doc: &Document, at_seconds: f64) -> Result<soundcraft_model::ClipId, MtError> {
         let samples = doc.frames() as u64 * doc.channels() as u64;
@@ -294,7 +307,7 @@ impl Multitrack {
                 let clips: Vec<_> = t
                     .clips()
                     .iter()
-                    .map(|c| json!({"name": c.name, "start": rate.seconds(c.start), "length": rate.seconds(c.length), "channels": c.source().and_then(|s| self.session.source(s)).map_or(0, |s| s.channels)}))
+                    .map(|c| json!({"name": c.name, "start": rate.seconds(c.start), "length": rate.seconds(c.length), "channels": c.source().and_then(|s| self.session.source(s)).map_or(0, |s| s.channels), "gain_db": c.gain_db, "offline": self.clip_offline(c)}))
                     .collect();
                 json!({"name": t.name, "channels": t.channels(), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "clips": clips})
             })

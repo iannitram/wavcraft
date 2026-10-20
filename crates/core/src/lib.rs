@@ -22,6 +22,7 @@ pub mod io;
 pub mod multitrack;
 pub mod random;
 pub mod save;
+pub mod session_file;
 pub mod settings;
 pub mod space;
 pub mod spectrogram;

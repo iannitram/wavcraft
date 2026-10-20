@@ -815,6 +815,19 @@ impl WaveApp {
                         ui.close();
                     }
                 });
+                let has_session = self.mtv.mt.is_some();
+                if ui.add_enabled(has_session, egui::Button::new("Save Session")).clicked() {
+                    self.mtv.save_session_dialog(false);
+                    ui.close();
+                }
+                if ui.add_enabled(has_session, egui::Button::new("Save Session As…")).clicked() {
+                    self.mtv.save_session_dialog(true);
+                    ui.close();
+                }
+                if ui.button("Open Session…").clicked() {
+                    self.mtv.open_session_dialog();
+                    ui.close();
+                }
                 ui.separator();
                 let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
                 if ui.button("Session Folder…").on_hover_text(&now).clicked() {
