@@ -6,6 +6,8 @@
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
+//! - `HOVER <x_px> <y_px>` (from the editor's top-left corner) → `OK pane=wave|spectrum|ruler|outside channel=<n|-> frame=<n> time=<m:ss.mmm>` plus `amp= dbfs= sample=` over a waveform or `hz=` over the spectrogram; `HOVER` alone → the editor's size and view
+//! - `STATE` also carries `last_op=<label> last_op_ms=<n> transport=<stopped|playing|paused|recording> status.<field>=<text>` (spaces as `_`), before `undo=`
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`

@@ -5,10 +5,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::time::{Duration, Instant};
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
+use wavcraft_core::readout::{self, EditorLayout, Readout, StatusField, Transport};
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
@@ -25,6 +27,8 @@ const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
 const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
 const RULER_HEIGHT: f32 = 22.0;
+/// Play and Stop share Space (not in the action table: the window toggles the transport itself).
+const SPACE: actions::Shortcut = actions::Shortcut { cmd: false, shift: false, alt: false, key: "Space" };
 
 /// A file being opened on a worker thread.
 struct Opening {
@@ -34,6 +38,7 @@ struct Opening {
     cancel: Arc<AtomicBool>,
     /// How far the streaming has got, in thousandths.
     progress: Arc<AtomicU32>,
+    started: Instant,
 }
 
 /// A save running on a worker thread.
@@ -49,6 +54,7 @@ struct Saving {
     /// Which open document it saves ([`WaveApp::doc_id`] when it started): a save that finishes
     /// after another file was opened must not give that file its path (Codex review CX-W1).
     doc_id: u64,
+    started: Instant,
 }
 
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
@@ -107,6 +113,14 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// What the last operation was and how long it took (A327): open, save, or an edit.
+    last_op: Option<(String, Duration)>,
+    /// The editor's geometry as last painted, for the pointer readout and `HOVER`.
+    layout: Option<EditorLayout>,
+    /// What is under the pointer now (A079); `None` when it is not over the editor.
+    hover: Option<Readout>,
+    /// Free space on the session folder's disk, asked every few seconds, not every frame (A328).
+    free_space: Option<(Instant, Option<u64>)>,
 }
 
 impl WaveApp {
@@ -161,6 +175,10 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            last_op: None,
+            layout: None,
+            hover: None,
+            free_space: None,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -196,7 +214,7 @@ impl WaveApp {
             let _ = tx.send(result);
             ctx.request_repaint();
         });
-        self.opening = Some(Opening { path, result: rx, cancel, progress });
+        self.opening = Some(Opening { path, result: rx, cancel, progress, started: Instant::now() });
         self.error = None;
         self.notice = None;
     }
@@ -209,8 +227,12 @@ impl WaveApp {
             // The worker ended without an answer: say so instead of showing "Opening…" forever.
             Err(TryRecvError::Disconnected) => Err("the decoder stopped unexpectedly".to_string()),
         };
+        let opened_in = self.opening.as_ref().map(|o| o.started.elapsed());
         match result {
             Ok(doc) => {
+                if let Some(took) = opened_in {
+                    self.last_op = Some(("Open".to_string(), took));
+                }
                 self.player.set_audio(Some(doc.audio.clone()));
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
@@ -298,8 +320,13 @@ impl WaveApp {
         }
         let sel = self.selection_range();
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
-        match editor.run(id, sel) {
+        let began = Instant::now();
+        let ran = editor.run(id, sel);
+        match ran {
             Ok(out) => {
+                if out.doc_changed {
+                    self.last_op = Some((actions::action(id).menu.to_string(), began.elapsed()));
+                }
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
                 if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd) {
                     self.player.stop();
@@ -581,7 +608,7 @@ impl WaveApp {
             ctx.request_repaint();
         });
         self.player.stop();
-        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close, doc_id: self.doc_id });
+        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close, doc_id: self.doc_id, started: Instant::now() });
         Ok(())
     }
 
@@ -592,7 +619,10 @@ impl WaveApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err("the save stopped unexpectedly".to_string()),
         };
-        let Some(Saving { path, state, ty, then_close, doc_id, .. }) = self.saving.take() else { return };
+        let Some(Saving { path, state, ty, then_close, doc_id, started, .. }) = self.saving.take() else { return };
+        if result.is_ok() {
+            self.last_op = Some(("Save".to_string(), started.elapsed()));
+        }
         match result {
             // Another file was opened while this one was being saved: the file on disk is
             // written, but the open document is not the one saved, so its path, saved mark and
@@ -665,6 +695,76 @@ impl WaveApp {
         }
     }
 
+    /// The stored sample at `frame` of channel `ch` in the current step (read through the store).
+    fn sample_at(&self, ch: usize, frame: usize) -> Option<f32> {
+        let state = self.editor.as_ref()?.history.current().clone();
+        let mut one = [0.0f32];
+        (state.read(ch, frame as u64, &mut one).ok()? == 1).then_some(one[0])
+    }
+
+    /// The readout for editor pixel (`x`, `y`), as the line `HOVER` answers.
+    fn hover_at(&self, x: f32, y: f32) -> String {
+        let (Some(layout), Some(doc)) = (&self.layout, &self.doc) else { return "ERR no file is shown yet".to_string() };
+        let rate = doc.sample_rate();
+        match Readout::at(layout, &self.view, &self.params, rate, doc.frames(), x, y) {
+            None => "OK pane=outside".to_string(),
+            Some(r) => {
+                let ch = r.channel().map_or_else(|| "-".to_string(), |c| c.to_string());
+                let (pane, extra) = match r.pane {
+                    readout::Pane::Ruler => ("ruler", String::new()),
+                    readout::Pane::Outside => ("outside", String::new()),
+                    readout::Pane::Wave { channel, amplitude } => {
+                        let db = readout::dbfs(amplitude).map_or_else(|| "-inf".to_string(), |d| format!("{d:.2}"));
+                        let sample = self.sample_at(channel, r.frame).map_or_else(|| "-".to_string(), |v| format!("{v:.6}"));
+                        ("wave", format!(" amp={amplitude:.4} dbfs={db} sample={sample}"))
+                    }
+                    readout::Pane::Spectrum { hz, .. } => ("spectrum", format!(" hz={hz:.1}")),
+                };
+                format!("OK pane={pane} channel={ch} frame={} time={}{extra}", r.frame, format_time(r.frame, rate))
+            }
+        }
+    }
+
+    fn transport(&self) -> Transport {
+        if self.player.is_playing() { Transport::Playing } else { Transport::Stopped }
+    }
+
+    /// The sample type the open file saves as, the same as `save` uses.
+    fn sample_type(&self) -> Option<SampleType> {
+        self.editor.as_ref().map(|e| SampleType::for_source(e.history.current().source()))
+    }
+
+    /// Free space on the session folder's disk, asked at most every 3 seconds.
+    fn free_now(&mut self) -> Option<u64> {
+        let stale = self.free_space.as_ref().is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(3));
+        if stale {
+            self.free_space = Some((Instant::now(), wavcraft_core::space::free_space(&self.sessions.path)));
+        }
+        self.free_space.as_ref().and_then(|(_, b)| *b)
+    }
+
+    /// The status bar's right-hand fields (A328), one item each so the bar can arrange them.
+    fn info_fields(&self, free: Option<u64>) -> Vec<StatusField> {
+        match (&self.editor, self.sample_type()) {
+            (Some(e), Some(ty)) => {
+                let d = e.history.current();
+                readout::info_fields(d.len_frames(), d.channel_count() as u64, d.sample_rate(), ty, free)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The extra `STATE` fields for the status bar: last operation and transport (no spaces in values).
+    fn status_state(&self) -> String {
+        let (op, ms) = self.last_op.as_ref().map_or(("-".to_string(), 0), |(l, d)| (l.replace(' ', "_"), d.as_millis()));
+        let free = self.free_space.as_ref().and_then(|(_, b)| *b);
+        let mut s = format!(" last_op={op} last_op_ms={ms} transport={}", self.transport().label().to_lowercase());
+        for f in self.info_fields(free) {
+            s += &format!(" status.{}={}", f.id, f.text.replace(' ', "_"));
+        }
+        s
+    }
+
     /// Answer one control-channel line (see `control.rs`).
     fn control_request(&mut self, line: &str, ctx: &egui::Context) -> String {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -677,7 +777,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved}{} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -685,11 +785,39 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            self.status_state(),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0{} undo=- redo=-",
+                        u8::from(busy),
+                        self.status_state()
+                    ),
+                }
+            }
+            // The pointer readout at pixel (x, y) from the editor's top-left corner (A079).
+            "HOVER" => {
+                let mut it = rest.split_whitespace().map(str::parse::<f32>);
+                match (it.next(), it.next()) {
+                    // No arguments: the editor's size and view, so a script can work out where to point.
+                    (None, _) => match &self.layout {
+                        Some(l) => format!(
+                            "OK width={} height={} ruler={} wave={} spectrum={} channels={} start={} frames_per_px={}",
+                            l.width,
+                            l.height,
+                            l.ruler_height,
+                            u8::from(l.show_waveform),
+                            u8::from(l.show_spectrum),
+                            l.channels,
+                            self.view.start,
+                            self.view.frames_per_px
+                        ),
+                        None => "ERR no file is shown yet".to_string(),
+                    },
+                    (Some(Ok(x)), Some(Ok(y))) => self.hover_at(x, y),
+                    _ => "ERR HOVER <x_px> <y_px>, from the editor's top-left corner".to_string(),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -776,7 +904,7 @@ impl WaveApp {
             let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
             let enabled = enabled && self.saving.is_none();
             let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
-            if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
+            if ui.add_enabled(enabled, egui::Button::new(&label).shortcut_text(keys)).on_hover_text(a.tooltip(&label, mac)).clicked() {
                 chosen = Some(a.id);
             }
         }
@@ -788,18 +916,21 @@ impl WaveApp {
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("Open…  Ctrl+O").clicked() {
+                if ui.button("Open…  Ctrl+O").on_hover_text("Open (Ctrl+O)").clicked() {
                     self.pick_file(ui.ctx());
                 }
                 let mac = cfg!(target_os = "macos");
                 let has_doc = self.editor.is_some() && self.saving.is_none();
                 let (save, save_as) = if mac { ("⌘S", "⇧⌘S") } else { ("Ctrl+S", "Ctrl+Shift+S") };
-                if ui.add_enabled(has_doc, egui::Button::new("Save").shortcut_text(save)).clicked()
+                if ui.add_enabled(has_doc, egui::Button::new("Save").shortcut_text(save)).on_hover_text(format!("Save ({save})")).clicked()
                     && let Err(e) = self.save(ui.ctx(), false, None, false)
                 {
                     self.error = Some(e);
                 }
-                if ui.add_enabled(has_doc, egui::Button::new("Save As…").shortcut_text(save_as)).clicked()
+                if ui
+                    .add_enabled(has_doc, egui::Button::new("Save As…").shortcut_text(save_as))
+                    .on_hover_text(format!("Save As ({save_as})"))
+                    .clicked()
                     && let Err(e) = self.save(ui.ctx(), true, None, false)
                 {
                     self.error = Some(e);
@@ -830,7 +961,7 @@ impl WaveApp {
                 for a in TABLE.iter().filter(|a| a.name.starts_with("view.")) {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
                     let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
-                    if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
+                    if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).on_hover_text(a.tooltip(a.menu, mac)).clicked() {
                         chosen = Some(a.id);
                     }
                 }
@@ -841,13 +972,19 @@ impl WaveApp {
                 ui.checkbox(&mut self.show_history, "History panel");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
-            if ui.button(label).on_hover_text("Space").clicked() {
+            if ui
+                .button(label)
+                .on_hover_text(actions::tooltip(if self.player.is_playing() { "Stop" } else { "Play" }, &[SPACE], cfg!(target_os = "macos")))
+                .clicked()
+            {
                 self.toggle_play();
             }
         });
     }
 
-    fn status(&self, ui: &mut egui::Ui) {
+    fn status(&mut self, ui: &mut egui::Ui) {
+        let free = self.free_now();
+        let fields = self.info_fields(free);
         ui.horizontal(|ui| {
             if let Some(o) = &self.opening {
                 ui.spinner();
@@ -889,6 +1026,19 @@ impl WaveApp {
                     ui.label(format!("Selection {} – {}  ({})", format_time(a, rate), format_time(b, rate), format_time(b - a, rate)));
                 }
                 ui.separator();
+                // Transport and the last operation (A327).
+                ui.label(self.transport().label());
+                if let Some((what, took)) = &self.last_op {
+                    ui.label(format!("· {what}: {}", readout::duration_text(took.as_millis() as u64)))
+                        .on_hover_text("How long the last operation took");
+                }
+                // What is under the pointer (A079).
+                if let Some(r) = &self.hover {
+                    let sample = r.channel().and_then(|c| self.sample_at(c, r.frame));
+                    ui.separator();
+                    ui.label(r.text(rate, sample));
+                }
+                ui.separator();
                 match &self.player.error {
                     Some(e) => ui.colored_label(CURSOR, format!("No sound: {e}")),
                     None if self.player.failed() => ui.colored_label(CURSOR, "No sound: the output device stopped (Play tries it again)"),
@@ -897,6 +1047,15 @@ impl WaveApp {
             } else {
                 ui.label("File › Open, or drop an audio file here.");
             }
+            // Right side (A328): one label per field, last field furthest right.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                for (i, f) in fields.iter().rev().enumerate() {
+                    if i > 0 {
+                        ui.separator();
+                    }
+                    ui.label(&f.text).on_hover_text(&f.tooltip);
+                }
+            });
         });
     }
 
@@ -913,6 +1072,18 @@ impl WaveApp {
             self.fit_on_next_frame = false;
         }
 
+        self.layout = Some(EditorLayout {
+            width,
+            height: rect.height(),
+            ruler_height: RULER_HEIGHT,
+            show_waveform: self.show_waveform,
+            show_spectrum: self.show_spectrum,
+            channels,
+        });
+        self.hover = response.hover_pos().and_then(|p| {
+            let layout = self.layout?;
+            Readout::at(&layout, &self.view, &self.params, rate, frames, p.x - rect.left(), p.y - rect.top())
+        });
         // Wheel zooms around the pointer; Shift+wheel and sideways scrolling move through time.
         if let Some(pointer) = response.hover_pos() {
             let (scroll, pinch, shift) = ui.input(|i| (i.smooth_scroll_delta(), i.zoom_delta(), i.modifiers.shift));

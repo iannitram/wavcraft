@@ -34,7 +34,7 @@ pub enum SampleType {
 }
 
 impl SampleType {
-    fn bytes(self) -> usize {
+    pub fn bytes(self) -> usize {
         match self {
             SampleType::Int16 => 2,
             SampleType::Int24 => 3,

@@ -391,3 +391,20 @@ fn repeat_last_command_runs_silence_again_on_the_new_selection_but_never_delete(
     assert_eq!(text(ActionId::ZeroRightToRight), ["Shift+L"]);
     assert_eq!(by_name("edit.zeroCrossings.outward").map(|a| a.id), Some(ActionId::ZeroOutward));
 }
+
+/// A350: hover text carries the keys from the table, not a copy of them.
+#[test]
+fn a350_tooltips_name_every_key_of_the_action() {
+    assert_eq!(action(ActionId::Undo).tooltip("Undo", false), "Undo (Ctrl+Z)");
+    assert_eq!(action(ActionId::Redo).tooltip("Redo", false), "Redo (Ctrl+Shift+Z, Ctrl+Y)");
+    assert_eq!(action(ActionId::Redo).tooltip("Redo", true), "Redo (⇧⌘Z, ⌘Y)");
+    assert_eq!(action(ActionId::Silence).tooltip("Silence", false), "Silence", "no keys: the label alone");
+    assert_eq!(wavcraft_core::actions::tooltip("Play", &[], false), "Play");
+    // Every action with keys gets a tooltip that shows each of them.
+    for a in TABLE.iter().filter(|a| !a.keys.is_empty()) {
+        let t = a.tooltip(a.menu, false);
+        for k in a.keys {
+            assert!(t.contains(&k.text(false)), "{t}");
+        }
+    }
+}

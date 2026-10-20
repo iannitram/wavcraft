@@ -173,6 +173,23 @@ pub fn by_name(name: &str) -> Option<&'static Action> {
     TABLE.iter().find(|a| a.name == name)
 }
 
+/// Hover text for a button: `label` and the action's keys, "Undo (Ctrl+Z)", "Redo (Ctrl+Shift+Z, Ctrl+Y)".
+/// Without keys it is just the label.
+pub fn tooltip(label: &str, keys: &[Shortcut], mac: bool) -> String {
+    if keys.is_empty() {
+        return label.to_string();
+    }
+    let list: Vec<String> = keys.iter().map(|k| k.text(mac)).collect();
+    format!("{label} ({})", list.join(", "))
+}
+
+impl Action {
+    /// This action's hover text with its label and every key bound to it.
+    pub fn tooltip(&self, label: &str, mac: bool) -> String {
+        tooltip(label, self.keys, mac)
+    }
+}
+
 /// What a run did, for the window to follow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
