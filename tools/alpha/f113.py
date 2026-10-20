@@ -88,7 +88,7 @@ def main():
         check("the strips meter the session's clips", s["t1"]["peak"] > -20 and s["t2"]["peak"] > -20, s)
 
         def tracks():
-            return json.loads(c.ask("SESSION state")[3:].strip())["tracks"]
+            return json.loads("{" + c.ask("SESSION state").partition(" {")[2])["tracks"]
 
         c.ask("MIXER set 1 vol=-6 pan=-0.5 mute=1")
         t = tracks()[0]
