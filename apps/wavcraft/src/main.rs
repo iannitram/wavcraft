@@ -13,6 +13,7 @@ mod control;
 mod convert_ui;
 mod doclist;
 mod effect_dialog;
+mod files;
 mod input;
 mod markers_panel;
 mod match_ui;

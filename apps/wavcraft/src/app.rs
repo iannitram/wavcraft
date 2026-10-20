@@ -33,6 +33,7 @@ use crate::control;
 use crate::convert_ui::{self, ConvertDialog};
 use crate::doclist::{DocList, Where};
 use crate::effect_dialog::{Answer, EffectDialog};
+use crate::files;
 use crate::markers_panel::MarkersUi;
 use crate::match_ui::MatchUi;
 use crate::meters_ui::{self, MetersUi};
@@ -196,6 +197,16 @@ fn is_unsaved(editor: &Option<Editor>, saved: &Option<Arc<DocState>>) -> bool {
     }
 }
 
+fn reveal_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else if cfg!(target_os = "windows") {
+        "Reveal in Explorer"
+    } else {
+        "Show in Folder"
+    }
+}
+
 fn path_name(path: &std::path::Path) -> String {
     path.file_name().map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned())
 }
@@ -291,6 +302,9 @@ pub struct WaveApp {
     /// File > Close All is going through the documents, asking about unsaved ones.
     close_all: bool,
     save_all: Option<SaveAllRun>,
+    /// Window › Files.
+    show_files: bool,
+    files: files::View,
     /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
     insert_silence: Option<String>,
     /// Edit › Mix Paste…: the dialog's fields while it is up.
@@ -435,6 +449,8 @@ impl WaveApp {
             new_audio: None,
             close_all: false,
             save_all: None,
+            show_files: true,
+            files: files::View::default(),
             insert_silence: None,
             mix_paste: None,
             stats: StatsPanel::default(),
@@ -1257,6 +1273,215 @@ impl WaveApp {
                 .parked()
                 .get(p)
                 .map_or_else(|| (String::new(), false, 0), |s| (path_name(&s.doc_path), is_unsaved(&s.editor, &s.saved), frames(&s.editor))),
+        }
+    }
+
+    /// The Files panel's rows, one per open document, in the order opened.
+    fn file_rows(&self) -> Vec<files::Row> {
+        (0..self.docs.len(self.editor.is_some()))
+            .filter_map(|i| {
+                let (path, editor, unsaved) = match self.docs.locate(i) {
+                    Where::Current => (&self.doc_path, &self.editor, self.unsaved()),
+                    Where::Parked(p) => {
+                        let s = self.docs.parked().get(p)?;
+                        (&s.doc_path, &s.editor, is_unsaved(&s.editor, &s.saved))
+                    }
+                };
+                let state = editor.as_ref()?.history.current();
+                let src = state.source();
+                let bits = match src.sample_format {
+                    SampleFormat::Int8 => "8",
+                    SampleFormat::Int16 => "16",
+                    SampleFormat::Int24 => "24",
+                    SampleFormat::Int32 => "32",
+                    SampleFormat::Float32 => "32f",
+                    SampleFormat::Float64 => "64f",
+                    SampleFormat::Compressed => "-",
+                };
+                Some(files::Row {
+                    doc: i,
+                    name: path_name(path),
+                    unsaved,
+                    frames: state.len_frames(),
+                    rate: state.sample_rate(),
+                    channels: state.channel_count(),
+                    bits: bits.to_string(),
+                    format: format!("{:?}", src.format),
+                    path: path.to_string_lossy().into_owned(),
+                })
+            })
+            .collect()
+    }
+
+    /// The document the shown row `i` stands for (rows are sorted and filtered).
+    fn file_row_doc(&self, i: usize) -> Result<usize, String> {
+        let rows = self.file_rows();
+        self.files
+            .arrange(&rows)
+            .get(i)
+            .map(|r| r.doc)
+            .ok_or_else(|| format!("no row {i} (the table shows {} rows)", self.files.arrange(&rows).len()))
+    }
+
+    /// Reveal a document's file in the system file manager (Linux: its folder).
+    fn reveal_file(&self, doc: usize) -> Result<(), String> {
+        let path = self.file_rows().into_iter().find(|r| r.doc == doc).map(|r| r.path).unwrap_or_default();
+        let (prog, args) = files::reveal_command(std::env::consts::OS, &path).ok_or("this document has no file yet: Save As first")?;
+        std::process::Command::new(&prog).args(&args).spawn().map(drop).map_err(|e| format!("could not run {prog}: {e}"))
+    }
+
+    /// Window › Files: the open documents as a table.
+    fn files_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Files");
+        ui.horizontal(|ui| {
+            ui.label("Filter");
+            ui.text_edit_singleline(&mut self.files.filter);
+        });
+        let rows = self.file_rows();
+        let shown: Vec<files::Row> = self.files.arrange(&rows).into_iter().cloned().collect();
+        let cur = self.docs.current();
+        let busy = self.saving.is_some() || self.making.is_some() || self.save_all.is_some();
+        let (mut go, mut open, mut close, mut reveal) = (None, false, false, false);
+        egui::ScrollArea::both().max_height((ui.available_height() - 40.0).max(60.0)).show(ui, |ui| {
+            egui::Grid::new("files_grid").striped(true).show(ui, |ui| {
+                for col in files::Col::ALL {
+                    let arrow = match self.files.sort {
+                        Some((c, true)) if c == col => " ▲",
+                        Some((c, false)) if c == col => " ▼",
+                        _ => "",
+                    };
+                    if ui.button(format!("{}{arrow}", col.title())).clicked() {
+                        self.files.click_header(col);
+                    }
+                }
+                ui.end_row();
+                for r in &shown {
+                    let on = r.doc == cur;
+                    let cells = [
+                        r.name.clone(),
+                        if r.unsaved { "*".to_string() } else { String::new() },
+                        format_time(r.frames as usize, r.rate),
+                        r.rate.to_string(),
+                        r.channels.to_string(),
+                        r.bits.clone(),
+                        r.format.clone(),
+                        r.path.clone(),
+                    ];
+                    for text in cells {
+                        let resp = ui.selectable_label(on, text);
+                        if resp.clicked() || resp.double_clicked() {
+                            go = Some(r.doc);
+                        }
+                        resp.context_menu(|ui| {
+                            go = Some(r.doc);
+                            if ui.button("Open…").clicked() {
+                                open = true;
+                                ui.close();
+                            }
+                            if ui.add_enabled(!busy, egui::Button::new("Close")).clicked() {
+                                close = true;
+                                ui.close();
+                            }
+                            if ui.add_enabled(!r.path.is_empty(), egui::Button::new(reveal_label())).clicked() {
+                                reveal = true;
+                                ui.close();
+                            }
+                        });
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            open |= ui.button("Open…").clicked();
+            close |= ui.add_enabled(!busy && self.editor.is_some(), egui::Button::new("Close")).clicked();
+            reveal |= ui.add_enabled(self.editor.is_some(), egui::Button::new(reveal_label())).clicked();
+        });
+        // Clicking a row makes it current; Open, Close and Reveal then act on the current document.
+        if let Some(i) = go
+            && let Err(e) = self.switch_doc(i)
+        {
+            self.error = Some(e);
+        }
+        if open {
+            self.pick_file(ui.ctx());
+        }
+        if close && let Err(e) = self.close_doc() {
+            self.error = Some(e);
+        }
+        if reveal && let Err(e) = self.reveal_file(self.docs.current()) {
+            self.error = Some(e);
+        }
+    }
+
+    /// `FILES …` from the control channel.
+    fn files_request(&mut self, rest: &str) -> String {
+        let mut words = rest.split_whitespace();
+        match words.next().map(str::to_ascii_lowercase).as_deref() {
+            None => {
+                let rows = self.file_rows();
+                let shown = self.files.arrange(&rows);
+                let mut out = format!(
+                    "OK count={} total={} current={} sort={} filter={:?}",
+                    shown.len(),
+                    rows.len(),
+                    self.docs.current(),
+                    self.files.sort_text(),
+                    self.files.filter.trim()
+                );
+                for (i, r) in shown.iter().enumerate() {
+                    out.push_str(&format!(
+                        " | {i} doc={} current={} unsaved={} frames={} rate={} ch={} bits={} format={} name={} path={}",
+                        r.doc,
+                        u8::from(r.doc == self.docs.current()),
+                        u8::from(r.unsaved),
+                        r.frames,
+                        r.rate,
+                        r.channels,
+                        r.bits,
+                        r.format,
+                        r.name,
+                        r.path
+                    ));
+                }
+                out
+            }
+            Some("sort") => {
+                let (col, dir) = (words.next(), words.next().map(str::to_ascii_lowercase));
+                match (col.map(str::to_ascii_lowercase).as_deref(), col.and_then(files::Col::parse), dir.as_deref()) {
+                    (Some("none"), _, None) => self.files.sort = None,
+                    (_, Some(c), Some("asc")) => self.files.sort = Some((c, true)),
+                    (_, Some(c), Some("desc")) => self.files.sort = Some((c, false)),
+                    _ => return "ERR FILES sort <name|unsaved|duration|rate|channels|bits|format|path> asc|desc, or FILES sort none".to_string(),
+                }
+                format!("OK sort={}", self.files.sort_text())
+            }
+            Some("filter") => {
+                let text = rest.trim().get("filter".len()..).unwrap_or("").trim();
+                self.files.filter = text.to_string();
+                format!("OK filter={text:?}")
+            }
+            Some("select") => match words.next().and_then(|w| w.parse::<usize>().ok()) {
+                Some(i) => match self.file_row_doc(i).and_then(|d| self.switch_doc(d).map(|()| d)) {
+                    Ok(d) => format!("OK current={d}"),
+                    Err(e) => format!("ERR {e}"),
+                },
+                None => "ERR FILES select <row>, from FILES".to_string(),
+            },
+            // What Reveal would run for row <i> (the current document without one). It is not run from here.
+            Some("reveal") => {
+                let doc = match words.next() {
+                    Some(w) => w.parse::<usize>().map_err(|_| "FILES reveal [row]".to_string()).and_then(|i| self.file_row_doc(i)),
+                    None => Ok(self.docs.current()),
+                };
+                match doc.map(|d| self.file_rows().into_iter().find(|r| r.doc == d).map(|r| r.path).unwrap_or_default()) {
+                    Ok(path) => {
+                        files::reveal_text(&path).map_or_else(|| "ERR this document has no file yet".to_string(), |c| format!("OK would run: {c}"))
+                    }
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+            _ => "ERR FILES [sort <col> asc|desc | filter <text> | select <row> | reveal [row]]".to_string(),
         }
     }
 
@@ -3662,6 +3887,7 @@ impl WaveApp {
                     },
                 }
             }
+            "FILES" => self.files_request(rest),
             "SWITCH" => match rest.trim().parse::<usize>().map_err(|_| "SWITCH <index>, from DOCS".to_string()).and_then(|i| self.switch_doc(i)) {
                 Ok(()) => format!("OK current={}", self.docs.current()),
                 Err(e) => format!("ERR {e}"),
@@ -4076,6 +4302,7 @@ impl WaveApp {
                 ui.checkbox(&mut self.matcher.show, "Match Loudness");
                 ui.checkbox(&mut self.show_metadata, "Metadata panel");
                 ui.checkbox(&mut self.markers_ui.show, "Markers panel");
+                ui.checkbox(&mut self.show_files, "Files panel");
             });
             let label = if self.transport.mode == Mode::Playing { "■ Stop" } else { "▶ Play" };
             if ui.add_enabled(!self.rec.is_active(), egui::Button::new(label)).on_hover_text("Space").clicked() {
@@ -4872,6 +5099,9 @@ impl eframe::App for WaveApp {
             egui::Panel::top("docs").show(ui, |ui| self.doc_tabs(ui));
         }
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
+        if self.show_files {
+            egui::Panel::left("files").default_size(420.0).show(ui, |ui| self.files_panel(ui));
+        }
         if self.show_sel_view_panel {
             egui::Panel::bottom("selection_view").show(ui, |ui| self.selection_view_panel(ui));
         }

@@ -10,6 +10,7 @@
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
 //! - `OPEN <path>` → `OK` (the open runs in the background and adds a document; poll `STATE` until `busy=0`)
 //! - `DOCS` → `OK count=<n> current=<i> | <i> unsaved=<0|1> frames=<n> <name> | …` (the open documents, in the order opened)
+//! - `FILES` → `OK count=<shown> total=<n> current=<i> sort=<col:asc|desc|none> filter="…" | <row> doc=<i> current=<0|1> unsaved=<0|1> frames=<n> rate=<hz> ch=<n> bits=<b> format=<f> name=<n> path=<p> | …` (the Files panel's table); `FILES sort <col> asc|desc` (or `sort none`), `FILES filter <text>`, `FILES select <row>` (makes that row's document current), `FILES reveal [row]` (answers the command Reveal would run; it is not run)
 //! - `SWITCH <i>` → `OK current=<i>` (every other verb acts on the current document)
 //! - `CLOSE` → `OK count=<n>` (closes the current document); with unsaved changes `ERR …` unless `CLOSE discard`
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
