@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use soundcraft_audio_io::AudioBuffer as ModelBuffer;
-use soundcraft_model::time::Samples;
+use soundcraft_model::time::{Range, Samples};
 use soundcraft_model::{Clip, ClipId, Playlist, Route, Source, SourceAudio, SourceId, TrackId, TrackKind};
 
 use crate::multitrack::{MAX_IMPORT_SAMPLES, MtError, Multitrack};
@@ -62,6 +62,73 @@ pub fn first_input(r: &Route) -> usize {
             h.trim_start_matches("In ").split(['-', ' ']).next().and_then(|n| n.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1))
         }
         _ => 0,
+    }
+}
+
+/// Seconds of lead-in played before the punch-in point when recording with punch on.
+pub const DEFAULT_PREROLL_S: f64 = 2.0;
+
+/// Punch in/out (f126, roadmap C039): a range on the session ruler, an on/off switch and a
+/// pre-roll. Recording with punch on starts `preroll` before the range and the take is cut to
+/// the range when it is placed, so nothing outside it is replaced.
+///
+/// SoundCraft's engine has the same idea (`Recording.punch`, `io::add_recording_in`); that
+/// function works on its `Engine`, which WavCraft does not use, so [`clip_in_punch`] repeats its
+/// arithmetic over the model (flagged in the PR, like f120's takes).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Punch {
+    pub range: Option<Range>,
+    pub on: bool,
+    pub preroll: Samples,
+}
+
+impl Punch {
+    pub fn new(preroll: Samples) -> Punch {
+        Punch { range: None, on: false, preroll }
+    }
+
+    /// Set the range (session frames); it must be at least one frame long.
+    pub fn set(&mut self, from: Samples, to: Samples) -> Result<(), MtError> {
+        if from < 0 || to <= from {
+            return err("a punch range needs 0 <= in < out");
+        }
+        self.range = Some(Range::new(from, to));
+        Ok(())
+    }
+
+    /// The range to punch, when punch is on and a range is set.
+    pub fn active(&self) -> Option<Range> {
+        if self.on { self.range } else { None }
+    }
+
+    /// Where recording starts for the active punch: `preroll` before the punch-in, not before 0.
+    pub fn record_start(&self) -> Option<Samples> {
+        self.active().map(|r| (r.start - self.preroll).max(0))
+    }
+
+    pub fn to_json(&self, rate: soundcraft_model::time::SampleRate) -> serde_json::Value {
+        serde_json::json!({
+            "on": self.on,
+            "in": self.range.map(|r| rate.seconds(r.start)),
+            "out": self.range.map(|r| rate.seconds(r.end)),
+            "preroll": rate.seconds(self.preroll),
+        })
+    }
+}
+
+/// A take of `len` frames recorded from `start`, cut to `punch`: `(clip start, offset into the
+/// take, clip length)`, or `None` when the take never reaches the range. Without a punch the
+/// whole take.
+pub fn clip_in_punch(start: Samples, len: Samples, punch: Option<Range>) -> Option<(Samples, Samples, Samples)> {
+    match punch {
+        None => Some((start, 0, len)),
+        Some(p) => {
+            let kept = Range::new(start, start + len).intersect(&p)?;
+            if kept.is_empty() {
+                return None;
+            }
+            Some((kept.start, kept.start - start, kept.len()))
+        }
     }
 }
 
@@ -161,6 +228,12 @@ impl Multitrack {
     /// playlist (a copy of the active one without the clips it overlaps, plus the take) that
     /// becomes the active one: the newest take is on top. Returns the placed take.
     pub fn place_take(&mut self, track: TrackId, start: Samples, path: &Path) -> Result<TakeInfo, MtError> {
+        self.place_take_in(track, start, path, None)
+    }
+
+    /// [`Multitrack::place_take`] with the take cut to `punch` (f126): only the part inside the
+    /// range becomes a clip (the file keeps everything recorded), and it replaces only that range.
+    pub fn place_take_in(&mut self, track: TrackId, start: Samples, path: &Path, punch: Option<Range>) -> Result<TakeInfo, MtError> {
         let (rate, name) = match self.session.track(track) {
             Some(t) => (self.session.sample_rate.hz(), t.name.clone()),
             None => return err("no such track"),
@@ -169,7 +242,7 @@ impl Multitrack {
         let (_, audio) = soundcraft_audio_io::decode(&bytes, path.extension().and_then(|e| e.to_str()))
             .map_err(|e| MtError(format!("cannot decode the take {}: {e}", path.display())))?;
         drop(bytes);
-        self.place_take_audio(track, start, path, audio, rate, &name)
+        self.place_take_audio(track, start, path, audio, (rate, &name), punch)
     }
 
     fn place_take_audio(
@@ -178,8 +251,8 @@ impl Multitrack {
         start: Samples,
         path: &Path,
         audio: ModelBuffer,
-        rate: u32,
-        name: &str,
+        (rate, name): (u32, &str),
+        punch: Option<Range>,
     ) -> Result<TakeInfo, MtError> {
         let frames = audio.frames();
         if frames == 0 {
@@ -192,8 +265,10 @@ impl Multitrack {
             return err("the take is too long to hold in memory as a clip (issue #302)");
         }
         let number = self.takes.iter().filter(|k| k.track == track).map(|k| k.number).max().unwrap_or(0) + 1;
-        let length = frames as i64;
-        let range = soundcraft_model::time::Range::new(start, start + length);
+        let Some((start, offset, length)) = clip_in_punch(start, frames as i64, punch) else {
+            return err("the take never reached the punch range, so nothing was placed");
+        };
+        let range = Range::new(start, start + length);
         let source = SourceId(self.session.alloc());
         let channels = u16::try_from(audio.num_channels()).unwrap_or(u16::MAX);
         let label = format!("{name} take {number:02}");
@@ -210,7 +285,31 @@ impl Multitrack {
         });
         self.session.pool.insert(source, Arc::new(SourceAudio::new(audio)));
         let clip_id = self.session.new_clip_id();
-        let clip = Clip::audio(clip_id, label, source, 0, start, length);
+        let clip = Clip::audio(clip_id, label, source, offset, start, length);
+        // With a punch, the old clips the range cuts through keep their parts outside it.
+        let mut kept_outside: Vec<Clip> = Vec::new();
+        if punch.is_some() {
+            let olds: Vec<Clip> = self
+                .session
+                .track(track)
+                .and_then(|t| t.playlist())
+                .map(|p| p.clips.iter().filter(|c| c.range().overlaps(&range)).cloned().collect())
+                .unwrap_or_default();
+            for c in olds {
+                if c.start < range.start {
+                    let mut head = c.clone();
+                    head.id = self.session.new_clip_id();
+                    head.trim_end_to(range.start);
+                    kept_outside.push(head);
+                }
+                if c.end() > range.end {
+                    let mut tail = c.clone();
+                    tail.id = self.session.new_clip_id();
+                    tail.trim_start_to(range.end);
+                    kept_outside.push(tail);
+                }
+            }
+        }
         let Some(t) = self.session.track_mut(track) else { return err("no such track") };
         let overlaps = t.playlist().is_some_and(|p| p.clips.iter().any(|c| c.range().overlaps(&range)));
         let playlist = if overlaps || t.playlists.is_empty() {
@@ -218,6 +317,7 @@ impl Multitrack {
             if let Some(active) = t.playlist() {
                 pl.clips = active.clips.iter().filter(|c| !c.range().overlaps(&range)).cloned().collect();
             }
+            pl.clips.extend(kept_outside);
             pl.clips.push(clip);
             pl.sort();
             t.playlists.push(pl);
@@ -321,6 +421,8 @@ pub struct Recorder {
     /// The session frame the takes start at.
     pub start: Samples,
     pub plans: Vec<TakePlan>,
+    /// The punch range the takes are cut to when placed (f126), fixed when recording starts.
+    pub punch: Option<Range>,
 }
 
 impl Recorder {
@@ -345,7 +447,7 @@ impl Recorder {
             .name("wavcraft-fake-input".into())
             .spawn(move || run_fake(writers, rate, &flag))
             .map_err(|e| MtError(format!("cannot start the input thread: {e}")))?;
-        Ok(Recorder { stop, thread: Some(thread), start, plans })
+        Ok(Recorder { stop, thread: Some(thread), start, plans, punch: None })
     }
 
     /// Stop, finish the files, and say what was written.
@@ -521,6 +623,55 @@ mod tests {
         let t = m.session.track(a).unwrap_or_else(|| panic!("t"));
         assert_eq!(t.active_playlist, 1);
         assert_eq!(t.clips().iter().map(|c| c.start).collect::<Vec<_>>(), vec![500, 10_000]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn punch_range_is_validated_and_gives_the_preroll_start() {
+        let mut p = Punch::new(96_000);
+        assert!(p.set(10, 10).is_err() && p.set(-1, 5).is_err() && p.set(20, 10).is_err());
+        assert_eq!((p.active(), p.record_start()), (None, None), "off until switched on");
+        p.set(480_000, 960_000).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(p.active(), None);
+        p.on = true;
+        assert_eq!(p.active(), Some(Range::new(480_000, 960_000)));
+        assert_eq!(p.record_start(), Some(384_000), "2 s of pre-roll");
+        p.set(48_000, 96_000).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(p.record_start(), Some(0), "pre-roll does not go before 0");
+    }
+
+    #[test]
+    fn a_take_is_clipped_to_the_punch_range() {
+        let r = Some(Range::new(1_000, 2_000));
+        assert_eq!(clip_in_punch(0, 5_000, None), Some((0, 0, 5_000)));
+        assert_eq!(clip_in_punch(0, 5_000, r), Some((1_000, 1_000, 1_000)), "pre-roll and tail cut");
+        assert_eq!(clip_in_punch(1_500, 200, r), Some((1_500, 0, 200)), "stopped inside the range");
+        assert_eq!(clip_in_punch(1_500, 5_000, r), Some((1_500, 0, 500)), "started inside the range");
+        assert_eq!(clip_in_punch(0, 1_000, r), None, "stopped before the range");
+        assert_eq!(clip_in_punch(2_000, 100, r), None, "started after it");
+    }
+
+    #[test]
+    fn a_punched_take_replaces_only_the_range_and_keeps_the_old_take_underneath() {
+        let (mut m, a, _) = session();
+        let dir = scratch("punch");
+        let (p1, p2) = (dir.join("Vox_take01.wav"), dir.join("Vox_take02.wav"));
+        write_take(&p1, 48_000, 1); // 1 s at 0
+        write_take(&p2, 48_000, 1); // a take recorded from 0 s (pre-roll), punch 0.25..0.5 s
+        m.place_take(a, 0, &p1).unwrap_or_else(|e| panic!("{e}"));
+        let info = m.place_take_in(a, 0, &p2, Some(Range::new(12_000, 24_000))).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((info.start, info.length, info.number, info.playlist), (12_000, 12_000, 2, 1));
+        let t = m.session.track(a).unwrap_or_else(|| panic!("t"));
+        let c = t.clips();
+        assert_eq!(c.len(), 3, "the old take's head and tail stay, the punch is the new take");
+        assert_eq!(c.iter().map(|k| (k.start, k.length)).collect::<Vec<_>>(), vec![(0, 12_000), (12_000, 12_000), (24_000, 24_000)]);
+        assert_eq!(c[1].name, "Vox take 02");
+        assert_eq!(t.playlists[0].clips[0].length, 48_000, "the old take is intact underneath");
+        // A take that misses the range places nothing.
+        let p3 = dir.join("Vox_take03.wav");
+        write_take(&p3, 100, 1);
+        assert!(m.place_take_in(a, 0, &p3, Some(Range::new(12_000, 24_000))).is_err());
+        assert_eq!(m.takes.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -67,6 +67,8 @@ pub struct Multitrack {
     pub session: Session,
     /// The recorded takes placed so far (f120), oldest first.
     pub takes: Vec<crate::mtrecord::TakeInfo>,
+    /// Punch in/out (f126): the range, whether it is on, and the pre-roll in frames.
+    pub punch: crate::mtrecord::Punch,
 }
 
 impl Multitrack {
@@ -76,7 +78,8 @@ impl Multitrack {
         let rate = SampleRate::new(rate_hz).map_err(|_| MtError(format!("a session's sample rate must be 8000 to 768000 Hz, not {rate_hz}")))?;
         let mut session = Session::new(name, rate);
         session.bit_depth = depth;
-        Ok(Multitrack { session, takes: Vec::new() })
+        let punch = crate::mtrecord::Punch::new(rate.samples(crate::mtrecord::DEFAULT_PREROLL_S));
+        Ok(Multitrack { session, takes: Vec::new(), punch })
     }
 
     pub fn name(&self) -> &str {
@@ -315,7 +318,7 @@ impl Multitrack {
                 json!({"track": track, "take": k.number, "start": rate.seconds(k.start), "length": rate.seconds(k.length), "file": k.path.file_name().and_then(|n| n.to_str()).unwrap_or(""), "playlist": k.playlist, "on_top": self.session.track(k.track).is_some_and(|t| t.active_playlist == k.playlist)})
             })
             .collect();
-        json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "tracks": tracks, "takes": takes})
+        json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "tracks": tracks, "takes": takes, "punch": self.punch.to_json(rate)})
     }
 
     /// The session as the model's own JSON (audio is not in it; the sources' file names are).

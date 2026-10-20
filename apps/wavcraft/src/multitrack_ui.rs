@@ -243,6 +243,23 @@ impl MtView {
             let at = self.transport.position() as f64 / f64::from(mt.rate());
             ui.monospace(format!("{:02}:{:05.2}", (at / 60.0) as u32, at % 60.0));
             ui.separator();
+            let rate = mt.session.sample_rate;
+            let (mut pin, mut pout) = mt.punch.range.map_or((0.0, 0.0), |r| (rate.seconds(r.start), rate.seconds(r.end)));
+            ui.label("Punch");
+            let moved = ui.add(egui::DragValue::new(&mut pin).speed(0.1).range(0.0..=36_000.0).suffix(" s")).changed()
+                | ui.add(egui::DragValue::new(&mut pout).speed(0.1).range(0.0..=36_000.0).suffix(" s")).changed();
+            if moved {
+                note(&mut failure, mt.punch.set(rate.samples(pin), rate.samples(pout.max(pin + 0.01))));
+            }
+            let mut on = mt.punch.on;
+            if ui.toggle_value(&mut on, "Punch").on_hover_text("record only inside the range, with a pre-roll").changed() {
+                if on && mt.punch.range.is_none() {
+                    failure = Some("set a punch range first".into());
+                } else {
+                    mt.punch.on = on;
+                }
+            }
+            ui.separator();
             if ui.button("Add Stereo Track").clicked() {
                 note(&mut failure, mt.add_track(None, 2).map(|_| ()));
             }
@@ -288,6 +305,15 @@ impl MtView {
                 painter.line_segment([pos2(x, rr.bottom() - 6.0), pos2(x, rr.bottom())], Stroke::new(1.0, Color32::GRAY));
                 painter.text(pos2(x + 3.0, rr.top()), egui::Align2::LEFT_TOP, format!("{s}s"), egui::FontId::monospace(10.0), Color32::GRAY);
                 s += step;
+            }
+            if let Some(r) = mt.punch.range {
+                let rate = mt.session.sample_rate;
+                let band = Rect::from_min_max(
+                    pos2(rr.left() + HEADER_W + rate.seconds(r.start) as f32 * self.px_per_sec, rr.top() + 12.0),
+                    pos2(rr.left() + HEADER_W + rate.seconds(r.end) as f32 * self.px_per_sec, rr.bottom()),
+                );
+                let c = if mt.punch.on { Color32::from_rgb(220, 70, 60) } else { Color32::from_gray(110) };
+                painter.rect_filled(band, 0.0, c.gamma_multiply(0.45));
             }
             for id in ids {
                 let Some(t) = mt.session.track(id) else { continue };
@@ -431,9 +457,33 @@ impl MtView {
                 self.transport.play(mt, mt.session.sample_rate.samples(at));
                 Ok("OK".into())
             }
+            ("PUNCH", verb) => {
+                let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+                let rate = mt.session.sample_rate;
+                let secs = |i: usize| -> Result<f64, MtError> {
+                    let v: f64 = word(i).parse().map_err(|_| MtError("seconds must be numbers".into()))?;
+                    if v.is_finite() && v >= 0.0 { Ok(v) } else { Err(MtError("seconds must be 0 or more".into())) }
+                };
+                match verb {
+                    "set" if w.len() == 3 => mt.punch.set(rate.samples(secs(1)?), rate.samples(secs(2)?))?,
+                    "preroll" if w.len() == 2 => mt.punch.preroll = rate.samples(secs(1)?),
+                    "on" | "off" if w.len() == 1 => {
+                        if verb == "on" && mt.punch.range.is_none() {
+                            return Err(MtError("no punch range: PUNCH set <in_s> <out_s> first".into()));
+                        }
+                        mt.punch.on = verb == "on";
+                    }
+                    _ => return usage("PUNCH set <in_s> <out_s> | PUNCH preroll <s> | PUNCH on|off"),
+                }
+                Ok("OK".into())
+            }
             ("SREC", "start") => {
                 let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
-                let at: f64 = if w.len() < 2 { 0.0 } else { word(1).parse().map_err(|_| MtError("usage: SREC start [seconds]".into()))? };
+                let at: f64 = if w.len() >= 2 {
+                    word(1).parse().map_err(|_| MtError("usage: SREC start [seconds]".into()))?
+                } else {
+                    mt.punch.record_start().map_or(0.0, |s| mt.session.sample_rate.seconds(s))
+                };
                 if !at.is_finite() || at < 0.0 {
                     return usage("SREC start [seconds], 0 or more");
                 }
@@ -555,7 +605,8 @@ fn start_recording(rec: &mut Option<Recorder>, mt: &Multitrack, transport: &mut 
     }
     let start = mt.session.sample_rate.samples(at);
     let plans = mt.plan_takes(dir, FAKE_CHANNELS);
-    let r = Recorder::start(plans, mt.rate(), start)?;
+    let mut r = Recorder::start(plans, mt.rate(), start)?;
+    r.punch = mt.punch.active();
     if mt.session.content_end() > start {
         transport.play(mt, start);
     }
@@ -566,13 +617,14 @@ fn start_recording(rec: &mut Option<Recorder>, mt: &Multitrack, transport: &mut 
 /// Stop recording and place every take; returns how many were placed.
 fn stop_recording(rec: &mut Option<Recorder>, mt: &mut Multitrack, transport: &mut Transport) -> Result<usize, MtError> {
     let r = rec.take().ok_or_else(|| MtError("not recording".into()))?;
-    let start = r.start;
+    let (start, punch) = (r.start, r.punch);
     transport.stop();
     let written = r.stop()?;
     let mut placed = 0;
     for w in written.into_iter().filter(|w| w.frames > 0) {
-        mt.place_take(w.track, start, &w.path)?;
-        placed += 1;
+        if mt.place_take_in(w.track, start, &w.path, punch).is_ok() || punch.is_none() {
+            placed += 1;
+        }
     }
     Ok(placed)
 }

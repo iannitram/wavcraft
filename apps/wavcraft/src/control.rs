@@ -18,6 +18,8 @@
 //!   `SPLAY [seconds]`, `SSTOP` (play the session, f114; `SESSION state` adds `playing`, `position` in seconds and `underruns`)
 //!   `TRACK arm <track> [input=<ch>]`, `TRACK disarm <track>`, `SREC start [seconds]`, `SREC stop` (record the armed tracks while the
 //!   rest plays, f120; takes are listed in `SESSION state` under `takes`; `WAVCRAFT_FAKE_INPUT=1` is the only input built so far)
+//!   `PUNCH set <in_s> <out_s>`, `PUNCH on|off`, `PUNCH preroll <s>` (punch in/out, f126: with punch on, `SREC start` without a time starts
+//!   at the pre-roll before the range and the take is cut to the range; `SESSION state` adds `punch`)
 //!   (multitrack basics, f103; see `multitrack_ui.rs`; `SESSION state` answers `OK view=… <json>`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
