@@ -11,6 +11,7 @@
 mod app;
 mod control;
 mod doclist;
+mod files;
 mod player;
 mod selflog;
 mod spectrum;
