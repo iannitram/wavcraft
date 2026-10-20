@@ -148,3 +148,20 @@ fn right_click_setting_round_trips_and_defaults_to_extend() {
     // Unknown values mean the default.
     assert!(!Settings::parse("right_click = banana").right_click_menu);
 }
+
+#[test]
+fn marker_columns_are_saved_and_unknown_names_ignored() {
+    use wavcraft_core::settings::MarkerColumns;
+    let dir = TempDir::new("marker-columns");
+    let file = dir.0.join("settings.txt");
+    assert!(Settings::load(&file).marker_columns.duration, "shown by default");
+    let mut s = Settings::default();
+    s.marker_columns.duration = false;
+    s.marker_columns.description = true;
+    s.save(&file).unwrap();
+    let back = Settings::load(&file);
+    assert_eq!(back.marker_columns, s.marker_columns);
+    assert_eq!(back.marker_columns.to_list(), "start,end,type,description");
+    assert_eq!(MarkerColumns::from_list("end, bogus ,type").to_list(), "end,type");
+    assert_eq!(Settings::parse("marker_columns =\n").marker_columns.to_list(), "", "an empty list hides them all");
+}

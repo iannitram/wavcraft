@@ -656,3 +656,31 @@ fn f19_zoom_actions_answer_to_their_panel_names_and_amplitude_zoom_has_alt_keys(
     assert_eq!((k.alt, k.key), (true, "Minus"));
     assert_eq!(by_name("view.zoom.ampReset").map(|a| a.id), Some(ActionId::ZoomAmpReset));
 }
+
+#[test]
+fn m6_rename_and_move_a_marker_are_one_undo_step_each() {
+    let t = TempDir::new("marker-rename-move");
+    let mut e = editor(&t.0, &stereo(2000));
+    e.run(ActionId::MarkerAdd, 100..100).unwrap();
+    e.run(ActionId::MarkerAdd, 300..400).unwrap();
+    let steps = e.history.steps().len();
+    let id = e.history.current().markers().id_at(1).unwrap();
+    assert!(e.rename_marker(id, "Chorus"));
+    assert_eq!(e.history.steps().len(), steps + 1);
+    assert_eq!(e.history.undo_label(), Some("Rename Marker"));
+    assert!(!e.rename_marker(id, "Chorus") && !e.rename_marker(id, " "), "no change, no step");
+    assert_eq!(e.history.steps().len(), steps + 1);
+    assert!(e.move_marker(id, 1900));
+    assert_eq!(e.history.undo_label(), Some("Move Marker"));
+    let m = e.history.current().markers().as_slice()[1].clone();
+    assert_eq!((m.name.as_str(), m.start, m.end), ("Chorus", 1900, 2000), "length kept, held inside the file");
+    assert!(!e.move_marker(id, 1900));
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e), [(100, 100), (300, 400)]);
+    assert_eq!(e.history.current().markers().as_slice()[1].name, "Chorus");
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(e.history.current().markers().as_slice()[1].name, "Marker 02");
+    e.run(ActionId::Redo, 0..0).unwrap();
+    e.run(ActionId::Redo, 0..0).unwrap();
+    assert_eq!(markers(&e)[1], (1900, 2000));
+}

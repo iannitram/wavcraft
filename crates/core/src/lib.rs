@@ -58,7 +58,7 @@ pub mod workspaces;
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;
 pub use doc::{Channel, DocState, Piece, SourceFormat};
-pub use markers::{Marker, Markers};
+pub use markers::{Marker, MarkerPick, Markers};
 
 pub use document::{Document, OpenError};
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};

@@ -48,6 +48,59 @@ pub const MAX_CROSSFADE_MS: u32 = 1000;
 const KEY_PANEL_LAYOUT: &str = "panel_layout";
 const KEY_ZONE_SIZES: &str = "zone_sizes";
 const KEY_WORKSPACE: &str = "workspace";
+const KEY_MARKER_COLUMNS: &str = "marker_columns";
+
+/// Which columns the Markers panel shows besides the name (A181).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkerColumns {
+    pub start: bool,
+    pub end: bool,
+    pub duration: bool,
+    pub kind: bool,
+    pub description: bool,
+}
+
+impl MarkerColumns {
+    /// The columns' settings names, in display order.
+    pub const NAMES: [&'static str; 5] = ["start", "end", "duration", "type", "description"];
+
+    pub fn get(&self, i: usize) -> bool {
+        [self.start, self.end, self.duration, self.kind, self.description].get(i).copied().unwrap_or(false)
+    }
+
+    pub fn set(&mut self, i: usize, on: bool) {
+        match i {
+            0 => self.start = on,
+            1 => self.end = on,
+            2 => self.duration = on,
+            3 => self.kind = on,
+            4 => self.description = on,
+            _ => {}
+        }
+    }
+
+    /// `start,end,duration,type` style list of the columns that are on.
+    pub fn to_list(&self) -> String {
+        (0..Self::NAMES.len()).filter(|&i| self.get(i)).map(|i| Self::NAMES[i]).collect::<Vec<_>>().join(",")
+    }
+
+    /// The columns named in `list` (unknown names are ignored).
+    pub fn from_list(list: &str) -> MarkerColumns {
+        let mut c = MarkerColumns { start: false, end: false, duration: false, kind: false, description: false };
+        for name in list.split(',').map(str::trim) {
+            if let Some(i) = Self::NAMES.iter().position(|n| *n == name) {
+                c.set(i, true);
+            }
+        }
+        c
+    }
+}
+
+impl Default for MarkerColumns {
+    fn default() -> Self {
+        MarkerColumns { start: true, end: true, duration: true, kind: true, description: false }
+    }
+}
 
 /// What the settings file holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +130,8 @@ pub struct Settings {
     pub zone_sizes: String,
     /// The workspace in use (`crate::workspaces`; empty: Default).
     pub workspace: String,
+    /// The Markers panel's columns.
+    pub marker_columns: MarkerColumns,
 }
 
 impl Default for Settings {
@@ -94,6 +149,7 @@ impl Default for Settings {
             panel_layout: String::new(),
             zone_sizes: String::new(),
             workspace: String::new(),
+            marker_columns: MarkerColumns::default(),
         }
     }
 }
@@ -136,6 +192,7 @@ impl Settings {
                 KEY_PANEL_LAYOUT => s.panel_layout = value.to_string(),
                 KEY_ZONE_SIZES => s.zone_sizes = value.to_string(),
                 KEY_WORKSPACE => s.workspace = value.to_string(),
+                KEY_MARKER_COLUMNS => s.marker_columns = MarkerColumns::from_list(value),
                 _ => {}
             }
             if key.trim() == KEY_SESSION_FOLDER {
@@ -208,6 +265,8 @@ impl Settings {
         out.push_str("# panel_layout: dock zones and tab order, `zone:id,id;zone:id` (a * marks the front tab); zone_sizes: points.\n");
         out.push_str(&format!("{KEY_PANEL_LAYOUT} = {}\n{KEY_ZONE_SIZES} = {}\n", self.panel_layout, self.zone_sizes));
         out.push_str(&format!("# workspace: the workspace in use (Window › Workspace; empty: Default).\n{KEY_WORKSPACE} = {}\n", self.workspace));
+        out.push_str("# marker_columns: the Markers panel's columns (start, end, duration, type, description).\n");
+        out.push_str(&format!("{KEY_MARKER_COLUMNS} = {}\n", self.marker_columns.to_list()));
         out
     }
 
