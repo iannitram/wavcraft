@@ -28,6 +28,7 @@
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
 //! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
+//! - `NOISE_PRINT` → `OK frames=<n> channels=<n> rate=<hz>` (the session's noise print, captured by `ACTION nr.capture_print`), or `OK none`
 //! - `EFFECT_DIALOG <name> [key=value ...]` opens the effect's dialog on those values; `EFFECT_DIALOG` → `OK open=<id|none> values=[..]`; `EFFECT_DIALOG OK|CANCEL` presses the button
 //! - `GENERATE` → the generators and their settings; `GENERATE <tone|noise> key=value ... [seed=N]` → `OK selection=<a>-<b> changed=<0|1>` (insert at the cursor or replace the selection)
 //! - `GENERATE_DIALOG <name> [key=value ...]` opens a Generate dialog; `GENERATE_DIALOG PREVIEW` → `OK preview=<frames>`; `GENERATE_DIALOG OK|CANCEL` presses the button

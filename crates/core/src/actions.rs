@@ -14,6 +14,7 @@ use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, MixOption
 use crate::doc::history::History;
 use crate::effects::{self, EffectParams, FadeCurve, FadeDir};
 use crate::generate;
+use crate::noise;
 use crate::snap::{self, SnapSettings};
 use std::sync::OnceLock;
 
@@ -68,6 +69,8 @@ pub enum ActionId {
     FadeInCosine,
     FadeOutLinear,
     FadeOutCosine,
+    /// Waveform › Capture Noise Print: learn the selection's noise spectrum (kept for the session).
+    CaptureNoisePrint,
     /// A registered effect: its index in [`effects::all`].
     Effect(u16),
     /// View › Snapping on or off (Audition's default key S).
@@ -203,6 +206,7 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::Clipboard3, "edit.clipboard.3", "Set Current Clipboard: 3", &[cmd("3")]),
     edit(ActionId::Clipboard4, "edit.clipboard.4", "Set Current Clipboard: 4", &[cmd("4")]),
     edit(ActionId::Clipboard5, "edit.clipboard.5", "Set Current Clipboard: 5", &[cmd("5")]),
+    edit(ActionId::CaptureNoisePrint, "nr.capture_print", "Capture Noise Print", &[shift("P")]),
     edit(ActionId::Delete, "edit.delete", "Delete", &[key("Delete"), key("Backspace")]),
     edit(ActionId::Silence, "edit.silence", "Silence", &[]),
     // Insert › Silence… asks for a length (the window's dialog), then runs `Editor::insert_silence`.
@@ -491,7 +495,7 @@ impl Editor {
             ActionId::Cut | ActionId::Copy => self.len() > 0,
             ActionId::Paste => self.clipboard().is_some(),
             ActionId::Clipboard1 | ActionId::Clipboard2 | ActionId::Clipboard3 | ActionId::Clipboard4 | ActionId::Clipboard5 => true,
-            ActionId::Delete | ActionId::Silence | ActionId::Crop => has_sel,
+            ActionId::Delete | ActionId::Silence | ActionId::Crop | ActionId::CaptureNoisePrint => has_sel,
             // Like Copy: with no selection the effects take the whole file.
             ActionId::Reverse
             | ActionId::Amplify
@@ -874,6 +878,17 @@ impl Editor {
                 let e = effects::apply(*effect, &params, &doc, sel.clone(), channels, xf, &cancel)?;
                 self.last = Some(Repeat::Effect(i, params));
                 (e, sel.clone())
+            }
+            ActionId::CaptureNoisePrint => {
+                let print = noise::capture(&doc, sel.clone()).map_err(|why| EditError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, why)))?;
+                let message = format!(
+                    "Noise print captured: {:.2} s, {} channel(s), {} frames averaged",
+                    (sel.end - sel.start) as f64 / f64::from(doc.sample_rate().max(1)),
+                    print.density.len(),
+                    print.frames
+                );
+                noise::set_current(print);
+                return Ok(Outcome { doc_changed: false, selection: sel, message: Some(message) });
             }
             ActionId::SelectAll => return unchanged(0..len),
             ActionId::DeselectAll | ActionId::ClearTimeSelection => return unchanged(sel.start..sel.start),

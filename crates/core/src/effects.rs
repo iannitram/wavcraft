@@ -177,8 +177,10 @@ pub fn fade(doc: &DocState, range: Range<u64>, channels: ChannelMask, dir: FadeD
 
 mod eq;
 mod gain;
+mod noise_reduction;
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
+pub use noise_reduction::NoiseReduction;
 
 /// What a setting means, so a dialog can pick the right control and units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,6 +314,19 @@ pub fn describe_list(descs: &[ParamDesc]) -> String {
     descs.iter().map(|p| format!("{}={} ({})", p.id, p.default, range_text(p))).collect::<Vec<_>>().join(" ")
 }
 
+/// Where a chunk handed to [`Effect::process_in_context`] sits in the document.
+pub struct ChunkCtx<'a> {
+    /// The document frame of the chunk's first frame (after the lead).
+    pub first_frame: u64,
+    /// The first frame of the range being processed: the origin of a spectral effect's frame grid.
+    pub range_start: u64,
+    /// Frames of context before the chunk in each input slice (and the same number after it).
+    pub lead: usize,
+    /// The document channel of each input slice.
+    pub channels: &'a [usize],
+    pub sample_rate: u32,
+}
+
 /// A process over audio.
 pub trait Effect: Sync {
     /// Stable lowercase key; the control channel calls the effect `effect.<id>`.
@@ -333,6 +348,21 @@ pub trait Effect: Sync {
     /// and `output` hold one slice per active channel, all the same length. The output has the
     /// same length as the input (the effect seam is length-preserving).
     fn process(&self, params: &[f64], first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()>;
+    /// How many frames of surrounding audio [`process_in_context`](Self::process_in_context)
+    /// wants on each side of a chunk (0: none, the chunk alone is enough). A spectral effect
+    /// asks for its FFT length plus any warm-up, so the overlap is right across chunk edges.
+    fn context_frames(&self, _params: &[f64], _sample_rate: u32) -> usize {
+        0
+    }
+    /// Process one chunk with context. Every `input` slice holds `ctx.lead` frames of context,
+    /// the chunk (as long as each `output`), then `ctx.lead` frames of context; the document's
+    /// real audio, or silence beyond its ends. The default hands the chunk to
+    /// [`process`](Self::process).
+    fn process_in_context(&self, params: &[f64], ctx: &ChunkCtx, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()> {
+        let m = output.first().map_or(0, |o| o.len());
+        let chunk: Vec<&[f32]> = input.iter().map(|i| i.get(ctx.lead..ctx.lead + m).unwrap_or(&[])).collect();
+        self.process(params, ctx.first_frame, &chunk, output)
+    }
 }
 
 /// What a stateful effect is told when a run starts (see [`Effect::begin`]).
@@ -374,7 +404,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &NoiseReduction];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
@@ -400,10 +430,38 @@ pub fn apply(
 ) -> Result<Edit, EditError> {
     validate(effect, params).map_err(|why| EditError::Io(io::Error::new(io::ErrorKind::InvalidInput, why)))?;
     let range = if range.start < range.end { range } else { 0..doc.len_frames() };
-    let ctx = RunContext { doc, range: range.clone(), channels: channels.active(doc.channel_count()), sample_rate: doc.sample_rate() };
+    let rate = doc.sample_rate();
+    let active = channels.active(doc.channel_count());
+    let ctx = RunContext { doc, range: range.clone(), channels: active.clone(), sample_rate: rate };
     let mut run = effect.begin(params, &ctx).map_err(EditError::Io)?;
-    edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, input, output| match run.as_mut() {
-        Some(run) => run.process(at, input, output),
-        None => effect.process(params, at, input, output),
+    let lead = effect.context_frames(params, rate);
+    // A stateful run (#135) takes the chunks in order; otherwise a stateless effect that wants no
+    // context gets the chunk alone; one that wants context (#139) reads it itself.
+    if run.is_some() || lead == 0 {
+        return edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, input, output| match run.as_mut() {
+            Some(run) => run.process(at, input, output),
+            None => effect.process(params, at, input, output),
+        });
+    }
+    // An effect that wants context reads it itself: each chunk plus `lead` frames either side
+    // (silence beyond the document), so a spectral effect's output is the same however the
+    // range was cut into chunks.
+    let mut bufs: Vec<Vec<f32>> = vec![Vec::new(); active.len()];
+    edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, _input, output| {
+        let m = output.first().map_or(0, |o| o.len());
+        let first = at;
+        let total = lead + m + lead;
+        let from = first as i64 - lead as i64;
+        for (buf, &c) in bufs.iter_mut().zip(&active) {
+            buf.clear();
+            buf.resize(total, 0.0);
+            let skip = if from < 0 { from.unsigned_abs() as usize } else { 0 };
+            if skip < total {
+                doc.read(c, from.max(0) as u64, &mut buf[skip..])?;
+            }
+        }
+        let ins: Vec<&[f32]> = bufs.iter().map(|b| &b[..]).collect();
+        let ctx = ChunkCtx { first_frame: first, range_start: range.start, lead, channels: &active, sample_rate: rate };
+        effect.process_in_context(params, &ctx, &ins, output)
     })
 }
