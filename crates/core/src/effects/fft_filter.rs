@@ -25,7 +25,8 @@ const POINTS: usize = 8;
 const fn params() -> [ParamDesc; 2 + 2 * POINTS] {
     const F: [&str; POINTS] = ["f1_hz", "f2_hz", "f3_hz", "f4_hz", "f5_hz", "f6_hz", "f7_hz", "f8_hz"];
     const G: [&str; POINTS] = ["g1_db", "g2_db", "g3_db", "g4_db", "g5_db", "g6_db", "g7_db", "g8_db"];
-    const FL: [&str; POINTS] = ["Frequency 1", "Frequency 2", "Frequency 3", "Frequency 4", "Frequency 5", "Frequency 6", "Frequency 7", "Frequency 8"];
+    const FL: [&str; POINTS] =
+        ["Frequency 1", "Frequency 2", "Frequency 3", "Frequency 4", "Frequency 5", "Frequency 6", "Frequency 7", "Frequency 8"];
     const GL: [&str; POINTS] = ["Gain 1", "Gain 2", "Gain 3", "Gain 4", "Gain 5", "Gain 6", "Gain 7", "Gain 8"];
     let blank = ParamDesc::number("", "", 0.0, 0.0, 0.0);
     let mut out = [blank; 2 + 2 * POINTS];
@@ -69,6 +70,8 @@ struct FilterRun {
     channels: Vec<usize>,
     range: std::ops::Range<u64>,
     stft: Stft,
+    /// The document frame of the next chunk's first frame. Kept here, not taken from `first_frame`.
+    next: u64,
     /// Linear gain per bin.
     gains: Vec<f32>,
 }
@@ -90,7 +93,14 @@ impl Effect for FftFilter {
         let log = p[1] == 0.0;
         let bin_hz = f64::from(ctx.sample_rate) / stft.size() as f64;
         let gains = (0..stft.bins()).map(|b| 10f64.powf(gain_db(&pts, log, b as f64 * bin_hz) / 20.0) as f32).collect();
-        Ok(Some(Box::new(FilterRun { doc: ctx.doc.clone(), channels: ctx.channels.clone(), range: ctx.range.clone(), stft, gains })))
+        Ok(Some(Box::new(FilterRun {
+            doc: ctx.doc.clone(),
+            channels: ctx.channels.clone(),
+            next: ctx.range.start,
+            range: ctx.range.clone(),
+            stft,
+            gains,
+        })))
     }
     fn process(&self, _p: &[f64], _f: u64, _i: &[&[f32]], _o: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::other("FFT Filter needs the sample rate: it runs through Effect::begin"))
@@ -98,7 +108,8 @@ impl Effect for FftFilter {
 }
 
 impl Run for FilterRun {
-    fn process(&mut self, first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()> {
+    fn process(&mut self, _first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()> {
+        let first_frame = self.next;
         let n = self.stft.size() as u64;
         let len = input.first().map_or(0, |c| c.len()) as u64;
         let from = first_frame.saturating_sub(n).max(self.range.start);
@@ -117,7 +128,7 @@ impl Run for FilterRun {
                 }
             });
         }
+        self.next += len;
         Ok(())
     }
 }
-

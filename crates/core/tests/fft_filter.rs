@@ -113,7 +113,7 @@ fn chunked_output_equals_a_single_pass() {
     let range = 1234..(n as u64 - 900);
     // One pass over the whole range, by hand.
     let fx = effects::all()[index() as usize];
-    let ctx = RunContext { doc: &before, range: range.clone(), channels: vec![0], sample_rate: RATE };
+    let ctx = RunContext { doc: before, range: range.clone(), channels: vec![0], sample_rate: RATE };
     let mut run = fx.begin(&params, &ctx).unwrap().expect("a run");
     let input = &data[range.start as usize..range.end as usize];
     let mut want = vec![0.0f32; input.len()];
