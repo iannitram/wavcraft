@@ -20,6 +20,7 @@ pub mod doc;
 pub mod document;
 pub mod io;
 pub mod mtplay;
+pub mod mtrecord;
 pub mod multitrack;
 pub mod random;
 pub mod save;

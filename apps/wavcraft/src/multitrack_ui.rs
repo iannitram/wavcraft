@@ -9,6 +9,7 @@ use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use soundcraft_playback::Player as DevicePlayer;
 use wavcraft_core::Document;
 use wavcraft_core::mtplay::{PlaybackSession, SilentPlayer};
+use wavcraft_core::mtrecord::{FAKE_CHANNELS, Recorder};
 use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, TrackId};
 use wavcraft_core::multitrack::{MtError, Multitrack, bit_depth_from_bits, bits_of};
 
@@ -107,6 +108,10 @@ pub struct MtView {
     rename: Option<(TrackId, String)>,
     pub message: Option<String>,
     pub transport: Transport,
+    /// Where take files are written (f120); the app sets it from the session folder.
+    pub take_dir: PathBuf,
+    recorder: Option<Recorder>,
+    arm_input: usize,
     px_per_sec: f32,
     import_at: f64,
     sessions_made: u32,
@@ -122,6 +127,9 @@ impl Default for MtView {
             rename: None,
             message: None,
             transport: Transport::default(),
+            take_dir: std::env::temp_dir().join("wavcraft-takes"),
+            recorder: None,
+            arm_input: 1,
             px_per_sec: 60.0,
             import_at: 0.0,
             sessions_made: 0,
@@ -137,6 +145,7 @@ impl MtView {
 
     fn create(&mut self, name: &str, rate: u32, depth: BitDepthSetting) -> Result<(), MtError> {
         self.mt = Some(Multitrack::new(name, rate, depth)?);
+        self.recorder = None; // dropping it finishes any take file
         self.transport.stop();
         self.selected = None;
         self.rename = None;
@@ -223,6 +232,14 @@ impl MtView {
             } else if ui.add_enabled(end_frames > 0, egui::Button::new("▶ Play")).on_hover_text("play the session from the start").clicked() {
                 self.transport.play(mt, 0);
             }
+            if self.recorder.is_some() {
+                if ui.button("■ Stop Recording").clicked() {
+                    note(&mut failure, stop_recording(&mut self.recorder, mt, &mut self.transport).map(|_| ()));
+                }
+                ui.ctx().request_repaint();
+            } else if ui.button("● Record").on_hover_text("record the armed tracks from the start while the others play").clicked() {
+                note(&mut failure, start_recording(&mut self.recorder, mt, &mut self.transport, &self.take_dir, 0.0));
+            }
             let at = self.transport.position() as f64 / f64::from(mt.rate());
             ui.monospace(format!("{:02}:{:05.2}", (at / 60.0) as u32, at % 60.0));
             ui.separator();
@@ -276,6 +293,7 @@ impl MtView {
                 let Some(t) = mt.session.track(id) else { continue };
                 let (name, chans, clips, [r, g, b]) = (t.name.clone(), t.channels(), t.clips().to_vec(), t.color);
                 let (mut mute, mut solo, mut vol) = (t.mixer.mute, t.mixer.solo, t.mixer.volume_db);
+                let mut arm = t.mixer.record_arm;
                 let (row, _) = ui.allocate_exact_size(vec2(HEADER_W + width, ROW_H), Sense::hover());
                 let header = Rect::from_min_size(row.min, vec2(HEADER_W - 4.0, ROW_H));
                 let lane = Rect::from_min_size(pos2(row.left() + HEADER_W, row.top()), vec2(width, ROW_H));
@@ -314,6 +332,10 @@ impl MtView {
                 h.horizontal(|ui| {
                     ui.toggle_value(&mut mute, "M").on_hover_text("Mute");
                     ui.toggle_value(&mut solo, "S").on_hover_text("Solo");
+                    ui.toggle_value(&mut arm, "R").on_hover_text("Arm for recording");
+                    if arm {
+                        ui.add(egui::DragValue::new(&mut self.arm_input).range(1..=FAKE_CHANNELS).prefix("In ")).on_hover_text("input channel");
+                    }
                     if ui.small_button("Rename").clicked() {
                         self.rename = Some((id, name.clone()));
                     }
@@ -323,6 +345,9 @@ impl MtView {
                 });
                 h.add(egui::Slider::new(&mut vol, -60.0..=12.0).suffix(" dB").fixed_decimals(1));
                 let _ = (mt.set_mute(id, mute), mt.set_solo(id, solo), mt.set_volume_db(id, vol));
+                if arm != t_armed(mt, id) {
+                    note(&mut failure, if arm { mt.arm_track(id, Some(self.arm_input)) } else { mt.disarm_track(id) });
+                }
                 // Timeline: the clips, drawn as boxes with their names.
                 let lane_resp = ui.interact(lane, ui.id().with(("lane", id.0)), Sense::click());
                 if lane_resp.clicked() {
@@ -406,6 +431,21 @@ impl MtView {
                 self.transport.play(mt, mt.session.sample_rate.samples(at));
                 Ok("OK".into())
             }
+            ("SREC", "start") => {
+                let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+                let at: f64 = if w.len() < 2 { 0.0 } else { word(1).parse().map_err(|_| MtError("usage: SREC start [seconds]".into()))? };
+                if !at.is_finite() || at < 0.0 {
+                    return usage("SREC start [seconds], 0 or more");
+                }
+                start_recording(&mut self.recorder, mt, &mut self.transport, &self.take_dir, at)?;
+                Ok("OK".into())
+            }
+            ("SREC", "stop") => {
+                let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+                let n = stop_recording(&mut self.recorder, mt, &mut self.transport)?;
+                Ok(format!("OK takes={n}"))
+            }
+            ("SREC", _) => usage("SREC start [seconds] | SREC stop"),
             ("SSTOP", _) => {
                 self.transport.stop();
                 Ok("OK".into())
@@ -416,6 +456,7 @@ impl MtView {
                     v["playing"] = self.transport.is_playing().into();
                     v["position"] = (self.transport.position() as f64 / f64::from(mt.rate())).into();
                     v["underruns"] = self.transport.underruns().into();
+                    v["recording"] = self.recorder.is_some().into();
                     Ok(format!("OK view={} {v}", if self.show { "multitrack" } else { "waveform" }))
                 }
                 None => Ok(format!("OK view={} none", if self.show { "multitrack" } else { "waveform" })),
@@ -454,14 +495,32 @@ impl MtView {
                         }
                         Ok("OK".into())
                     }
+                    "arm" if w.len() == 2 || w.len() == 3 => {
+                        let id = mt.find_track(word(1))?;
+                        let input = match w.get(2) {
+                            None => None,
+                            Some(kv) => Some(
+                                kv.strip_prefix("input=")
+                                    .and_then(|v| v.parse::<usize>().ok())
+                                    .ok_or_else(|| MtError("usage: TRACK arm <track> [input=<channel>]".into()))?,
+                            ),
+                        };
+                        mt.arm_track(id, input)?;
+                        Ok("OK".into())
+                    }
+                    "disarm" if w.len() == 2 => {
+                        let id = mt.find_track(word(1))?;
+                        mt.disarm_track(id)?;
+                        Ok("OK".into())
+                    }
                     "volume" if w.len() == 3 => {
                         let id = mt.find_track(word(1))?;
                         mt.set_volume_db(id, word(2).parse().map_err(|_| MtError("volume is a number of dB".into()))?)?;
                         Ok("OK".into())
                     }
-                    _ => {
-                        usage("TRACK add [name] [mono|stereo] | remove <track> | rename <track> <new> | mute|solo <track> 0|1 | volume <track> <dB>")
-                    }
+                    _ => usage(
+                        "TRACK add [name] [mono|stereo] | remove <track> | rename <track> <new> | mute|solo <track> 0|1 | volume <track> <dB> | arm <track> [input=<ch>] | disarm <track>",
+                    ),
                 }
             }
             ("CLIP", "add") if w.len() == 4 => {
@@ -482,6 +541,40 @@ impl MtView {
             _ => usage("CLIP add <track> <path> <at_seconds> | CLIP adddoc <track> <at_seconds>"),
         }
     }
+}
+
+fn t_armed(mt: &Multitrack, id: TrackId) -> bool {
+    mt.session.track(id).is_some_and(|t| t.mixer.record_arm)
+}
+
+/// Start recording the armed tracks at `at` seconds, with the session playing from there when
+/// it has anything to play (overdub, C038).
+fn start_recording(rec: &mut Option<Recorder>, mt: &Multitrack, transport: &mut Transport, dir: &std::path::Path, at: f64) -> Result<(), MtError> {
+    if rec.is_some() {
+        return Err(MtError("already recording".into()));
+    }
+    let start = mt.session.sample_rate.samples(at);
+    let plans = mt.plan_takes(dir, FAKE_CHANNELS);
+    let r = Recorder::start(plans, mt.rate(), start)?;
+    if mt.session.content_end() > start {
+        transport.play(mt, start);
+    }
+    *rec = Some(r);
+    Ok(())
+}
+
+/// Stop recording and place every take; returns how many were placed.
+fn stop_recording(rec: &mut Option<Recorder>, mt: &mut Multitrack, transport: &mut Transport) -> Result<usize, MtError> {
+    let r = rec.take().ok_or_else(|| MtError("not recording".into()))?;
+    let start = r.start;
+    transport.stop();
+    let written = r.stop()?;
+    let mut placed = 0;
+    for w in written.into_iter().filter(|w| w.frames > 0) {
+        mt.place_take(w.track, start, &w.path)?;
+        placed += 1;
+    }
+    Ok(placed)
 }
 
 fn note(failure: &mut Option<String>, r: Result<(), MtError>) {

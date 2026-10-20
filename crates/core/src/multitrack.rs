@@ -65,6 +65,8 @@ pub fn bits_of(d: BitDepthSetting) -> u32 {
 /// A multitrack session being edited.
 pub struct Multitrack {
     pub session: Session,
+    /// The recorded takes placed so far (f120), oldest first.
+    pub takes: Vec<crate::mtrecord::TakeInfo>,
 }
 
 impl Multitrack {
@@ -74,7 +76,7 @@ impl Multitrack {
         let rate = SampleRate::new(rate_hz).map_err(|_| MtError(format!("a session's sample rate must be 8000 to 768000 Hz, not {rate_hz}")))?;
         let mut session = Session::new(name, rate);
         session.bit_depth = depth;
-        Ok(Multitrack { session })
+        Ok(Multitrack { session, takes: Vec::new() })
     }
 
     pub fn name(&self) -> &str {
@@ -144,6 +146,7 @@ impl Multitrack {
         let Some(i) = self.session.track_index(id) else { return err("no such track") };
         let used: Vec<SourceId> = self.session.tracks[i].playlists.iter().flat_map(|p| p.clips.iter().filter_map(Clip::source)).collect();
         self.session.tracks.remove(i);
+        self.takes.retain(|k| k.track != id);
         for s in used {
             if self.session.clips_using(s).next().is_none() {
                 self.session.sources.retain(|x| x.id != s);
@@ -301,10 +304,18 @@ impl Multitrack {
                     .iter()
                     .map(|c| json!({"name": c.name, "start": rate.seconds(c.start), "length": rate.seconds(c.length), "channels": c.source().and_then(|s| self.session.source(s)).map_or(0, |s| s.channels)}))
                     .collect();
-                json!({"name": t.name, "channels": t.channels(), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "clips": clips})
+                json!({"name": t.name, "channels": t.channels(), "armed": t.mixer.record_arm, "input": crate::mtrecord::input_label(&t.mixer.input), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "clips": clips})
             })
             .collect();
-        json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "tracks": tracks})
+        let takes: Vec<_> = self
+            .takes
+            .iter()
+            .map(|k| {
+                let track = self.session.track(k.track).map_or("?", |t| t.name.as_str());
+                json!({"track": track, "take": k.number, "start": rate.seconds(k.start), "length": rate.seconds(k.length), "file": k.path.file_name().and_then(|n| n.to_str()).unwrap_or(""), "playlist": k.playlist, "on_top": self.session.track(k.track).is_some_and(|t| t.active_playlist == k.playlist)})
+            })
+            .collect();
+        json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "tracks": tracks, "takes": takes})
     }
 
     /// The session as the model's own JSON (audio is not in it; the sources' file names are).

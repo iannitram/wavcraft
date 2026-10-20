@@ -16,6 +16,8 @@
 //! - `SESSION new <name> [rate=48000] [depth=24]`, `SESSION state`, `TRACK add|remove|rename|mute|solo|volume …`,
 //!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`
 //!   `SPLAY [seconds]`, `SSTOP` (play the session, f114; `SESSION state` adds `playing`, `position` in seconds and `underruns`)
+//!   `TRACK arm <track> [input=<ch>]`, `TRACK disarm <track>`, `SREC start [seconds]`, `SREC stop` (record the armed tracks while the
+//!   rest plays, f120; takes are listed in `SESSION state` under `takes`; `WAVCRAFT_FAKE_INPUT=1` is the only input built so far)
 //!   (multitrack basics, f103; see `multitrack_ui.rs`; `SESSION state` answers `OK view=… <json>`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!

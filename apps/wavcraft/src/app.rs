@@ -170,6 +170,7 @@ impl WaveApp {
                 control::start_from_env(move || ctx.request_repaint())
             },
         };
+        app.mtv.take_dir = app.sessions.path.join("takes");
         if let Some(path) = file {
             app.open(path, &cc.egui_ctx);
         }
@@ -265,6 +266,7 @@ impl WaveApp {
             None => Err("this system has no settings folder, so it lasts until WavCraft closes".to_string()),
         };
         self.sessions = SessionFolder { path, source, warning: None };
+        self.mtv.take_dir = self.sessions.path.join("takes");
         let mut msg = format!("Session folder: {} (from the next file opened)", self.sessions.path.display());
         match saved {
             Ok(()) if overridden => msg.push_str(". Saved, but --session-dir or WAVCRAFT_SESSION_DIR will win again at the next start"),
@@ -750,7 +752,7 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
-            "SESSION" | "TRACK" | "CLIP" | "VIEW" | "SPLAY" | "SSTOP" => self.mtv.control(cmd, rest, self.doc.as_ref()),
+            "SESSION" | "TRACK" | "CLIP" | "VIEW" | "SPLAY" | "SSTOP" | "SREC" => self.mtv.control(cmd, rest, self.doc.as_ref()),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
