@@ -47,6 +47,7 @@ pub enum ActionId {
     TimeCompact,
     TimeSamples,
     TimeSmpte30,
+    GotoTime,
 }
 
 /// Which part of the program carries an action out.
@@ -168,6 +169,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeDecimal, "view.time_display.decimal", "Decimal (mm:ss.ddd)", &[]),
     window(ActionId::TimeCompact, "view.time_display.compact", "Compact", &[]),
     window(ActionId::TimeSamples, "view.time_display.samples", "Samples", &[]),
+    window(ActionId::GotoTime, "view.gotoTime", "Go to Time…", &[cmd("J")]),
     window(ActionId::TimeSmpte30, "view.time_display.smpte30", "SMPTE 30 fps", &[]),
 ];
 
@@ -297,7 +299,7 @@ impl Editor {
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::TimeDecimal | ActionId::TimeCompact | ActionId::TimeSamples | ActionId::TimeSmpte30 => true,
-            ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
+            ActionId::GotoTime | ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
@@ -469,6 +471,7 @@ impl Editor {
             | ActionId::TimeCompact
             | ActionId::TimeSamples
             | ActionId::TimeSmpte30
+            | ActionId::GotoTime
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast

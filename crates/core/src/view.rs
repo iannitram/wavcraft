@@ -293,6 +293,129 @@ fn compact(frame: usize, sample_rate: u32) -> String {
     trimmed.trim_end_matches('.').to_string()
 }
 
+impl TimeFormat {
+    /// How many frames one step of the digit group under character `char_idx` of `text` (a time
+    /// written in this format) is worth, for scrubbing by dragging (roadmap A105). Decimal and
+    /// Compact: hours, minutes, seconds, then the fraction (a fraction digit group of n digits
+    /// steps by 10^(3-n) ms). SMPTE: hours, minutes, seconds, frames. Samples: the one digit
+    /// (steps by its power of ten). `None` when `text` has no digit there or the rate is 0. At
+    /// least 1 frame.
+    pub fn unit_at(self, text: &str, char_idx: usize, sample_rate: u32) -> Option<usize> {
+        let rate = u64::from(sample_rate);
+        let chars: Vec<char> = text.chars().collect();
+        if rate == 0 || chars.is_empty() {
+            return None;
+        }
+        let idx = char_idx.min(chars.len() - 1);
+        // A separator under the pointer belongs to the group on its right, then on its left.
+        let idx = if chars[idx].is_ascii_digit() {
+            idx
+        } else {
+            (idx + 1..chars.len()).find(|i| chars[*i].is_ascii_digit()).or_else(|| (0..idx).rev().find(|i| chars[*i].is_ascii_digit()))?
+        };
+        if self == TimeFormat::Samples {
+            let from_right = chars[idx + 1..].iter().filter(|c| c.is_ascii_digit()).count() as u32;
+            return usize::try_from(10u64.checked_pow(from_right)?).ok();
+        }
+        let is_sep = |c: &char| matches!(c, ':' | ';' | '.');
+        let group_start = (0..=idx).rev().find(|i| is_sep(&chars[*i])).map_or(0, |i| i + 1);
+        let group_end = (idx..chars.len()).find(|i| is_sep(&chars[*i])).unwrap_or(chars.len());
+        let has_fraction = matches!(self, TimeFormat::Decimal | TimeFormat::Compact) && chars.contains(&'.');
+        let sep_before = group_start.checked_sub(1).map(|i| chars[i]);
+        let seps_after = chars[group_end..].iter().filter(|c| is_sep(c)).count();
+        let frames = if sep_before == Some('.') {
+            let digits = group_end - group_start;
+            let ms = 10u64.pow(3u32.saturating_sub(digits as u32));
+            rate * ms / 1000
+        } else {
+            // Position among the whole-number groups, from the right (0 = the last one).
+            let unit_secs = |from_right: usize| 60u64.pow(from_right.min(2) as u32);
+            match self {
+                TimeFormat::Smpte30 if seps_after == 0 => rate / SMPTE_FPS,
+                TimeFormat::Smpte30 => rate * unit_secs(seps_after - 1),
+                _ => rate * unit_secs(seps_after - usize::from(has_fraction)),
+            }
+        };
+        usize::try_from(frames.max(1)).ok()
+    }
+
+    /// `frame` moved by `steps` of `unit` frames, kept in `0..=total`.
+    pub fn scrub(frame: usize, steps: i64, unit: usize, total: usize) -> usize {
+        let moved = frame as i128 + i128::from(steps) * unit as i128;
+        moved.clamp(0, total as i128) as usize
+    }
+
+    /// The smallest "round" ruler step, in seconds, that is at least `min_seconds`, in this
+    /// format's own units: samples in 1-2-5 steps, SMPTE frames below a second, else seconds
+    /// (A107).
+    pub fn tick_step(self, min_seconds: f64, sample_rate: u32) -> f64 {
+        let rate = f64::from(sample_rate.max(1));
+        match self {
+            TimeFormat::Samples => {
+                let min_frames = (min_seconds * rate).max(1.0);
+                let mut decade = 1.0f64;
+                loop {
+                    if let Some(m) = [1.0, 2.0, 5.0].iter().map(|m| m * decade).find(|f| *f >= min_frames) {
+                        return m / rate;
+                    }
+                    decade *= 10.0;
+                }
+            }
+            TimeFormat::Smpte30 => {
+                const FRAMES: [f64; 5] = [1.0, 2.0, 5.0, 10.0, 15.0];
+                FRAMES.iter().map(|f| f / SMPTE_FPS as f64).find(|s| *s >= min_seconds).unwrap_or_else(|| seconds_step(min_seconds.max(1.0)))
+            }
+            TimeFormat::Decimal | TimeFormat::Compact => seconds_step(min_seconds),
+        }
+    }
+
+    /// How many equal parts the fine (minor) ticks cut a labelled step of `step_seconds` into:
+    /// 1 when it cannot be cut into whole units of the format (one sample, one SMPTE frame).
+    pub fn subdivisions(self, step_seconds: f64, sample_rate: u32) -> u32 {
+        let rate = f64::from(sample_rate.max(1));
+        let near = |a: f64, b: f64| (a - b).abs() <= b.abs() * 1e-6 + 1e-12;
+        // The 1-2-5 ladder below a decade: 1 -> 5 parts, 2 -> 2, 5 -> 5.
+        let ladder = |units: f64| -> u32 {
+            let decade = 10f64.powf(units.log10().floor());
+            let m = units / decade;
+            if near(m, 2.0) { 2 } else { 5 }
+        };
+        let whole_seconds = |s: f64| -> u32 {
+            match s {
+                s if s < 10.0 => ladder(s),
+                s if near(s, 10.0) => 5,
+                s if near(s, 30.0) => 3,
+                s if near(s, 60.0) => 6,
+                s if near(s, 120.0) => 4,
+                s if near(s, 300.0) => 5,
+                s if near(s, 600.0) => 5,
+                s if near(s, 1800.0) => 6,
+                _ => 6,
+            }
+        };
+        match self {
+            TimeFormat::Samples => {
+                let frames = (step_seconds * rate).round();
+                if frames < 2.0 { 1 } else { ladder(frames) }
+            }
+            TimeFormat::Smpte30 if step_seconds < 1.0 - 1e-9 => match (step_seconds * SMPTE_FPS as f64).round() as u32 {
+                2 => 2,
+                5 => 5,
+                10 => 5,
+                15 => 3,
+                _ => 1,
+            },
+            _ => whole_seconds(step_seconds),
+        }
+    }
+}
+
+/// The smallest "round" number of seconds that is at least `min_seconds`.
+fn seconds_step(min_seconds: f64) -> f64 {
+    const STEPS: [f64; 19] = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0];
+    STEPS.iter().copied().find(|s| *s >= min_seconds).unwrap_or(3600.0)
+}
+
 /// `frame` at `sample_rate` as `m:ss.mmm`, or `h:mm:ss.mmm` from one hour up.
 pub fn format_time(frame: usize, sample_rate: u32) -> String {
     if sample_rate == 0 {
@@ -405,6 +528,71 @@ mod tests {
         assert!((v.end(1000.0) - 48_000.0 * 1200.0).abs() < 1.0);
         v.set_end(HOUR * 2, 1000.0, HOUR);
         assert!(v.end(1000.0) <= HOUR as f64 + 1.0, "kept inside the file");
+    }
+
+    #[test]
+    fn digit_groups_scrub_by_their_unit() {
+        let r = 48_000u32;
+        // "1:02:03.500": h at 0, m at 2-3, s at 5-6, ms at 8-10.
+        let t = "1:02:03.500";
+        assert_eq!(TimeFormat::Decimal.unit_at(t, 0, r), Some(3600 * 48_000));
+        assert_eq!(TimeFormat::Decimal.unit_at(t, 3, r), Some(60 * 48_000));
+        assert_eq!(TimeFormat::Decimal.unit_at(t, 5, r), Some(48_000));
+        assert_eq!(TimeFormat::Decimal.unit_at(t, 9, r), Some(48));
+        assert_eq!(TimeFormat::Decimal.unit_at(t, 4, r), Some(48_000), "a separator belongs to the group on its right");
+        assert_eq!(TimeFormat::Decimal.unit_at("1:02.5", 5, r), Some(4800), "one fraction digit is tenths");
+        assert_eq!(TimeFormat::Decimal.unit_at("0:03", 3, r), Some(48_000), "no fraction: the last group is seconds");
+        assert_eq!(TimeFormat::Compact.unit_at("0:03", 0, r), Some(60 * 48_000));
+        assert_eq!(TimeFormat::Smpte30.unit_at("01:02:03:15", 10, r), Some(1600));
+        assert_eq!(TimeFormat::Smpte30.unit_at("01:02:03:15", 7, r), Some(48_000));
+        assert_eq!(TimeFormat::Smpte30.unit_at("01:02:03:15", 1, r), Some(3600 * 48_000));
+        assert_eq!(TimeFormat::Samples.unit_at("123456", 5, r), Some(1));
+        assert_eq!(TimeFormat::Samples.unit_at("123456", 2, r), Some(1000));
+        assert_eq!(TimeFormat::Decimal.unit_at("", 0, r), None);
+        assert_eq!(TimeFormat::Decimal.unit_at(t, 0, 0), None);
+        assert_eq!(TimeFormat::Decimal.unit_at(t, 99, r), Some(48), "past the end is the last group");
+    }
+
+    #[test]
+    fn scrubbing_is_clamped_to_the_file() {
+        assert_eq!(TimeFormat::scrub(100, 3, 10, 1000), 130);
+        assert_eq!(TimeFormat::scrub(100, -50, 10, 1000), 0);
+        assert_eq!(TimeFormat::scrub(990, 5, 10, 1000), 1000);
+        assert_eq!(TimeFormat::scrub(5, i64::MIN, usize::MAX, 9), 0);
+    }
+
+    #[test]
+    fn tick_steps_follow_the_format() {
+        assert_eq!(TimeFormat::Decimal.tick_step(0.7, 48_000), 1.0);
+        assert!((TimeFormat::Samples.tick_step(0.0011, 48_000) - 100.0 / 48_000.0).abs() < 1e-12);
+        assert!((TimeFormat::Smpte30.tick_step(0.02, 48_000) - 1.0 / 30.0).abs() < 1e-12);
+        assert!((TimeFormat::Smpte30.tick_step(0.2, 48_000) - 10.0 / 30.0).abs() < 1e-12);
+        assert_eq!(TimeFormat::Smpte30.tick_step(3.0, 48_000), 5.0);
+        assert_eq!(TimeFormat::Compact.tick_step(5000.0, 48_000), 3600.0);
+    }
+
+    #[test]
+    fn fine_ticks_cut_the_step_into_whole_units() {
+        let r = 48_000;
+        assert_eq!(TimeFormat::Decimal.subdivisions(1.0, r), 5);
+        assert_eq!(TimeFormat::Decimal.subdivisions(0.002, r), 2);
+        assert_eq!(TimeFormat::Decimal.subdivisions(0.5, r), 5);
+        assert_eq!(TimeFormat::Decimal.subdivisions(30.0, r), 3);
+        assert_eq!(TimeFormat::Decimal.subdivisions(60.0, r), 6);
+        assert_eq!(TimeFormat::Samples.subdivisions(1.0 / 48_000.0, r), 1, "one sample cannot be cut");
+        assert_eq!(TimeFormat::Samples.subdivisions(100.0 / 48_000.0, r), 5);
+        assert_eq!(TimeFormat::Samples.subdivisions(20.0 / 48_000.0, r), 2);
+        assert_eq!(TimeFormat::Smpte30.subdivisions(1.0 / 30.0, r), 1, "one frame cannot be cut");
+        assert_eq!(TimeFormat::Smpte30.subdivisions(10.0 / 30.0, r), 5);
+        assert_eq!(TimeFormat::Smpte30.subdivisions(15.0 / 30.0, r), 3);
+        assert_eq!(TimeFormat::Smpte30.subdivisions(5.0, r), 5);
+        // Every step the ruler can choose divides evenly in its own format.
+        for fmt in TimeFormat::ALL {
+            for k in 0..60 {
+                let step = fmt.tick_step(f64::from(k) * 0.137 + 1e-4, r);
+                assert!(fmt.subdivisions(step, r) >= 1, "{fmt:?} {step}");
+            }
+        }
     }
 
     #[test]
