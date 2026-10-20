@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
-use wavcraft_core::save::{SampleType, save_wav};
+use wavcraft_core::save::{ExtraChunk, SampleType, SaveError, SaveOptions, save_wav_with};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
@@ -42,8 +42,10 @@ struct Saving {
     /// The step being saved: it becomes the saved state when the save succeeds.
     state: Arc<DocState>,
     ty: SampleType,
-    result: Receiver<Result<(), String>>,
+    result: Receiver<Result<(), SaveError>>,
     progress: Arc<AtomicU32>,
+    /// Set by Cancel (status bar, `SAVE_CANCEL`): the worker stops and removes its temporary file.
+    cancel: Arc<AtomicBool>,
     /// Close the window once it is saved (Save from the close prompt).
     then_close: bool,
     /// Which open document it saves ([`WaveApp::doc_id`] when it started): a save that finishes
@@ -87,6 +89,9 @@ pub struct WaveApp {
     doc_path: PathBuf,
     /// Counts the files opened in this window: names the document a save belongs to.
     doc_id: u64,
+    /// "Include markers and other metadata" for the open document (A262): starts as the
+    /// setting, changed from File › Save Options or `SAVE <path> meta=0|1`.
+    include_meta: bool,
     /// The views' copy of the document, being read back after an edit (newest request only).
     rebuilding: Option<Receiver<Result<Document, OpenError>>>,
     /// Requests from the control channel, when `WAVCRAFT_CONTROL_PORT` turned it on.
@@ -152,6 +157,7 @@ impl WaveApp {
             editor: None,
             doc_path: PathBuf::new(),
             doc_id: 0,
+            include_meta: true,
             rebuilding: None,
             saved: None,
             saving: None,
@@ -217,6 +223,7 @@ impl WaveApp {
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
                 self.doc_id += 1;
+                self.include_meta = self.settings.save_include_metadata;
                 self.rebuilding = None;
                 self.doc = Some(doc);
                 self.generation += 1;
@@ -571,18 +578,33 @@ impl WaveApp {
         let ty = SampleType::for_source(state.source());
         let (tx, rx) = channel();
         let progress = Arc::new(AtomicU32::new(0));
-        let (job_state, job_path, job_progress, ctx) = (state.clone(), path.clone(), progress.clone(), ctx.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (job_state, job_path, job_progress, job_cancel, ctx) = (state.clone(), path.clone(), progress.clone(), cancel.clone(), ctx.clone());
+        let (include_metadata, extra_chunks) = (self.include_meta, metadata_chunks());
+        let block_delay = test_block_delay();
         std::thread::spawn(move || {
             let mut report = |p: f64| {
                 job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
                 ctx.request_repaint();
             };
-            let _ = tx.send(save_wav(&job_state, &job_path, ty, &mut report).map_err(|e| e.to_string()));
+            let opts = SaveOptions { include_metadata, extra_chunks, cancel: Some(&job_cancel), block_delay };
+            let _ = tx.send(save_wav_with(&job_state, &job_path, ty, &opts, &mut report));
             ctx.request_repaint();
         });
         self.player.stop();
-        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close, doc_id: self.doc_id });
+        self.saving = Some(Saving { path, state, ty, result: rx, progress, cancel, then_close, doc_id: self.doc_id });
         Ok(())
+    }
+
+    /// Set the per-document option and keep it as the default for files opened next.
+    fn set_include_meta(&mut self, on: bool) {
+        self.include_meta = on;
+        self.settings.save_include_metadata = on;
+        if let Some(file) = &self.settings_path
+            && let Err(e) = self.settings.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not keep the save option in {}: {e}", file.display());
+        }
     }
 
     fn finish_saving(&mut self, ctx: &egui::Context) {
@@ -590,7 +612,7 @@ impl WaveApp {
         let result = match saving.result.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("the save stopped unexpectedly".to_string()),
+            Err(TryRecvError::Disconnected) => Err(SaveError::Io(std::io::Error::other("the save stopped unexpectedly"))),
         };
         let Some(Saving { path, state, ty, then_close, doc_id, .. }) = self.saving.take() else { return };
         match result {
@@ -613,6 +635,10 @@ impl WaveApp {
                     self.allow_close = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+            }
+            Err(SaveError::Cancelled) => {
+                self.error = None;
+                self.notice = Some(format!("Save cancelled. {} is unchanged and the file is still unsaved.", path.display()));
             }
             Err(e) => {
                 self.error = Some(format!("Not saved: {e}. {} is unchanged.", path.display()));
@@ -677,7 +703,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} meta={} save={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -685,6 +711,8 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            u8::from(self.include_meta),
+                            self.saving.as_ref().map_or("-".to_string(), |s| (s.progress.load(Ordering::Relaxed) / 10).to_string()),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
@@ -746,7 +774,23 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
+            "SAVE_CANCEL" => match &self.saving {
+                Some(s) => {
+                    s.cancel.store(true, Ordering::Relaxed);
+                    "OK".to_string()
+                }
+                None => "ERR no save is running".to_string(),
+            },
             "SAVE" => {
+                // `SAVE [path] [meta=0|1]`: meta sets this document's option first.
+                let (rest, meta) = match rest.rsplit_once(' ').unwrap_or(("", rest)) {
+                    (head, "meta=0") => (head.trim(), Some(false)),
+                    (head, "meta=1") => (head.trim(), Some(true)),
+                    _ => (rest, None),
+                };
+                if let Some(m) = meta {
+                    self.include_meta = m;
+                }
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
                     Ok(()) => "OK".to_string(),
@@ -804,6 +848,14 @@ impl WaveApp {
                 {
                     self.error = Some(e);
                 }
+                let mut meta = self.include_meta;
+                if ui
+                    .add_enabled(has_doc, egui::Checkbox::new(&mut meta, "Include markers and other metadata"))
+                    .on_hover_text("Applies to Save and Save As for this file")
+                    .changed()
+                {
+                    self.set_include_meta(meta);
+                }
                 ui.separator();
                 let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
                 if ui.button("Session Folder…").on_hover_text(&now).clicked() {
@@ -856,6 +908,9 @@ impl WaveApp {
             } else if let Some(s) = &self.saving {
                 ui.spinner();
                 ui.label(format!("Saving {}… {}%", s.path.display(), s.progress.load(Ordering::Relaxed) / 10));
+                if ui.button("Cancel").on_hover_text("Stop saving: the file on disk stays as it was").clicked() {
+                    s.cancel.store(true, Ordering::Relaxed);
+                }
             } else if self.rebuilding.is_some() {
                 ui.spinner();
                 ui.label("Updating the view…");
@@ -1185,6 +1240,23 @@ fn palette() -> Vec<Color32> {
             Color32::from_rgb(mix(0), mix(1), mix(2))
         })
         .collect()
+}
+
+/// The extra chunks a save writes when "Include markers and other metadata" is on. This is
+/// the one place the marker and metadata features add theirs. Test only: with
+/// `WAVCRAFT_TEST_SAVE_CHUNK` set, a `TEST` chunk, so the switch can be checked on a file.
+fn metadata_chunks() -> Vec<ExtraChunk> {
+    let mut chunks = Vec::new();
+    if std::env::var_os("WAVCRAFT_TEST_SAVE_CHUNK").is_some() {
+        chunks.push(ExtraChunk { id: *b"TEST", data: b"wavcraft test chunk".to_vec() });
+    }
+    chunks
+}
+
+/// Test only: `WAVCRAFT_TEST_SAVE_DELAY_MS` slows a save down per 64 K-frame block.
+fn test_block_delay() -> std::time::Duration {
+    let ms = std::env::var("WAVCRAFT_TEST_SAVE_DELAY_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    std::time::Duration::from_millis(ms)
 }
 
 #[cfg(test)]

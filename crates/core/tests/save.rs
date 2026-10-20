@@ -8,7 +8,10 @@ use wavcraft_core::doc::edit::Crossfades;
 use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::io::{OpenOptions, open};
-use wavcraft_core::save::{LEFTOVER_AGE, SampleType, remove_leftover_temps, save_wav, save_wav_failing_after, temp_files, temp_path};
+use wavcraft_core::save::{
+    ExtraChunk, LEFTOVER_AGE, SampleType, SaveError, SaveOptions, remove_leftover_temps, save_wav, save_wav_failing_after, save_wav_with, temp_files,
+    temp_path,
+};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 const RATE: u32 = 48_000;
@@ -227,4 +230,57 @@ fn cx_w6_the_next_save_removes_only_temp_files_left_by_a_killed_save() {
     // Once its save has ended (lock gone) and it is old, it goes too.
     assert_eq!(remove_leftover_temps(&target), 1);
     assert!(!running.exists());
+}
+
+/// The chunk ids of a RIFF/WAVE file, in order.
+fn chunk_ids(bytes: &[u8]) -> Vec<String> {
+    assert_eq!(&bytes[..4], b"RIFF");
+    assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize, bytes.len() - 8, "RIFF size is the file");
+    let (mut at, mut ids) = (12, Vec::new());
+    while at + 8 <= bytes.len() {
+        ids.push(String::from_utf8_lossy(&bytes[at..at + 4]).into_owned());
+        let len = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+        at += 8 + len + (len & 1);
+    }
+    assert_eq!(at, bytes.len(), "chunks tile the file");
+    ids
+}
+
+fn test_chunks() -> Vec<ExtraChunk> {
+    vec![ExtraChunk { id: *b"TEST", data: b"odd".to_vec() }]
+}
+
+#[test]
+fn a262_metadata_off_writes_only_format_and_data_chunks() {
+    let t = TempDir::new("meta");
+    let doc = doc_from(&t.0.join("store"), &exact(16, 1000));
+    for (include, want) in [(true, vec!["fmt ", "data", "TEST"]), (false, vec!["fmt ", "data"])] {
+        let target = t.0.join(format!("m{include}.wav"));
+        let opts = SaveOptions { include_metadata: include, extra_chunks: test_chunks(), ..SaveOptions::default() };
+        save_wav_with(&doc, &target, SampleType::Int16, &opts, &mut |_| {}).unwrap();
+        assert_eq!(chunk_ids(&std::fs::read(&target).unwrap()), want, "include_metadata={include}");
+        // The audio is the same either way.
+        assert_eq!(bits(&content(&reopen(&target, &t.0.join("s")))), bits(&content(&doc)));
+    }
+}
+
+#[test]
+fn a263_cancel_keeps_the_original_and_leaves_no_temp_file() {
+    let t = TempDir::new("cancel");
+    let doc = doc_from(&t.0.join("store"), &exact(16, 4 * BLOCK_FRAMES));
+    let target = t.0.join("keep.wav");
+    std::fs::write(&target, b"the original bytes").unwrap();
+    let cancel = AtomicBool::new(false);
+    let opts = SaveOptions { include_metadata: true, cancel: Some(&cancel), ..SaveOptions::default() };
+    let mut blocks = 0;
+    let err = save_wav_with(&doc, &target, SampleType::Int16, &opts, &mut |_| {
+        blocks += 1;
+        if blocks == 2 {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    assert!(matches!(err, Err(SaveError::Cancelled)), "{err:?}");
+    assert_eq!(blocks, 2, "stopped at the next block");
+    assert_eq!(std::fs::read(&target).unwrap(), b"the original bytes");
+    assert!(temp_files(&target).is_empty());
 }

@@ -17,6 +17,7 @@ use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use soundcraft_audio_io::SampleFormat;
@@ -69,6 +70,8 @@ pub enum SaveError {
     Io(io::Error),
     /// The document has no audio.
     Empty,
+    /// The save was cancelled: the temporary file is gone and the target is as it was.
+    Cancelled,
 }
 
 impl fmt::Display for SaveError {
@@ -76,6 +79,7 @@ impl fmt::Display for SaveError {
         match self {
             SaveError::Io(e) => write!(f, "{e}"),
             SaveError::Empty => write!(f, "the file has no audio to save"),
+            SaveError::Cancelled => write!(f, "the save was cancelled"),
         }
     }
 }
@@ -161,20 +165,64 @@ pub fn remove_leftover_temps(target: &Path) -> usize {
     removed
 }
 
-/// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically.
+/// An extra RIFF chunk written after the `data` chunk (markers, metadata). Other features
+/// fill [`SaveOptions::extra_chunks`] with theirs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtraChunk {
+    pub id: [u8; 4],
+    pub data: Vec<u8>,
+}
+
+/// What a save writes besides the format and data chunks, and how it can be stopped.
+#[derive(Debug, Default)]
+pub struct SaveOptions<'a> {
+    /// "Include markers and other metadata" (A262): when false, the file holds only the
+    /// format chunks (`fmt `, and `fact` where the sample type needs it) and `data`.
+    pub include_metadata: bool,
+    /// The chunks that "metadata" means for this document, written after `data` only when
+    /// `include_metadata` is set. This is where the marker and metadata branches plug in.
+    pub extra_chunks: Vec<ExtraChunk>,
+    /// Set from another thread to stop the save (A263): the temporary file is removed, the
+    /// target untouched, and the save returns [`SaveError::Cancelled`].
+    pub cancel: Option<&'a AtomicBool>,
+    /// Test only: wait this long after each 64 K-frame block, so a cancel can be tested.
+    pub block_delay: Duration,
+}
+
+impl SaveOptions<'_> {
+    /// The chunks that will be written: none when metadata is off.
+    fn chunks(&self) -> &[ExtraChunk] {
+        if self.include_metadata { &self.extra_chunks } else { &[] }
+    }
+}
+
+/// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically, with the
+/// metadata chunks (none exist yet unless a caller passes them in [`SaveOptions`]).
 /// `progress` gets 0 to 1 as the samples go out.
 pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
-    save_wav_inner(doc, target, ty, progress, None)
+    save_wav_inner(doc, target, ty, progress, None, &SaveOptions { include_metadata: true, ..SaveOptions::default() })
+}
+
+/// [`save_wav`] with options: metadata on or off, cancel, and the test delay.
+pub fn save_wav_with(doc: &DocState, target: &Path, ty: SampleType, opts: &SaveOptions, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
+    save_wav_inner(doc, target, ty, progress, None, opts)
 }
 
 /// [`save_wav`] that fails with an I/O error once `fail_after` frames are out (tests: a save
 /// that dies halfway must leave the target whole).
 #[doc(hidden)]
 pub fn save_wav_failing_after(doc: &DocState, target: &Path, ty: SampleType, fail_after: u64) -> Result<(), SaveError> {
-    save_wav_inner(doc, target, ty, &mut |_| {}, Some(fail_after))
+    save_wav_inner(doc, target, ty, &mut |_| {}, Some(fail_after), &SaveOptions { include_metadata: true, ..SaveOptions::default() })
 }
 
-fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> Result<(), SaveError> {
+fn save_wav_inner(
+    doc: &DocState,
+    target: &Path,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+    opts: &SaveOptions,
+) -> Result<(), SaveError> {
     let frames = doc.len_frames();
     if frames == 0 {
         return Err(SaveError::Empty);
@@ -183,10 +231,14 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
     let tmp = TempFile::create(target).map_err(SaveError::Io)?;
     let TempFile { path: tmp, file } = tmp;
     // Written through the handle made by the exclusive create, never reopened by name.
-    let file = match write_wav(doc, file, ty, progress, fail_after) {
+    let file = match write_wav(doc, file, ty, progress, fail_after, opts) {
         Ok(file) => file,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
+            if e.kind() == io::ErrorKind::Interrupted && opts.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                log::info!(target: "wavcraft_core::save", "save to {} cancelled, the file is unchanged", target.display());
+                return Err(SaveError::Cancelled);
+            }
             log::warn!(target: "wavcraft_core::save", "save to {} failed, the file is unchanged: {e}", target.display());
             return Err(SaveError::Io(e));
         }
@@ -204,15 +256,26 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
     Ok(())
 }
 
-fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> io::Result<File> {
+fn write_wav(
+    doc: &DocState,
+    file: File,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+    opts: &SaveOptions,
+) -> io::Result<File> {
     let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
-    let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames)?;
+    let extra_len: u64 = opts.chunks().iter().map(|c| 8 + c.data.len() as u64 + (c.data.len() as u64 & 1)).sum();
+    let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames, extra_len)?;
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * channels * ty.bytes());
     let mut at = 0u64;
     while at < frames {
+        if opts.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
         let n = (frames - at).min(BLOCK_FRAMES as u64) as usize;
         for (ch, buf) in bufs.iter_mut().enumerate() {
             let got = doc.read(ch, at, &mut buf[..n])?;
@@ -238,9 +301,23 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
             return Err(io::Error::other("test: the disk went away"));
         }
         progress(at as f64 / frames as f64);
+        if !opts.block_delay.is_zero() {
+            std::thread::sleep(opts.block_delay);
+        }
+    }
+    if opts.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
     }
     if data_len & 1 == 1 {
         out.write_all(&[0])?;
+    }
+    for c in opts.chunks() {
+        out.write_all(&c.id)?;
+        out.write_all(&u32::try_from(c.data.len()).map_err(|_| invalid("metadata chunk too long"))?.to_le_bytes())?;
+        out.write_all(&c.data)?;
+        if c.data.len() & 1 == 1 {
+            out.write_all(&[0])?;
+        }
     }
     let file = out.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
@@ -248,13 +325,13 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
 }
 
 /// The RIFF (or, above 4 GiB, RF64) header and the `data` chunk's header; returns the data size.
-fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
+fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64, extra_len: u64) -> io::Result<u64> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(u64::from(channels)).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("WAV too long"))?;
     let float = ty == SampleType::Float32;
     let fmt_len: u32 = if float { 18 } else { 16 };
     let fact = if float { 12 } else { 0 };
-    let riff_len = 4 + (8 + u64::from(fmt_len)) + fact + 8 + data_len + (data_len & 1);
+    let riff_len = 4 + (8 + u64::from(fmt_len)) + fact + 8 + data_len + (data_len & 1) + extra_len;
     let rf64 = u32::try_from(riff_len).is_err();
     let block_align = channels.checked_mul(bytes as u16).ok_or_else(|| invalid("too many channels"))?;
     if rf64 {

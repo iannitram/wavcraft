@@ -21,12 +21,21 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_SAVE_META: &str = "save_include_metadata";
 
 /// What the settings file holds.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// "Include markers and other metadata" when saving: the default for each opened file.
+    pub save_include_metadata: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { session_folder: None, save_include_metadata: true }
+    }
 }
 
 impl Settings {
@@ -59,8 +68,10 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
-            if key.trim() == KEY_SESSION_FOLDER {
-                s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            match key.trim() {
+                KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+                KEY_SAVE_META => s.save_include_metadata = !matches!(value.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+                _ => {}
             }
         }
         s
@@ -72,6 +83,8 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        out.push_str("# save_include_metadata: 1 writes markers and other metadata when saving (the default), 0 writes only the audio.\n");
+        out.push_str(&format!("{KEY_SAVE_META} = {}\n", u8::from(self.save_include_metadata)));
         out
     }
 
