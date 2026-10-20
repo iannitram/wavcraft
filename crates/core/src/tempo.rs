@@ -10,6 +10,9 @@ use soundcraft_time::{BarBeat, SampleRate, TempoMap};
 /// The slowest and fastest tempo accepted, in beats a minute.
 pub const BPM_RANGE: std::ops::RangeInclusive<f64> = 20.0..=400.0;
 
+/// The latest time `parse` accepts, in seconds (1000 hours); anything later is a refusal, not a search.
+pub const MAX_PARSE_SECONDS: f64 = 3_600_000.0;
+
 /// Tempo (beats a minute, a beat being the meter's denominator note) and time signature.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tempo {
@@ -102,6 +105,10 @@ impl Tempo {
         if bar < 1 || beat < 1 || beat > i64::from(self.numerator) || tick >= meter.ticks_per_beat() {
             return None;
         }
+        // Refuse a time past the longest a document can be, before any arithmetic can overflow.
+        if (bar - 1) as f64 * self.bar_seconds() > MAX_PARSE_SECONDS {
+            return None;
+        }
         let want = map.tick_at_bar_beat(BarBeat { bar, beat, tick });
         let mut f = map.tick_to_samples(want, sr).max(0);
         while f > 0 && map.samples_to_ticks(f - 1, sr) >= want {
@@ -162,6 +169,26 @@ mod tests {
             assert_eq!(t.parse(bad, 48_000), None, "{bad:?}");
         }
         assert_eq!(t.parse("1:1.000", 0), None);
+    }
+
+    #[test]
+    fn huge_bar_numbers_are_refused_quickly() {
+        let t = Tempo::default();
+        let started = std::time::Instant::now();
+        for huge in ["9223372036854775807", "9223372036854775807:1.000", "4611686018427387904:4.959", "99999999999", "1800002"] {
+            assert_eq!(t.parse(huge, 48_000), None, "{huge}");
+            assert_eq!(Tempo::new(20.0, 32, 1).unwrap().parse(huge, 192_000), None, "{huge}");
+        }
+        assert!(started.elapsed().as_secs() < 2, "refusal must not scale with the input");
+    }
+
+    #[test]
+    fn boundary_bars_parse() {
+        let t = Tempo::default(); // a bar is 2 s: bar 1_800_001 starts at exactly the cap
+        let f = t.parse("1800001:1.000", 48_000).expect("the last accepted bar");
+        assert_eq!(t.format(f, 48_000), "1800001:1.000");
+        assert_eq!(t.parse("1800002", 48_000), None);
+        assert!(t.parse("1000000:4.959", 48_000).is_some());
     }
 
     #[test]
