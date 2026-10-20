@@ -35,6 +35,10 @@ pub struct MtView {
     px_per_sec: f32,
     import_at: f64,
     sessions_made: u32,
+    /// Clips picked for Mixdown of selected clips (click a clip to pick or drop it).
+    pub sel_clips: Vec<wavcraft_core::multitrack::soundcraft_model::ClipId>,
+    /// Normalize a mixdown to this peak (menu check box).
+    pub mix_normalize: bool,
 }
 
 impl Default for MtView {
@@ -49,11 +53,27 @@ impl Default for MtView {
             px_per_sec: 60.0,
             import_at: 0.0,
             sessions_made: 0,
+            sel_clips: Vec::new(),
+            mix_normalize: false,
         }
     }
 }
 
 impl MtView {
+    /// What Mixdown needs: the session and the options (`selected_only`: just the picked clips).
+    pub fn mixdown_input(
+        &self,
+        selected_only: bool,
+        normalize_db: Option<f32>,
+    ) -> Result<(wavcraft_core::multitrack::soundcraft_model::Session, wavcraft_core::mixdown::MixdownOptions), MtError> {
+        let mt = self.mt.as_ref().ok_or_else(|| MtError("no session: File > New > Multitrack Session first".into()))?;
+        let only_clips = selected_only.then(|| self.sel_clips.clone());
+        if selected_only && self.sel_clips.is_empty() {
+            return Err(MtError("no clips are selected: click clips in the Multitrack editor first".into()));
+        }
+        Ok((mt.session.clone(), wavcraft_core::mixdown::MixdownOptions { only_clips, normalize_db }))
+    }
+
     pub fn open_dialog(&mut self) {
         self.sessions_made += 1;
         self.dialog = Some(NewDialog { name: format!("Session {}", self.sessions_made), rate: 48_000, bits: 24 });
@@ -63,6 +83,7 @@ impl MtView {
         self.mt = Some(Multitrack::new(name, rate, depth)?);
         self.selected = None;
         self.rename = None;
+        self.sel_clips.clear();
         self.show = true;
         Ok(())
     }
@@ -235,10 +256,20 @@ impl MtView {
                 let _ = (mt.set_mute(id, mute), mt.set_solo(id, solo), mt.set_volume_db(id, vol));
                 // Timeline: the clips, drawn as boxes with their names.
                 let lane_resp = ui.interact(lane, ui.id().with(("lane", id.0)), Sense::click());
+                let rate = f64::from(mt.rate());
                 if lane_resp.clicked() {
                     self.selected = Some(id);
+                    if let Some(pos) = lane_resp.interact_pointer_pos() {
+                        let hit = clips.iter().find(|c| {
+                            let x0 = lane.left() + (c.start as f64 / rate) as f32 * self.px_per_sec;
+                            let w = ((c.length as f64 / rate) as f32 * self.px_per_sec).max(2.0);
+                            pos.x >= x0 && pos.x <= x0 + w
+                        });
+                        if let Some(c) = hit {
+                            toggle(&mut self.sel_clips, c.id);
+                        }
+                    }
                 }
-                let rate = f64::from(mt.rate());
                 let p = ui.painter_at(lane);
                 for c in &clips {
                     let x0 = lane.left() + (c.start as f64 / rate) as f32 * self.px_per_sec;
@@ -246,7 +277,13 @@ impl MtView {
                     let cr = Rect::from_min_size(pos2(x0, lane.top() + 4.0), vec2(w, ROW_H - 8.0));
                     let fill = if mute { colour.gamma_multiply(0.25) } else { colour.gamma_multiply(0.6) };
                     p.rect_filled(cr, 3.0, fill);
-                    p.rect_stroke(cr, 3.0, Stroke::new(1.0, colour), StrokeKind::Inside);
+                    let picked = self.sel_clips.contains(&c.id);
+                    p.rect_stroke(
+                        cr,
+                        3.0,
+                        Stroke::new(if picked { 2.5 } else { 1.0 }, if picked { Color32::WHITE } else { colour }),
+                        StrokeKind::Inside,
+                    );
                     p.text(cr.left_top() + vec2(4.0, 3.0), egui::Align2::LEFT_TOP, &c.name, egui::FontId::proportional(12.0), Color32::WHITE);
                 }
             }
@@ -366,8 +403,33 @@ impl MtView {
                 mt.add_clip_document(id, d, at)?;
                 Ok(format!("OK clips={}", mt.clip_count()))
             }
-            _ => usage("CLIP add <track> <path> <at_seconds> | CLIP adddoc <track> <at_seconds>"),
+            ("CLIP", "select") if w.len() == 2 && word(1) == "none" => {
+                self.sel_clips.clear();
+                Ok("OK selected=0".into())
+            }
+            ("CLIP", "select") if w.len() == 3 => {
+                let mt = self.mt.as_ref().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+                let id = mt.find_track(word(1))?;
+                let n: usize = word(2).parse().map_err(|_| MtError("<n> is the clip's 1-based position on the track".into()))?;
+                let clip = mt
+                    .session
+                    .track(id)
+                    .and_then(|t| t.clips().get(n.wrapping_sub(1)))
+                    .map(|c| c.id)
+                    .ok_or_else(|| MtError(format!("no clip {n} on that track")))?;
+                toggle(&mut self.sel_clips, clip);
+                Ok(format!("OK selected={}", self.sel_clips.len()))
+            }
+            _ => usage("CLIP add <track> <path> <at_seconds> | CLIP adddoc <track> <at_seconds> | CLIP select <track> <n> | CLIP select none"),
         }
+    }
+}
+
+fn toggle(v: &mut Vec<wavcraft_core::multitrack::soundcraft_model::ClipId>, id: wavcraft_core::multitrack::soundcraft_model::ClipId) {
+    if let Some(i) = v.iter().position(|x| *x == id) {
+        v.remove(i);
+    } else {
+        v.push(id);
     }
 }
 

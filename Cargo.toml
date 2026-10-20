@@ -25,6 +25,8 @@ soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "
 # `ours` on the same fork, SEPARATELY from the audio-io pin above (the model needs a newer audio-io).
 # The model's own audio-io is named `soundcraft-model-audio` here so the two never meet in a type.
 soundcraft-model = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
+# Offline mixdown (f111): SoundCraft's mix engine (MIT OR Apache-2.0), at the same fork commit as the model.
+soundcraft-mix = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
 soundcraft-model-audio = { package = "soundcraft-audio-io", git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
 # Session state for the control channel and tests (already in the tree through the model). MIT OR Apache-2.0.
 serde_json = "1"
