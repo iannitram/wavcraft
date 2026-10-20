@@ -21,6 +21,10 @@ craft-log = { path = "crates/craft-log" }
 # and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
 soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
 
+# f28 (dynamics): SoundCraft's DSP crate (compressor, de-esser), the same pinned commit.
+# Licence MIT OR Apache-2.0.
+soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
+
 rustfft = "6"
 rayon = "1"
 log = "0.4"

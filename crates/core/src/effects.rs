@@ -15,7 +15,9 @@ use std::sync::atomic::AtomicBool;
 use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
+mod dynamics;
 mod gain;
+pub use dynamics::{Compressor, DeEsser, HardLimiter};
 pub use gain::Gain;
 
 /// What a setting means, so a dialog can pick the right control and units.
@@ -29,6 +31,8 @@ pub enum ParamKind {
     Time,
     /// One of [`ParamDesc::choices`]; the value is the index.
     Choice,
+    /// A plain number in `unit` (`Hz`, `:1`).
+    Number,
 }
 
 /// One adjustable setting, described for a dialog.
@@ -57,6 +61,9 @@ impl ParamDesc {
     }
     pub const fn time(id: &'static str, label: &'static str, min: f64, max: f64, default: f64, unit: &'static str) -> ParamDesc {
         ParamDesc { id, label, kind: ParamKind::Time, min, max, default, unit, choices: &[] }
+    }
+    pub const fn number(id: &'static str, label: &'static str, min: f64, max: f64, default: f64, unit: &'static str) -> ParamDesc {
+        ParamDesc { id, label, kind: ParamKind::Number, min, max, default, unit, choices: &[] }
     }
     pub const fn choice(id: &'static str, label: &'static str, choices: &'static [&'static str], default: usize) -> ParamDesc {
         ParamDesc { id, label, kind: ParamKind::Choice, min: 0.0, max: (choices.len() - 1) as f64, default: default as f64, unit: "", choices }
@@ -144,6 +151,25 @@ pub trait Effect: Sync {
     /// and `output` hold one slice per active channel, all the same length. The output has the
     /// same length as the input (the effect seam is length-preserving).
     fn process(&self, params: &[f64], first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()>;
+    /// For an effect that keeps state from one chunk to the next (a dynamics envelope, a filter,
+    /// a look-ahead window; f28): a processor for one run over a range, at the document's
+    /// sample rate and with `channels` active channels. When this returns `Some`, [`apply`] uses
+    /// it and never calls [`Effect::process`] (which such an effect may refuse).
+    fn stream(&self, _params: &[f64], _sample_rate: u32, _channels: usize) -> Option<Box<dyn Stream>> {
+        None
+    }
+}
+
+/// One run of a stateful effect (see [`Effect::stream`]). It sees the range's audio in order,
+/// in blocks of any size, and works in place. With a [`latency`](Stream::latency) of `L` frames
+/// the audio it hands back in a call is the input of `L` frames earlier; [`apply`] feeds it
+/// `L` frames ahead (read from the document, zeros past the end) so the result lines up.
+pub trait Stream: Send {
+    fn latency(&self) -> usize {
+        0
+    }
+    /// Process one block in place; one slice per active channel, all the same length.
+    fn process(&mut self, io: &mut [&mut [f32]]);
 }
 
 /// Polarity inversion: every sample times -1. The reference effect.
@@ -167,7 +193,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &Compressor, &HardLimiter, &DeEsser];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
@@ -193,7 +219,50 @@ pub fn apply(
 ) -> Result<Edit, EditError> {
     validate(effect, params).map_err(|why| EditError::Io(io::Error::new(io::ErrorKind::InvalidInput, why)))?;
     let range = if range.start < range.end { range } else { 0..doc.len_frames() };
+    let active = channels.active(doc.channel_count());
+    if let Some(stream) = effect.stream(params, doc.sample_rate(), active.len()) {
+        return apply_stream(stream, doc, range, channels, &active, effect.name(), xf, cancel);
+    }
     edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, input, output| {
         effect.process(params, range.start + at, input, output)
+    })
+}
+
+/// [`apply`] for a [`Stream`]: one pass over the range, each chunk read `latency` frames ahead.
+#[allow(clippy::too_many_arguments)]
+fn apply_stream(
+    mut stream: Box<dyn Stream>,
+    doc: &DocState,
+    range: Range<u64>,
+    channels: ChannelMask,
+    active: &[usize],
+    label: &str,
+    xf: Crossfades,
+    cancel: &AtomicBool,
+) -> Result<Edit, EditError> {
+    let len = doc.len_frames();
+    let lat = stream.latency() as u64;
+    // Read `buf.len()` frames from `from`, zeros past the end of the document.
+    let fill = |c: usize, from: u64, buf: &mut [f32]| -> io::Result<()> {
+        let got = if from < len { doc.read(c, from, buf)? } else { 0 };
+        buf[got..].fill(0.0);
+        Ok(())
+    };
+    if lat > 0 && range.start < range.end && !active.is_empty() {
+        // Prime: the first `lat` frames go in and their (empty-window) output is dropped.
+        let mut warm: Vec<Vec<f32>> = vec![vec![0.0; lat as usize]; active.len()];
+        for (buf, &c) in warm.iter_mut().zip(active) {
+            fill(c, range.start, buf)?;
+        }
+        let mut views: Vec<&mut [f32]> = warm.iter_mut().map(|b| b.as_mut_slice()).collect();
+        stream.process(&mut views);
+    }
+    let active = active.to_vec();
+    edit::replace_range(doc, range, channels, label, xf, cancel, move |at, _input, output| {
+        for (buf, &c) in output.iter_mut().zip(&active) {
+            fill(c, at + lat, buf)?;
+        }
+        stream.process(output);
+        Ok(())
     })
 }
