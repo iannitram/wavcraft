@@ -32,7 +32,7 @@ fn the_settings_file_round_trips_and_ignores_what_it_does_not_know() {
     let dir = TempDir::new("file");
     let file = dir.0.join("nested").join("settings.txt");
     assert_eq!(Settings::load(&file), Settings::default(), "a missing file gives the defaults");
-    let s = Settings { session_folder: Some(PathBuf::from("D:/Scratch/wavcraft sessions")) };
+    let s = Settings { session_folder: Some(PathBuf::from("D:/Scratch/wavcraft sessions")), ..Default::default() };
     s.save(&file).unwrap();
     assert_eq!(Settings::load(&file), s);
     Settings::default().save(&file).unwrap();
@@ -42,9 +42,22 @@ fn the_settings_file_round_trips_and_ignores_what_it_does_not_know() {
 }
 
 #[test]
+fn the_playback_quality_is_stored_and_a_bad_word_is_the_default() {
+    use wavcraft_core::resample::Quality;
+    let dir = TempDir::new("quality");
+    let file = dir.0.join("settings.txt");
+    assert_eq!(Settings::default().playback_quality, Quality::High);
+    let s = Settings { playback_quality: Quality::Fast, ..Default::default() };
+    s.save(&file).unwrap();
+    assert!(std::fs::read_to_string(&file).unwrap().contains("playback_quality = fast"));
+    assert_eq!(Settings::load(&file).playback_quality, Quality::Fast);
+    assert_eq!(Settings::parse("playback_quality = best\n").playback_quality, Quality::High);
+}
+
+#[test]
 fn the_flag_beats_the_environment_beats_the_settings_file_beats_the_default() {
     let default = PathBuf::from("/default/sessions");
-    let settings = Settings { session_folder: Some(PathBuf::from("/from/settings")) };
+    let settings = Settings { session_folder: Some(PathBuf::from("/from/settings")), ..Default::default() };
     let abs = |p: &str| std::path::absolute(p).unwrap();
 
     let r = resolve_session_folder(Some("/from/flag".into()), Some(OsString::from("/from/env")), &settings, default.clone(), ok);
@@ -73,7 +86,7 @@ fn a_folder_that_cannot_be_used_falls_back_to_the_default_and_says_why() {
     assert!(w.contains(&bad.display().to_string()) && w.contains(&default.display().to_string()) && w.contains("--session-dir"), "{w}");
 
     // A folder the check refuses (as a read-only one would be), from the settings file.
-    let settings = Settings { session_folder: Some(dir.0.join("read-only")) };
+    let settings = Settings { session_folder: Some(dir.0.join("read-only")), ..Default::default() };
     let refuse = |p: &Path| if p.ends_with("read-only") { Err("it can't be written to (denied)".to_string()) } else { Ok(()) };
     let r = resolve_session_folder(None, None, &settings, default.clone(), refuse);
     assert_eq!(r.path, default);

@@ -119,8 +119,14 @@ itself when zoomed closer. Nothing is cached per view; columns are recomputed ev
   stream is opened at start-up and reopened on Play after an error or when there was none.
 - Shared state: `Mutex<Option<Arc<AudioBuffer>>>`, `pos` and `end` as `f64` bits in `AtomicU64`
   (file frames), `playing` and `failed` as `AtomicBool`.
-- The callback converts the file's rate to the device's by linear interpolation, averages all
-  channels onto a mono device, writes the new `pos` back and clears `playing` at `end`.
+- A producer thread (f74, A205) renders the play range into the device's rate and channel layout
+  with `core::resample::Resampler` (Kaiser windowed sinc, `fast` 16 taps / `high` 64 taps, stored as
+  `playback_quality` in `settings.txt`; an exact copy when the rates match) and pushes it into a
+  0.4 s ring (`Mutex<VecDeque>`). The callback only `try_lock`s the ring, copies and converts the
+  sample format, averaging all channels onto a mono device; a missed lock or an empty ring is
+  silence and an underrun. The playhead is `start + frames_taken * doc_rate / device_rate` in
+  document frames, from the integer count (no drift). `WAVCRAFT_NO_AUDIO=1` swaps the device for a
+  silent real-time test sink (48 kHz stereo, `WAVCRAFT_NO_AUDIO_RATE`); control verb `PLAYBACK`.
 - **Playhead to the UI:** `Player::position()` reads `pos` atomically; while playing the editor draws
   the playhead there, keeps it on screen (`Viewport::reveal`) and calls `request_repaint()` each frame.
 

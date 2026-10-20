@@ -13,6 +13,9 @@
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `PLAYBACK [PLAY|STOP|QUALITY fast|high]` → `OK device_rate=<hz> doc_rate=<hz> resampling=<0|1> quality=<q> playing=<0|1> position=<frame> underruns=<n> sink=<0|1>`
+//!   (`PLAY` plays the selection like the Play button; `QUALITY` is stored in the settings;
+//!   `WAVCRAFT_NO_AUDIO=1` swaps the sound card for a silent test sink, 48 kHz unless `WAVCRAFT_NO_AUDIO_RATE`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

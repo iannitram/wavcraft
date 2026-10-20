@@ -15,18 +15,23 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::resample::Quality;
+
 /// The environment variable that sets the session folder (over the settings file).
 pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 /// How a person changes the session folder, for messages.
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_PLAYBACK_QUALITY: &str = "playback_quality";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// Sample-rate conversion quality for playback (`playback_quality = fast|high`).
+    pub playback_quality: Quality,
 }
 
 impl Settings {
@@ -61,6 +66,8 @@ impl Settings {
             let value = value.trim();
             if key.trim() == KEY_SESSION_FOLDER {
                 s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            } else if key.trim() == KEY_PLAYBACK_QUALITY {
+                s.playback_quality = Quality::parse(value).unwrap_or_default();
             }
         }
         s
@@ -72,6 +79,8 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        out.push_str("# playback_quality: sample-rate conversion when the file's rate differs from the output device's (fast or high).\n");
+        out.push_str(&format!("{KEY_PLAYBACK_QUALITY} = {}\n", self.playback_quality.as_str()));
         out
     }
 
