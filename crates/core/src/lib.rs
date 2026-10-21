@@ -21,6 +21,7 @@ pub mod doc;
 pub mod document;
 pub mod dsp;
 pub mod io;
+pub mod meters;
 pub mod mix;
 pub mod random;
 pub mod save;
