@@ -212,6 +212,23 @@ fn the_ramp_streams_in_as_its_oracle() {
     }
 }
 
+#[test]
+fn chained_ogg_opens_every_stream() {
+    let input = TempDir::new("chained-ogg");
+    let sessions = TempDir::new("chained-ogg-sessions");
+    let path = input.0.join("chained-two-streams-8k-mono.ogg");
+    std::fs::write(&path, include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/chained-two-streams-8k-mono.ogg"))).unwrap();
+
+    let doc = stream(&path, &sessions.0).unwrap();
+    assert_eq!((doc.sample_rate(), doc.channel_count()), (8_000, 1));
+    assert!(doc.len_frames() > 11_000);
+
+    let mut samples = vec![0.0; 2_000];
+    assert_eq!(doc.read(0, 8_200, &mut samples).unwrap(), samples.len());
+    let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt();
+    assert!(rms > 0.1, "second stream RMS is {rms}");
+}
+
 /// Test 10: cancelled halfway, open returns `Cancelled` and the session folder is gone.
 #[test]
 fn a_cancelled_open_leaves_nothing_behind() {
