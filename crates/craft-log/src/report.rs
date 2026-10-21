@@ -481,7 +481,7 @@ pub fn first_line_of(program: &Path, args: &[&str], timeout: Duration) -> Result
     let deadline = start + timeout;
     let after_kill = |child: &mut std::process::Child| {
         kill_tree(child);
-        rx.try_recv().ok().ok_or_else(|| format!("no answer within {} s", timeout.as_secs()))
+        rx.recv_timeout(Duration::from_millis(200)).ok().ok_or_else(|| format!("no answer within {} s", timeout.as_secs()))
     };
     loop {
         match child.try_wait() {
@@ -759,6 +759,19 @@ mod tests {
         assert_eq!(got.as_deref(), Ok("hi"));
         assert!(t0.elapsed() < Duration::from_secs(2), "call took {:?}", t0.elapsed());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_no_newline_line_is_returned_after_a_background_child_holds_stdout_open() {
+        if !Path::new("/bin/sh").is_file() {
+            return;
+        }
+        let timeout = Duration::from_millis(300);
+        let t0 = Instant::now();
+        let got = first_line_of(Path::new("/bin/sh"), &["-c", "printf hi; sleep 30 &"], timeout);
+        assert_eq!(got.as_deref(), Ok("hi"));
+        assert!(t0.elapsed() < timeout + Duration::from_secs(1), "call took {:?}", t0.elapsed());
     }
 
     #[test]
