@@ -35,6 +35,9 @@ pub enum ActionId {
     ZoomOut,
     ZoomToSelection,
     ZoomOutFull,
+    ToolSelect,
+    ToolHand,
+    ToolZoom,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -161,6 +164,10 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
+    // The mouse tools (f64): a minimal switch; a fuller tool model is on another branch.
+    window(ActionId::ToolSelect, "tool.select", "Time Selection Tool", &[key("V")]),
+    window(ActionId::ToolHand, "tool.hand", "Hand Tool", &[key("H")]),
+    window(ActionId::ToolZoom, "tool.zoom", "Zoom Tool", &[key("Z")]),
 ];
 
 /// The table row for `id`.
@@ -289,6 +296,7 @@ impl Editor {
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
+            ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
@@ -456,6 +464,9 @@ impl Editor {
             | ActionId::ZoomOut
             | ActionId::ZoomToSelection
             | ActionId::ZoomOutFull
+            | ActionId::ToolSelect
+            | ActionId::ToolHand
+            | ActionId::ToolZoom
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast
