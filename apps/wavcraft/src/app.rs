@@ -27,6 +27,17 @@ const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
 const RULER_HEIGHT: f32 = 22.0;
 
+/// Longest silence Insert Silence accepts, in seconds (24 hours).
+const MAX_SILENCE_SECS: f64 = 86_400.0;
+
+/// Frames for an Insert Silence of `secs` seconds at `rate` Hz, or an error message when it is longer than 24 hours.
+fn silence_frames(secs: f64, rate: u32) -> Result<u64, String> {
+    if !secs.is_finite() || secs <= 0.0 || secs > MAX_SILENCE_SECS {
+        return Err("Insert Silence: the length can be at most 24 hours".to_string());
+    }
+    Ok((secs * f64::from(rate)).round() as u64)
+}
+
 /// A file being opened on a worker thread.
 struct Opening {
     path: PathBuf,
@@ -58,8 +69,33 @@ struct SpectrumCache {
     textures: Vec<TextureHandle>,
 }
 
+/// What a primary-button drag in the editor does (f64: a minimal switch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Tool {
+    /// Click places the cursor, drag selects.
+    #[default]
+    Select,
+    /// Drag scrolls the view.
+    Hand,
+    /// Click zooms in at the point (Alt: out), drag zooms to the range.
+    Zoom,
+}
+
+impl Tool {
+    fn name(self) -> &'static str {
+        match self {
+            Tool::Select => "select",
+            Tool::Hand => "hand",
+            Tool::Zoom => "zoom",
+        }
+    }
+}
+
 pub struct WaveApp {
     doc: Option<Document>,
+    tool: Tool,
+    /// Where the current drag began (set when a drag starts, for the Zoom tool and the ruler).
+    drag_origin: Option<Pos2>,
     /// Bumped on every open, so cached pictures of the previous file are dropped.
     generation: usize,
     view: Viewport,
@@ -113,6 +149,10 @@ pub struct WaveApp {
     show_video: bool,
     /// Control-channel `VIDEO frame` requests waiting for their picture.
     video_waiters: Waiters,
+    /// A History row had keyboard focus last frame: Up and Down move through the states then.
+    history_focus: bool,
+    /// The History row to give keyboard focus next frame (after an arrow key moved the cursor).
+    history_refocus: Option<usize>,
 }
 
 impl WaveApp {
@@ -140,6 +180,8 @@ impl WaveApp {
             doc: None,
             generation: 0,
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
+            tool: Tool::default(),
+            drag_origin: None,
             selection: Selection::default(),
             player: Player::new(),
             params: SpectrogramParams::default(),
@@ -170,6 +212,8 @@ impl WaveApp {
             video: None,
             show_video: true,
             video_waiters: Waiters::default(),
+            history_focus: false,
+            history_refocus: None,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -377,6 +421,9 @@ impl WaveApp {
             ActionId::ZoomIn => self.view.zoom_at(2.0, width * 0.5, width, frames),
             ActionId::ZoomOut => self.view.zoom_at(0.5, width * 0.5, width, frames),
             ActionId::ZoomOutFull => self.fit_on_next_frame = true,
+            ActionId::ToolSelect => self.tool = Tool::Select,
+            ActionId::ToolHand => self.tool = Tool::Hand,
+            ActionId::ToolZoom => self.tool = Tool::Zoom,
             ActionId::ZoomToSelection if !self.selection.is_empty() => {
                 let (a, b) = (self.selection.start() as f64, self.selection.end() as f64);
                 self.view.frames_per_px = ((b - a) / f64::from(width)).max(1.0 / 64.0);
@@ -450,7 +497,14 @@ impl WaveApp {
     fn run_insert_silence(&mut self, secs: f64, ctx: &egui::Context) -> Option<String> {
         let at = self.selection.start() as u64;
         let editor = self.editor.as_mut()?;
-        let frames = (secs * f64::from(editor.history.current().sample_rate())).round() as u64;
+        let rate = editor.history.current().sample_rate();
+        let frames = match silence_frames(secs, rate) {
+            Ok(f) => f,
+            Err(why) => {
+                self.error = Some(why.clone());
+                return Some(why);
+            }
+        };
         match editor.insert_silence(at, frames) {
             Ok(out) => {
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
@@ -483,28 +537,87 @@ impl WaveApp {
             ui.label(format!("Oldest {dropped} steps removed to stay under {:.1} GB", editor.history.cap_disk_bytes() as f64 / 1e9));
         }
         let mut go = None;
+        let mut delete = None;
+        let mut focus = false;
+        let refocus = self.history_refocus.take();
         egui::ScrollArea::vertical().max_height(ui.available_height() - 60.0).show(ui, |ui| {
             for (i, label) in labels.iter().enumerate() {
-                if ui.selectable_label(i == cursor, label).clicked() && i != cursor {
+                let r = ui.selectable_label(i == cursor, label);
+                if refocus == Some(i) {
+                    r.request_focus();
+                    r.scroll_to_me(None);
+                }
+                focus |= r.has_focus();
+                if r.clicked() && i != cursor {
                     go = Some(i);
                 }
+                r.context_menu(|ui| {
+                    if ui.add_enabled(i > 0, egui::Button::new("Delete State")).on_hover_text("Removes this state and every later one").clicked() {
+                        delete = Some(i);
+                        ui.close();
+                    }
+                });
             }
         });
+        self.history_focus = focus || refocus.is_some();
         ui.separator();
         let free = wavcraft_core::space::free_space(&dir).map_or_else(|| "unknown".to_string(), |b| format!("{:.1} GB", b as f64 / 1e9));
         ui.label(format!("Session: {:.1} MB · free {free}", held as f64 / 1e6));
-        if ui.add_enabled(labels.len() > 1, egui::Button::new("Clear History…")).clicked() {
-            self.confirm_clear_history = true;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(cursor > 0, egui::Button::new("Delete State"))
+                .on_hover_text("Removes the highlighted state and every later one")
+                .clicked()
+            {
+                delete = Some(cursor);
+            }
+            if ui.add_enabled(labels.len() > 1, egui::Button::new("Clear History…")).clicked() {
+                self.confirm_clear_history = true;
+            }
+        });
+        if self.saving.is_none() {
+            if let Some(i) = delete {
+                self.history_delete(i, ui.ctx());
+            } else if let Some(i) = go {
+                self.history_go(i, ui.ctx());
+            }
         }
-        if let Some(i) = go
-            && self.saving.is_none()
-            && let Some(editor) = self.editor.as_mut()
-            && editor.history.go_to(i).is_some()
-        {
-            let len = editor.history.current().len_frames() as usize;
-            self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
-            self.rebuild(ui.ctx());
+    }
+
+    /// Go to History step `i` (a click, an arrow key or the control channel). False if there is none.
+    fn history_go(&mut self, i: usize, ctx: &egui::Context) -> bool {
+        let Some(editor) = self.editor.as_mut() else { return false };
+        if editor.history.go_to(i).is_none() {
+            return false;
         }
+        self.history_changed(ctx);
+        true
+    }
+
+    /// Delete History step `i` and the steps after it. The steps removed, or `None`.
+    fn history_delete(&mut self, i: usize, ctx: &egui::Context) -> Option<usize> {
+        let editor = self.editor.as_mut()?;
+        let before = editor.history.current().clone();
+        let gone = editor.history.delete_step(i)?;
+        if !Arc::ptr_eq(&before, editor.history.current()) {
+            self.history_changed(ctx);
+        }
+        Some(gone)
+    }
+
+    /// The current step changed: keep the selection inside it and redraw.
+    fn history_changed(&mut self, ctx: &egui::Context) {
+        let Some(editor) = self.editor.as_ref() else { return };
+        let len = editor.history.current().len_frames() as usize;
+        self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
+        self.rebuild(ctx);
+    }
+
+    /// Up or Down with the History panel focused: move one state. The cursor's new index.
+    fn history_arrow(&mut self, down: bool, ctx: &egui::Context) -> Option<usize> {
+        let cursor = self.editor.as_ref()?.history.cursor();
+        let to = history_arrow_target(cursor, self.editor.as_ref()?.history.steps().len(), down)?;
+        self.history_go(to, ctx).then_some(to)
     }
 
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
@@ -706,6 +819,25 @@ impl WaveApp {
         }
     }
 
+    /// `GESTURE hand_drag <dx_px>` | `zoom_click <frame> [out]` | `ruler_rdrag <start> <end>`: the
+    /// mouse gestures of the navigation tools, through the same code the pointer uses.
+    fn control_gesture(&mut self, rest: &str) -> String {
+        let frames = self.doc.as_ref().map_or(0, Document::frames);
+        if frames == 0 {
+            return "ERR no file is open".to_string();
+        }
+        let width = self.editor_width.max(1.0);
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let num = |i: usize| words.get(i).and_then(|w| w.parse::<f64>().ok()).filter(|n| n.is_finite());
+        match (words.first().copied(), num(1), num(2)) {
+            (Some("hand_drag"), Some(dx), _) => self.view.drag_by(dx as f32, width, frames),
+            (Some("zoom_click"), Some(frame), _) => self.view.zoom_click(frame, words.get(2) == Some(&"out"), width, frames),
+            (Some("ruler_rdrag"), Some(a), Some(b)) => self.view.zoom_to_range(a, b, width, frames),
+            _ => return "ERR GESTURE hand_drag <dx_px> | zoom_click <frame> [out] | ruler_rdrag <start> <end>".to_string(),
+        }
+        format!("OK view={:.0}-{:.0}", self.view.start, self.view.end(width))
+    }
+
     /// Answer one control-channel line (see `control.rs`).
     fn control_request(&mut self, line: &str, ctx: &egui::Context) -> String {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -714,11 +846,13 @@ impl WaveApp {
             "STATE" => {
                 let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
                 let unsaved = u8::from(self.unsaved());
+                let width = self.editor_width.max(1.0);
+                let view = format!("tool={} view={:.0}-{:.0}", self.tool.name(), self.view.start, self.view.end(width));
                 match &self.editor {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {view} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -730,7 +864,9 @@ impl WaveApp {
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => {
+                        format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {view} undo=- redo=-", u8::from(busy))
+                    }
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -767,6 +903,7 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
+            "GESTURE" => self.control_gesture(rest),
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
@@ -775,16 +912,14 @@ impl WaveApp {
                 _ => "ERR INSERT_SILENCE <seconds>, above 0".to_string(),
             },
             // The History panel's click: go to step <index> (0 is Open).
-            "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.as_mut()) {
-                (Ok(i), Some(e)) if self.saving.is_none() => match e.history.go_to(i) {
-                    Some(_) => {
-                        let len = e.history.current().len_frames() as usize;
-                        self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
-                        self.rebuild(ctx);
+            "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
+                (Ok(i), true) if self.saving.is_none() => {
+                    if self.history_go(i, ctx) {
                         "OK".to_string()
+                    } else {
+                        format!("ERR no step {i}")
                     }
-                    None => format!("ERR no step {i}"),
-                },
+                }
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
             "VIDEO" => {
@@ -805,6 +940,30 @@ impl WaveApp {
                     _ => "ERR VIDEO attach <path> | frame <seconds> | status | detach".to_string(),
                 }
             }
+            // The panel's Delete State: step <index> and every later step go (0 can't).
+            "HISTORY_DELETE" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
+                (Ok(i), true) if self.saving.is_none() => match self.history_delete(i, ctx) {
+                    Some(n) => format!("OK removed={n}"),
+                    None => format!("ERR no step {i} to delete (Open can't be)"),
+                },
+                _ => "ERR HISTORY_DELETE <step>, with a file open".to_string(),
+            },
+            // Clear History without the panel's confirmation: the current state is all that stays.
+            "HISTORY_CLEAR" => match self.editor.as_mut() {
+                Some(e) if self.saving.is_none() => {
+                    e.history.clear();
+                    "OK".to_string()
+                }
+                _ => "ERR HISTORY_CLEAR, with a file open".to_string(),
+            },
+            // The panel's Up / Down keys.
+            "HISTORY_KEY" if self.editor.is_some() && self.saving.is_none() => match rest.trim() {
+                k @ ("up" | "down") => match self.history_arrow(k == "down", ctx) {
+                    Some(i) => format!("OK cursor={i}"),
+                    None => "OK cursor=unchanged".to_string(),
+                },
+                _ => "ERR HISTORY_KEY up|down".to_string(),
+            },
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -886,7 +1045,7 @@ impl WaveApp {
                 ui.separator();
                 let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
                 let mut chosen = None;
-                for a in TABLE.iter().filter(|a| a.name.starts_with("view.")) {
+                for a in TABLE.iter().filter(|a| a.name.starts_with("view.") || a.name.starts_with("tool.")) {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
                     let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
                     if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
@@ -1005,20 +1164,51 @@ impl WaveApp {
         }
         self.view.clamp(width, frames);
 
-        // Click places the cursor, drag selects.
         let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
-        if response.drag_started()
+        let ruler_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
+        if response.drag_started() {
+            self.drag_origin = ui.input(|i| i.pointer.press_origin()).or_else(|| response.interact_pointer_pos());
+        }
+        let drag_dx = response.drag_delta().x;
+        // Middle-button drag scrolls whatever the tool (A084); the Hand tool does it with the
+        // primary button (A050).
+        if response.dragged_by(egui::PointerButton::Middle) || (self.tool == Tool::Hand && response.dragged_by(egui::PointerButton::Primary)) {
+            self.view.drag_by(drag_dx, width, frames);
+        }
+        // A range drag zooms to it: right-drag in the ruler (A091), or the Zoom tool's drag (A051).
+        let range_zoom = (response.drag_stopped_by(egui::PointerButton::Secondary) && self.drag_origin.is_some_and(|o| ruler_rect.contains(o)))
+            || (self.tool == Tool::Zoom && response.drag_stopped_by(egui::PointerButton::Primary));
+        if range_zoom
+            && let (Some(origin), Some(end)) = (self.drag_origin, ui.input(|i| i.pointer.latest_pos()).or_else(|| response.interact_pointer_pos()))
+        {
+            let (a, b) = (self.view.frame_at(origin.x - rect.left()), self.view.frame_at(end.x - rect.left()));
+            self.view.zoom_to_range(a, b, width, frames);
+        }
+        if self.tool == Tool::Zoom
+            && response.clicked_by(egui::PointerButton::Primary)
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let out = ui.input(|i| i.modifiers.alt);
+            self.view.zoom_click(self.view.frame_at(pos.x - rect.left()), out, width, frames);
+        }
+
+        // Select tool: click places the cursor, drag selects (primary button only).
+        let select = self.tool == Tool::Select;
+        if select
+            && response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             // A drag is only reported once the pointer has moved a few pixels: anchor the
             // selection where the button went down, not where the pointer has got to.
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
             self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
-        } else if response.dragged()
+        } else if select
+            && response.dragged_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             self.selection.head = frame_at(&self.view, pos);
-        } else if response.clicked()
+        } else if select
+            && response.clicked_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             self.selection = Selection::at(frame_at(&self.view, pos));
@@ -1152,6 +1342,15 @@ impl eframe::App for WaveApp {
         {
             self.error = Some(e);
         }
+        // Up and Down belong to the History panel while one of its rows has focus (before the
+        // action table gets them: there they pick the left or right channel).
+        if self.history_focus && self.saving.is_none() {
+            let (up, down) =
+                ctx.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, Key::ArrowDown)));
+            if let Some(to) = (up || down).then(|| self.history_arrow(down, &ctx)).flatten() {
+                self.history_refocus = Some(to);
+            }
+        }
         for id in pressed_actions(&ctx) {
             let _ = self.run_action(id, &ctx);
         }
@@ -1200,9 +1399,18 @@ impl eframe::App for WaveApp {
     }
 }
 
+/// The History step an Up or Down key moves to from `cursor` among `len` steps (none at an end).
+fn history_arrow_target(cursor: usize, len: usize, down: bool) -> Option<usize> {
+    if down { (cursor + 1 < len).then_some(cursor + 1) } else { cursor.checked_sub(1) }
+}
+
 /// The actions whose keys were pressed this frame. Keys with more modifiers are taken first, so
 /// Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
 fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
+    // A text field being edited owns the keyboard: Backspace, Delete and Cmd+Z there edit the text, not the audio (#368).
+    if ctx.text_edit_focused() {
+        return Vec::new();
+    }
     let mut keys: Vec<(ActionId, actions::Shortcut)> = TABLE.iter().flat_map(|a| a.keys.iter().map(move |k| (a.id, *k))).collect();
     keys.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
@@ -1287,7 +1495,41 @@ fn palette() -> Vec<Color32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn history_arrows_stop_at_the_ends() {
+        use super::history_arrow_target as t;
+        assert_eq!(t(0, 3, false), None);
+        assert_eq!(t(0, 3, true), Some(1));
+        assert_eq!(t(2, 3, true), None);
+        assert_eq!(t(2, 3, false), Some(1));
+        assert_eq!(t(0, 1, true), None);
+    }
+
     use super::*;
+
+    /// Runs three frames on a fresh context: frame 1 draws a text field and (when `focus`) asks for focus,
+    /// frame 2 lets that focus settle, frame 3 delivers one key press and returns what `pressed_actions` reports.
+    fn actions_for_key(focus: bool, key: Key, modifiers: egui::Modifiers) -> Vec<ActionId> {
+        let ctx = egui::Context::default();
+        let mut text = String::from("10");
+        let mut frame = |events: Vec<egui::Event>, ask_focus: bool| -> Vec<ActionId> {
+            let raw = egui::RawInput { events, ..Default::default() };
+            let mut found = Vec::new();
+            let mut output = ctx.run_ui(raw, |ui| {
+                let r = ui.text_edit_singleline(&mut text);
+                if ask_focus {
+                    r.request_focus();
+                }
+                found = pressed_actions(ui.ctx());
+            });
+            output.textures_delta.clear();
+            found
+        };
+        let _ = frame(Vec::new(), focus);
+        let _ = frame(Vec::new(), false);
+        let press = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        frame(vec![press], false)
+    }
 
     #[test]
     fn ruler_steps_are_round_and_wide_enough() {
@@ -1317,10 +1559,56 @@ mod tests {
     }
 
     #[test]
+    fn silence_longer_than_a_day_is_rejected() {
+        assert_eq!(silence_frames(1.0, 44_100), Ok(44_100));
+        assert_eq!(silence_frames(86_400.0, 48_000), Ok(4_147_200_000));
+        assert!(silence_frames(86_400.5, 48_000).is_err());
+        assert!(silence_frames(1e20, 44_100).is_err());
+        assert!(silence_frames(f64::INFINITY, 44_100).is_err());
+        assert!(silence_frames(0.0, 44_100).is_err());
+    }
+
+    #[test]
     fn lanes_stack_without_gaps() {
         let area = Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 300.0));
         assert_eq!(lane(area, 0, 2), Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 200.0)));
         assert_eq!(lane(area, 1, 2), Rect::from_min_max(pos2(0.0, 200.0), pos2(800.0, 300.0)));
         assert_eq!(lane(area, 0, 0), area);
+    }
+
+    #[test]
+    fn backspace_in_a_focused_text_field_runs_no_action() {
+        let got = actions_for_key(true, Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(got, Vec::<ActionId>::new());
+    }
+
+    #[test]
+    fn cmd_z_in_a_focused_text_field_runs_no_action() {
+        let got = actions_for_key(true, Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(got, Vec::<ActionId>::new());
+    }
+
+    #[test]
+    fn delete_key_in_a_focused_text_field_runs_no_action() {
+        let got = actions_for_key(true, Key::Delete, egui::Modifiers::NONE);
+        assert_eq!(got, Vec::<ActionId>::new());
+    }
+
+    #[test]
+    fn backspace_without_a_focused_text_field_runs_delete() {
+        let got = actions_for_key(false, Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(got, vec![ActionId::Delete]);
+    }
+
+    #[test]
+    fn cmd_z_without_a_focused_text_field_runs_undo() {
+        let got = actions_for_key(false, Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(got, vec![ActionId::Undo]);
+    }
+
+    #[test]
+    fn cmd_shift_z_without_a_focused_text_field_runs_redo_only() {
+        let got = actions_for_key(false, Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
+        assert_eq!(got, vec![ActionId::Redo]);
     }
 }

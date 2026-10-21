@@ -1,4 +1,4 @@
-//! Stale session folders (2026-10-19, Shuttlecraft 6): a run ended by a signal or a crash left its
+//! Stale session folders (2026-10-19, the Mac test machine): a run ended by a signal or a crash left its
 //! session store behind (measured: 3 runs, 3 folders, 66 MB for a 1-minute file), and nothing
 //! removed it. `sweep_stale_sessions` removes those, and only those.
 
