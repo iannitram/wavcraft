@@ -3,6 +3,7 @@
 
 /// Returns the normalized cross-correlation over the common prefix of `left`
 /// and `right`. Empty input or zero energy on either channel returns `0.0`.
+/// The result is clamped into `[-1.0, 1.0]`.
 pub fn phase_correlation(left: &[f32], right: &[f32]) -> f32 {
     let (cross, left_energy, right_energy) =
         left.iter().zip(right.iter()).fold((0.0_f64, 0.0_f64, 0.0_f64), |(cross, left_energy, right_energy), (&l, &r)| {
@@ -12,7 +13,12 @@ pub fn phase_correlation(left: &[f32], right: &[f32]) -> f32 {
         });
 
     let denominator = (left_energy * right_energy).sqrt();
-    if denominator == 0.0 { 0.0 } else { (cross / denominator) as f32 }
+    if denominator == 0.0 { 0.0 } else { clamp_correlation(cross / denominator) }
+}
+
+/// Clamps a raw correlation into `[-1.0, 1.0]` before the `f32` cast, so rounding cannot overshoot.
+fn clamp_correlation(value: f64) -> f32 {
+    value.clamp(-1.0, 1.0) as f32
 }
 
 /// Returns one correlation for each full `window` in the common prefix,
@@ -147,5 +153,42 @@ mod tests {
         let values: Vec<f32> = result.to_vec();
         approx(values[0], 1.0, 1e-6);
         assert_eq!(values[1], 0.0);
+    }
+
+    #[test]
+    fn unequal_energy_one_zero_against_ones() {
+        approx(phase_correlation(&[1.0, 0.0], &[1.0, 1.0]), 0.70710677, 1e-6);
+    }
+
+    #[test]
+    fn unequal_energy_three_zero_against_three_four() {
+        approx(phase_correlation(&[3.0, 0.0], &[3.0, 4.0]), 0.6, 1e-6);
+        approx(phase_correlation(&[3.0, 4.0], &[3.0, 0.0]), 0.6, 1e-6);
+    }
+
+    #[test]
+    fn ordinary_signals_keep_their_correlation() {
+        approx(phase_correlation(&[1.0, 2.0, 3.0], &[1.0, 2.0, 2.0]), 0.9799579, 1e-6);
+    }
+
+    #[test]
+    fn clamp_correlation_caps_overshoot() {
+        assert_eq!(clamp_correlation(1.0000001), 1.0);
+        assert_eq!(clamp_correlation(1.5), 1.0);
+    }
+
+    #[test]
+    fn clamp_correlation_floors_undershoot() {
+        assert_eq!(clamp_correlation(-1.0000001), -1.0);
+        assert_eq!(clamp_correlation(-1.5), -1.0);
+    }
+
+    #[test]
+    fn clamp_correlation_keeps_in_range_values() {
+        assert_eq!(clamp_correlation(0.25), 0.25);
+        assert_eq!(clamp_correlation(-0.5), -0.5);
+        assert_eq!(clamp_correlation(1.0), 1.0);
+        assert_eq!(clamp_correlation(-1.0), -1.0);
+        assert_eq!(clamp_correlation(0.0), 0.0);
     }
 }
