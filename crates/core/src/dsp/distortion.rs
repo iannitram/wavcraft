@@ -38,7 +38,7 @@ impl ToneLp {
 /// Drives one sample into the waveshaper, then applies the output gain.
 ///
 /// A drive of exactly 0.0 bypasses the stage: the input comes back unchanged.
-/// `output_gain` is a linear trim, and `|out| <= |output_gain|`.
+/// `output_gain` is a linear trim: for any drive other than 0.0, `|out| <= |output_gain|`.
 pub fn distort(sample: f32, drive: f32, mode: Mode, output_gain: f32) -> f32 {
     if drive == 0.0 {
         return sample;
@@ -69,12 +69,22 @@ mod tests {
 
     #[test]
     fn tone_lp_step_response() {
+        // Reference values computed independently in python from the filter definition
+        // y += alpha * (x - y), alpha = 1 - exp(-2*pi*fc/fs), fc = 1000, fs = 48000
+        // (alpha = 0.1226942309), constant 1.0 input from y = 0.
+        // Output 2 = 0.2303345875, output 10 = 0.7299091619, output 20 = 0.9270509392.
         let mut lp = ToneLp::new(1000.0, 48000.0);
-        // Process a constant 1.0 input for 20000 samples to let it settle
-        for _ in 0..20000 {
+        let mut out = [0.0f32; 20];
+        for o in out.iter_mut() {
+            *o = lp.process(1.0);
+        }
+        approx(out[1], 0.2303346);
+        approx(out[9], 0.7299092);
+        approx(out[19], 0.92705094);
+        // Settling: after 20000 samples the output is within 1e-4 of the input.
+        for _ in 20..20000 {
             lp.process(1.0);
         }
-        // Should be very close to 1.0 (the filter will have settled)
         assert!((lp.process(1.0) - 1.0).abs() <= 1e-4);
     }
 
