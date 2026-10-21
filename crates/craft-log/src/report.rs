@@ -450,41 +450,59 @@ pub fn first_line_of(program: &Path, args: &[&str], timeout: Duration) -> Result
     }
     let mut child = command.spawn().map_err(|e| e.to_string())?;
     let (tx, rx) = std::sync::mpsc::channel();
-    if let Some(mut out) = child.stdout.take() {
+    if let Some(out) = child.stdout.take() {
         std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = std::io::Read::read_to_string(&mut out, &mut text);
-            let _ = tx.send(text);
+            use std::io::BufRead as _;
+            let mut out = std::io::BufReader::new(out);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                match out.read_until(b'\n', &mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let text = String::from_utf8_lossy(&line);
+                        let text = text.trim_end();
+                        if !text.trim().is_empty() {
+                            let _ = tx.send(text.to_owned());
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            while out.read_until(b'\n', &mut line).is_ok_and(|n| n != 0) {
+                line.clear();
+            }
         });
     } else {
-        let _ = tx.send(String::new());
+        drop(tx);
     }
     let start = Instant::now();
     let deadline = start + timeout;
+    let after_kill = |child: &mut std::process::Child| {
+        kill_tree(child);
+        rx.try_recv().ok().ok_or_else(|| format!("no answer within {} s", timeout.as_secs()))
+    };
     loop {
         match child.try_wait() {
             Ok(Some(_)) => {
-                match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                    Ok(text) => {
-                        // the first line with text (Windows' `ver` starts with an empty one)
-                        return text.lines().map(str::trim_end).find(|l| !l.trim().is_empty()).map(str::to_owned).ok_or_else(|| "printed nothing".into());
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        kill_tree(&mut child);
-                        return Err(format!("no answer within {} s", timeout.as_secs()));
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err("printed nothing".into()),
-                }
+                return match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(line) => Ok(line),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => after_kill(&mut child),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("printed nothing".into()),
+                };
             }
             Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(20).min(deadline.saturating_duration_since(Instant::now())));
                 continue;
             }
             Ok(None) => {
-                kill_tree(&mut child);
-                return Err(format!("no answer within {} s", timeout.as_secs()));
+                return after_kill(&mut child);
             }
-            Err(e) => return Err(e.to_string()),
+            Err(e) => {
+                kill_tree(&mut child);
+                return Err(e.to_string());
+            }
         }
     }
 }
@@ -723,7 +741,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_background_child_holding_stdout_is_given_up_on() {
+    fn a_background_child_holding_stdout_still_returns_its_line() {
         if !Path::new("/bin/sh").is_file() {
             return;
         }
@@ -738,7 +756,7 @@ mod tests {
         }
         let t0 = Instant::now();
         let got = first_line_of(&script, &[], Duration::from_millis(300));
-        assert!(got.is_err_and(|e| e.contains("no answer")));
+        assert_eq!(got.as_deref(), Ok("hi"));
         assert!(t0.elapsed() < Duration::from_secs(2), "call took {:?}", t0.elapsed());
         let _ = std::fs::remove_dir_all(&dir);
     }
