@@ -10,6 +10,11 @@ pub fn is_valid_isrc(input: &str) -> bool {
 
 /// Normalizes an ISRC to uppercase without dashes.
 pub fn normalize_isrc(input: &str) -> Option<String> {
+    // Defensive ASCII guard
+    if !input.is_ascii() {
+        return None;
+    }
+
     // Remove all dashes (but not whitespace) to get the cleaned version
     let cleaned: String = input.chars().filter(|c| *c != '-').collect();
 
@@ -120,6 +125,55 @@ pub fn ean13_check_digit(digits: &str) -> Option<u8> {
     Some((10 - sum % 10) % 10)
 }
 
+/// Calculates the check digit for UPC-A.
+pub fn upc_a_check_digit(digits: &str) -> Option<u8> {
+    // Must be exactly 11 ASCII digits
+    if digits.len() != 11 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+
+    let mut sum = 0;
+    for (i, c) in digits.chars().enumerate() {
+        let digit = match c.to_digit(10) {
+            Some(d) => d as u8,
+            None => return None,
+        };
+        // Odd positions (1-indexed) are multiplied by 3, even positions by 1
+        if (i + 1) % 2 == 1 {
+            sum += digit * 3;
+        } else {
+            sum += digit;
+        }
+    }
+
+    Some((10 - sum % 10) % 10)
+}
+
+/// Checks if a UPC-A is valid.
+pub fn is_valid_upc_a(input: &str) -> bool {
+    // Must be exactly 12 ASCII digits
+    if input.len() != 12 || !input.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+
+    // Get the check digit from the last character
+    let last_digit = input.chars().last();
+    let last_digit_value = match last_digit {
+        Some(d) => match d.to_digit(10) {
+            Some(d) => d as u8,
+            None => return false,
+        },
+        None => return false,
+    };
+
+    // Calculate the expected check digit
+    let expected_check_digit = upc_a_check_digit(&input[..11]);
+    match expected_check_digit {
+        Some(expected) => last_digit_value == expected,
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +223,20 @@ mod tests {
     }
 
     #[test]
+    fn isrc_ascii_guard_regression() {
+        // These should all return None due to non-ASCII characters
+        let non_ascii_inputs = ["USRC176078é", "ÜSRC17607839", "USRC1760783🎵", "USRC17607839\u{301}", "éééééé"];
+
+        for input in &non_ascii_inputs {
+            assert_eq!(normalize_isrc(input), None);
+            assert!(!is_valid_isrc(input));
+        }
+
+        // This should still work
+        assert_eq!(normalize_isrc("USRC17607839"), Some("USRC17607839".to_string()));
+    }
+
+    #[test]
     fn ean13_valid_table() {
         let valid_eans = ["4006381333931", "5901234123457", "0012345678905", "9780306406157"];
 
@@ -214,5 +282,55 @@ mod tests {
         for input in &bad_inputs {
             assert_eq!(ean13_check_digit(input), None);
         }
+    }
+
+    #[test]
+    fn upc_a_check_digit_valid() {
+        // Test cases from the brief: upc_a_check_digit("03600029145") should be Some(2)
+        assert_eq!(upc_a_check_digit("03600029145"), Some(2));
+
+        // Additional test cases
+        assert_eq!(upc_a_check_digit("00000000000"), Some(0));
+        assert_eq!(upc_a_check_digit("12345678901"), Some(2));
+        assert_eq!(upc_a_check_digit("99999999999"), Some(3));
+    }
+
+    #[test]
+    fn upc_a_check_digit_invalid() {
+        // Test invalid inputs
+        assert_eq!(upc_a_check_digit("0360002914"), None); // 10 digits
+        assert_eq!(upc_a_check_digit("036000291452"), None); // 12 digits
+        assert_eq!(upc_a_check_digit("0360002914A"), None); // contains letter
+        assert_eq!(upc_a_check_digit(""), None); // empty string
+        assert_eq!(upc_a_check_digit("0360002914é"), None); // contains non-ASCII
+    }
+
+    #[test]
+    fn is_valid_upc_a_valid() {
+        // Test the classic valid UPC-A from the brief
+        assert!(is_valid_upc_a("036000291452"));
+
+        // Additional valid cases
+        assert!(is_valid_upc_a("000000000000"));
+        assert!(is_valid_upc_a("123456789012"));
+    }
+
+    #[test]
+    fn is_valid_upc_a_invalid() {
+        // Test invalid UPC-A numbers
+        assert!(!is_valid_upc_a("036000291453")); // Wrong check digit
+        assert!(!is_valid_upc_a("03600029145")); // 11 digits
+        assert!(!is_valid_upc_a("0360002914522")); // 13 digits
+        assert!(!is_valid_upc_a("03600029145A")); // Contains letter
+        assert!(!is_valid_upc_a("036000291 452")); // Contains space
+        assert!(!is_valid_upc_a("03600029145é")); // Contains non-ASCII
+        assert!(!is_valid_upc_a("")); // Empty string
+    }
+
+    #[test]
+    fn upc_a_equivalence_with_ean13() {
+        // The brief states that is_valid_ean13("0036000291452") should be true
+        // This is because UPC-A "036000291452" becomes EAN-13 "0036000291452"
+        assert!(is_valid_ean13("0036000291452"));
     }
 }
