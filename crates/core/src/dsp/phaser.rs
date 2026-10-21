@@ -155,8 +155,8 @@ mod tests {
     fn edge_cases_invalid_inputs_and_clamps() {
         let x = [0.2, -0.4, 0.8];
         assert!(phaser(&[], 44100.0, 1, 0.0, 0.0, 0.0, 1.0).is_empty());
-        for rate in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            assert_eq!(phaser(&x, rate, 1, 0.0, 0.0, 0.0, 1.0), x);
+        for bad_sample_rate in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(phaser(&x, bad_sample_rate, 1, 0.0, 0.0, 0.0, 1.0), x);
         }
         assert_eq!(phaser(&x, 44100.0, 0, 0.0, 0.0, 0.0, 1.0), phaser(&x, 44100.0, 1, 0.0, 0.0, 0.0, 1.0));
         assert_eq!(phaser(&x, 44100.0, 1, 0.0, 0.0, 2.0, 1.0), phaser(&x, 44100.0, 1, 0.0, 0.0, 0.95, 1.0));
