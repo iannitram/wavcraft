@@ -4,23 +4,50 @@
 //! silence if the UI holds it. The file's rate is converted to the device's with linear
 //! interpolation, which is fine for auditioning (an edit never goes through this path).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::AudioBuffer;
 
+#[derive(Copy, Clone, Default)]
+struct Playback {
+    /// Bumped by every play/stop; a render pass started under an older value must not write back.
+    generation: u64,
+    /// Play position in file frames.
+    pos: f64,
+    /// Frame to stop at.
+    end: f64,
+    playing: bool,
+}
+
 struct Shared {
     audio: Mutex<Option<Arc<AudioBuffer>>>,
-    /// Play position in file frames, an `f64` stored as bits.
-    pos: AtomicU64,
-    /// Frame to stop at, an `f64` stored as bits.
-    end: AtomicU64,
-    /// Bumped by every play/stop; a render pass started under an older value must not write back.
-    generation: AtomicU64,
-    playing: AtomicBool,
+    state: Mutex<Playback>,
     /// Set by the stream's error callback (the device went away, for example).
     failed: AtomicBool,
+}
+
+impl Shared {
+    fn start(&self, from: f64, to: f64) {
+        self.start_with(from, to, || {});
+    }
+
+    fn start_with<F: FnOnce()>(&self, from: f64, to: f64, between: F) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.generation += 1;
+        // Test seam: keep the state lock held so a callback cannot see a half-applied start.
+        between();
+        state.pos = from;
+        state.end = to;
+        state.playing = to > from;
+    }
+
+    fn halt(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.generation += 1;
+        state.playing = false;
+    }
 }
 
 /// The output stream and the play state shared with its callback.
@@ -36,14 +63,7 @@ pub struct Player {
 impl Player {
     /// Open the default output device. Without one the player still works, silently.
     pub fn new() -> Player {
-        let shared = Arc::new(Shared {
-            audio: Mutex::new(None),
-            pos: AtomicU64::new(0f64.to_bits()),
-            end: AtomicU64::new(0f64.to_bits()),
-            generation: AtomicU64::new(0),
-            playing: AtomicBool::new(false),
-            failed: AtomicBool::new(false),
-        });
+        let shared = Arc::new(Shared { audio: Mutex::new(None), state: Mutex::new(Playback::default()), failed: AtomicBool::new(false) });
         let mut player = Player { shared, stream: None, error: None, device: String::new() };
         player.reopen();
         player
@@ -86,24 +106,20 @@ impl Player {
         if self.stream.is_none() {
             return;
         }
-        self.shared.generation.fetch_add(1, Ordering::AcqRel);
-        self.shared.pos.store((from as f64).to_bits(), Ordering::Relaxed);
-        self.shared.end.store((to as f64).to_bits(), Ordering::Relaxed);
-        self.shared.playing.store(to > from, Ordering::Relaxed);
+        self.shared.start(from as f64, to as f64);
     }
 
     pub fn stop(&self) {
-        self.shared.generation.fetch_add(1, Ordering::AcqRel);
-        self.shared.playing.store(false, Ordering::Relaxed);
+        self.shared.halt();
     }
 
     pub fn is_playing(&self) -> bool {
-        self.shared.playing.load(Ordering::Relaxed)
+        self.shared.state.lock().unwrap_or_else(|e| e.into_inner()).playing
     }
 
     /// The frame being played right now.
     pub fn position(&self) -> usize {
-        f64::from_bits(self.shared.pos.load(Ordering::Relaxed)).max(0.0) as usize
+        self.shared.state.lock().unwrap_or_else(|e| e.into_inner()).pos.max(0.0) as usize
     }
 }
 
@@ -138,7 +154,7 @@ where
             move |err| {
                 log::warn!("audio output: {err}");
                 on_error.failed.store(true, Ordering::Relaxed);
-                on_error.playing.store(false, Ordering::Relaxed);
+                on_error.state.lock().unwrap_or_else(|e| e.into_inner()).playing = false;
             },
             None,
         )
@@ -147,20 +163,26 @@ where
 
 /// Fill one device buffer. Runs on the audio thread.
 fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T], channels: usize, device_rate: f64) {
-    render_with(shared, out, channels, device_rate, || {});
+    render_with(shared, out, channels, device_rate, || {}, || {});
 }
 
-fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce()>(
+fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()>(
     shared: &Shared,
     out: &mut [T],
     channels: usize,
     device_rate: f64,
     before_commit: F,
+    after_check: G,
 ) {
-    let generation = shared.generation.load(Ordering::Acquire);
     let silence = T::from_sample(0.0f32);
+    let Ok(state) = shared.state.try_lock() else {
+        out.iter_mut().for_each(|s| *s = silence);
+        return;
+    };
+    let playback = *state;
+    drop(state);
     out.iter_mut().for_each(|s| *s = silence);
-    if !shared.playing.load(Ordering::Relaxed) {
+    if !playback.playing {
         return;
     }
     let Ok(slot) = shared.audio.try_lock() else { return };
@@ -170,8 +192,8 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce()>(
         return;
     }
     let step = f64::from(audio.sample_rate) / device_rate;
-    let end = f64::from_bits(shared.end.load(Ordering::Relaxed)).min(audio.frames() as f64);
-    let mut pos = f64::from_bits(shared.pos.load(Ordering::Relaxed)).max(0.0);
+    let end = playback.end.min(audio.frames() as f64);
+    let mut pos = playback.pos.max(0.0);
     let mut finished = false;
     for frame in out.chunks_mut(channels) {
         if pos >= end {
@@ -203,11 +225,14 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce()>(
         pos += step;
     }
     before_commit();
-    if shared.generation.load(Ordering::Acquire) == generation {
+    let Ok(mut state) = shared.state.try_lock() else { return };
+    if state.generation == playback.generation {
+        // Test seam: keep the state lock held so a concurrent restart applies after this commit.
+        after_check();
         if finished {
-            shared.playing.store(false, Ordering::Relaxed);
+            state.playing = false;
         }
-        shared.pos.store(pos.to_bits(), Ordering::Relaxed);
+        state.pos = pos;
     }
 }
 
@@ -216,21 +241,15 @@ mod tests {
     use super::*;
 
     fn shared_with(audio: AudioBuffer) -> Shared {
-        Shared {
-            audio: Mutex::new(Some(Arc::new(audio))),
-            pos: AtomicU64::new(0f64.to_bits()),
-            end: AtomicU64::new(0f64.to_bits()),
-            generation: AtomicU64::new(0),
-            playing: AtomicBool::new(false),
-            failed: AtomicBool::new(false),
-        }
+        Shared { audio: Mutex::new(Some(Arc::new(audio))), state: Mutex::new(Playback::default()), failed: AtomicBool::new(false) }
+    }
+
+    fn playback(shared: &Shared) -> Playback {
+        *shared.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn play(shared: &Shared, from: f64, to: f64) {
-        shared.generation.fetch_add(1, Ordering::AcqRel);
-        shared.pos.store(from.to_bits(), Ordering::Relaxed);
-        shared.end.store(to.to_bits(), Ordering::Relaxed);
-        shared.playing.store(true, Ordering::Relaxed);
+        shared.start(from, to);
     }
 
     #[test]
@@ -239,14 +258,18 @@ mod tests {
         let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
         play(&shared, 0.0, 1000.0);
         let mut out = vec![0.0f32; 64];
-        render_with(&shared, &mut out, 1, 48_000.0, || {
-            shared.generation.fetch_add(1, Ordering::AcqRel);
-            shared.pos.store(500.0f64.to_bits(), Ordering::Relaxed);
-            shared.end.store(1000.0f64.to_bits(), Ordering::Relaxed);
-            shared.playing.store(true, Ordering::Relaxed);
-        });
-        assert_eq!(f64::from_bits(shared.pos.load(Ordering::Relaxed)), 500.0);
-        assert!(shared.playing.load(Ordering::Relaxed));
+        render_with(
+            &shared,
+            &mut out,
+            1,
+            48_000.0,
+            || {
+                shared.start(500.0, 1000.0);
+            },
+            || {},
+        );
+        assert_eq!(playback(&shared).pos, 500.0);
+        assert!(playback(&shared).playing);
     }
 
     #[test]
@@ -255,14 +278,78 @@ mod tests {
         let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
         play(&shared, 10.0, 20.0);
         let mut out = vec![0.0f32; 64];
-        render_with(&shared, &mut out, 1, 48_000.0, || {
-            shared.generation.fetch_add(1, Ordering::AcqRel);
-            shared.pos.store(500.0f64.to_bits(), Ordering::Relaxed);
-            shared.end.store(1000.0f64.to_bits(), Ordering::Relaxed);
-            shared.playing.store(true, Ordering::Relaxed);
+        render_with(
+            &shared,
+            &mut out,
+            1,
+            48_000.0,
+            || {
+                shared.start(500.0, 1000.0);
+            },
+            || {},
+        );
+        assert!(playback(&shared).playing);
+        assert_eq!(playback(&shared).pos, 500.0);
+    }
+
+    #[test]
+    fn play_bump_window_is_not_clobbered() {
+        let ramp: Vec<f32> = (0..1000).map(|i| (i + 1) as f32).collect();
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        play(&shared, 0.0, 1000.0);
+        let mut out = vec![0.0f32; 64];
+        shared.start_with(500.0, 1000.0, || {
+            render_with(&shared, &mut out, 1, 48_000.0, || {}, || {});
+            assert!(out.iter().all(|v| *v == 0.0));
         });
-        assert!(shared.playing.load(Ordering::Relaxed));
-        assert_eq!(f64::from_bits(shared.pos.load(Ordering::Relaxed)), 500.0);
+        assert_eq!(playback(&shared).pos, 500.0);
+        assert!(playback(&shared).playing);
+    }
+
+    #[test]
+    fn restart_between_check_and_commit_is_not_clobbered() {
+        let ramp: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        play(&shared, 0.0, 1000.0);
+        let mut out = vec![0.0f32; 64];
+        std::thread::scope(|scope| {
+            render_with(
+                &shared,
+                &mut out,
+                1,
+                48_000.0,
+                || {},
+                || {
+                    scope.spawn(|| shared.start(500.0, 1000.0));
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                },
+            );
+        });
+        assert_eq!(playback(&shared).pos, 500.0);
+        assert!(playback(&shared).playing);
+    }
+
+    #[test]
+    fn restart_between_check_and_commit_is_not_clobbered_at_end_of_range() {
+        let ramp = vec![0.0f32; 1000];
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        play(&shared, 10.0, 20.0);
+        let mut out = vec![0.0f32; 64];
+        std::thread::scope(|scope| {
+            render_with(
+                &shared,
+                &mut out,
+                1,
+                48_000.0,
+                || {},
+                || {
+                    scope.spawn(|| shared.start(500.0, 1000.0));
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                },
+            );
+        });
+        assert!(playback(&shared).playing);
+        assert_eq!(playback(&shared).pos, 500.0);
     }
 
     #[test]
@@ -279,8 +366,8 @@ mod tests {
             assert_eq!((out[2 * k], out[2 * k + 1]), (ramp[10 + k], -ramp[10 + k]), "frame {k}");
         }
         assert!(out[20..].iter().all(|v| *v == 0.0));
-        assert!(!shared.playing.load(Ordering::Relaxed), "stops at the end of the range");
-        assert_eq!(f64::from_bits(shared.pos.load(Ordering::Relaxed)), 20.0);
+        assert!(!playback(&shared).playing, "stops at the end of the range");
+        assert_eq!(playback(&shared).pos, 20.0);
     }
 
     #[test]
