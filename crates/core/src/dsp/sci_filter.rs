@@ -1,13 +1,14 @@
 //! Scientific analogue-prototype filters realised as bilinear-transform biquad cascades.
 //!
 //! Butterworth, Chebyshev I, Chebyshev II, and Bessel lowpass and highpass filters are
-//! implemented. Bessel orders 1..=8 use tabulated normalised poles; Bessel orders 9 and
-//! above are deferred and return `SciFilterError`. Bandpass, bandstop, and elliptic filters
+//! implemented. Bessel orders 1..=8 use tabulated normalised poles; Bessel orders 0 and 9
+//! and above return `SciFilterError`. Bandpass, bandstop, and elliptic filters
 //! are deferred because they are not part of the feature-log row. An invalid sample rate or
 //! cutoff still returns an empty design, and `process_filter` consequently returns the dry
 //! input. NaN parameters are
 //! treated as invalid for the design (ripple and attenuation NaNs use safe defaults).
-//! Order zero returns the input unchanged.
+//! For Butterworth, Chebyshev I, and Chebyshev II, order zero gives an empty design, so
+//! `process_filter` returns the input unchanged. Bessel order zero is an error (see above).
 
 use std::f64::consts::PI;
 
