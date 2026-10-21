@@ -198,6 +198,15 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
         log::warn!("{}: {w}", path.display());
     }
     let rate = src.sample_rate;
+    if let Some(first) = built.channels.first() {
+        let mut at = 0u64;
+        let mut origin = Vec::new();
+        for p in first.pieces() {
+            origin.push((p.block().block().id, at));
+            at += u64::from(p.len());
+        }
+        src.origin = Arc::new(origin);
+    }
     DocState::new(store, built.channels, rate, src).map_err(|e| malformed(e.to_string()))
 }
 
@@ -476,6 +485,8 @@ struct Fmt {
     valid_bits: u16,
     /// Bytes a frame takes, as the header says (checked against the format before use).
     block_align: u16,
+    /// `dwChannelMask` of a `WAVE_FORMAT_EXTENSIBLE` header, else 0.
+    channel_mask: u32,
 }
 
 fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
@@ -487,6 +498,7 @@ fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
         bits: le_u16(c, 14).unwrap_or(0),
         valid_bits: 0,
         block_align: le_u16(c, 12).ok_or_else(short)?,
+        channel_mask: 0,
     };
     fmt.valid_bits = fmt.bits;
     if fmt.tag == WAVE_FORMAT_EXTENSIBLE {
@@ -496,6 +508,7 @@ fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
                     fmt.valid_bits = valid;
                 }
                 fmt.tag = sub;
+                fmt.channel_mask = le_u32(c, 20).unwrap_or(0);
             }
             _ => return Err(malformed("WAVE_FORMAT_EXTENSIBLE fmt chunk too short")),
         }
@@ -566,7 +579,17 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
             }
             match &id {
                 b"fmt " => fmt = Some(parse_fmt(&job.read_at(body, declared)?)?),
-                b"bext" => src.bwf = parse_bext(&job.read_at(body, declared)?),
+                b"bext" if declared <= crate::meta::MAX_META_BYTES => {
+                    let raw = job.read_at(body, declared)?;
+                    src.bwf = parse_bext(&raw);
+                    src.meta.bext = crate::meta::Bext::parse(&raw);
+                }
+                b"LIST" if declared <= crate::meta::MAX_META_BYTES && src.meta.info.0.is_empty() => {
+                    if let Some(tags) = crate::meta::InfoTags::parse(&job.read_at(body, declared)?) {
+                        src.meta.info = tags;
+                    }
+                }
+                b"iXML" if declared <= crate::meta::MAX_META_BYTES => src.meta.ixml = Some(job.read_at(body, declared)?),
                 b"ds64" => ds64_data = le_u64(&job.read_at(body, declared.min(64))?, 8),
                 _ => {}
             }
@@ -582,6 +605,14 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
     src.sample_rate = fmt.sample_rate;
     src.channels = fmt.channels;
     let channels = usize::from(fmt.channels);
+    src.meta.chnames = crate::meta::mask_names(fmt.channel_mask, channels);
+    if let Some(x) = &src.meta.ixml {
+        for (slot, n) in src.meta.chnames.iter_mut().zip(crate::meta::ixml_names(x, channels)) {
+            if !n.is_empty() {
+                *slot = n;
+            }
+        }
+    }
     let (kind, sample_format) = match (fmt.tag, fmt.bits) {
         (WAVE_FORMAT_PCM, bits @ 1..=32) => {
             let bytes = usize::from(bits.div_ceil(8));

@@ -21,7 +21,8 @@ use std::time::{Duration, SystemTime};
 
 use soundcraft_audio_io::SampleFormat;
 
-use crate::doc::{DocState, SourceFormat};
+use crate::doc::{ChunkInfo, DocState, SourceFormat};
+use crate::meta::Bext;
 use crate::store::BLOCK_FRAMES;
 
 /// How samples are stored in the saved file.
@@ -183,8 +184,8 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
     let tmp = TempFile::create(target).map_err(SaveError::Io)?;
     let TempFile { path: tmp, file } = tmp;
     // Written through the handle made by the exclusive create, never reopened by name.
-    let file = match write_wav(doc, file, ty, progress, fail_after) {
-        Ok(file) => file,
+    let (file, written) = match write_wav(doc, file, ty, progress, fail_after) {
+        Ok(done) => done,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
             log::warn!(target: "wavcraft_core::save", "save to {} failed, the file is unchanged: {e}", target.display());
@@ -200,15 +201,200 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
         return Err(SaveError::Io(io::Error::new(e.kind(), format!("could not replace the file ({e}); it is unchanged"))));
     }
     drop(file);
+    // The file on disk now holds the chunks at new places: later saves copy from there.
+    doc.source().relocated.set(target.to_path_buf(), written);
     log::info!(target: "wavcraft_core::save", "saved {} frames as {} WAV to {}", frames, ty.describe(), target.display());
     Ok(())
 }
 
-fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> io::Result<File> {
+/// One chunk of the saved file after `fmt `/`fact`, in the order it is written.
+enum Item {
+    /// The samples (written fresh from the document).
+    Data,
+    /// A chunk the app owns and writes fresh: `bext`, `LIST`/`INFO`.
+    Fresh { id: [u8; 4], body: Vec<u8> },
+    /// A chunk of the source file, streamed through unchanged.
+    Copy(ChunkInfo),
+}
+
+/// Chunks the app writes itself or that a save makes stale, so never copied from the source:
+/// the format and size chunks, padding, the peak envelope (the audio changed), and the cue list
+/// and `adtl` labels (the marker code owns them).
+const NOT_COPIED: [&[u8; 4]; 7] = [b"fmt ", b"fact", b"ds64", b"JUNK", b"PEAK", b"cue ", b"data"];
+
+/// The EBU R98 coding-history line for a save.
+fn coding_line(ty: SampleType, rate: u32, channels: usize) -> String {
+    let mode = match channels {
+        1 => "mono",
+        2 => "stereo",
+        _ => "multi",
+    };
+    format!("A=PCM,F={rate},W={},M={mode},T=WavCraft", ty.bytes() * 8)
+}
+
+/// A chunk of the source is copied only if the file still has it where the table says.
+fn source_chunk_is_intact(f: &mut File, len: u64, c: &ChunkInfo) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut head = [0u8; 8];
+    c.offset.checked_add(8).and_then(|b| b.checked_add(c.size)).is_some_and(|end| end <= len)
+        && f.seek(SeekFrom::Start(c.offset)).is_ok()
+        && f.read_exact(&mut head).is_ok()
+        && head[..4] == c.id
+        && u64::from(u32::from_le_bytes([head[4], head[5], head[6], head[7]])) == c.size
+}
+
+/// The chunks after `fmt `/`fact` (Roadmap A272, A265, A256): the source's chunks in their
+/// original order, the app's own (`data`, `bext`, an edited `LIST`/`INFO`) written fresh in
+/// their place, and the source file itself kept open to stream the rest from.
+fn plan_chunks(doc: &DocState, ty: SampleType) -> (Vec<Item>, Option<File>) {
+    let src = doc.source();
+    let meta = &src.meta;
+    let (path, chunks) = src.relocated.get().unwrap_or_else(|| (src.path.clone(), src.chunks.clone()));
+    let usable = src.format == soundcraft_audio_io::FileFormat::Wav && !path.as_os_str().is_empty();
+    let mut file = if usable { File::open(&path).ok() } else { None };
+    let len = file.as_ref().and_then(|f| f.metadata().ok()).map_or(0, |m| m.len());
+    let bext = meta.bext.as_ref().map(|b| {
+        let history = Bext::with_history_line(&b.coding_history, &coding_line(ty, doc.sample_rate(), doc.channel_count()));
+        Item::Fresh { id: *b"bext", body: b.to_bytes(b.time_reference.saturating_add(doc.start_shift()), &history) }
+    });
+    let info = (!meta.info.0.is_empty()).then(|| Item::Fresh { id: *b"LIST", body: meta.info.to_bytes() });
+    let has_ixml_chunk = chunks.iter().any(|c| c.id == *b"iXML");
+    let mut ixml = (meta.chnames_edited && (meta.ixml.is_some() || !has_ixml_chunk))
+        .then(|| Item::Fresh { id: *b"iXML", body: crate::meta::ixml_with_names(meta.ixml.as_deref(), &meta.chnames) });
+    let (mut bext, mut info) = (bext, info);
+    let mut plan = Vec::new();
+    let (mut have_data, mut have_info) = (false, false);
+    for c in &chunks {
+        let Some(f) = file.as_mut() else { break };
+        if c.id == *b"data" {
+            if !have_data {
+                plan.push(Item::Data);
+                have_data = true;
+            }
+            continue;
+        }
+        if NOT_COPIED.contains(&&c.id) {
+            continue;
+        }
+        if !source_chunk_is_intact(f, len, c) {
+            log::warn!(target: "wavcraft_core::save", "the {} chunk is no longer in the source file where it was; it is not kept", c.id_str());
+            continue;
+        }
+        if c.id == *b"bext" && meta.bext.is_some() {
+            plan.extend(bext.take());
+        } else if c.id == *b"iXML" && meta.ixml.is_some() {
+            if meta.chnames_edited {
+                plan.extend(ixml.take());
+            } else {
+                plan.push(Item::Copy(c.clone()));
+            }
+        } else if c.id == *b"LIST" && is_list(f, c, b"INFO") {
+            if meta.info_edited {
+                if !have_info {
+                    plan.extend(info.take());
+                }
+            } else {
+                plan.push(Item::Copy(c.clone()));
+            }
+            have_info = true;
+        } else if c.id == *b"LIST" && is_list(f, c, b"adtl") {
+            // The marker code owns the labels with the cue list.
+        } else {
+            plan.push(Item::Copy(c.clone()));
+        }
+    }
+    if let Some(b) = bext.take() {
+        plan.insert(0, b);
+    }
+    if !have_data {
+        plan.push(Item::Data);
+    }
+    if !have_info {
+        plan.extend(info.take());
+    }
+    plan.extend(ixml.take());
+    (plan, file)
+}
+
+/// Whether the `LIST` chunk `c` has the form type `form`.
+fn is_list(f: &mut File, c: &ChunkInfo, form: &[u8; 4]) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut t = [0u8; 4];
+    c.size >= 4 && f.seek(SeekFrom::Start(c.offset + 8)).is_ok() && f.read_exact(&mut t).is_ok() && &t == form
+}
+
+fn write_wav(
+    doc: &DocState,
+    file: File,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+) -> io::Result<(File, Vec<ChunkInfo>)> {
     let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
+    let (plan, mut source) = plan_chunks(doc, ty);
+    let extra: u64 = plan
+        .iter()
+        .map(|i| match i {
+            Item::Data => 0,
+            Item::Fresh { body, .. } => 8 + body.len() as u64 + (body.len() as u64 & 1),
+            Item::Copy(c) => 8 + c.size + (c.size & 1),
+        })
+        .sum();
     let mut out = BufWriter::with_capacity(1 << 20, file);
-    let data_len = write_header(&mut out, ch16, doc.sample_rate(), ty, frames)?;
+    let (data_len, mut pos) = write_header(&mut out, ch16, doc.sample_rate(), ty, frames, extra)?;
+    let mut table = Vec::new();
+    for item in &plan {
+        match item {
+            Item::Data => {
+                table.push(ChunkInfo { id: *b"data", offset: pos, size: data_len });
+                out.write_all(b"data")?;
+                out.write_all(&u32::try_from(data_len).unwrap_or(u32::MAX).to_le_bytes())?;
+                write_samples(&mut out, doc, ty, progress, fail_after)?;
+                if data_len & 1 == 1 {
+                    out.write_all(&[0])?;
+                }
+                pos += 8 + data_len + (data_len & 1);
+            }
+            Item::Fresh { id, body } => {
+                table.push(ChunkInfo { id: *id, offset: pos, size: body.len() as u64 });
+                out.write_all(id)?;
+                out.write_all(&(body.len() as u32).to_le_bytes())?;
+                out.write_all(body)?;
+                if body.len() & 1 == 1 {
+                    out.write_all(&[0])?;
+                }
+                pos += 8 + body.len() as u64 + (body.len() as u64 & 1);
+            }
+            Item::Copy(c) => {
+                use std::io::{Read, Seek, SeekFrom};
+                let f = source.as_mut().ok_or_else(|| io::Error::other("the source file went away"))?;
+                f.seek(SeekFrom::Start(c.offset + 8))?;
+                table.push(ChunkInfo { id: c.id, offset: pos, size: c.size });
+                out.write_all(&c.id)?;
+                out.write_all(&(c.size as u32).to_le_bytes())?;
+                let copied = io::copy(&mut f.take(c.size), &mut out)?;
+                if copied != c.size {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format!("the {} chunk of the source file changed while saving", c.id_str()),
+                    ));
+                }
+                if c.size & 1 == 1 {
+                    out.write_all(&[0])?;
+                }
+                pos += 8 + c.size + (c.size & 1);
+            }
+        }
+    }
+    let file = out.into_inner().map_err(|e| e.into_error())?;
+    file.sync_all()?;
+    Ok((file, table))
+}
+
+/// The samples, 64 K frames at a time.
+fn write_samples(out: &mut impl Write, doc: &DocState, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> io::Result<()> {
+    let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * channels * ty.bytes());
     let mut at = 0u64;
@@ -239,22 +425,19 @@ fn write_wav(doc: &DocState, file: File, ty: SampleType, progress: &mut dyn FnMu
         }
         progress(at as f64 / frames as f64);
     }
-    if data_len & 1 == 1 {
-        out.write_all(&[0])?;
-    }
-    let file = out.into_inner().map_err(|e| e.into_error())?;
-    file.sync_all()?;
-    Ok(file)
+    Ok(())
 }
 
-/// The RIFF (or, above 4 GiB, RF64) header and the `data` chunk's header; returns the data size.
-fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
+/// The RIFF (or, above 4 GiB, RF64) header, `fmt ` and (float) `fact`; returns the data size
+/// and the file offset the next chunk starts at. `extra` is the bytes of every other chunk
+/// (headers and pads included) that follow; the `data` chunk is counted here.
+fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64, extra: u64) -> io::Result<(u64, u64)> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(u64::from(channels)).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("WAV too long"))?;
     let float = ty == SampleType::Float32;
     let fmt_len: u32 = if float { 18 } else { 16 };
     let fact = if float { 12 } else { 0 };
-    let riff_len = 4 + (8 + u64::from(fmt_len)) + fact + 8 + data_len + (data_len & 1);
+    let riff_len = 4 + (8 + u64::from(fmt_len)) + fact + 8 + data_len + (data_len & 1) + extra;
     let rf64 = u32::try_from(riff_len).is_err();
     let block_align = channels.checked_mul(bytes as u16).ok_or_else(|| invalid("too many channels"))?;
     if rf64 {
@@ -287,9 +470,8 @@ fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: Sampl
         out.write_all(&4u32.to_le_bytes())?;
         out.write_all(&u32::try_from(frames).unwrap_or(u32::MAX).to_le_bytes())?;
     }
-    out.write_all(b"data")?;
-    out.write_all(&u32::try_from(data_len).unwrap_or(u32::MAX).to_le_bytes())?;
-    Ok(data_len)
+    let pos = if rf64 { 12 + 36 } else { 12 } + 8 + u64::from(fmt_len) + fact;
+    Ok((data_len, pos))
 }
 
 /// `x` (full scale ±1) as a `bits`-bit integer, rounded and clamped; NaN is 0.

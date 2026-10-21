@@ -13,10 +13,11 @@
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use soundcraft_audio_io::{AudioBuffer, BwfInfo, FileFormat, SampleFormat};
 
+use crate::meta::Metadata;
 use crate::store::{BLOCK_FRAMES, BlockHandle, BlockId, Store};
 
 pub mod edit;
@@ -238,6 +239,37 @@ pub struct SourceFormat {
     pub chunks: Vec<ChunkInfo>,
     /// What was wrong with the file but still opened: truncation, damaged packets.
     pub warnings: Vec<String>,
+    /// The `bext` and `LIST`/`INFO` metadata, as read and as edited (one undo step per edit).
+    pub meta: Metadata,
+    /// Where each block of the opened file's first channel started, in frames, for the BWF
+    /// time reference: a save moves it by how far the document's start moved.
+    pub origin: Arc<Vec<(BlockId, u64)>>,
+    /// Where the chunks to copy through live now, after a save has rewritten the file.
+    pub relocated: Relocated,
+}
+
+/// The file the save copies unknown chunks from, when a save has replaced the opened one: its
+/// path and its chunks. Shared by every state of one open document (a save changes the file
+/// on disk, not one step of the history).
+#[derive(Debug, Clone, Default)]
+pub struct Relocated(Arc<Mutex<Option<RelocatedFile>>>);
+
+type RelocatedFile = (PathBuf, Vec<ChunkInfo>);
+
+impl Relocated {
+    pub fn get(&self) -> Option<RelocatedFile> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set(&self, path: PathBuf, chunks: Vec<ChunkInfo>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((path, chunks));
+    }
+}
+
+impl PartialEq for Relocated {
+    fn eq(&self, other: &Relocated) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.get() == other.get()
+    }
 }
 
 impl SourceFormat {
@@ -253,6 +285,9 @@ impl SourceFormat {
             bwf: None,
             chunks: Vec::new(),
             warnings: Vec::new(),
+            meta: Metadata::default(),
+            origin: Arc::new(Vec::new()),
+            relocated: Relocated::default(),
         }
     }
 
@@ -317,6 +352,30 @@ impl DocState {
         let doc = DocState { store, channels, sample_rate, source };
         debug_assert!(doc.channels.iter().all(|c| c.len() == doc.len_frames()), "all channels of a DocState are the same length");
         Ok(doc)
+    }
+
+    /// This state with `meta` as its metadata: the audio is shared, nothing is copied. `bwf`
+    /// follows the `bext` so the views that show it agree.
+    pub fn with_metadata(&self, meta: Metadata) -> DocState {
+        let mut src = (*self.source).clone();
+        src.bwf = meta.bext.as_ref().map(|b| BwfInfo {
+            description: b.description.clone(),
+            originator: b.originator.clone(),
+            originator_reference: b.originator_reference.clone(),
+            origination_date: b.origination_date.clone(),
+            origination_time: b.origination_time.clone(),
+            time_reference: b.time_reference,
+        });
+        src.meta = meta;
+        DocState { source: Arc::new(src), ..self.clone() }
+    }
+
+    /// How many frames later than the opened file's first frame this state starts, when its
+    /// first piece is audio of the opened file; 0 when the start is new material.
+    pub fn start_shift(&self) -> u64 {
+        let Some(piece) = self.channels.first().and_then(|c| c.pieces().first()) else { return 0 };
+        let id = piece.block().block().id;
+        self.source.origin.iter().find(|(b, _)| *b == id).map_or(0, |(_, at)| at + u64::from(piece.offset()))
     }
 
     pub fn store(&self) -> &Store {

@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
+use wavcraft_core::meta;
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
@@ -144,6 +145,12 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Window › Metadata.
+    show_metadata: bool,
+    /// The Metadata panel's text boxes (one per `meta::FIELDS`) and the source they were filled
+    /// from: refilled whenever the current step's metadata is another one.
+    meta_draft: Vec<String>,
+    meta_for: Option<Arc<wavcraft_core::SourceFormat>>,
     /// Video › Attach video file…: the picture of a video file at the playhead (f122).
     video: Option<VideoPanel>,
     show_video: bool,
@@ -209,6 +216,9 @@ impl WaveApp {
             show_history: true,
             insert_silence: None,
             confirm_clear_history: false,
+            show_metadata: false,
+            meta_draft: Vec::new(),
+            meta_for: None,
             video: None,
             show_video: true,
             video_waiters: Waiters::default(),
@@ -618,6 +628,67 @@ impl WaveApp {
         let cursor = self.editor.as_ref()?.history.cursor();
         let to = history_arrow_target(cursor, self.editor.as_ref()?.history.steps().len(), down)?;
         self.history_go(to, ctx).then_some(to)
+    }
+
+    /// Set metadata fields as ONE undoable step ("Edit Metadata"). Nothing changes (and no step
+    /// is made) when every value is already what the file has.
+    fn apply_metadata(&mut self, changes: &[(String, String)]) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let current = editor.history.current().clone();
+        let mut meta = current.source().meta.clone();
+        for (field, value) in changes {
+            if meta.get(field).as_deref() != Some(value.as_str()) {
+                meta.set(field, value)?;
+            }
+        }
+        if meta == current.source().meta {
+            return Ok(false);
+        }
+        editor.history.push_metadata("Edit Metadata", current.with_metadata(meta));
+        self.error = None;
+        Ok(true)
+    }
+
+    /// Window › Metadata: the Broadcast Wave fields and the INFO title, artist and comment of the
+    /// current step. Apply makes one history step.
+    fn metadata_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Metadata");
+        let Some(editor) = self.editor.as_ref() else {
+            ui.label("No file open.");
+            return;
+        };
+        let src = editor.history.current().source().clone();
+        let keys = src.meta.keys();
+        if self.meta_for.as_ref().is_none_or(|a| !Arc::ptr_eq(a, &src)) || self.meta_draft.len() != keys.len() {
+            self.meta_draft = keys.iter().map(|f| src.meta.get(f).unwrap_or_default()).collect();
+            self.meta_for = Some(src.clone());
+        }
+        let mut apply = false;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (field, text) in keys.iter().zip(self.meta_draft.iter_mut()) {
+                match field.strip_prefix("chname.") {
+                    Some(n) => ui.label(format!("channel {n} name")),
+                    None => ui.label(field.replace('_', " ")),
+                };
+                if *field == "coding_history" {
+                    ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY));
+                } else {
+                    ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                }
+            }
+            ui.add_space(6.0);
+            apply = ui.button("Apply").clicked();
+        });
+        if apply {
+            let changes: Vec<(String, String)> = keys.iter().cloned().zip(self.meta_draft.iter().cloned()).collect();
+            match self.apply_metadata(&changes) {
+                Ok(_) => self.meta_for = None,
+                Err(e) => self.error = Some(format!("Metadata: {e}")),
+            }
+        }
     }
 
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
@@ -1034,6 +1105,58 @@ impl WaveApp {
                 },
                 _ => "ERR HISTORY_KEY up|down".to_string(),
             },
+            // META get [field] | META set <field> <value>: the metadata of the current step.
+            "META" => {
+                let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
+                let meta = &editor.history.current().source().meta;
+                match (verb, rest.trim()) {
+                    ("get", "") => format!("OK {}", meta.summary()),
+                    ("get", field) => match meta.get(field) {
+                        Some(v) => format!("OK {}", meta::escape_lines(&v)),
+                        None => format!("ERR no metadata field {field:?}"),
+                    },
+                    ("set", args) => {
+                        let (field, value) = args.split_once(' ').unwrap_or((args, ""));
+                        match self.apply_metadata(&[(field.to_string(), meta::unescape_lines(value))]) {
+                            Ok(changed) => format!("OK changed={}", u8::from(changed)),
+                            Err(e) => format!("ERR {e}"),
+                        }
+                    }
+                    _ => "ERR META get [field] | META set <field> <value>".to_string(),
+                }
+            }
+            // CHNAME get | CHNAME set <ch> <name>: channel names (<ch> counts from 1); one undo step.
+            "CHNAME" => {
+                let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
+                match verb {
+                    "get" => format!(
+                        "OK {}",
+                        editor
+                            .history
+                            .current()
+                            .source()
+                            .meta
+                            .chnames
+                            .iter()
+                            .map(|n| meta::escape_lines(n).replace(' ', "_"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ),
+                    "set" => {
+                        let (ch, name) = rest.trim_start().split_once(' ').unwrap_or((rest.trim(), ""));
+                        match ch.parse::<usize>() {
+                            Ok(n) => match self.apply_metadata(&[(format!("chname.{n}"), name.to_string())]) {
+                                Ok(changed) => format!("OK changed={}", u8::from(changed)),
+                                Err(e) => format!("ERR {e}"),
+                            },
+                            Err(_) => "ERR CHNAME set <channel from 1> <name>".to_string(),
+                        }
+                    }
+                    _ => "ERR CHNAME get | CHNAME set <channel from 1> <name>".to_string(),
+                }
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -1127,6 +1250,7 @@ impl WaveApp {
                 }
                 ui.separator();
                 ui.checkbox(&mut self.show_history, "History panel");
+                ui.checkbox(&mut self.show_metadata, "Metadata panel");
             });
             ui.menu_button("Video", |ui| {
                 if ui.add_enabled(self.editor.is_some(), egui::Button::new("Attach video file…")).clicked() {
@@ -1203,6 +1327,7 @@ impl WaveApp {
         painter.rect_filled(rect, 0.0, BACKGROUND);
         let Some(doc) = &self.doc else { return };
         let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
+        let chnames: Vec<String> = self.editor.as_ref().map(|e| e.history.current().source().meta.chnames.clone()).unwrap_or_default();
         let width = rect.width().max(1.0);
         self.editor_width = width;
         if self.fit_on_next_frame {
@@ -1337,6 +1462,15 @@ impl WaveApp {
                 let mid = lane.center().y;
                 painter.line_segment([pos2(lane.left(), mid), pos2(lane.right(), mid)], Stroke::new(1.0, Color32::from_gray(50)));
                 let half = lane.height() * 0.5 - 2.0;
+                if let Some(name) = chnames.get(ch).filter(|n| !n.is_empty()) {
+                    painter.text(
+                        pos2(lane.left() + 4.0, lane.top() + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        name,
+                        egui::FontId::proportional(12.0),
+                        Color32::from_gray(170),
+                    );
+                }
                 for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
                     let x = lane.left() + i as f32 + 0.5;
                     let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);
@@ -1494,6 +1628,9 @@ impl eframe::App for WaveApp {
         }
         if self.show_history {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
+        }
+        if self.show_metadata {
+            egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));
         }
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);

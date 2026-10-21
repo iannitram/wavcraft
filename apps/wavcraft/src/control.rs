@@ -13,6 +13,8 @@
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
+//! - `META get [field]` / `META set <field> <value>` → `OK <value>` / `OK changed=<0|1>` (one undo step "Edit Metadata" per set; `\r` and `\n` in a value are line breaks)
+//! - `CHNAME get` / `CHNAME set <ch from 1> <name>` → `OK <names>` / `OK changed=<0|1>` (channel names; one undo step "Edit Metadata"); `META set INFO.INAM <v>` (or any `INFO.XXXX`) sets a RIFF INFO tag
 //! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
 //! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)
 //! - `HISTORY_KEY up|down` → `OK cursor=<i>` (the panel's arrow keys)
