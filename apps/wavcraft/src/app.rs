@@ -1044,7 +1044,6 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
-            "GESTURE" => self.control_gesture(rest),
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
@@ -1363,7 +1362,6 @@ impl WaveApp {
         // it, Shift-click extends, double-click selects what is on screen, triple-click everything.
         let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
         let edge_at = |sel: &Selection, view: &Viewport, pos: Pos2| sel.edge_near(view, pos.x - rect.left(), GRAB_PX);
-        let shift = ui.input(|i| i.modifiers.shift);
         if let Some(pos) = response.hover_pos().or(response.interact_pointer_pos())
             && edge_at(&self.selection, &self.view, pos).is_some()
         {
@@ -1399,12 +1397,6 @@ impl WaveApp {
         // Selection gestures belong to the Select tool, primary button only.
         let select = self.tool == Tool::Select;
         let shift = ui.input(|i| i.modifiers.shift);
-        if select
-            && let Some(pos) = response.hover_pos().or(response.interact_pointer_pos())
-            && edge_at(&self.selection, &self.view, pos).is_some()
-        {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        }
         if select
             && response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
