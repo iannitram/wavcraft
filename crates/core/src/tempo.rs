@@ -22,13 +22,17 @@ impl TapTempo {
     }
 
     /// Creates a new TapTempo with custom parameters.
-    /// The window is clamped to at least 2.
+    /// The window is clamped to at least 2 and at most 1024.
     pub fn with_params(window: usize, reset_gap_ms: f64) -> Self {
-        Self { taps: Vec::new(), window: window.max(2), reset_gap_ms }
+        const MAX_WINDOW: usize = 1024;
+        Self { taps: Vec::new(), window: window.clamp(2, MAX_WINDOW), reset_gap_ms }
     }
 
     /// Records a tap at the given timestamp.
     /// Returns the current BPM or None if not enough data.
+    /// 
+    /// The new tap is compared against the last retained tap, even if it's a
+    /// backward timestamp (which may cause the tap count to decrease).
     pub fn tap(&mut self, now_ms: f64) -> Option<f64> {
         // Ignore non-finite timestamps
         if !now_ms.is_finite() {
@@ -44,7 +48,8 @@ impl TapTempo {
         self.taps.push(now_ms);
 
         // Keep only the last window + 1 taps (N = window intervals)
-        if self.taps.len() > self.window + 1 {
+        // Using saturating_add to prevent overflow
+        if self.taps.len() > self.window.saturating_add(1) {
             self.taps.remove(0);
         }
 
@@ -259,7 +264,61 @@ mod tests {
     #[test]
     fn tap_tempo_extreme_values() {
         let result = bpm_from_taps(&[-f64::MAX, 0.0, f64::MAX]);
-        assert!(result.is_some());
-        assert!(!result.unwrap().is_nan());
+        assert!(result.is_some_and(|bpm| bpm.is_finite() && bpm > 0.0));
+    }
+
+    #[test]
+    fn with_params_zero_or_one_window() {
+        let mut tap_tempo = TapTempo::with_params(0, 2000.0);
+        assert_eq!(tap_tempo.tap(0.0), None);
+        assert_eq!(tap_tempo.tap(500.0), Some(120.0));
+        assert_eq!(tap_tempo.tap(1000.0), Some(120.0));
+        assert_eq!(tap_tempo.tap(1500.0), Some(120.0));
+        assert_eq!(tap_tempo.tap_count(), 3);
+    }
+
+    #[test]
+    fn with_params_one_window_clamps_to_two() {
+        let mut tap_tempo = TapTempo::with_params(1, 2000.0);
+        assert_eq!(tap_tempo.tap(0.0), None);
+        assert_eq!(tap_tempo.tap(500.0), Some(120.0));
+        assert_eq!(tap_tempo.tap(1000.0), Some(120.0));
+        assert_eq!(tap_tempo.tap(1500.0), Some(120.0));
+        assert_eq!(tap_tempo.tap_count(), 3);
+    }
+
+    #[test]
+    fn with_params_max_window() {
+        let mut tap_tempo = TapTempo::with_params(usize::MAX, 2000.0);
+        assert_eq!(tap_tempo.tap(0.0), None);
+        assert_eq!(tap_tempo.tap(500.0), Some(120.0));
+        assert_eq!(tap_tempo.tap(1000.0), Some(120.0));
+        assert_eq!(tap_tempo.tap(1500.0), Some(120.0));
+        assert_eq!(tap_tempo.tap(2000.0), Some(120.0));
+        assert_eq!(tap_tempo.tap_count(), 5);
+    }
+
+    #[test]
+    fn tap_infinity_and_neginfinity() {
+        let mut tap_tempo = TapTempo::new();
+        tap_tempo.tap(0.0);
+        let count_before = tap_tempo.tap_count();
+        tap_tempo.tap(f64::INFINITY);
+        assert_eq!(tap_tempo.tap_count(), count_before);
+        tap_tempo.tap(f64::NEG_INFINITY);
+        assert_eq!(tap_tempo.tap_count(), count_before);
+    }
+
+    #[test]
+    fn backwards_timestamps() {
+        let mut tap_tempo = TapTempo::new();
+        assert_eq!(tap_tempo.tap(0.0), None);
+        assert_eq!(tap_tempo.tap_count(), 1);
+        assert_eq!(tap_tempo.tap(1000.0), Some(60.0));
+        assert_eq!(tap_tempo.tap_count(), 2);
+        assert_eq!(tap_tempo.tap(500.0), Some(120.0));
+        assert_eq!(tap_tempo.tap_count(), 3);
+        assert_eq!(tap_tempo.tap(2601.0), None);
+        assert_eq!(tap_tempo.tap_count(), 1);
     }
 }
