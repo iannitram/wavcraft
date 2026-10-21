@@ -43,9 +43,10 @@ fn sample_at(input: &[f32], position: f32) -> f32 {
 /// `feedback` is clamped to 0..=0.95 (NaN becomes zero) and is taken from the wet line.
 /// `mix` is clamped to 0..=1 (NaN becomes zero), blending dry and wet output; zero returns the input exactly.
 ///
-/// Delay is clamped to 0.1..10 ms and also to at least 1 sample, because feedback is read from the wet line and
-/// a sub-sample delay would make the loop depend on the current output. The 1-sample floor only matters below
-/// 10 kHz, so the stated millisecond range holds at audio rates.
+/// Delay is clamped to 0.1..10 ms and also to at least 1 sample, because the wet line is written after it is read:
+/// a sub-sample delay would interpolate into the current slot, still its initial zero, and so scale the feedback
+/// down instead of delaying it. The 1-sample floor only matters below 10 kHz, so the stated millisecond range
+/// holds at audio rates.
 pub fn flanger(input: &[f32], sample_rate: f32, rate_hz: f32, depth: f32, feedback: f32, mix: f32) -> Vec<f32> {
     if !sample_rate.is_finite() || sample_rate <= 0.0 {
         return input.to_vec();
