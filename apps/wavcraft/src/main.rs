@@ -11,6 +11,9 @@
 mod app;
 mod control;
 mod player;
+// Not called yet: the Reveal in file manager menu item will use it.
+#[allow(dead_code)]
+mod reveal;
 mod selflog;
 mod spectrum;
 #[cfg(windows)]
