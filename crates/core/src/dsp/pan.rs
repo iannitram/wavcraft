@@ -11,7 +11,9 @@ pub fn pan_gains(mut pan: f32) -> (f32, f32) {
         return (0.0, 1.0);
     }
     let t = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
-    (t.cos(), t.sin())
+    let left = t.cos().max(0.0).min(1.0);
+    let right = t.sin().max(0.0).min(1.0);
+    (left, right)
 }
 
 #[cfg(test)]
@@ -39,6 +41,37 @@ mod tests {
     fn gains_have_constant_power() {
         for step in -10..=10 {
             let (left, right) = pan_gains(step as f32 / 10.0);
+            approx(left * left + right * right, 1.0);
+        }
+    }
+
+    #[test]
+    fn pan_just_inside_edges_has_nonnegative_gains() {
+        for pan in [0.99999994, -0.99999994] {
+            let (left, right) = pan_gains(pan);
+            assert!(left >= 0.0);
+            assert!(right >= 0.0);
+        }
+    }
+
+    #[test]
+    fn pan_law_is_monotonic() {
+        let (mut previous_left, mut previous_right) = pan_gains(-1.0);
+        for i in 1..=2000 {
+            let pan = -1.0 + 2.0 * i as f32 / 2000.0;
+            let (left, right) = pan_gains(pan);
+            assert!(left <= previous_left);
+            assert!(right >= previous_right);
+            previous_left = left;
+            previous_right = right;
+        }
+    }
+
+    #[test]
+    fn sweep_has_constant_power() {
+        for i in 0..=2000 {
+            let pan = -1.0 + 2.0 * i as f32 / 2000.0;
+            let (left, right) = pan_gains(pan);
             approx(left * left + right * right, 1.0);
         }
     }
