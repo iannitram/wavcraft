@@ -1123,6 +1123,10 @@ impl eframe::App for WaveApp {
 /// The actions whose keys were pressed this frame. Keys with more modifiers are taken first, so
 /// Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
 fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
+    // A text field being edited owns the keyboard: Backspace, Delete and Cmd+Z there edit the text, not the audio (#368).
+    if ctx.text_edit_focused() {
+        return Vec::new();
+    }
     let mut keys: Vec<(ActionId, actions::Shortcut)> = TABLE.iter().flat_map(|a| a.keys.iter().map(move |k| (a.id, *k))).collect();
     keys.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
@@ -1209,6 +1213,30 @@ fn palette() -> Vec<Color32> {
 mod tests {
     use super::*;
 
+    /// Runs three frames on a fresh context: frame 1 draws a text field and (when `focus`) asks for focus,
+    /// frame 2 lets that focus settle, frame 3 delivers one key press and returns what `pressed_actions` reports.
+    fn actions_for_key(focus: bool, key: Key, modifiers: egui::Modifiers) -> Vec<ActionId> {
+        let ctx = egui::Context::default();
+        let mut text = String::from("10");
+        let mut frame = |events: Vec<egui::Event>, ask_focus: bool| -> Vec<ActionId> {
+            let raw = egui::RawInput { events, ..Default::default() };
+            let mut found = Vec::new();
+            let mut output = ctx.run_ui(raw, |ui| {
+                let r = ui.text_edit_singleline(&mut text);
+                if ask_focus {
+                    r.request_focus();
+                }
+                found = pressed_actions(ui.ctx());
+            });
+            output.textures_delta.clear();
+            found
+        };
+        let _ = frame(Vec::new(), focus);
+        let _ = frame(Vec::new(), false);
+        let press = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        frame(vec![press], false)
+    }
+
     #[test]
     fn ruler_steps_are_round_and_wide_enough() {
         assert_eq!(ruler_step(0.0004), 0.001);
@@ -1252,5 +1280,41 @@ mod tests {
         assert_eq!(lane(area, 0, 2), Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 200.0)));
         assert_eq!(lane(area, 1, 2), Rect::from_min_max(pos2(0.0, 200.0), pos2(800.0, 300.0)));
         assert_eq!(lane(area, 0, 0), area);
+    }
+
+    #[test]
+    fn backspace_in_a_focused_text_field_runs_no_action() {
+        let got = actions_for_key(true, Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(got, Vec::<ActionId>::new());
+    }
+
+    #[test]
+    fn cmd_z_in_a_focused_text_field_runs_no_action() {
+        let got = actions_for_key(true, Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(got, Vec::<ActionId>::new());
+    }
+
+    #[test]
+    fn delete_key_in_a_focused_text_field_runs_no_action() {
+        let got = actions_for_key(true, Key::Delete, egui::Modifiers::NONE);
+        assert_eq!(got, Vec::<ActionId>::new());
+    }
+
+    #[test]
+    fn backspace_without_a_focused_text_field_runs_delete() {
+        let got = actions_for_key(false, Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(got, vec![ActionId::Delete]);
+    }
+
+    #[test]
+    fn cmd_z_without_a_focused_text_field_runs_undo() {
+        let got = actions_for_key(false, Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(got, vec![ActionId::Undo]);
+    }
+
+    #[test]
+    fn cmd_shift_z_without_a_focused_text_field_runs_redo_only() {
+        let got = actions_for_key(false, Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
+        assert_eq!(got, vec![ActionId::Redo]);
     }
 }
