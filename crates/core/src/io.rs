@@ -13,6 +13,8 @@
 //! way. What was wrong with a file that still opened is listed in
 //! [`SourceFormat::warnings`](crate::doc::SourceFormat).
 
+pub mod channel_mask;
+
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::panic::{AssertUnwindSafe, catch_unwind};
