@@ -14,6 +14,7 @@
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The environment variable that sets the session folder (over the settings file).
 pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
@@ -21,6 +22,7 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -80,9 +82,17 @@ impl Settings {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = path.with_extension("txt.new");
-        std::fs::write(&tmp, self.to_text())?;
-        std::fs::rename(&tmp, path)
+        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        let tmp = path.with_file_name(format!("{file_name}.{}.{}.tmp", std::process::id(), NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed),));
+        if let Err(error) = std::fs::write(&tmp, self.to_text()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
+        if let Err(error) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
+        Ok(())
     }
 }
 
