@@ -5,6 +5,12 @@ pub const MIN_DELAY_MS: f32 = 10.0;
 pub const MAX_DELAY_MS: f32 = 30.0;
 
 const BASE_DELAY_MS: f32 = 20.0;
+/// Relative LFO-rate spread between neighbouring voices, from the B065 "detuned" intent.
+const VOICE_DETUNE: f32 = 0.04;
+
+fn voice_rate_factor(voice: usize, voices: usize) -> f32 {
+    1.0 + VOICE_DETUNE * (voice as f32 - (voices as f32 - 1.0) / 2.0)
+}
 
 fn sample_at(input: &[f32], position: f32) -> f32 {
     if !position.is_finite() {
@@ -37,6 +43,9 @@ fn sample_at(input: &[f32], position: f32) -> f32 {
 /// `depth` is a 0..1 amount of the 10..30 ms delay range: zero is the fixed
 /// 20 ms base delay and one reaches the two range limits. `mix` is the dry/wet
 /// blend, where zero is exactly the input and one is fully wet.
+/// `voices` is clamped to 2..=3 (0 and 1 become 2; 4 and above become 3).
+/// A non-finite or non-positive `rate_hz` gives a fixed 20 ms delay. Invalid
+/// `depth` and `mix` values are clamped, with NaN treated as zero.
 /// If `sample_rate` is non-finite or not positive, the dry input is returned
 /// unchanged.
 pub fn chorus(input: &[f32], sample_rate: f32, voices: usize, rate_hz: f32, depth: f32, mix: f32) -> Vec<f32> {
@@ -52,7 +61,6 @@ pub fn chorus(input: &[f32], sample_rate: f32, voices: usize, rate_hz: f32, dept
     let voice_count = voices.clamp(2, 3);
     let base_delay = BASE_DELAY_MS * sample_rate / 1000.0;
     let modulation = (MAX_DELAY_MS - BASE_DELAY_MS) * sample_rate / 1000.0 * depth;
-    let period = if rate_hz > 0.0 { sample_rate / rate_hz } else { f32::INFINITY };
     let voice_count_f = voice_count as f32;
 
     input
@@ -62,6 +70,7 @@ pub fn chorus(input: &[f32], sample_rate: f32, voices: usize, rate_hz: f32, dept
             let mut wet = 0.0;
             for voice in 0..voice_count {
                 let phase = voice as f32 / voice_count_f * std::f32::consts::TAU;
+                let period = if rate_hz > 0.0 { sample_rate / (rate_hz * voice_rate_factor(voice, voice_count)) } else { f32::INFINITY };
                 let lfo = if period.is_finite() { ((index as f32 / period) * std::f32::consts::TAU + phase).sin() } else { 0.0 };
                 let delay = (base_delay + modulation * lfo).clamp(MIN_DELAY_MS * sample_rate / 1000.0, MAX_DELAY_MS * sample_rate / 1000.0);
                 wet += sample_at(input, index as f32 - delay);
@@ -74,7 +83,16 @@ pub fn chorus(input: &[f32], sample_rate: f32, voices: usize, rate_hz: f32, dept
 
 #[cfg(test)]
 mod tests {
-    use super::{chorus, MAX_DELAY_MS, MIN_DELAY_MS};
+    use super::{chorus, voice_rate_factor, MAX_DELAY_MS, MIN_DELAY_MS};
+
+    #[test]
+    fn voice_rate_factors_are_detuned() {
+        assert!((voice_rate_factor(0, 2) - 0.98).abs() <= 1e-6);
+        assert!((voice_rate_factor(1, 2) - 1.02).abs() <= 1e-6);
+        assert!((voice_rate_factor(0, 3) - 0.96).abs() <= 1e-6);
+        assert!((voice_rate_factor(1, 3) - 1.0).abs() <= 1e-6);
+        assert!((voice_rate_factor(2, 3) - 1.04).abs() <= 1e-6);
+    }
 
     #[test]
     fn mix_zero_is_identity() {
@@ -96,27 +114,136 @@ mod tests {
     fn lfo_period_and_peak_delay_are_predictable() {
         let mut input = vec![0.0; 80];
         input[0] = 1.0;
-        let output = chorus(&input, 1000.0, 2, 50.0, 1.0, 1.0);
-        let period_samples = 1000.0 / 50.0;
+        let sample_rate = 1000.0_f32;
+        let voices = 2;
+        let rate_hz = 50.0_f32;
+        let depth = 1.0_f32;
+        let mix = 1.0_f32;
+        let output = chorus(&input, sample_rate, voices, rate_hz, depth, mix);
+        let period_samples = sample_rate / rate_hz;
         assert_eq!(period_samples, 20.0);
-        let peak = output.iter().enumerate().max_by(|(_, left), (_, right)| left.total_cmp(right)).map(|(index, _)| index);
-        assert_eq!(peak, Some(20));
-        assert!((output[20] - 1.0).abs() <= 1e-6);
+        let base_delay = 20.0_f32 * sample_rate / 1000.0;
+        let modulation = 10.0_f32 * sample_rate / 1000.0 * depth;
+        let expected: Vec<f32> = (0..input.len())
+            .map(|index| {
+                let mut wet = 0.0_f32;
+                for voice in 0..voices {
+                    let factor = voice_rate_factor(voice, voices);
+                    let phase = voice as f32 / voices as f32 * std::f32::consts::TAU;
+                    let lfo = (index as f32 * rate_hz * factor / sample_rate * std::f32::consts::TAU + phase).sin();
+                    let delay = (base_delay + modulation * lfo).clamp(MIN_DELAY_MS * sample_rate / 1000.0, MAX_DELAY_MS * sample_rate / 1000.0);
+                    let position = index as f32 - delay;
+                    let lower = position.floor() as i64;
+                    let fraction = position - lower as f32;
+                    let first = if lower >= 0 {
+                        match input.get(lower as usize) {
+                            Some(&sample) => sample,
+                            None => 0.0,
+                        }
+                    } else {
+                        0.0
+                    };
+                    let upper = lower.saturating_add(1);
+                    let second = if upper >= 0 {
+                        match input.get(upper as usize) {
+                            Some(&sample) => sample,
+                            None => 0.0,
+                        }
+                    } else {
+                        0.0
+                    };
+                    wet += first + fraction * (second - first);
+                }
+                (1.0 - mix) * input[index] + mix * (wet / voices as f32)
+            })
+            .collect();
+        let expected_peak = expected.iter().enumerate().max_by(|(_, left), (_, right)| left.total_cmp(right)).map(|(index, _)| index);
+        let actual_peak = output.iter().enumerate().max_by(|(_, left), (_, right)| left.total_cmp(right)).map(|(index, _)| index);
+        assert_eq!(actual_peak, expected_peak);
+        for (actual, expected) in output.iter().zip(expected.iter()) {
+            assert!((actual - expected).abs() <= 1e-6);
+        }
     }
 
     #[test]
     fn voices_have_expected_impulse_positions() {
         let mut input = vec![0.0; 40];
         input[0] = 1.0;
-        let output = chorus(&input, 1000.0, 2, 25.0, 0.5, 1.0);
-        let peak = output.iter().enumerate().max_by(|(_, left), (_, right)| left.total_cmp(right)).map(|(index, _)| index);
-        assert_eq!(peak, Some(20));
-        assert!((output[20] - 1.0).abs() <= 1e-6);
+        let sample_rate = 1000.0_f32;
+        let rate_hz = 25.0_f32;
+        let depth = 0.5_f32;
+        let mix = 1.0_f32;
+        for voices in [2, 3] {
+            let output = chorus(&input, sample_rate, voices, rate_hz, depth, mix);
+            let base_delay = 20.0_f32 * sample_rate / 1000.0;
+            let modulation = 10.0_f32 * sample_rate / 1000.0 * depth;
+            let expected: Vec<f32> = (0..input.len())
+                .map(|index| {
+                    let mut wet = 0.0_f32;
+                    for voice in 0..voices {
+                        let factor = voice_rate_factor(voice, voices);
+                        let phase = voice as f32 / voices as f32 * std::f32::consts::TAU;
+                        let lfo = (index as f32 * rate_hz * factor / sample_rate * std::f32::consts::TAU + phase).sin();
+                        let delay = (base_delay + modulation * lfo).clamp(MIN_DELAY_MS * sample_rate / 1000.0, MAX_DELAY_MS * sample_rate / 1000.0);
+                        let position = index as f32 - delay;
+                        let lower = position.floor() as i64;
+                        let fraction = position - lower as f32;
+                        let first = if lower >= 0 {
+                            match input.get(lower as usize) {
+                                Some(&sample) => sample,
+                                None => 0.0,
+                            }
+                        } else {
+                            0.0
+                        };
+                        let upper = lower.saturating_add(1);
+                        let second = if upper >= 0 {
+                            match input.get(upper as usize) {
+                                Some(&sample) => sample,
+                                None => 0.0,
+                            }
+                        } else {
+                            0.0
+                        };
+                        wet += first + fraction * (second - first);
+                    }
+                    (1.0 - mix) * input[index] + mix * (wet / voices as f32)
+                })
+                .collect();
+            let expected_peak = expected.iter().enumerate().max_by(|(_, left), (_, right)| left.total_cmp(right)).map(|(index, _)| index);
+            let actual_peak = output.iter().enumerate().max_by(|(_, left), (_, right)| left.total_cmp(right)).map(|(index, _)| index);
+            assert_eq!(actual_peak, expected_peak);
+            for (actual, expected) in output.iter().zip(expected.iter()) {
+                assert!((actual - expected).abs() <= 1e-6);
+            }
+        }
+    }
 
-        let output = chorus(&input, 1000.0, 3, 25.0, 0.5, 1.0);
-        let peak = output.iter().enumerate().max_by(|(_, left), (_, right)| left.total_cmp(right)).map(|(index, _)| index);
-        assert_eq!(peak, Some(20));
-        assert!((output[20] - (1.0 / 3.0)).abs() <= 1e-6);
+    #[test]
+    fn detuned_voices_have_different_late_impulse_positions() {
+        let sample_rate = 1000.0;
+        let rate_hz = 3.0;
+        let impulse_index = 1000;
+        let mut input = vec![0.0; 1060];
+        input[impulse_index] = 1.0;
+        let output = chorus(&input, sample_rate, 2, rate_hz, 1.0, 1.0);
+
+        let expected_positions: Vec<usize> = (0..2)
+            .map(|voice| {
+                let factor = voice_rate_factor(voice, 2);
+                let phase = voice as f32 / 2.0 * std::f32::consts::TAU;
+                let mut position = impulse_index as f32 + 20.0;
+                for _ in 0..8 {
+                    let delay = 20.0 + 10.0 * (phase + std::f32::consts::TAU * position * rate_hz * factor / sample_rate).sin();
+                    position = impulse_index as f32 + delay;
+                }
+                position.round() as usize
+            })
+            .collect();
+
+        assert!(expected_positions[0].abs_diff(expected_positions[1]) >= 5);
+        assert!(output[expected_positions[0]] > 0.35);
+        assert!(output[expected_positions[1]] > 0.35);
     }
 
     #[test]
