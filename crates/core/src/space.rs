@@ -131,7 +131,7 @@ mod tests {
             eprintln!("skipped: / is a tmpfs here");
             return;
         }
-        let Some(folder) = ["/dev/shm", "/tmp"].into_iter().find(|m| fs_type(*m).as_deref() == Some("tmpfs")) else {
+        let Some(folder) = ["/dev/shm", "/tmp"].into_iter().find(|m| fs_type(m).as_deref() == Some("tmpfs")) else {
             eprintln!("skipped: neither /dev/shm nor /tmp is a tmpfs here");
             return;
         };

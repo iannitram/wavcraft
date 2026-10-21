@@ -407,7 +407,7 @@ fn stream_pcm(job: &mut Job<'_>, store: &Store, data_start: u64, frames: u64, ki
     job.check_space(store, frames, channels, false)?;
 
     // Check buffer size before allocation
-    let block = (kind.bytes() * channels) as usize;
+    let block = kind.bytes() * channels;
     let buf_len = CHUNK_FRAMES.checked_mul(block).filter(|n| *n <= MAX_SCRATCH_BYTES).ok_or_else(|| unsupported("too many channels"))?;
 
     let mut buf = Vec::new();

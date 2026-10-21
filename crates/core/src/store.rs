@@ -44,6 +44,9 @@ pub const HELD_FILE: &str = "session.held";
 
 const BYTES_PER_SAMPLE: u64 = 4;
 
+#[cfg(test)]
+type CreateHook = Mutex<Option<Box<dyn Fn(&Path) + Send>>>;
+
 /// A block's identity: unique within one store, never reused. `BlockId(0)` is the zero block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockId(pub u64);
@@ -323,7 +326,7 @@ struct Pack {
 }
 
 #[cfg(test)]
-static CREATE_HOOK: Mutex<Option<Box<dyn Fn(&Path) + Send>>> = Mutex::new(None);
+static CREATE_HOOK: CreateHook = Mutex::new(None);
 
 impl Store {
     /// A store in `dir` (made if missing) with the default options.
