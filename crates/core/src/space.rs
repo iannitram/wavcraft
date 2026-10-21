@@ -44,7 +44,7 @@ pub fn frames_from_file_size(file_bytes: u64, sample_rate: u32) -> u64 {
 /// the system won't say.
 ///
 /// On Unix the file system holding the folder itself is asked (`statvfs`), so a folder on a
-/// tmpfs such as `/tmp` or `/dev/shm` gets that file system's figure (the Legion Go review's W7:
+/// tmpfs such as `/tmp` or `/dev/shm` gets that file system's figure (the Linux handheld review's W7:
 /// sysinfo's disk list has no tmpfs, so `/tmp` used to be matched to `/`). Elsewhere, or when
 /// that call fails, the folder is matched to the longest mount point in sysinfo's disk list.
 pub fn free_space(path: &Path) -> Option<u64> {
@@ -112,8 +112,8 @@ mod tests {
         assert_eq!(plain_path(Path::new("/home/x")), PathBuf::from("/home/x"));
     }
 
-    /// W7 (the Legion Go review): a folder on a tmpfs reports that file system's free space, not
-    /// that of `/`. Linux only (it runs on the Z13 or the Legion Go); skipped when neither
+    /// W7 (the Linux handheld review): a folder on a tmpfs reports that file system's free space, not
+    /// that of `/`. Linux only (it runs on a Linux handheld); skipped when neither
     /// `/dev/shm` nor `/tmp` is a tmpfs, or when `/` is one itself.
     #[cfg(target_os = "linux")]
     #[test]

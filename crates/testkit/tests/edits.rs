@@ -155,7 +155,7 @@ fn one_channel_cut_copies_that_channel_and_silences_it() {
     assert_eq!(ed.state.len_frames(), doc.len_frames());
 }
 
-/// Where the 3-hour kit file is: `WAVCRAFT_KIT` or Hyperion's kit folder.
+/// Where the 3-hour kit file is: `WAVCRAFT_KIT` or the Windows dev machine's kit folder.
 fn long_file() -> PathBuf {
     std::env::var_os("WAVCRAFT_KIT").map_or_else(|| PathBuf::from("B:/dev/craft/wavcraft-testkit-out"), PathBuf::from).join(LONG)
 }
