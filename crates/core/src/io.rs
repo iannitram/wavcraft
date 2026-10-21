@@ -856,7 +856,7 @@ fn decode_symphonia(
     let mut reader = probed.format;
     let track =
         reader.tracks().iter().find(|t| t.codec_params.codec != sc::CODEC_TYPE_NULL).ok_or_else(|| unsupported("no decodable audio track"))?;
-    let track_id = track.id;
+    let mut track_id = track.id;
     let params = track.codec_params.clone();
     src.sample_rate = params.sample_rate.filter(|&r| r > 0).ok_or_else(|| malformed("unknown sample rate"))?;
     check_rate(src.sample_rate, "the file")?;
@@ -881,7 +881,37 @@ fn decode_symphonia(
         let packet = match reader.next_packet() {
             Ok(p) => p,
             Err(SymError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(SymError::ResetRequired) => break,
+            Err(SymError::ResetRequired) => {
+                sbuf = None;
+                let Some(track) = reader.tracks().iter().find(|t| t.codec_params.codec != sc::CODEC_TYPE_NULL) else {
+                    break;
+                };
+                let new_params = track.codec_params.clone();
+                let Some(sample_rate) = new_params.sample_rate.filter(|&r| r > 0) else {
+                    break;
+                };
+                let channels = new_params.channels.map(|c| c.count()).unwrap_or(0);
+                if sample_rate != src.sample_rate {
+                    src.warnings.push(format!(
+                        "the sample rate changed from {} to {sample_rate} mid-stream; opened the {frames} frames before that",
+                        src.sample_rate
+                    ));
+                    break;
+                }
+                if channels != usize::from(src.channels) {
+                    src.warnings.push(format!(
+                        "the channel count changed from {} to {channels} mid-stream; opened the {frames} frames before that",
+                        src.channels
+                    ));
+                    break;
+                }
+                let Ok(new_decoder) = symphonia::default::get_codecs().make(&new_params, &DecoderOptions::default()) else {
+                    break;
+                };
+                track_id = track.id;
+                decoder = new_decoder;
+                continue;
+            }
             Err(e) => {
                 if frames == 0 {
                     return Err(sym_err(e));
