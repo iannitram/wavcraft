@@ -308,6 +308,30 @@ mod tests {
     use std::process::Command;
 
     #[test]
+    fn disconnect_answers_outstanding_requests_with_err() {
+        let (request_tx, _request_rx) = channel();
+        let (message_tx, message_rx) = channel();
+        let mut panel = VideoPanel {
+            path: PathBuf::new(),
+            status: Status::Loading,
+            tx: request_tx,
+            rx: message_rx,
+            seq: 0,
+            auto_seq: 0,
+            in_flight: false,
+            last_asked: None,
+            shown_seq: 0,
+            texture: None,
+            shown: None,
+            last_error: None,
+        };
+        panel.request(0.0, true);
+        drop(message_tx);
+
+        assert!(panel.poll(&egui::Context::default()).contains(&(1, "ERR video detached".to_string())));
+    }
+
+    #[test]
     fn frame_index_maps_time_through_the_frame_rate() {
         assert_eq!(frame_index(0.0, 24.0, 48), Some(0));
         assert_eq!(frame_index(0.5, 24.0, 48), Some(12));
