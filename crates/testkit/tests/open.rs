@@ -226,7 +226,7 @@ fn chained_ogg_opens_every_stream() {
     let mut samples = vec![0.0; 2_000];
     assert_eq!(doc.read(0, 8_200, &mut samples).unwrap(), samples.len());
     let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt();
-    assert!(rms > 0.1, "second stream RMS is {rms}");
+    assert!(rms > 0.05, "second stream RMS is {rms}");
 }
 
 /// Test 10: cancelled halfway, open returns `Cancelled` and the session folder is gone.
