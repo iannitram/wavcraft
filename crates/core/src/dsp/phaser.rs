@@ -6,6 +6,7 @@
 /// Applies a mono phaser with 1..=8 swept all-pass stages, sine-LFO rate and
 /// depth, feedback, and dry/wet mix. Stereo processing, LFO waveforms other
 /// than sine, and any other unnamed option are deferred.
+/// `rate_hz` is clamped to half the sample rate.
 pub fn phaser(input: &[f32], sample_rate: f32, stages: usize, rate_hz: f32, depth: f32, feedback: f32, mix: f32) -> Vec<f32> {
     if !sample_rate.is_finite() || sample_rate <= 0.0 {
         return input.to_vec();
@@ -15,7 +16,7 @@ pub fn phaser(input: &[f32], sample_rate: f32, stages: usize, rate_hz: f32, dept
         return input.to_vec();
     }
     let stage_count = stages.clamp(1, 8);
-    let rate_hz = if rate_hz.is_finite() && rate_hz > 0.0 { rate_hz } else { 0.0 };
+    let rate_hz = if rate_hz.is_finite() && rate_hz > 0.0 { rate_hz.min(0.5 * sample_rate) } else { 0.0 };
     let depth = if depth.is_nan() { 0.0 } else { depth.clamp(0.0, 1.0) };
     let feedback = if feedback.is_nan() { 0.0 } else { feedback.clamp(0.0, 0.95) };
     let mut previous_input = vec![0.0; stage_count];
@@ -169,5 +170,36 @@ mod tests {
         let x: Vec<f32> = (0..44100).map(|n| (2.0 * std::f32::consts::PI * 440.0 * n as f32 / 44100.0).sin()).collect();
         let y = phaser(&x, 44100.0, 8, 0.5, 1.0, 0.95, 1.0);
         assert!(y.iter().all(|v| v.is_finite() && v.abs() <= 40.0));
+    }
+
+    #[test]
+    fn huge_rate_output_is_finite() {
+        let x = deterministic_input();
+        let y = phaser(&x, 44100.0, 2, 3.0e38, 1.0, 0.0, 1.0);
+        assert!(y.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn max_rate_output_is_finite() {
+        let x = deterministic_input();
+        let y = phaser(&x, 44100.0, 2, f32::MAX, 1.0, 0.0, 1.0);
+        assert!(y.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn huge_rate_equals_nyquist_rate() {
+        let x = deterministic_input();
+        assert_eq!(phaser(&x, 44100.0, 2, 3.0e38, 1.0, 0.0, 1.0), phaser(&x, 44100.0, 2, 22050.0, 1.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn huge_rate_impulse_matches_static_chain() {
+        let mut input = vec![0.0; 10];
+        input[0] = 1.0;
+        let got = phaser(&input, 44100.0, 2, 3.0e38, 1.0, 0.0, 1.0);
+        let expected = [0.834883, -0.301741, -0.248443, -0.202096, -0.161897, -0.12713];
+        for (a, e) in got.iter().zip(expected) {
+            assert!((*a - e).abs() <= 1e-4);
+        }
     }
 }
