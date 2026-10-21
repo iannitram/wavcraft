@@ -42,6 +42,10 @@ fn sample_at(input: &[f32], position: f32) -> f32 {
 /// `depth` is clamped to 0..=1 (NaN becomes zero), from the fixed 5 ms base delay toward the delay limits.
 /// `feedback` is clamped to 0..=0.95 (NaN becomes zero) and is taken from the wet line.
 /// `mix` is clamped to 0..=1 (NaN becomes zero), blending dry and wet output; zero returns the input exactly.
+///
+/// Delay is clamped to 0.1..10 ms and also to at least 1 sample, because feedback is read from the wet line and
+/// a sub-sample delay would make the loop depend on the current output. The 1-sample floor only matters below
+/// 10 kHz, so the stated millisecond range holds at audio rates.
 pub fn flanger(input: &[f32], sample_rate: f32, rate_hz: f32, depth: f32, feedback: f32, mix: f32) -> Vec<f32> {
     if !sample_rate.is_finite() || sample_rate <= 0.0 {
         return input.to_vec();
@@ -176,5 +180,35 @@ mod tests {
         assert_eq!(flanger(&input, 1000.0, 1.0, 1.0, 0.5, 0.0), input);
         assert_eq!(flanger(&input, 1000.0, 1.0, 1.0, 0.5, f32::NAN), input);
         assert_eq!(flanger(&[], 1000.0, 1.0, 1.0, 0.5, 0.0), Vec::<f32>::new());
+    }
+
+    #[test]
+    fn delay_240_samples_at_48khz_with_feedback() {
+        let mut input = vec![0.0; 700];
+        input[0] = 1.0;
+        let output = flanger(&input, 48000.0, 1.0, 0.0, 0.5, 0.5);
+        assert_eq!(output[0], 0.5);
+        assert_eq!(output[240], 0.5);
+        assert_eq!(output[480], 0.25);
+        assert!(output.iter().enumerate().all(|(index, &sample)| matches!(index, 0 | 240 | 480) || sample == 0.0));
+    }
+
+    #[test]
+    fn minimum_delay_clamp_at_48khz_lfo_trough() {
+        let mut input = vec![0.0; 36100];
+        input[36000] = 1.0;
+        let output = flanger(&input, 48000.0, 1.0, 1.0, 0.0, 1.0);
+        assert!((output[36004] - 0.19921875).abs() <= 1e-6);
+        assert!((output[36005] - 0.80078125).abs() <= 1e-6);
+        assert!(output.iter().enumerate().all(|(index, &sample)| matches!(index, 36004 | 36005) || sample == 0.0));
+    }
+
+    #[test]
+    fn one_sample_floor_at_1khz_lfo_trough() {
+        let mut input = vec![0.0; 1000];
+        input[750] = 1.0;
+        let output = flanger(&input, 1000.0, 1.0, 1.0, 0.0, 1.0);
+        assert!((output[751] - 1.0).abs() <= 1e-6);
+        assert!(output.iter().enumerate().all(|(index, &sample)| index == 751 || sample == 0.0));
     }
 }
