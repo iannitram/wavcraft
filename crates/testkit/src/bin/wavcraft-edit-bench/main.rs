@@ -158,26 +158,30 @@ fn run() -> Result<(), String> {
         done.push(random_edit(&mut h, &mut rng, Crossfades::default(), 60 * rate, &mut clipboard).map_err(|e| e.to_string())?);
     }
     println!("{edits} random edits: {:.2} s", t.elapsed().as_secs_f64());
-    let mut by: std::collections::BTreeMap<&str, Vec<Duration>> = std::collections::BTreeMap::new();
-    for e in &done {
-        by.entry(e.label.as_str()).or_default().push(e.edit);
-    }
-    for (label, mut times) in by {
-        times.sort();
-        println!("  {label:>14}: {:3}, median {}, slowest {}", times.len(), ms(times[times.len() / 2]), ms(*times.last().unwrap_or(&Duration::ZERO)));
-    }
-    let mut push: Vec<Duration> = done.iter().map(|e| e.push).collect();
-    push.sort();
-    let last = done.last().map(|e| (e.behind, e.push));
-    println!(
-        "  push: median {}, slowest {}; last push ({:?} steps behind): {:?}",
-        ms(push[push.len() / 2]),
-        ms(*push.last().unwrap_or(&Duration::ZERO)),
-        last.map(|l| l.0),
-        last.map(|l| ms(l.1))
-    );
-    if let Some((i, e)) = done.iter().enumerate().max_by_key(|(_, e)| e.push) {
-        println!("  slowest push: edit {i} ({}, {} steps behind)", e.label, e.behind);
+    if !done.is_empty() {
+        let mut by: std::collections::BTreeMap<&str, Vec<Duration>> = std::collections::BTreeMap::new();
+        for e in &done {
+            by.entry(e.label.as_str()).or_default().push(e.edit);
+        }
+        for (label, mut times) in by {
+            times.sort();
+            println!("  {label:>14}: {:3}, median {}, slowest {}", times.len(), ms(times[times.len() / 2]), ms(*times.last().unwrap_or(&Duration::ZERO)));
+        }
+        let mut push: Vec<Duration> = done.iter().map(|e| e.push).collect();
+        push.sort();
+        let last = done.last().map(|e| (e.behind, e.push));
+        println!(
+            "  push: median {}, slowest {}; last push ({:?} steps behind): {:?}",
+            ms(push[push.len() / 2]),
+            ms(*push.last().unwrap_or(&Duration::ZERO)),
+            last.map(|l| l.0),
+            last.map(|l| ms(l.1))
+        );
+        if let Some((i, e)) = done.iter().enumerate().max_by_key(|(_, e)| e.push) {
+            println!("  slowest push: edit {i} ({}, {} steps behind)", e.label, e.behind);
+        }
+    } else {
+        println!("  no edits run");
     }
     // One more push, timed on its own, with every step behind it.
     let behind = h.cursor();
