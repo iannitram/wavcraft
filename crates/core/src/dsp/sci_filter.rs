@@ -1,12 +1,14 @@
 //! Scientific analogue-prototype filters realised as bilinear-transform biquad cascades.
 //!
 //! Butterworth, Chebyshev I, Chebyshev II, and Bessel lowpass and highpass filters are
-//! implemented. Bessel orders 2..=8 use tabulated normalised poles; Bessel orders above
-//! eight are deferred. Bandpass, bandstop, and elliptic filters are deferred because they
-//! are not part of the feature-log row. An invalid sample rate or cutoff returns an empty
-//! design, and `process_filter` consequently returns the dry input. NaN parameters are
+//! implemented. Bessel orders 1..=8 use tabulated normalised poles; Bessel orders 0 and 9
+//! and above return `SciFilterError`. Bandpass, bandstop, and elliptic filters
+//! are deferred because they are not part of the feature-log row. An invalid sample rate or
+//! cutoff still returns an empty design, and `process_filter` consequently returns the dry
+//! input. NaN parameters are
 //! treated as invalid for the design (ripple and attenuation NaNs use safe defaults).
-//! Order zero returns the input unchanged.
+//! For Butterworth, Chebyshev I, and Chebyshev II, order zero gives an empty design, so
+//! `process_filter` returns the input unchanged. Bessel order zero is an error (see above).
 
 use std::f64::consts::PI;
 
@@ -54,6 +56,7 @@ impl Default for Complex {
 }
 
 fn bessel_poles(order: usize) -> Option<&'static [Complex]> {
+    const N1: [Complex; 1] = [Complex { re: -1.0, im: 0.0 }];
     const N2: [Complex; 1] = [Complex { re: -1.5, im: 0.8660254 }];
     const N3: [Complex; 2] = [Complex { re: -1.838907, im: 1.754381 }, Complex { re: -2.322185, im: 0.0 }];
     const N4: [Complex; 2] = [Complex { re: -2.103789, im: 2.657419 }, Complex { re: -2.896211, im: 0.867235 }];
@@ -79,7 +82,7 @@ fn bessel_poles(order: usize) -> Option<&'static [Complex]> {
         Complex { re: -4.368289217, im: 4.414442500 },
         Complex { re: -2.838983949, im: 6.353911299 },
     ];
-    match order { 2 => Some(&N2), 3 => Some(&N3), 4 => Some(&N4), 5 => Some(&N5), 6 => Some(&N6), 7 => Some(&N7), 8 => Some(&N8), _ => None }
+    match order { 1 => Some(&N1), 2 => Some(&N2), 3 => Some(&N3), 4 => Some(&N4), 5 => Some(&N5), 6 => Some(&N6), 7 => Some(&N7), 8 => Some(&N8), _ => None }
 }
 
 fn prototype_poles(family: FilterFamily, order: usize, ripple_db: f64, stopband_db: f64) -> Option<(Vec<Complex>, Vec<f64>, f64)> {
@@ -138,13 +141,33 @@ fn section_from_poles(pole: Complex, k: f64, response: ResponseType, zero: Optio
     BiquadSection { b0: n0 / a0, b1: n1 / a0, b2: n2 / a0, a1: a1 / a0, a2: a2 / a0, q }
 }
 
+/// Why a filter could not be designed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SciFilterError {
+    /// The Bessel order has no tabulated poles (supported orders are 1 to 8).
+    UnsupportedBesselOrder(usize),
+}
+
+impl std::fmt::Display for SciFilterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedBesselOrder(order) => write!(f, "Bessel order {order} is not supported; supported Bessel orders are 1 to 8"),
+        }
+    }
+}
+
+impl std::error::Error for SciFilterError {}
+
 /// Designs a bilinear-transform cascade. `ripple_db` applies to Chebyshev I and
 /// `stopband_db` applies to Chebyshev II; the other families ignore those values.
-pub fn design_filter(family: FilterFamily, response: ResponseType, order: usize, cutoff_hz: f64, sample_rate: f64, ripple_db: f64, stopband_db: f64) -> Vec<BiquadSection> {
-    if order == 0 { return Vec::new(); }
-    if !sample_rate.is_finite() || sample_rate <= 0.0 || !cutoff_hz.is_finite() || cutoff_hz <= 0.0 || cutoff_hz >= sample_rate / 2.0 { return Vec::new(); }
+/// An unsupported Bessel order returns `Err(SciFilterError::UnsupportedBesselOrder(order))`.
+/// An invalid sample rate or cutoff still returns an empty design.
+pub fn design_filter(family: FilterFamily, response: ResponseType, order: usize, cutoff_hz: f64, sample_rate: f64, ripple_db: f64, stopband_db: f64) -> Result<Vec<BiquadSection>, SciFilterError> {
+    if family == FilterFamily::Bessel && bessel_poles(order).is_none() { return Err(SciFilterError::UnsupportedBesselOrder(order)); }
+    if order == 0 { return Ok(Vec::new()); }
+    if !sample_rate.is_finite() || sample_rate <= 0.0 || !cutoff_hz.is_finite() || cutoff_hz <= 0.0 || cutoff_hz >= sample_rate / 2.0 { return Ok(Vec::new()); }
     let cutoff = 1.0 / (PI * cutoff_hz / sample_rate).tan();
-    let Some((poles, prototype_zeros, prototype_gain)) = prototype_poles(family, order, ripple_db, stopband_db) else { return Vec::new(); };
+    let Some((poles, prototype_zeros, prototype_gain)) = prototype_poles(family, order, ripple_db, stopband_db) else { return Ok(Vec::new()); };
     let mut zeros = prototype_zeros.into_iter();
     let mut sections = Vec::new();
     let mut used = vec![false; poles.len()];
@@ -178,7 +201,7 @@ pub fn design_filter(family: FilterFamily, response: ResponseType, order: usize,
             first.b2 *= scale;
         }
     }
-    sections
+    Ok(sections)
 }
 
 fn magnitude_linear(sections: &[BiquadSection], frequency_hz: f64, sample_rate: f64) -> f64 {
@@ -220,10 +243,10 @@ pub fn magnitude_response_db(sections: &[BiquadSection], frequency_hz: f64, samp
 
 #[cfg(test)]
 mod tests {
-    use super::{bessel_poles, design_filter, magnitude_response_db, process_filter, BiquadSection, FilterFamily, ResponseType};
+    use super::{bessel_poles, design_filter, magnitude_response_db, process_filter, BiquadSection, FilterFamily, ResponseType, SciFilterError};
 
     fn assert_close(actual: f64, expected: f64, tolerance: f64) { assert!((actual - expected).abs() <= tolerance, "{actual} != {expected}"); }
-    fn filter(family: FilterFamily, response: ResponseType, order: usize) -> Vec<BiquadSection> { design_filter(family, response, order, 1000.0, 48000.0, 1.0, 40.0) }
+    fn filter(family: FilterFamily, response: ResponseType, order: usize) -> Vec<BiquadSection> { design_filter(family, response, order, 1000.0, 48000.0, 1.0, 40.0).unwrap_or_default() }
 
     #[test] fn butterworth_lowpass_minus_3db_at_cutoff_n2() { assert_close(magnitude_response_db(&filter(FilterFamily::Butterworth, ResponseType::Lowpass, 2), 1000.0, 48000.0), -3.0103, 0.02); }
     #[test] fn butterworth_lowpass_minus_3db_at_cutoff_n4() { assert_close(magnitude_response_db(&filter(FilterFamily::Butterworth, ResponseType::Lowpass, 4), 1000.0, 48000.0), -3.0103, 0.02); }
@@ -240,8 +263,8 @@ mod tests {
     #[test] fn chebyshev1_passband_ripple_bounded() { let s = filter(FilterFamily::ChebyshevI, ResponseType::Lowpass, 4); for i in 0..=100 { let db = magnitude_response_db(&s, i as f64 * 10.0, 48000.0); assert!((-1.05..=0.02).contains(&db)); } }
     #[test] fn chebyshev2_stopband_ripple_bounded() { let s = filter(FilterFamily::ChebyshevII, ResponseType::Lowpass, 4); assert!(magnitude_response_db(&s, 5000.0, 48000.0) < -20.0); }
     #[test] fn bessel_n2_prototype_denominator() { let poles = bessel_poles(2).unwrap_or(&[]); let pole = poles[0]; assert_close(-2.0 * pole.re, 3.0, 0.02); assert_close(pole.re * pole.re + pole.im * pole.im, 3.0, 0.02); }
-    #[test] fn invalid_sample_rate_does_not_panic() { assert!(design_filter(FilterFamily::Butterworth, ResponseType::Lowpass, 2, 1000.0, f64::NAN, 1.0, 40.0).is_empty()); }
-    #[test] fn invalid_cutoff_does_not_panic() { assert!(design_filter(FilterFamily::Butterworth, ResponseType::Lowpass, 2, 0.0, 48000.0, 1.0, 40.0).is_empty()); }
+    #[test] fn invalid_sample_rate_does_not_panic() { assert!(design_filter(FilterFamily::Butterworth, ResponseType::Lowpass, 2, 1000.0, f64::NAN, 1.0, 40.0).unwrap_or_default().is_empty()); }
+    #[test] fn invalid_cutoff_does_not_panic() { assert!(design_filter(FilterFamily::Butterworth, ResponseType::Lowpass, 2, 0.0, 48000.0, 1.0, 40.0).unwrap_or_default().is_empty()); }
     #[test] fn order_zero_returns_input() { let input = [0.2, -0.4]; assert_eq!(process_filter(&input, &filter(FilterFamily::Butterworth, ResponseType::Lowpass, 0)), input); }
     #[test] fn impulse_response_decays() { let mut input = vec![0.0; 256]; input[0] = 1.0; let output = process_filter(&input, &filter(FilterFamily::Butterworth, ResponseType::Lowpass, 4)); assert!(output[255].abs() < output[0].abs()); }
     #[test] fn zero_length_input_is_empty() { assert!(process_filter(&[], &filter(FilterFamily::Butterworth, ResponseType::Lowpass, 2)).is_empty()); }
@@ -258,6 +281,7 @@ mod tests {
     fn bessel_orders_5_to_8_have_unity_dc_gain() {
         for order in 5..=8 {
             let sections = filter(FilterFamily::Bessel, ResponseType::Lowpass, order);
+            assert!(!sections.is_empty());
             assert_close(magnitude_response_db(&sections, 0.0, 48000.0), 0.0, 0.005);
         }
     }
@@ -271,14 +295,41 @@ mod tests {
             (8, [-0.072274, -0.290278, -1.180635], [-0.067809, -0.290278, -1.582734]),
         ];
         for (order, low, high) in cases {
-            let low_sections = design_filter(FilterFamily::Bessel, ResponseType::Lowpass, order, 1000.0, 48000.0, 1.0, 40.0);
+            let low_sections = design_filter(FilterFamily::Bessel, ResponseType::Lowpass, order, 1000.0, 48000.0, 1.0, 40.0).unwrap_or_default();
             for (freq, expected) in [500.0, 1000.0, 2000.0].into_iter().zip(low) {
                 assert_close(magnitude_response_db(&low_sections, freq, 48000.0), expected, 0.005);
             }
-            let high_sections = design_filter(FilterFamily::Bessel, ResponseType::Lowpass, order, 5000.0, 44100.0, 1.0, 40.0);
+            let high_sections = design_filter(FilterFamily::Bessel, ResponseType::Lowpass, order, 5000.0, 44100.0, 1.0, 40.0).unwrap_or_default();
             for (freq, expected) in [2500.0, 5000.0, 10000.0].into_iter().zip(high) {
                 assert_close(magnitude_response_db(&high_sections, freq, 44100.0), expected, 0.005);
             }
+        }
+    }
+    #[test]
+    fn bessel_order_1_is_single_real_pole_at_minus_one() {
+        let poles = bessel_poles(1).unwrap_or(&[]);
+        assert_eq!(poles.len(), 1);
+        assert_close(poles[0].re, -1.0, 1e-12);
+        assert_close(poles[0].im, 0.0, 1e-12);
+    }
+    #[test]
+    fn bessel_order_1_magnitude_matches_reference() {
+        // |H(jW)| = 1/sqrt(1+W^2), W = tan(pi f/fs) / tan(pi fc/fs). Expected dB computed independently in python.
+        let low = design_filter(FilterFamily::Bessel, ResponseType::Lowpass, 1, 1000.0, 48000.0, 1.0, 40.0).unwrap_or_default();
+        assert_eq!(low.len(), 1);
+        for (freq, expected) in [0.0, 500.0, 1000.0, 2000.0].into_iter().zip([0.0, -0.967239, -3.010300, -7.019641]) {
+            assert_close(magnitude_response_db(&low, freq, 48000.0), expected, 0.005);
+        }
+        let high = design_filter(FilterFamily::Bessel, ResponseType::Lowpass, 1, 5000.0, 44100.0, 1.0, 40.0).unwrap_or_default();
+        for (freq, expected) in [2500.0, 5000.0, 10000.0].into_iter().zip([-0.913370, -3.010300, -8.054063]) {
+            assert_close(magnitude_response_db(&high, freq, 44100.0), expected, 0.005);
+        }
+    }
+    #[test]
+    fn bessel_unsupported_orders_return_error_not_empty_design() {
+        for order in [0, 9, 10] {
+            let result = design_filter(FilterFamily::Bessel, ResponseType::Lowpass, order, 1000.0, 48000.0, 1.0, 40.0);
+            assert_eq!(result.err(), Some(SciFilterError::UnsupportedBesselOrder(order)));
         }
     }
 }
