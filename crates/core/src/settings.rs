@@ -83,12 +83,17 @@ impl Settings {
             std::fs::create_dir_all(dir)?;
         }
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        self.save_with_names(path, || {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+            format!("{file_name}.{}.{nanos}.{}.tmp", std::process::id(), NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed))
+        })
+    }
+
+    fn save_with_names(&self, path: &Path, mut next_name: impl FnMut() -> String) -> io::Result<()> {
         // Create the temp file exclusively (O_EXCL: never follows a symlink, never truncates)
         // under a unique name; if the name is taken, try another.
         for _ in 0..16 {
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-            let tmp =
-                path.with_file_name(format!("{file_name}.{}.{nanos}.{}.tmp", std::process::id(), NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed)));
+            let tmp = path.with_file_name(next_name());
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
                 Ok(mut file) => {
                     let written = io::Write::write_all(&mut file, self.to_text().as_bytes());
@@ -211,9 +216,8 @@ pub fn resolve_session_folder(
 
 #[cfg(test)]
 mod tests {
-    use super::{NEXT_TEMP_FILE, Settings, check_folder};
+    use super::{Settings, check_folder};
     use std::path::PathBuf;
-    use std::sync::atomic::Ordering;
 
     fn unique_folder(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
@@ -283,27 +287,28 @@ mod tests {
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
         let victim = folder.join("recording.wav");
         std::fs::write(&victim, b"KEEP-ME-0123456789").map_err(|e| e.to_string())?;
-        let base = NEXT_TEMP_FILE.load(Ordering::Relaxed);
-        let mut planted = Vec::new();
-        for k in base..base + 64 {
-            let link = folder.join(format!("settings.txt.{}.{k}.tmp", std::process::id()));
-            std::os::unix::fs::symlink(&victim, &link).map_err(|e| e.to_string())?;
-            planted.push(link);
-        }
-
-        for link in &planted {
-            let meta = std::fs::symlink_metadata(link).map_err(|e| e.to_string())?;
-            assert!(meta.file_type().is_symlink(), "FIXTURE CHECK: temp path is not a symlink");
-            let target = std::fs::read_link(link).map_err(|e| e.to_string())?;
-            assert_eq!(target, victim, "FIXTURE CHECK: symlink does not point to the victim");
-        }
         let before = std::fs::read(&victim).map_err(|e| e.to_string())?;
         assert_eq!(before, b"KEEP-ME-0123456789".to_vec(), "FIXTURE CHECK: victim does not hold the 18 bytes");
 
-        let saved = Settings { session_folder: Some(PathBuf::from("/w-new")) }.save(&folder.join("settings.txt"));
+        let decoy = folder.join("settings.txt.decoy.tmp");
+        std::os::unix::fs::symlink(&victim, &decoy).map_err(|e| e.to_string())?;
+        let second = folder.join("settings.txt.retry.tmp");
+        let mut calls = 0;
+        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")) };
+        let saved = settings.save_with_names(&folder.join("settings.txt"), || {
+            calls += 1;
+            if calls == 1 { "settings.txt.decoy.tmp".into() } else { "settings.txt.retry.tmp".into() }
+        });
         assert!(saved.is_ok(), "save failed: {saved:?}");
+        assert_eq!(calls, 2);
         let after = std::fs::read(&victim).map_err(|e| e.to_string())?;
         assert_eq!(after, b"KEEP-ME-0123456789".to_vec());
+        assert_eq!(std::fs::read_link(&decoy).map_err(|e| e.to_string())?, victim);
+        assert_eq!(
+            std::fs::read_to_string(folder.join("settings.txt")).map_err(|e| e.to_string())?,
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
+        );
+        assert!(!second.exists());
         let _ = std::fs::remove_dir_all(&folder);
         Ok(())
     }
@@ -312,29 +317,24 @@ mod tests {
     fn q431_regular_file_at_predicted_temp_name_is_not_overwritten() -> Result<(), String> {
         let folder = unique_folder("q431-regular");
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-        let base = NEXT_TEMP_FILE.load(Ordering::Relaxed);
-        let mut planted = Vec::new();
-        for k in base..base + 64 {
-            let file = folder.join(format!("settings.txt.{}.{k}.tmp", std::process::id()));
-            std::fs::write(&file, b"KEEP-ME-0123456789").map_err(|e| e.to_string())?;
-            planted.push(file);
-        }
-        for file in &planted {
-            let before = std::fs::read(file).map_err(|e| e.to_string())?;
-            assert_eq!(before, b"KEEP-ME-0123456789".to_vec(), "FIXTURE CHECK: file does not hold the 18 bytes");
-        }
-
-        let saved = Settings { session_folder: Some(PathBuf::from("/w-new")) }.save(&folder.join("settings.txt"));
+        let decoy = folder.join("settings.txt.decoy.tmp");
+        std::fs::write(&decoy, b"KEEP-ME-0123456789").map_err(|e| e.to_string())?;
+        let second = folder.join("settings.txt.retry.tmp");
+        let mut calls = 0;
+        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")) };
+        let saved = settings.save_with_names(&folder.join("settings.txt"), || {
+            calls += 1;
+            if calls == 1 { "settings.txt.decoy.tmp".into() } else { "settings.txt.retry.tmp".into() }
+        });
         assert!(saved.is_ok(), "save failed: {saved:?}");
-        for file in &planted {
-            let after = std::fs::read(file).map_err(|e| e.to_string())?;
-            assert_eq!(after, b"KEEP-ME-0123456789".to_vec(), "planted file was overwritten: {}", file.display());
-        }
+        assert_eq!(calls, 2);
+        assert_eq!(std::fs::read(&decoy).map_err(|e| e.to_string())?, b"KEEP-ME-0123456789");
         let text = std::fs::read_to_string(folder.join("settings.txt")).map_err(|e| e.to_string())?;
         assert_eq!(
             text,
             "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
         );
+        assert!(!second.exists());
         let _ = std::fs::remove_dir_all(&folder);
         Ok(())
     }
