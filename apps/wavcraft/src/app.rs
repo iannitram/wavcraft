@@ -26,6 +26,17 @@ const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
 const RULER_HEIGHT: f32 = 22.0;
 
+/// Longest silence Insert Silence accepts, in seconds (24 hours).
+const MAX_SILENCE_SECS: f64 = 86_400.0;
+
+/// Frames for an Insert Silence of `secs` seconds at `rate` Hz, or an error message when it is longer than 24 hours.
+fn silence_frames(secs: f64, rate: u32) -> Result<u64, String> {
+    if !secs.is_finite() || secs <= 0.0 || secs > MAX_SILENCE_SECS {
+        return Err("Insert Silence: the length can be at most 24 hours".to_string());
+    }
+    Ok((secs * f64::from(rate)).round() as u64)
+}
+
 /// A file being opened on a worker thread.
 struct Opening {
     path: PathBuf,
@@ -409,7 +420,14 @@ impl WaveApp {
     fn run_insert_silence(&mut self, secs: f64, ctx: &egui::Context) -> Option<String> {
         let at = self.selection.start() as u64;
         let editor = self.editor.as_mut()?;
-        let frames = (secs * f64::from(editor.history.current().sample_rate())).round() as u64;
+        let rate = editor.history.current().sample_rate();
+        let frames = match silence_frames(secs, rate) {
+            Ok(f) => f,
+            Err(why) => {
+                self.error = Some(why.clone());
+                return Some(why);
+            }
+        };
         match editor.insert_silence(at, frames) {
             Ok(out) => {
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
@@ -1216,6 +1234,16 @@ mod tests {
         assert_eq!(p[255], Color32::from_rgb(255, 250, 215));
         let brightness = |c: Color32| u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b());
         assert!(p.windows(2).all(|w| brightness(w[1]) + 3 >= brightness(w[0])), "brightness never drops");
+    }
+
+    #[test]
+    fn silence_longer_than_a_day_is_rejected() {
+        assert_eq!(silence_frames(1.0, 44_100), Ok(44_100));
+        assert_eq!(silence_frames(86_400.0, 48_000), Ok(4_147_200_000));
+        assert!(silence_frames(86_400.5, 48_000).is_err());
+        assert!(silence_frames(1e20, 44_100).is_err());
+        assert!(silence_frames(f64::INFINITY, 44_100).is_err());
+        assert!(silence_frames(0.0, 44_100).is_err());
     }
 
     #[test]
