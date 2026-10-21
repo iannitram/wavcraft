@@ -21,6 +21,11 @@ craft-log = { path = "crates/craft-log" }
 # and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
 soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
 
+# f122 (the Video panel): SoundCraft's `soundcraft-video` (MIT OR Apache-2.0: pure Rust H.264, ProRes
+# and Motion JPEG decode, ISO base media demux), from the head of our fork's `ours` branch. It brings
+# the `image` crate (MIT OR Apache-2.0) with its jpeg feature, for Motion JPEG.
+soundcraft-video = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
+
 rustfft = "6"
 rayon = "1"
 log = "0.4"
@@ -37,7 +42,7 @@ bytemuck = "1.25"
 dirs = "6"
 sysinfo = { version = "0.37", default-features = false, features = ["system", "disk"] }
 proptest = "1.11"
-# The Legion Go review's W7 (2026-10-16): free space asked of the session folder's own file
+# The Linux handheld review's W7 (2026-10-16): free space asked of the session folder's own file
 # system (`statvfs`) on Unix, so a tmpfs isn't matched to `/`. Already in Cargo.lock (1.1.5,
 # through tempfile and others), so no new crate; its safe API keeps `unsafe` forbidden here.
 # Licence Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT.

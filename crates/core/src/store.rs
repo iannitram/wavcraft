@@ -44,6 +44,9 @@ pub const HELD_FILE: &str = "session.held";
 
 const BYTES_PER_SAMPLE: u64 = 4;
 
+#[cfg(test)]
+type CreateHook = Mutex<Option<Box<dyn Fn(&Path) + Send>>>;
+
 /// A block's identity: unique within one store, never reused. `BlockId(0)` is the zero block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockId(pub u64);
@@ -322,6 +325,9 @@ struct Pack {
     file: Option<Arc<File>>,
 }
 
+#[cfg(test)]
+static CREATE_HOOK: CreateHook = Mutex::new(None);
+
 impl Store {
     /// A store in `dir` (made if missing) with the default options.
     pub fn create(dir: &Path) -> io::Result<Store> {
@@ -330,8 +336,20 @@ impl Store {
 
     /// A store in `dir` (made if missing). Fails if `dir` already holds a lock file: another
     /// store is using it, or one ended without cleaning up.
+    ///
+    /// The order inside matters: [`HELD_FILE`] is created and locked before [`LOCK_FILE`] is
+    /// written. [`stale_sessions`] skips folders without a readable lock file, so creating and
+    /// locking `HELD_FILE` first ensures a concurrent sweep never mistakes a session mid-creation
+    /// for a stale one.
     pub fn create_with(dir: &Path, opts: StoreOptions) -> io::Result<Store> {
         std::fs::create_dir_all(dir)?;
+        // Held for the store's whole life; the system releases it when the program ends.
+        let held = OpenOptions::new().read(true).write(true).create_new(true).open(dir.join(HELD_FILE))?;
+        #[cfg(test)]
+        if let Some(hook) = lock(&CREATE_HOOK).as_ref() {
+            hook(dir);
+        }
+        held.try_lock().map_err(|e| io::Error::other(format!("could not lock the session: {e}")))?;
         let mut lock_file = OpenOptions::new().write(true).create_new(true).open(dir.join(LOCK_FILE))?;
         writeln!(
             lock_file,
@@ -341,9 +359,6 @@ impl Store {
             machine_id(),
             env!("CARGO_PKG_VERSION")
         )?;
-        // Held for the store's whole life; the system releases it when the program ends.
-        let held = OpenOptions::new().read(true).write(true).create_new(true).open(dir.join(HELD_FILE))?;
-        held.try_lock().map_err(|e| io::Error::other(format!("could not lock the session: {e}")))?;
         Ok(Store {
             inner: Arc::new(Inner {
                 dir: dir.to_path_buf(),
@@ -783,5 +798,53 @@ impl Cache {
             hits: self.hits,
             misses: self.misses,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("wavcraft-store-test-{}-{name}-{id}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn sweep_between_held_creation_and_lock_keeps_new_session() {
+        let _guard = lock(&TEST_LOCK);
+        let temp = TempDir::new("sweep-held");
+        let root = temp.0.clone();
+
+        *lock(&CREATE_HOOK) = Some(Box::new(|session_dir| {
+            if let Some(root) = session_dir.parent() {
+                sweep_stale_sessions(Some(root));
+            }
+        }));
+
+        let res = Store::create_session(Some(&root), StoreOptions::default());
+        assert!(res.is_ok());
+        let store = res.unwrap();
+        let dir = store.dir();
+        assert!(dir.exists());
+        assert!(dir.join(HELD_FILE).exists());
+        assert!(dir.join(LOCK_FILE).exists());
+        *lock(&CREATE_HOOK) = None;
     }
 }

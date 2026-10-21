@@ -16,16 +16,22 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod actions;
+pub mod cd;
 pub mod doc;
 pub mod document;
+pub mod dsp;
+pub mod generate;
 pub mod io;
 pub mod meta;
+pub mod meters;
+pub mod mix;
 pub mod random;
 pub mod save;
 pub mod settings;
 pub mod space;
 pub mod spectrogram;
 pub mod store;
+pub mod tempo;
 pub mod view;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};

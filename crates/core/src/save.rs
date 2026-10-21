@@ -194,7 +194,7 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
     };
     if let Err(e) = std::fs::rename(&tmp, target) {
         drop(file);
-        // Hyperion's review (2026-10-19): a failed save leaves nothing behind. The target is
+        // The Windows dev machine's review (2026-10-19): a failed save leaves nothing behind. The target is
         // untouched (the rename did not happen) and this save's temporary file goes too.
         let _ = std::fs::remove_file(&tmp);
         log::warn!(target: "wavcraft_core::save", "could not replace {}, the file is unchanged: {e}", target.display());
