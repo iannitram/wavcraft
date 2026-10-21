@@ -26,6 +26,7 @@ pub mod settings;
 pub mod space;
 pub mod spectrogram;
 pub mod store;
+pub mod tempo;
 pub mod view;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
