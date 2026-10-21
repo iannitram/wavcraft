@@ -195,11 +195,8 @@ pub fn ixml_with_names(raw: Option<&[u8]>, names: &[String]) -> Vec<u8> {
         seen[ch] = true;
         let inner = &s[a..b];
         match element(inner, "NAME") {
-            Some((x, y)) => {
-                if xml_unescape(inner[x..y].trim()) != *want {
-                    edits.push((a + x, y - x, xml_escape(want)));
-                }
-            }
+            Some((x, y)) if xml_unescape(inner[x..y].trim()) != *want => edits.push((a + x, y - x, xml_escape(want))),
+            Some(_) => {}
             None if !want.is_empty() => edits.push((b, 0, format!("<NAME>{}</NAME>\n", xml_escape(want)))),
             None => {}
         }
