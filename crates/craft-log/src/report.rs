@@ -420,9 +420,20 @@ pub fn find_on_path(program: &str) -> Option<PathBuf> {
     std::env::split_paths(&path).flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.is_file())
 }
 
-/// Run `program args` and return the first line with text it printed, killing it after `timeout`. On
-/// Windows it runs without a console window (`CREATE_NO_WINDOW`), so a window app that asks
-/// flashes none.
+/// Kill `child` and, on unix, the whole process group it leads (it was started with `process_group(0)`),
+/// so a background child holding its output goes too; then reap it.
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill").args(["-KILL", "--"]).arg(format!("-{}", child.id())).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Run `program args` and return the first line with text it printed, killing it after `timeout`.
+/// The timeout bounds reading the program's output too. On Windows it runs without a console
+/// window (`CREATE_NO_WINDOW`), so a window app that asks flashes none.
 pub fn first_line_of(program: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut command = Command::new(program);
     command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -432,26 +443,68 @@ pub fn first_line_of(program: &Path, args: &[&str], timeout: Duration) -> Result
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            use std::io::BufRead as _;
+            let mut out = std::io::BufReader::new(out);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                match out.read_until(b'\n', &mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let text = String::from_utf8_lossy(&line);
+                        let text = text.trim_end();
+                        if !text.trim().is_empty() {
+                            let _ = tx.send(text.to_owned());
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            while out.read_until(b'\n', &mut line).is_ok_and(|n| n != 0) {
+                line.clear();
+            }
+        });
+    } else {
+        drop(tx);
+    }
     let start = Instant::now();
+    let deadline = start + timeout;
+    let after_kill = |child: &mut std::process::Child| {
+        kill_tree(child);
+        rx.recv_timeout(Duration::from_millis(200)).ok().ok_or_else(|| format!("no answer within {} s", timeout.as_secs()))
+    };
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(20)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("no answer within {} s", timeout.as_secs()));
+            Ok(Some(_)) => {
+                return match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(line) => Ok(line),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => after_kill(&mut child),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("printed nothing".into()),
+                };
             }
-            Err(e) => return Err(e.to_string()),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20).min(deadline.saturating_duration_since(Instant::now())));
+                continue;
+            }
+            Ok(None) => {
+                return after_kill(&mut child);
+            }
+            Err(e) => {
+                kill_tree(&mut child);
+                return Err(e.to_string());
+            }
         }
     }
-    let mut text = String::new();
-    if let Some(mut out) = child.stdout.take() {
-        let _ = std::io::Read::read_to_string(&mut out, &mut text);
-    }
-    // the first line with text (Windows' `ver` starts with an empty one)
-    text.lines().map(str::trim_end).find(|l| !l.trim().is_empty()).map(str::to_owned).ok_or_else(|| "printed nothing".into())
 }
 
 /// The most recently modified file in `dir` whose name `wanted` accepts.
@@ -684,6 +737,42 @@ mod tests {
         assert!(got.is_err_and(|e| e.contains("no answer")));
         assert!(t0.elapsed() < Duration::from_secs(3));
         assert_eq!(first_line_of(Path::new("/bin/echo"), &["hello"], FFMPEG_TIMEOUT).as_deref(), Ok("hello"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_background_child_holding_stdout_still_returns_its_line() {
+        if !Path::new("/bin/sh").is_file() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("craft-log-report-bg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("wrapper.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30 &\necho hi\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let t0 = Instant::now();
+        // run it through sh rather than exec: another test's fork can briefly hold the just-written file open (ETXTBSY)
+        let got = first_line_of(Path::new("/bin/sh"), &[script.to_str().unwrap()], Duration::from_millis(300));
+        assert_eq!(got.as_deref(), Ok("hi"));
+        assert!(t0.elapsed() < Duration::from_secs(2), "call took {:?}", t0.elapsed());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_no_newline_line_is_returned_after_a_background_child_holds_stdout_open() {
+        if !Path::new("/bin/sh").is_file() {
+            return;
+        }
+        let timeout = Duration::from_millis(300);
+        let t0 = Instant::now();
+        let got = first_line_of(Path::new("/bin/sh"), &["-c", "printf hi; sleep 30 &"], timeout);
+        assert_eq!(got.as_deref(), Ok("hi"));
+        assert!(t0.elapsed() < timeout + Duration::from_secs(1), "call took {:?}", t0.elapsed());
     }
 
     #[test]
