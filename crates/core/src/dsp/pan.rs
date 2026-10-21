@@ -11,8 +11,8 @@ pub fn pan_gains(mut pan: f32) -> (f32, f32) {
         return (0.0, 1.0);
     }
     let t = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
-    let left = t.cos().max(0.0).min(1.0);
-    let right = t.sin().max(0.0).min(1.0);
+    let left = t.cos().clamp(0.0, 1.0);
+    let right = t.sin().clamp(0.0, 1.0);
     (left, right)
 }
 
