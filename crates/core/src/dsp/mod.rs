@@ -3,5 +3,6 @@
 pub mod chorus;
 pub mod distortion;
 pub mod echo;
+pub mod flanger;
 pub mod midside;
 pub mod pan;
