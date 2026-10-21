@@ -301,7 +301,7 @@ mod tests {
         std::os::unix::fs::symlink(&victim, &decoy).map_err(|e| e.to_string())?;
         let second = folder.join("settings.txt.retry.tmp");
         let mut calls = 0;
-        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")) };
+        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), ..Default::default() };
         let saved = settings.save_with_names(&folder.join("settings.txt"), || {
             calls += 1;
             if calls == 1 { "settings.txt.decoy.tmp".into() } else { "settings.txt.retry.tmp".into() }
@@ -328,7 +328,7 @@ mod tests {
         std::fs::write(&decoy, b"KEEP-ME-0123456789").map_err(|e| e.to_string())?;
         let second = folder.join("settings.txt.retry.tmp");
         let mut calls = 0;
-        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")) };
+        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), ..Default::default() };
         let saved = settings.save_with_names(&folder.join("settings.txt"), || {
             calls += 1;
             if calls == 1 { "settings.txt.decoy.tmp".into() } else { "settings.txt.retry.tmp".into() }
