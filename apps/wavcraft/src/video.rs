@@ -95,6 +95,7 @@ pub struct VideoPanel {
     tx: Sender<Req>,
     rx: Receiver<Msg>,
     seq: u64,
+    outstanding: Vec<u64>,
     /// The newest request sent for the playhead, and whether its picture is still to come.
     auto_seq: u64,
     in_flight: bool,
@@ -122,6 +123,7 @@ impl VideoPanel {
             tx: req_tx,
             rx: msg_rx,
             seq: 0,
+            outstanding: Vec::new(),
             auto_seq: 0,
             in_flight: false,
             last_asked: None,
@@ -140,6 +142,7 @@ impl VideoPanel {
             self.in_flight = true;
             self.last_asked = Some(secs);
         }
+        self.outstanding.push(self.seq);
         let _ = self.tx.send(Req::Show { seq: self.seq, secs, must });
         self.seq
     }
@@ -158,6 +161,7 @@ impl VideoPanel {
             match self.rx.try_recv() {
                 Ok(Msg::Opened(status)) => self.status = status,
                 Ok(Msg::Frame { seq, result }) => {
+                    self.outstanding.retain(|outstanding| *outstanding != seq);
                     if seq == self.auto_seq {
                         self.in_flight = false;
                     }
@@ -182,6 +186,7 @@ impl VideoPanel {
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
+                    answers.extend(self.outstanding.drain(..).map(|seq| (seq, "ERR video detached".to_string())));
                     if matches!(self.status, Status::Loading) {
                         self.status = Status::Failed("the decoder stopped unexpectedly".to_string());
                     }
@@ -300,6 +305,11 @@ impl Waiters {
             let _ = r.send(text);
         }
     }
+    pub fn fail_all(&mut self, text: &str) {
+        for (_, r) in self.0.drain() {
+            let _ = r.send(text.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -317,6 +327,7 @@ mod tests {
             tx: request_tx,
             rx: message_rx,
             seq: 0,
+            outstanding: Vec::new(),
             auto_seq: 0,
             in_flight: false,
             last_asked: None,

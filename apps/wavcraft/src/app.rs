@@ -228,7 +228,7 @@ impl WaveApp {
                 self.doc_id += 1;
                 self.rebuilding = None;
                 self.doc = Some(doc);
-                self.video = None;
+                self.drop_video();
                 self.generation += 1;
                 self.selection = Selection::default();
                 self.spectrum = None;
@@ -253,9 +253,15 @@ impl WaveApp {
         if self.editor.is_none() {
             return Err("open a file first: the video goes with the open document".to_string());
         }
+        self.drop_video();
         self.video = Some(VideoPanel::attach(path, ctx));
         self.show_video = true;
         Ok(())
+    }
+
+    fn drop_video(&mut self) {
+        self.video_waiters.fail_all("ERR video detached");
+        self.video = None;
     }
 
     fn pick_video(&mut self, ctx: &egui::Context) {
@@ -793,7 +799,7 @@ impl WaveApp {
                         None => "ERR no video attached".to_string(),
                     },
                     "detach" => {
-                        self.video = None;
+                        self.drop_video();
                         "OK".to_string()
                     }
                     _ => "ERR VIDEO attach <path> | frame <seconds> | status | detach".to_string(),
@@ -898,7 +904,7 @@ impl WaveApp {
                     self.pick_video(ui.ctx());
                 }
                 if ui.add_enabled(self.video.is_some(), egui::Button::new("Detach video")).clicked() {
-                    self.video = None;
+                    self.drop_video();
                 }
                 ui.checkbox(&mut self.show_video, "Video panel");
             });
