@@ -83,16 +83,31 @@ impl Settings {
             std::fs::create_dir_all(dir)?;
         }
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-        let tmp = path.with_file_name(format!("{file_name}.{}.{}.tmp", std::process::id(), NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed),));
-        if let Err(error) = std::fs::write(&tmp, self.to_text()) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(error);
+        // Create the temp file exclusively (O_EXCL: never follows a symlink, never truncates)
+        // under a unique name; if the name is taken, try another.
+        for _ in 0..16 {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+            let tmp =
+                path.with_file_name(format!("{file_name}.{}.{nanos}.{}.tmp", std::process::id(), NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed)));
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+                Ok(mut file) => {
+                    let written = io::Write::write_all(&mut file, self.to_text().as_bytes());
+                    drop(file);
+                    if let Err(error) = written {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Err(error);
+                    }
+                    if let Err(error) = std::fs::rename(&tmp, path) {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Err(error);
+                    }
+                    return Ok(());
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
         }
-        if let Err(error) = std::fs::rename(&tmp, path) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(error);
-        }
-        Ok(())
+        Err(io::Error::new(io::ErrorKind::AlreadyExists, "no unused temporary file name found"))
     }
 }
 
@@ -196,8 +211,9 @@ pub fn resolve_session_folder(
 
 #[cfg(test)]
 mod tests {
-    use super::check_folder;
+    use super::{NEXT_TEMP_FILE, Settings, check_folder};
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
 
     fn unique_folder(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
@@ -256,6 +272,69 @@ mod tests {
             }
         }
         assert_eq!(count, 0);
+        let _ = std::fs::remove_dir_all(&folder);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn q431_symlink_at_predicted_temp_name_keeps_its_target() -> Result<(), String> {
+        let folder = unique_folder("q431-symlink");
+        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let victim = folder.join("recording.wav");
+        std::fs::write(&victim, b"KEEP-ME-0123456789").map_err(|e| e.to_string())?;
+        let base = NEXT_TEMP_FILE.load(Ordering::Relaxed);
+        let mut planted = Vec::new();
+        for k in base..base + 64 {
+            let link = folder.join(format!("settings.txt.{}.{k}.tmp", std::process::id()));
+            std::os::unix::fs::symlink(&victim, &link).map_err(|e| e.to_string())?;
+            planted.push(link);
+        }
+
+        for link in &planted {
+            let meta = std::fs::symlink_metadata(link).map_err(|e| e.to_string())?;
+            assert!(meta.file_type().is_symlink(), "FIXTURE CHECK: temp path is not a symlink");
+            let target = std::fs::read_link(link).map_err(|e| e.to_string())?;
+            assert_eq!(target, victim, "FIXTURE CHECK: symlink does not point to the victim");
+        }
+        let before = std::fs::read(&victim).map_err(|e| e.to_string())?;
+        assert_eq!(before, b"KEEP-ME-0123456789".to_vec(), "FIXTURE CHECK: victim does not hold the 18 bytes");
+
+        let saved = Settings { session_folder: Some(PathBuf::from("/w-new")) }.save(&folder.join("settings.txt"));
+        assert!(saved.is_ok(), "save failed: {saved:?}");
+        let after = std::fs::read(&victim).map_err(|e| e.to_string())?;
+        assert_eq!(after, b"KEEP-ME-0123456789".to_vec());
+        let _ = std::fs::remove_dir_all(&folder);
+        Ok(())
+    }
+
+    #[test]
+    fn q431_regular_file_at_predicted_temp_name_is_not_overwritten() -> Result<(), String> {
+        let folder = unique_folder("q431-regular");
+        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let base = NEXT_TEMP_FILE.load(Ordering::Relaxed);
+        let mut planted = Vec::new();
+        for k in base..base + 64 {
+            let file = folder.join(format!("settings.txt.{}.{k}.tmp", std::process::id()));
+            std::fs::write(&file, b"KEEP-ME-0123456789").map_err(|e| e.to_string())?;
+            planted.push(file);
+        }
+        for file in &planted {
+            let before = std::fs::read(file).map_err(|e| e.to_string())?;
+            assert_eq!(before, b"KEEP-ME-0123456789".to_vec(), "FIXTURE CHECK: file does not hold the 18 bytes");
+        }
+
+        let saved = Settings { session_folder: Some(PathBuf::from("/w-new")) }.save(&folder.join("settings.txt"));
+        assert!(saved.is_ok(), "save failed: {saved:?}");
+        for file in &planted {
+            let after = std::fs::read(file).map_err(|e| e.to_string())?;
+            assert_eq!(after, b"KEEP-ME-0123456789".to_vec(), "planted file was overwritten: {}", file.display());
+        }
+        let text = std::fs::read_to_string(folder.join("settings.txt")).map_err(|e| e.to_string())?;
+        assert_eq!(
+            text,
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
+        );
         let _ = std::fs::remove_dir_all(&folder);
         Ok(())
     }
