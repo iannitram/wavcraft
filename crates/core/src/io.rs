@@ -407,7 +407,7 @@ fn stream_pcm(job: &mut Job<'_>, store: &Store, data_start: u64, frames: u64, ki
     job.check_space(store, frames, channels, false)?;
 
     // Check buffer size before allocation
-    let block = (kind.bytes() * channels) as usize;
+    let block = kind.bytes() * channels;
     let buf_len = CHUNK_FRAMES.checked_mul(block).filter(|n| *n <= MAX_SCRATCH_BYTES).ok_or_else(|| unsupported("too many channels"))?;
 
     let mut buf = Vec::new();
@@ -991,6 +991,9 @@ fn decode_symphonia(
             }
         }
     }
+    if params.codec == sc::CODEC_TYPE_FLAC && !estimated && frames < expected_frames {
+        src.warnings.push(format!("the file is truncated: opened the {frames} of {expected_frames} frames it should hold"));
+    }
     if errors > 0 {
         src.warnings.push(format!("{errors} damaged packet(s) skipped (last: {last_error})"));
     }
@@ -1001,4 +1004,107 @@ fn decode_symphonia(
         Some(b) => b,
         None => Builder::new(store, usize::from(src.channels))?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+
+    use super::{OpenOptions, open};
+
+    const FULL: &[u8] = include_bytes!("../tests/fixtures/q367-full.flac");
+    const TRUNCATED: &[u8] = include_bytes!("../tests/fixtures/q367-truncated.flac");
+
+    /// A folder in the system's temp directory, removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let dir = std::env::temp_dir().join(format!("wavcraft-io-test-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::create_dir_all(&dir);
+            TempDir(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Opens `bytes` as a FLAC file; returns its frame count and warnings.
+    fn open_flac(name: &str, bytes: &[u8]) -> (u64, Vec<String>) {
+        let t = TempDir::new(name);
+        let path = t.0.join("input.flac");
+        assert!(std::fs::write(&path, bytes).is_ok());
+        let opts = OpenOptions { sessions_root: Some(t.0.join("sessions")), ..OpenOptions::default() };
+        let result = open(&path, &opts, &mut |_| {}, &AtomicBool::new(false));
+        assert!(result.is_ok());
+        match result {
+            Ok(doc) => (doc.len_frames(), doc.source().warnings.clone()),
+            Err(_) => (0, Vec::new()),
+        }
+    }
+
+    /// Opens `bytes` as a PCM WAV file; returns its frame count and warnings.
+    fn open_wav(name: &str, bytes: &[u8]) -> (u64, Vec<String>) {
+        let t = TempDir::new(name);
+        let path = t.0.join("input.wav");
+        assert!(std::fs::write(&path, bytes).is_ok());
+        let opts = OpenOptions { sessions_root: Some(t.0.join("sessions")), ..OpenOptions::default() };
+        let result = open(&path, &opts, &mut |_| {}, &AtomicBool::new(false));
+        assert!(result.is_ok());
+        match result {
+            Ok(doc) => (doc.len_frames(), doc.source().warnings.clone()),
+            Err(_) => (0, Vec::new()),
+        }
+    }
+
+    #[test]
+    fn q367_truncated_flac_warns_and_opens_fewer_frames() {
+        let (frames, warnings) = open_flac("truncated", TRUNCATED);
+        assert!(warnings.iter().any(|w| w.contains("truncated")), "warnings: {warnings:?}");
+        assert!(frames > 0);
+        assert!(frames < 44100, "frames: {frames}");
+        // Complete frames decoded by the flac CLI (independent decoder).
+        assert_eq!(frames, 16384);
+    }
+
+    #[test]
+    fn q367_intact_flac_opens_fully_without_truncation_warning() {
+        let (frames, warnings) = open_flac("intact", FULL);
+        assert_eq!(frames, 44100);
+        assert!(!warnings.iter().any(|w| w.contains("truncated")), "warnings: {warnings:?}");
+    }
+
+    #[test]
+    fn q367_non_flac_count_mismatch_does_not_warn() {
+        let channels = 2u16;
+        let bits = 16u16;
+        let sample_rate = 44_100u32;
+        let block_align = channels * (bits / 8);
+        let samples = vec![0u8; 32];
+        let expected_data_len = samples.len() as u32 * 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + expected_data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&channels.to_le_bytes());
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(sample_rate * u32::from(block_align)).to_le_bytes());
+        bytes.extend_from_slice(&block_align.to_le_bytes());
+        bytes.extend_from_slice(&bits.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&expected_data_len.to_le_bytes());
+        bytes.extend_from_slice(&samples);
+
+        let actual_frames = samples.len() / usize::from(block_align);
+        let (frames, warnings) = open_wav("non-flac-count-mismatch", &bytes);
+        assert_eq!(frames, actual_frames as u64);
+        assert!(!warnings.iter().any(|w| w.contains("truncated")), "warnings: {warnings:?}");
+    }
 }

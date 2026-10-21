@@ -12,6 +12,9 @@
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
+//! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
+//! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)
+//! - `HISTORY_KEY up|down` → `OK cursor=<i>` (the panel's arrow keys)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
@@ -103,7 +106,7 @@ fn check_private(_path: &Path, meta: &std::fs::Metadata) -> std::io::Result<()> 
 
 /// Windows: an existing token file is used only when its DACL is protected (nothing inherited)
 /// and every allow entry is this process's user (by SID). Anything else is refused, as on Unix;
-/// it is never repaired, since others may already have read it (Hyperion's check of wavcraft#8).
+/// it is never repaired, since others may already have read it (the Windows dev machine's check of wavcraft#8).
 #[cfg(not(unix))]
 fn check_private(path: &Path, _meta: &std::fs::Metadata) -> std::io::Result<()> {
     match crate::win_acl::others_can_read(path)? {
@@ -213,7 +216,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Hyperion's check of wavcraft#8 (2026-10-19): on Windows an existing token file whose ACL
+    /// The Windows dev machine's check of wavcraft#8 (2026-10-19): on Windows an existing token file whose ACL
     /// lets others read it (inherited entries, or the Users group) is refused, not repaired.
     #[cfg(windows)]
     #[test]

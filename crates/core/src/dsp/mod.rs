@@ -7,4 +7,5 @@ pub mod echo;
 pub mod flanger;
 pub mod midside;
 pub mod pan;
+pub mod sci_filter;
 pub mod phaser;

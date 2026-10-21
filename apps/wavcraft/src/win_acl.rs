@@ -1,5 +1,5 @@
 //! Windows only: the control channel's token file is made owner-only, and checked to be, through
-//! the Win32 security API (wavcraft#8, Hyperion's check of CX-W5, 2026-10-19). The owner is the
+//! the Win32 security API (wavcraft#8, the Windows dev machine's check of CX-W5, 2026-10-19). The owner is the
 //! user in this process's token, by SID, never the USERNAME variables. This module is the app's
 //! one exception to "no `unsafe`" (README): each call below is a plain Win32 call with the
 //! pointers it documents, and every buffer the system allocates is freed here.
