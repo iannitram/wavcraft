@@ -244,3 +244,14 @@ fn data_shorter_than_its_header_opens_with_a_warning() {
         assert_eq!(opened.warnings(), &warnings[..], "{name}");
     }
 }
+
+/// #374: a tiny WAV declaring 65,535 channels is refused with an `OpenError`, not an allocation
+/// of gigabytes that aborts the process.
+#[test]
+fn a_huge_channel_count_is_an_open_error_not_an_abort() {
+    let dir = TempDir::new("channels");
+    let root = TempDir::new("channels-sessions");
+    let h = Header { channels: u16::MAX, rate: 48_000, block_align: u16::MAX, bits: 8, data_declared: 65_535 };
+    let result = open_bytes(&dir, "channels-65535.wav", &wav(h, 65_535), &root.0);
+    assert!(result.is_err(), "a 65,535-channel WAV opened");
+}

@@ -148,6 +148,8 @@ pub struct OpenOptions {
 const CHUNK_FRAMES: usize = BLOCK_FRAMES;
 /// How much of the file's start is read to tell its format.
 const HEAD_BYTES: u64 = 1 << 16;
+/// Maximum memory to allocate for scratch buffers in bytes (1 GiB).
+const MAX_SCRATCH_BYTES: usize = 1 << 30;
 
 /// Open `path` into a new session store. `progress` gets the fraction of the file read so far
 /// (0 to 1), now and then. If `cancel` becomes true, opening stops, the store and its folder are
@@ -258,12 +260,25 @@ struct Builder {
 }
 
 impl Builder {
-    fn new(store: &Store, channels: usize) -> Builder {
-        Builder {
-            store: store.clone(),
-            channels: (0..channels).map(|_| Channel::new()).collect(),
-            planes: (0..channels).map(|_| Vec::with_capacity(CHUNK_FRAMES)).collect(),
+    fn new(store: &Store, channels: usize) -> Result<Builder, OpenError> {
+        // Check if the memory usage would be excessive
+        let estimated_size = channels
+            .checked_mul(CHUNK_FRAMES)
+            .and_then(|n| n.checked_mul(4)) // 4 bytes per f32 sample
+            .ok_or_else(|| unsupported(format!("{channels} channels at once is more than WavCraft opens")))?;
+
+        if estimated_size > MAX_SCRATCH_BYTES {
+            return Err(unsupported(format!("{channels} channels at once is more than WavCraft opens")));
         }
+
+        let mut planes = Vec::new();
+        for _ in 0..channels {
+            let mut v = Vec::new();
+            v.try_reserve_exact(CHUNK_FRAMES).map_err(|_| OpenError::Io("not enough memory to open a file with this many channels".into()))?;
+            planes.push(v);
+        }
+
+        Ok(Builder { store: store.clone(), channels: (0..channels).map(|_| Channel::new()).collect(), planes })
     }
 
     /// Append what the planes hold as one block per channel, and empty them.
@@ -388,15 +403,22 @@ fn deinterleave(data: &[u8], kind: PcmKind, planes: &mut [Vec<f32>]) {
 /// Read `frames` frames of `kind` PCM from `data_start` into the store, a chunk at a time.
 fn stream_pcm(job: &mut Job<'_>, store: &Store, data_start: u64, frames: u64, kind: PcmKind, channels: usize) -> Result<Builder, OpenError> {
     job.check_space(store, frames, channels, false)?;
-    let mut b = Builder::new(store, channels);
-    let block = (kind.bytes() * channels) as u64;
-    let mut buf = vec![0u8; CHUNK_FRAMES * block as usize];
+
+    // Check buffer size before allocation
+    let block = (kind.bytes() * channels) as usize;
+    let buf_len = CHUNK_FRAMES.checked_mul(block).filter(|n| *n <= MAX_SCRATCH_BYTES).ok_or_else(|| unsupported("too many channels"))?;
+
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(buf_len).map_err(|_| OpenError::Io("not enough memory to open this file".into()))?;
+    buf.resize(buf_len, 0u8);
+
+    let mut b = Builder::new(store, channels)?;
     job.file.seek(SeekFrom::Start(data_start))?;
     let mut done = 0u64;
     while done < frames {
-        job.check(data_start + done * block)?;
+        job.check(data_start + done * block as u64)?;
         let n = (frames - done).min(CHUNK_FRAMES as u64) as usize;
-        let bytes = buf.get_mut(..n * block as usize).ok_or_else(|| OpenError::Io("chunk buffer".into()))?;
+        let bytes = buf.get_mut(..n * block).ok_or_else(|| OpenError::Io("chunk buffer".into()))?;
         job.file.read_exact(bytes)?;
         deinterleave(bytes, kind, &mut b.planes);
         b.flush()?;
@@ -944,7 +966,7 @@ fn decode_symphonia(
         if built.is_none() {
             // The decoded stream is authoritative for the channel count.
             src.channels = u16::try_from(ch).map_err(|_| unsupported("too many channels"))?;
-            built = Some(Builder::new(store, ch));
+            built = Some(Builder::new(store, ch)?);
         }
         let Some(b) = built.as_mut() else { break };
         if b.planes.len() != ch {
@@ -973,5 +995,8 @@ fn decode_symphonia(
     if src.channels == 0 {
         return Err(malformed("stream contains no audio"));
     }
-    Ok(built.unwrap_or_else(|| Builder::new(store, usize::from(src.channels))))
+    Ok(match built {
+        Some(b) => b,
+        None => Builder::new(store, usize::from(src.channels))?,
+    })
 }
