@@ -24,9 +24,63 @@ pub fn echo(input: &[f32], delay_samples: usize, feedback: f32, mix: f32) -> Vec
         .collect()
 }
 
+/// Converts a delay in milliseconds to a whole number of samples.
+///
+/// Rounds to the nearest sample (halves round up). Returns 0 when `ms` or
+/// `sample_rate` is non-finite, `ms` is negative, or `sample_rate` is not positive.
+pub fn ms_to_samples(ms: f32, sample_rate: f32) -> usize {
+    if !ms.is_finite() || !sample_rate.is_finite() || ms < 0.0 || sample_rate <= 0.0 {
+        return 0;
+    }
+    let samples = (ms * sample_rate / 1000.0).round();
+    if samples.is_finite() {
+        samples as usize
+    } else {
+        0
+    }
+}
+
+/// Applies the echo and appends `tail_samples` of silence first, so the last
+/// repeats are not cut. Output length is `input.len() + tail_samples`.
+pub fn echo_with_tail(input: &[f32], delay_samples: usize, feedback: f32, mix: f32, tail_samples: usize) -> Vec<f32> {
+    let mut padded = Vec::with_capacity(input.len().saturating_add(tail_samples));
+    padded.extend_from_slice(input);
+    padded.resize(input.len().saturating_add(tail_samples), 0.0);
+    echo(&padded, delay_samples, feedback, mix)
+}
+
+/// Delay and feedback for one channel of the stereo echo.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EchoChannel {
+    pub delay_samples: usize,
+    pub feedback: f32,
+}
+
+/// Applies the echo to interleaved stereo samples (L,R,L,R,...).
+///
+/// With `lock_left_right` the `left` settings drive both channels and `right`
+/// is ignored; otherwise each channel uses its own settings. For odd-length
+/// input the final unpaired sample is treated as a left sample (the right
+/// channel simply has one fewer sample). Output length equals input length.
+pub fn echo_stereo_interleaved(input: &[f32], left: EchoChannel, right: EchoChannel, mix: f32, lock_left_right: bool) -> Vec<f32> {
+    let right = if lock_left_right { left } else { right };
+    let left_in: Vec<f32> = input.iter().step_by(2).copied().collect();
+    let right_in: Vec<f32> = input.iter().skip(1).step_by(2).copied().collect();
+    let left_out = echo(&left_in, left.delay_samples, left.feedback, mix);
+    let right_out = echo(&right_in, right.delay_samples, right.feedback, mix);
+    let mut output = Vec::with_capacity(input.len());
+    for (index, &l) in left_out.iter().enumerate() {
+        output.push(l);
+        if let Some(&r) = right_out.get(index) {
+            output.push(r);
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
-    use super::echo;
+    use super::{echo, echo_stereo_interleaved, echo_with_tail, ms_to_samples, EchoChannel};
 
     fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
         assert_eq!(actual.len(), expected.len());
@@ -126,5 +180,94 @@ mod tests {
         let below = echo(&input, 3, 0.5, -1.0);
         assert_eq!(above, full);
         assert_eq!(below, input);
+    }
+
+    #[test]
+    fn ms_to_samples_exact() {
+        assert_eq!(ms_to_samples(5.0, 1000.0), 5);
+    }
+
+    #[test]
+    fn ms_to_samples_rounds_down_below_half() {
+        assert_eq!(ms_to_samples(0.4, 1000.0), 0);
+    }
+
+    #[test]
+    fn ms_to_samples_rounds_half_up() {
+        assert_eq!(ms_to_samples(0.5, 1000.0), 1);
+    }
+
+    #[test]
+    fn ms_to_samples_negative_is_zero() {
+        assert_eq!(ms_to_samples(-1.0, 48000.0), 0);
+    }
+
+    #[test]
+    fn ms_to_samples_nan_is_zero() {
+        assert_eq!(ms_to_samples(f32::NAN, 48000.0), 0);
+        assert_eq!(ms_to_samples(5.0, 0.0), 0);
+    }
+
+    #[test]
+    fn ms_delay_impulse_pattern() {
+        let mut input = vec![0.0; 16];
+        input[0] = 1.0;
+        let output = echo(&input, ms_to_samples(5.0, 1000.0), 0.5, 0.5);
+        let mut expected = vec![0.0; 16];
+        expected[0] = 1.0;
+        expected[5] = 0.25;
+        expected[10] = 0.125;
+        expected[15] = 0.0625;
+        assert_close(&output, &expected, 1e-6);
+    }
+
+    #[test]
+    fn stereo_locked_matches_mono_per_channel() {
+        let input = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let channel = EchoChannel { delay_samples: 2, feedback: 0.5 };
+        let ignored = EchoChannel { delay_samples: 1, feedback: 0.9 };
+        let output = echo_stereo_interleaved(&input, channel, ignored, 1.0, true);
+        assert_close(&output, &[1.0, 0.0, 0.0, 1.0, 0.5, 0.0, 0.0, 0.5, 0.25, 0.0], 1e-6);
+    }
+
+    #[test]
+    fn stereo_unlocked_is_independent() {
+        let input = [1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let left = EchoChannel { delay_samples: 1, feedback: 0.5 };
+        let right = EchoChannel { delay_samples: 2, feedback: 0.25 };
+        let output = echo_stereo_interleaved(&input, left, right, 1.0, false);
+        assert_close(&output, &[1.0, 1.0, 0.5, 0.0, 0.25, 0.25, 0.125, 0.0], 1e-6);
+    }
+
+    #[test]
+    fn stereo_odd_length_last_sample_is_left() {
+        let input = [1.0, 2.0, 0.0, 4.0, 0.5];
+        let channel = EchoChannel { delay_samples: 1, feedback: 0.5 };
+        let output = echo_stereo_interleaved(&input, channel, channel, 1.0, true);
+        assert_close(&output, &[1.0, 2.0, 0.5, 5.0, 0.75], 1e-6);
+    }
+
+    #[test]
+    fn stereo_empty_is_empty() {
+        let channel = EchoChannel { delay_samples: 1, feedback: 0.5 };
+        assert!(echo_stereo_interleaved(&[], channel, channel, 1.0, false).is_empty());
+    }
+
+    #[test]
+    fn tail_keeps_last_echoes() {
+        let mut input = vec![0.0; 4];
+        input[0] = 1.0;
+        let output = echo_with_tail(&input, 5, 0.5, 1.0, 15);
+        assert_eq!(output.len(), 19);
+        assert_eq!(output[0], 1.0);
+        assert_eq!(output[5], 0.5);
+        assert_eq!(output[10], 0.25);
+        assert_eq!(output[15], 0.125);
+    }
+
+    #[test]
+    fn zero_tail_matches_echo() {
+        let input = [0.3, -0.2, 0.9, 0.0, 0.5];
+        assert_eq!(echo_with_tail(&input, 2, 0.7, 0.6, 0), echo(&input, 2, 0.7, 0.6));
     }
 }
