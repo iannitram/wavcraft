@@ -180,19 +180,28 @@ impl History {
         if edit.is_noop() {
             return 0;
         }
-        self.push_with_change(edit.label, edit.state, edit.change)
+        self.push_with_change(edit.label, edit.state, edit.change, false)
+    }
+
+    /// Record a step that changes what is saved with the audio but not the audio (metadata):
+    /// unlike [`push`](Self::push) it is recorded although it shares every channel.
+    pub fn push_metadata(&mut self, label: impl Into<String>, state: DocState) -> usize {
+        self.push_with_change(label.into(), state, Change::None, true)
     }
 
     /// Make `state` the current step, after the cursor; any redo steps go. A state that is the
     /// current one (it shares every channel) records nothing. Returns how many old steps the cap
     /// dropped.
     pub fn push(&mut self, label: impl Into<String>, state: DocState) -> usize {
-        self.push_with_change(label.into(), state, Change::LengthFrom { frame: 0 })
+        self.push_with_change(label.into(), state, Change::LengthFrom { frame: 0 }, false)
     }
 
-    fn push_with_change(&mut self, label: String, state: DocState, change: Change) -> usize {
+    fn push_with_change(&mut self, label: String, state: DocState, change: Change, same_audio_ok: bool) -> usize {
         let cur = self.current();
-        if cur.channel_count() == state.channel_count() && cur.channels().iter().zip(state.channels()).all(|(a, b)| Arc::ptr_eq(a, b)) {
+        if !same_audio_ok
+            && cur.channel_count() == state.channel_count()
+            && cur.channels().iter().zip(state.channels()).all(|(a, b)| Arc::ptr_eq(a, b))
+        {
             return 0;
         }
         while self.steps.len() > self.cursor + 1 {
@@ -300,6 +309,26 @@ impl History {
         }
         self.steps.push(keep);
         self.cursor = 0;
+    }
+
+    /// Delete step `index` and every step after it (the History panel's delete). Each step is a
+    /// finished snapshot of the whole document, with no record of how to redo its edit on another
+    /// state, so a later step can't be kept without the step it builds on. Open (0) can't be
+    /// deleted. If the cursor was on a removed step it moves to the one before `index`. Returns
+    /// how many steps went, or `None` for step 0 or a step that doesn't exist.
+    pub fn delete_step(&mut self, index: usize) -> Option<usize> {
+        if index == 0 || index >= self.steps.len() {
+            return None;
+        }
+        let gone = self.steps.len() - index;
+        for step in self.steps.split_off(index) {
+            self.remove_counts(&step.state);
+        }
+        if self.cursor >= index {
+            self.cursor = index - 1;
+        }
+        self.current_bytes = self.current().disk_bytes_referenced();
+        Some(gone)
     }
 
     /// Whether a job that writes `bytes` may start: it must leave at least [`FREE_RESERVE`] free

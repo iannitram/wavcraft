@@ -14,7 +14,15 @@
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
+//! - `META get [field]` / `META set <field> <value>` → `OK <value>` / `OK changed=<0|1>` (one undo step "Edit Metadata" per set; `\r` and `\n` in a value are line breaks)
+//! - `CHNAME get` / `CHNAME set <ch from 1> <name>` → `OK <names>` / `OK changed=<0|1>` (channel names; one undo step "Edit Metadata"); `META set INFO.INAM <v>` (or any `INFO.XXXX`) sets a RIFF INFO tag
+//! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
+//! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)
+//! - `HISTORY_KEY up|down` → `OK cursor=<i>` (the panel's arrow keys)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `VIDEO attach <path>` → `OK` (the Video panel opens the file on a worker; `ERR` with no file open)
+//! - `VIDEO frame <seconds>` → `OK index=<i> size=<w>x<h> time=<t>` once the worker has decoded it, or `ERR <why>`
+//! - `VIDEO status` → `OK <text>` (what the panel says about the file); `VIDEO detach` → `OK`
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
@@ -105,7 +113,7 @@ fn check_private(_path: &Path, meta: &std::fs::Metadata) -> std::io::Result<()> 
 
 /// Windows: an existing token file is used only when its DACL is protected (nothing inherited)
 /// and every allow entry is this process's user (by SID). Anything else is refused, as on Unix;
-/// it is never repaired, since others may already have read it (Hyperion's check of wavcraft#8).
+/// it is never repaired, since others may already have read it (the Windows dev machine's check of wavcraft#8).
 #[cfg(not(unix))]
 fn check_private(path: &Path, _meta: &std::fs::Metadata) -> std::io::Result<()> {
     match crate::win_acl::others_can_read(path)? {
@@ -215,7 +223,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Hyperion's check of wavcraft#8 (2026-10-19): on Windows an existing token file whose ACL
+    /// The Windows dev machine's check of wavcraft#8 (2026-10-19): on Windows an existing token file whose ACL
     /// lets others read it (inherited entries, or the Users group) is refused, not repaired.
     #[cfg(windows)]
     #[test]

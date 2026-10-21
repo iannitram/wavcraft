@@ -347,7 +347,7 @@ proptest! {
     }
 }
 
-/// W1 (the Legion Go's verification, 2026-10-15): a Crop of an empty range, at the end of the file
+/// W1 (the Linux handheld's verification, 2026-10-15): a Crop of an empty range, at the end of the file
 /// (`s == len`, what the property test kept drawing) and in the middle (`s == e`), leaves a
 /// non-empty document unchanged and adds no history step, in the edit and in the model; so do
 /// Delete and Cut of an empty range. Fixed inputs, no random draw (`plan/tasks/audition-check.md`,
@@ -657,8 +657,8 @@ fn frames_dur(frames: u64) -> Duration {
 ///
 /// **These hold for a full-scale sine at 1 kHz and above only** (the tests use 1 kHz), not for
 /// any audio. Lower down, the sine's own largest step shrinks while the 2 ms fade's slope does
-/// not, so the ratio grows without any discontinuity: the Legion Go measured Delete at 1.43 × at
-/// 220 Hz and 4.12 × at 50 Hz, Paste at 1.10 × and 1.43 × (`verification-by-legiongo.md` W6,
+/// not, so the ratio grows without any discontinuity: a Linux handheld measured Delete at 1.43 × at
+/// 220 Hz and 4.12 × at 50 Hz, Paste at 1.10 × and 1.43 × (the Linux handheld review's W6,
 /// 2026-10-16). At 50 Hz that step is about 0.027 of full scale, which is the fade's own slope,
 /// not a click. A test of "no click" at low frequencies needs another measure (for example the
 /// step against the fade's slope); none is written yet.
@@ -791,7 +791,7 @@ fn one_channel_crop_silences_outside_and_keeps_the_length() {
             let ru = r.start as usize..r.end as usize;
             let what = format!("crop {r:?} channel {ch}");
             let ed = edit::crop(&doc, r.clone(), ChannelMask::only(ch), NONE).unwrap();
-            assert_eq!(ed.label, edit::CROP);
+            assert_eq!(ed.label, edit::CROP_AUDIO);
             assert_eq!(ed.change, Change::SameLength { range: 0..len, channels: ChannelMask::only(ch) }, "{what}");
             assert_eq!(ed.state.len_frames(), len, "{what}");
             assert!(std::sync::Arc::ptr_eq(&ed.state.channels()[other], &doc.channels()[other]), "{what}");
@@ -844,7 +844,7 @@ fn one_channel_paste_overwrites_and_keeps_the_length() {
                 let (f, t) = (r.start, (r.start + clip.len_frames() as usize).min(frames));
                 let what = format!("paste {at:?} channel {ch}, a {}-channel clip", clip.channel_count());
                 let ed = edit::paste(&doc, at.clone(), clip, mask, NONE).unwrap();
-                assert_eq!(ed.label, edit::PASTE);
+                assert_eq!(ed.label, edit::PASTE_AUDIO);
                 assert_eq!(ed.change, Change::SameLength { range: f as u64..t as u64, channels: mask }, "{what}");
                 assert_eq!(ed.state.len_frames(), len, "{what}");
                 assert!(std::sync::Arc::ptr_eq(&ed.state.channels()[other], &doc.channels()[other]), "{what}");
@@ -1000,4 +1000,62 @@ fn history_clear_go_to_labels_and_space() {
     assert!(e.to_string().starts_with("needs 3.0 GB, 5.0 GB free"));
     let h = h.with_free_space(|_| None);
     assert!(h.can_afford(u64::MAX).is_ok());
+}
+
+/// Audition-style names for the one-channel (some channels) Crop, Cut and Paste (f15).
+#[test]
+fn some_channel_labels_say_audio() {
+    let dir = TempDir::new("lbl");
+    let s = store(&dir.0.join("s"), 1 << 20);
+    let doc = doc_from(&s, &data(2, 10_000, 3), 2_000);
+    let (all, clip) = edit::cut(&doc, 100..200, ChannelMask::ALL, NONE).unwrap();
+    assert_eq!(all.label, "Cut");
+    let (one, clip1) = edit::cut(&doc, 100..200, ChannelMask::only(0), NONE).unwrap();
+    assert_eq!(one.label, "Cut Audio");
+    assert_eq!(edit::paste(&doc, PasteAt::Insert(5), &clip, ChannelMask::ALL, NONE).unwrap().label, "Paste");
+    assert_eq!(edit::paste(&doc, PasteAt::Insert(5), &clip1, ChannelMask::only(1), NONE).unwrap().label, "Paste Audio");
+    assert_eq!(edit::crop(&doc, 10..500, ChannelMask::ALL, NONE).unwrap().label, "Crop");
+    assert_eq!(edit::crop(&doc, 10..500, ChannelMask::only(1), NONE).unwrap().label, "Crop Audio");
+    // A no-op keeps the plain name (it records nothing anyway).
+    assert_eq!(edit::delete(&doc, 100..200, ChannelMask::only(1), NONE).unwrap().label, "Delete Audio");
+}
+
+/// Deleting a history state removes it and every later state; Open can't go (f15).
+#[test]
+fn history_delete_step_drops_it_and_later_steps() {
+    let dir = TempDir::new("hdel");
+    let s = store(&dir.0.join("s"), 1 << 20);
+    let doc = doc_from(&s, &data(2, 10_000, 5), 2_000);
+    let mut h = History::new(doc.clone(), u64::MAX);
+    let mut states = vec![h.current().clone()];
+    for r in [100..200u64, 300..400, 500..600, 700..800] {
+        let ed = edit::delete(h.current(), r, ChannelMask::ALL, NONE).unwrap();
+        h.push_edit(ed);
+        states.push(h.current().clone());
+    }
+    assert_eq!(h.steps().len(), 5);
+    assert_eq!(h.delete_step(0), None, "Open stays");
+    assert_eq!(h.delete_step(9), None, "no such step");
+    // The cursor is on step 4. Delete step 3: steps 3 and 4 go; the cursor moves to 2.
+    let removed = h.delete_step(3).unwrap();
+    assert_eq!(removed, 2);
+    assert_eq!(h.steps().len(), 3);
+    assert_eq!(h.cursor(), 2);
+    assert!(std::sync::Arc::ptr_eq(h.current(), &states[2]));
+    assert!(!h.can_redo());
+    // With the cursor before the deleted step, the cursor stays.
+    h.go_to(1).unwrap();
+    assert_eq!(h.delete_step(2), Some(1));
+    assert_eq!(h.cursor(), 1);
+    assert!(std::sync::Arc::ptr_eq(h.current(), &states[1]));
+    // Block counts follow: only the blocks of Open and step 1 are held.
+    let mut want = History::new(doc.clone(), u64::MAX);
+    want.push_edit(edit::delete(want.current(), 100..200, ChannelMask::ALL, NONE).unwrap());
+    assert_eq!(h.held_bytes(), want.held_bytes());
+    assert_eq!(h.held_blocks().len(), want.held_blocks().len());
+    // Deleting the cursor's own step falls back to the one before.
+    assert_eq!(h.delete_step(1), Some(1));
+    assert_eq!(h.cursor(), 0);
+    assert!(std::sync::Arc::ptr_eq(h.current(), &states[0]));
+    assert_eq!(h.held_bytes(), 0);
 }
