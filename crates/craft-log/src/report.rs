@@ -755,7 +755,8 @@ mod tests {
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let t0 = Instant::now();
-        let got = first_line_of(&script, &[], Duration::from_millis(300));
+        // run it through sh rather than exec: another test's fork can briefly hold the just-written file open (ETXTBSY)
+        let got = first_line_of(Path::new("/bin/sh"), &[script.to_str().unwrap()], Duration::from_millis(300));
         assert_eq!(got.as_deref(), Ok("hi"));
         assert!(t0.elapsed() < Duration::from_secs(2), "call took {:?}", t0.elapsed());
         let _ = std::fs::remove_dir_all(&dir);
