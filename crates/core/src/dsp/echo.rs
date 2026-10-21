@@ -26,18 +26,15 @@ pub fn echo(input: &[f32], delay_samples: usize, feedback: f32, mix: f32) -> Vec
 
 /// Converts a delay in milliseconds to a whole number of samples.
 ///
-/// Rounds to the nearest sample (halves round up). Returns 0 when `ms` or
-/// `sample_rate` is non-finite, `ms` is negative, or `sample_rate` is not positive.
+/// Rounds to the nearest sample (halves round up), computing in f64. Returns 0 when `ms` or
+/// `sample_rate` is non-finite, `ms` is negative, or `sample_rate` is not positive; a result
+/// above `usize::MAX` saturates to `usize::MAX`.
 pub fn ms_to_samples(ms: f32, sample_rate: f32) -> usize {
     if !ms.is_finite() || !sample_rate.is_finite() || ms < 0.0 || sample_rate <= 0.0 {
         return 0;
     }
-    let samples = (ms * sample_rate / 1000.0).round();
-    if samples.is_finite() {
-        samples as usize
-    } else {
-        0
-    }
+    let samples = (f64::from(ms) * f64::from(sample_rate) / 1000.0).round();
+    samples as usize
 }
 
 /// Applies the echo and appends `tail_samples` of silence first, so the last
@@ -269,5 +266,34 @@ mod tests {
     fn zero_tail_matches_echo() {
         let input = [0.3, -0.2, 0.9, 0.0, 0.5];
         assert_eq!(echo_with_tail(&input, 2, 0.7, 0.6, 0), echo(&input, 2, 0.7, 0.6));
+    }
+
+    #[test]
+    fn ms_to_samples_huge_product_saturates() {
+        assert_eq!(ms_to_samples(1e30, 1e30), usize::MAX);
+    }
+
+    #[test]
+    fn ms_to_samples_f32_overflowing_product_saturates() {
+        assert_eq!(ms_to_samples(2e19, 2e19), usize::MAX);
+    }
+
+    #[test]
+    fn ms_to_samples_max_ms_saturates() {
+        assert_eq!(ms_to_samples(f32::MAX, 48000.0), usize::MAX);
+    }
+
+    #[test]
+    fn ms_to_samples_one_second_at_48k() {
+        assert_eq!(ms_to_samples(1000.0, 48000.0), 48000);
+    }
+
+    #[test]
+    fn ms_to_samples_non_finite_inputs_are_zero() {
+        assert_eq!(ms_to_samples(5.0, f32::INFINITY), 0);
+        assert_eq!(ms_to_samples(5.0, f32::NEG_INFINITY), 0);
+        assert_eq!(ms_to_samples(5.0, f32::NAN), 0);
+        assert_eq!(ms_to_samples(f32::INFINITY, 48000.0), 0);
+        assert_eq!(ms_to_samples(f32::NAN, 48000.0), 0);
     }
 }
