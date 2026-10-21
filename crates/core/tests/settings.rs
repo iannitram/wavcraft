@@ -105,7 +105,7 @@ fn concurrent_saves_do_not_share_temp_files() {
     for worker in 0..8 {
         let file = Arc::clone(&file);
         threads.push(thread::spawn(move || {
-            let settings = Settings { session_folder: Some(PathBuf::from(format!("/w{worker}"))) };
+            let settings = Settings { session_folder: Some(PathBuf::from(format!("/w{worker}"))), ..Default::default() };
             for _ in 0..4 {
                 settings.save(&file).unwrap();
             }
