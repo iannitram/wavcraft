@@ -1203,6 +1203,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2711,6 +2713,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-video"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "image",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "spirv"
 version = "0.4.0+sdk-1.4.341.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3277,6 +3289,7 @@ dependencies = [
  "egui",
  "log",
  "rfd",
+ "soundcraft-video",
  "wavcraft-core",
  "windows-sys 0.61.2",
 ]
