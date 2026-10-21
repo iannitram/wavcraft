@@ -80,7 +80,7 @@ impl Default for TapTempo {
 /// Intervals are the differences between consecutive sorted taps.
 /// If fewer than 2 taps remain after dropping non-finite values, return None.
 /// The median of the intervals is taken (for an even count, the mean of the two middle values).
-/// If the median interval is not strictly positive, return None.
+/// If the median interval is not finite or not strictly positive, return None.
 /// Otherwise return Some(60000.0 / median_interval_ms).
 ///
 /// # Arguments
@@ -113,8 +113,8 @@ pub fn bpm_from_taps(taps_ms: &[f64]) -> Option<f64> {
     // Calculate median interval
     let median_interval = median(&sorted_intervals);
 
-    // If median interval is not strictly positive, return None
-    if median_interval <= 0.0 {
+    // If the median interval is infinite (overflowed) or not strictly positive, return None
+    if !median_interval.is_finite() || median_interval <= 0.0 {
         return None;
     }
 
@@ -320,5 +320,20 @@ mod tests {
         assert_eq!(tap_tempo.tap_count(), 3);
         assert_eq!(tap_tempo.tap(2601.0), None);
         assert_eq!(tap_tempo.tap_count(), 1);
+    }
+
+    #[test]
+    fn extreme_finite_taps_overflowing_interval_is_none() {
+        assert_eq!(bpm_from_taps(&[-f64::MAX, f64::MAX]), None);
+    }
+
+    #[test]
+    fn overflowing_interval_with_zero_interval_is_none() {
+        assert_eq!(bpm_from_taps(&[-f64::MAX, f64::MAX, f64::MAX]), None);
+    }
+
+    #[test]
+    fn ordinary_taps_still_give_their_bpm_after_overflow_guard() {
+        assert_eq!(bpm_from_taps(&[0.0, 500.0, 1000.0]), Some(120.0));
     }
 }
