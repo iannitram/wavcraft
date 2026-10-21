@@ -1,3 +1,29 @@
+/// Maximum feedback gain (roadmap row B043: feedback 0..0.95).
+pub const MAX_FEEDBACK: f32 = 0.95;
+
+/// Applies a feedback delay to mono samples.
+pub fn echo(input: &[f32], delay_samples: usize, feedback: f32, mix: f32) -> Vec<f32> {
+    if delay_samples == 0 {
+        return input.to_vec();
+    }
+
+    let feedback = if feedback.is_nan() { 0.0 } else { feedback.clamp(0.0, MAX_FEEDBACK) };
+    let mix = if mix.is_nan() { 0.0 } else { mix.clamp(0.0, 1.0) };
+    let mut wet = vec![0.0; input.len()];
+    input
+        .iter()
+        .enumerate()
+        .map(|(index, &sample)| {
+            let delayed = index.checked_sub(delay_samples).and_then(|previous| wet.get(previous).copied()).unwrap_or(0.0);
+            let wet_sample = sample + feedback * delayed;
+            if let Some(slot) = wet.get_mut(index) {
+                *slot = wet_sample;
+            }
+            (1.0 - mix) * sample + mix * wet_sample
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::echo;
@@ -45,9 +71,25 @@ mod tests {
             let mut input = vec![0.0; 5];
             input[0] = 1.0;
             let output = echo(&input, 1, feedback, 1.0);
-            assert_close(&output, &[1.0, 0.99, 0.9801, 0.970299, 0.96059601], 1e-5);
+            assert_close(&output, &[1.0, 0.95, 0.9025, 0.857375, 0.81450625], 1e-5);
             assert!(output.iter().all(|sample| sample.is_finite()));
         }
+    }
+
+    #[test]
+    fn feedback_exactly_max_is_unchanged() {
+        let mut input = vec![0.0; 5];
+        input[0] = 1.0;
+        let output = echo(&input, 1, super::MAX_FEEDBACK, 1.0);
+        assert_close(&output, &[1.0, 0.95, 0.9025, 0.857375, 0.81450625], 1e-5);
+    }
+
+    #[test]
+    fn feedback_above_max_is_clamped_to_max() {
+        let mut input = vec![0.0; 5];
+        input[0] = 1.0;
+        let output = echo(&input, 1, 0.96, 1.0);
+        assert_close(&output, &[1.0, 0.95, 0.9025, 0.857375, 0.81450625], 1e-5);
     }
 
     #[test]
@@ -85,30 +127,4 @@ mod tests {
         assert_eq!(above, full);
         assert_eq!(below, input);
     }
-}
-
-/// Maximum feedback gain.
-pub const MAX_FEEDBACK: f32 = 0.99;
-
-/// Applies a feedback delay to mono samples.
-pub fn echo(input: &[f32], delay_samples: usize, feedback: f32, mix: f32) -> Vec<f32> {
-    if delay_samples == 0 {
-        return input.to_vec();
-    }
-
-    let feedback = if feedback.is_nan() { 0.0 } else { feedback.clamp(0.0, MAX_FEEDBACK) };
-    let mix = if mix.is_nan() { 0.0 } else { mix.clamp(0.0, 1.0) };
-    let mut wet = vec![0.0; input.len()];
-    input
-        .iter()
-        .enumerate()
-        .map(|(index, &sample)| {
-            let delayed = index.checked_sub(delay_samples).and_then(|previous| wet.get(previous).copied()).unwrap_or(0.0);
-            let wet_sample = sample + feedback * delayed;
-            if let Some(slot) = wet.get_mut(index) {
-                *slot = wet_sample;
-            }
-            (1.0 - mix) * sample + mix * wet_sample
-        })
-        .collect()
 }
