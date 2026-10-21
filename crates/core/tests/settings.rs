@@ -2,6 +2,8 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread;
 
 use wavcraft_core::settings::{FolderSource, Settings, check_folder, resolve_session_folder};
 
@@ -88,4 +90,27 @@ fn check_folder_makes_a_missing_folder_and_leaves_no_probe_behind() {
     assert!(target.is_dir());
     assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
     assert!(check_folder(Path::new("")).is_err());
+}
+
+#[test]
+fn concurrent_saves_do_not_share_temp_files() {
+    let dir = TempDir::new("concurrent-saves");
+    let file = Arc::new(dir.0.join("settings.txt"));
+    let mut threads = Vec::new();
+    for worker in 0..8 {
+        let file = Arc::clone(&file);
+        threads.push(thread::spawn(move || {
+            let settings = Settings { session_folder: Some(PathBuf::from(format!("/w{worker}"))) };
+            for _ in 0..4 {
+                settings.save(&file).unwrap();
+            }
+            settings
+        }));
+    }
+
+    let writers: Vec<_> = threads.into_iter().map(|thread| thread.join().unwrap()).collect();
+    let text = std::fs::read_to_string(&*file).unwrap();
+    assert!(writers.iter().any(|settings| settings.to_text() == text), "{text}");
+    let entries: Vec<_> = std::fs::read_dir(&dir.0).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    assert_eq!(entries, vec![std::ffi::OsString::from("settings.txt")]);
 }
