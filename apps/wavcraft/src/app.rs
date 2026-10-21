@@ -14,7 +14,7 @@ use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
 use crate::player::Player;
@@ -890,23 +890,92 @@ impl WaveApp {
         }
     }
 
-    /// `GESTURE hand_drag <dx_px>` | `zoom_click <frame> [out]` | `ruler_rdrag <start> <end>`: the
-    /// mouse gestures of the navigation tools, through the same code the pointer uses.
+    /// Shift+Left/Right/Home/End extend the selection (taken before the action table, whose
+    /// Home and End would otherwise also fire).
+    fn selection_keys(&mut self, ctx: &egui::Context) {
+        let Some(frames) = self.doc.as_ref().map(|d| d.frames()) else { return };
+        let step = self.view.frames_per_px.round().max(1.0) as i64;
+        let pressed = |k: Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, k));
+        for (key, name) in [(Key::ArrowLeft, "shift_left"), (Key::ArrowRight, "shift_right"), (Key::Home, "shift_home"), (Key::End, "shift_end")] {
+            if pressed(key) {
+                self.gesture(name, step, frames);
+            }
+        }
+    }
+
+    /// The selection gestures by name, shared by the keys and the control channel.
+    fn gesture(&mut self, name: &str, step: i64, frames: usize) -> bool {
+        match name {
+            "shift_left" => self.selection.extend_by(-step, frames),
+            "shift_right" => self.selection.extend_by(step, frames),
+            "shift_home" => self.selection.extend_edge_to(0, frames),
+            "shift_end" => self.selection.extend_edge_to(frames, frames),
+            _ => return false,
+        }
+        self.view.reveal(self.selection.head as f64, self.editor_width, frames);
+        true
+    }
+
+    /// Answer `GESTURE <name> [args]` (see `control.rs`): the selection gestures at a frame, as
+    /// the editor would see them, and the mouse gestures of the navigation tools
+    /// (`hand_drag <dx_px>`, `zoom_click <frame> [out]`, `ruler_rdrag <start> <end>`), through
+    /// the same code the pointer uses.
     fn control_gesture(&mut self, rest: &str) -> String {
         let frames = self.doc.as_ref().map_or(0, Document::frames);
-        if frames == 0 {
-            return "ERR no file is open".to_string();
-        }
-        let width = self.editor_width.max(1.0);
+        let mut it = rest.split_whitespace();
+        let name = it.next().unwrap_or("");
+        let nums: Vec<usize> = it.map_while(|w| w.parse().ok()).collect();
+        let at = |i: usize| nums.get(i).copied().map(|f| f.min(frames));
+        // Navigation gestures answer with the view they leave.
+        let nav_width = self.editor_width.max(1.0);
         let words: Vec<&str> = rest.split_whitespace().collect();
         let num = |i: usize| words.get(i).and_then(|w| w.parse::<f64>().ok()).filter(|n| n.is_finite());
-        match (words.first().copied(), num(1), num(2)) {
-            (Some("hand_drag"), Some(dx), _) => self.view.drag_by(dx as f32, width, frames),
-            (Some("zoom_click"), Some(frame), _) => self.view.zoom_click(frame, words.get(2) == Some(&"out"), width, frames),
-            (Some("ruler_rdrag"), Some(a), Some(b)) => self.view.zoom_to_range(a, b, width, frames),
-            _ => return "ERR GESTURE hand_drag <dx_px> | zoom_click <frame> [out] | ruler_rdrag <start> <end>".to_string(),
+        if frames == 0 && matches!(name, "hand_drag" | "zoom_click" | "ruler_rdrag") {
+            return "ERR no file is open".to_string();
         }
-        format!("OK view={:.0}-{:.0}", self.view.start, self.view.end(width))
+        let nav = match (name, num(1), num(2)) {
+            ("hand_drag", Some(dx), _) => {
+                self.view.drag_by(dx as f32, nav_width, frames);
+                true
+            }
+            ("zoom_click", Some(frame), _) => {
+                self.view.zoom_click(frame, words.get(2) == Some(&"out"), nav_width, frames);
+                true
+            }
+            ("ruler_rdrag", Some(a), Some(b)) => {
+                self.view.zoom_to_range(a, b, nav_width, frames);
+                true
+            }
+            _ => false,
+        };
+        if nav {
+            return format!("OK view={:.0}-{:.0}", self.view.start, self.view.end(nav_width));
+        }
+        match (name, at(0)) {
+            ("shift_click", Some(f)) => self.selection.extend_to(f),
+            ("double_click", _) => self.selection = Selection::visible(&self.view, self.editor_width, frames),
+            ("triple_click", _) => self.selection = Selection::all(frames),
+            // Press near an edge at <from>, drag to <to>.
+            ("edge_drag", Some(from)) => {
+                let (Some(to), true) = (at(1), self.view.frames_per_px > 0.0) else { return "ERR GESTURE edge_drag <from> <to>".to_string() };
+                match self.selection.edge_near(&self.view, self.view.x_of(from as f64), GRAB_PX) {
+                    Some(edge) => {
+                        self.selection.grab(edge);
+                        self.selection.head = to;
+                    }
+                    None => return format!("ERR no selection edge near frame {from}"),
+                }
+            }
+            ("shift_left" | "shift_right", _) => {
+                let step = at(0).map_or(1, |n| n as i64);
+                self.gesture(name, step, frames);
+            }
+            ("shift_home" | "shift_end", _) => {
+                self.gesture(name, 0, frames);
+            }
+            _ => return "ERR GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end | hand_drag <dx_px> | zoom_click <frame> [out] | ruler_rdrag <start> <end>".to_string(),
+        }
+        format!("OK selection={}-{}", self.selection.start(), self.selection.end())
     }
 
     /// Answer one control-channel line (see `control.rs`).
@@ -955,6 +1024,7 @@ impl WaveApp {
                     _ => "ERR SELECT <start> <end>, in frames".to_string(),
                 }
             }
+            "GESTURE" => self.control_gesture(rest),
             "ACTION" => match actions::by_name(rest) {
                 Some(a) => match self.run_action(a.id, ctx) {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
@@ -974,7 +1044,6 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
-            "GESTURE" => self.control_gesture(rest),
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
@@ -1289,7 +1358,15 @@ impl WaveApp {
         }
         self.view.clamp(width, frames);
 
+        // Select tool: click places the cursor, drag selects; near a selection edge a drag adjusts
+        // it, Shift-click extends, double-click selects what is on screen, triple-click everything.
         let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
+        let edge_at = |sel: &Selection, view: &Viewport, pos: Pos2| sel.edge_near(view, pos.x - rect.left(), GRAB_PX);
+        if let Some(pos) = response.hover_pos().or(response.interact_pointer_pos())
+            && edge_at(&self.selection, &self.view, pos).is_some()
+        {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
         let ruler_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
         if response.drag_started() {
             self.drag_origin = ui.input(|i| i.pointer.press_origin()).or_else(|| response.interact_pointer_pos());
@@ -1317,8 +1394,9 @@ impl WaveApp {
             self.view.zoom_click(self.view.frame_at(pos.x - rect.left()), out, width, frames);
         }
 
-        // Select tool: click places the cursor, drag selects (primary button only).
+        // Selection gestures belong to the Select tool, primary button only.
         let select = self.tool == Tool::Select;
+        let shift = ui.input(|i| i.modifiers.shift);
         if select
             && response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
@@ -1326,17 +1404,32 @@ impl WaveApp {
             // A drag is only reported once the pointer has moved a few pixels: anchor the
             // selection where the button went down, not where the pointer has got to.
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
-            self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
+            if let Some(edge) = edge_at(&self.selection, &self.view, origin) {
+                self.selection.grab(edge);
+                self.selection.head = frame_at(&self.view, pos);
+            } else if shift {
+                self.selection.extend_to(frame_at(&self.view, pos));
+            } else {
+                self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
+            }
         } else if select
             && response.dragged_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             self.selection.head = frame_at(&self.view, pos);
+        } else if select && response.triple_clicked_by(egui::PointerButton::Primary) {
+            self.selection = Selection::all(frames);
+        } else if select && response.double_clicked_by(egui::PointerButton::Primary) {
+            self.selection = Selection::visible(&self.view, width, frames);
         } else if select
             && response.clicked_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
-            self.selection = Selection::at(frame_at(&self.view, pos));
+            if shift {
+                self.selection.extend_to(frame_at(&self.view, pos));
+            } else {
+                self.selection = Selection::at(frame_at(&self.view, pos));
+            }
         }
 
         let (start, end) = (self.view.start, self.view.end(width));
@@ -1476,6 +1569,7 @@ impl eframe::App for WaveApp {
         {
             self.error = Some(e);
         }
+        self.selection_keys(&ctx);
         // Up and Down belong to the History panel while one of its rows has focus (before the
         // action table gets them: there they pick the left or right channel).
         if self.history_focus && self.saving.is_none() {
