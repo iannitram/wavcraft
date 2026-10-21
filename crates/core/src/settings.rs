@@ -79,8 +79,10 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
-        out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\n");
-        out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}\n", self.hidden_panels.join(",")));
+        if !self.hidden_panels.is_empty() {
+            out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\n");
+            out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}\n", self.hidden_panels.join(",")));
+        }
         out
     }
 
@@ -344,5 +346,25 @@ mod tests {
         assert!(!second.exists());
         let _ = std::fs::remove_dir_all(&folder);
         Ok(())
+    }
+
+    #[test]
+    fn empty_hidden_panels_keep_the_old_file_format() {
+        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: Vec::new() };
+        assert_eq!(
+            settings.to_text(),
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
+        );
+    }
+
+    #[test]
+    fn hidden_panels_are_written_and_read_back() {
+        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: vec!["history".to_string(), "waveform".to_string()] };
+        let text = settings.to_text();
+        assert_eq!(
+            text,
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\nhidden_panels = history,waveform\n"
+        );
+        assert_eq!(Settings::parse(&text), settings);
     }
 }
