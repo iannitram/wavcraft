@@ -1,8 +1,8 @@
 //! Scientific analogue-prototype filters realised as bilinear-transform biquad cascades.
 //!
 //! Butterworth, Chebyshev I, Chebyshev II, and Bessel lowpass and highpass filters are
-//! implemented. Bessel orders 2..=4 use tabulated normalised poles; Bessel orders above
-//! four are deferred. Bandpass, bandstop, and elliptic filters are deferred because they
+//! implemented. Bessel orders 2..=8 use tabulated normalised poles; Bessel orders above
+//! eight are deferred. Bandpass, bandstop, and elliptic filters are deferred because they
 //! are not part of the feature-log row. An invalid sample rate or cutoff returns an empty
 //! design, and `process_filter` consequently returns the dry input. NaN parameters are
 //! treated as invalid for the design (ripple and attenuation NaNs use safe defaults).
@@ -57,7 +57,29 @@ fn bessel_poles(order: usize) -> Option<&'static [Complex]> {
     const N2: [Complex; 1] = [Complex { re: -1.5, im: 0.8660254 }];
     const N3: [Complex; 2] = [Complex { re: -1.838907, im: 1.754381 }, Complex { re: -2.322185, im: 0.0 }];
     const N4: [Complex; 2] = [Complex { re: -2.103789, im: 2.657419 }, Complex { re: -2.896211, im: 0.867235 }];
-    match order { 2 => Some(&N2), 3 => Some(&N3), 4 => Some(&N4), _ => None }
+    const N5: [Complex; 3] = [
+        Complex { re: -3.351956399, im: 1.742661416 },
+        Complex { re: -2.324674303, im: 3.571022920 },
+        Complex { re: -3.646738595, im: 0.0 },
+    ];
+    const N6: [Complex; 3] = [
+        Complex { re: -4.248359396, im: 0.8675096732 },
+        Complex { re: -3.735708356, im: 2.626272311 },
+        Complex { re: -2.515932248, im: 4.492672954 },
+    ];
+    const N7: [Complex; 4] = [
+        Complex { re: -4.758290528, im: 1.739286061 },
+        Complex { re: -4.070139164, im: 3.517174048 },
+        Complex { re: -2.685676879, im: 5.420694131 },
+        Complex { re: -4.971786859, im: 0.0 },
+    ];
+    const N8: [Complex; 4] = [
+        Complex { re: -5.587886043, im: 0.8676144454 },
+        Complex { re: -5.204840791, im: 2.616175153 },
+        Complex { re: -4.368289217, im: 4.414442500 },
+        Complex { re: -2.838983949, im: 6.353911299 },
+    ];
+    match order { 2 => Some(&N2), 3 => Some(&N3), 4 => Some(&N4), 5 => Some(&N5), 6 => Some(&N6), 7 => Some(&N7), 8 => Some(&N8), _ => None }
 }
 
 fn prototype_poles(family: FilterFamily, order: usize, ripple_db: f64, stopband_db: f64) -> Option<(Vec<Complex>, Vec<f64>, f64)> {
@@ -225,4 +247,38 @@ mod tests {
     #[test] fn zero_length_input_is_empty() { assert!(process_filter(&[], &filter(FilterFamily::Butterworth, ResponseType::Lowpass, 2)).is_empty()); }
     #[test] fn bounded_input_bounded_output() { let input = vec![1.0; 256]; let output = process_filter(&input, &filter(FilterFamily::Butterworth, ResponseType::Lowpass, 4)); assert!(output.iter().all(|sample| sample.abs() <= 2.0)); }
     #[test] fn output_has_no_nan() { let output = process_filter(&[f32::NAN, 0.5, f32::INFINITY], &filter(FilterFamily::Butterworth, ResponseType::Lowpass, 2)); assert!(output.iter().all(|sample| sample.is_finite())); }
+    #[test]
+    fn bessel_orders_5_to_8_have_one_section_per_conjugate_pair_and_real_pole() {
+        for order in 5..=8 {
+            let sections = filter(FilterFamily::Bessel, ResponseType::Lowpass, order);
+            assert_eq!(sections.len(), order.div_ceil(2));
+        }
+    }
+    #[test]
+    fn bessel_orders_5_to_8_have_unity_dc_gain() {
+        for order in 5..=8 {
+            let sections = filter(FilterFamily::Bessel, ResponseType::Lowpass, order);
+            assert_close(magnitude_response_db(&sections, 0.0, 48000.0), 0.0, 0.005);
+        }
+    }
+    #[test]
+    fn bessel_orders_5_to_8_magnitude_matches_reference() {
+        // (order, dB at 500/1000/2000 Hz for fc 1000 Hz at fs 48000 Hz, dB at 2500/5000/10000 Hz for fc 5000 Hz at fs 44100 Hz)
+        let cases: [(usize, [f64; 3], [f64; 3]); 4] = [
+            (5, [-0.120619, -0.486501, -2.019258], [-0.113158, -0.486501, -2.737011]),
+            (6, [-0.098616, -0.396843, -1.628028], [-0.092520, -0.396843, -2.192142]),
+            (7, [-0.083412, -0.335254, -1.367816], [-0.078258, -0.335254, -1.836462]),
+            (8, [-0.072274, -0.290278, -1.180635], [-0.067809, -0.290278, -1.582734]),
+        ];
+        for (order, low, high) in cases {
+            let low_sections = design_filter(FilterFamily::Bessel, ResponseType::Lowpass, order, 1000.0, 48000.0, 1.0, 40.0);
+            for (freq, expected) in [500.0, 1000.0, 2000.0].into_iter().zip(low) {
+                assert_close(magnitude_response_db(&low_sections, freq, 48000.0), expected, 0.005);
+            }
+            let high_sections = design_filter(FilterFamily::Bessel, ResponseType::Lowpass, order, 5000.0, 44100.0, 1.0, 40.0);
+            for (freq, expected) in [2500.0, 5000.0, 10000.0].into_iter().zip(high) {
+                assert_close(magnitude_response_db(&high_sections, freq, 44100.0), expected, 0.005);
+            }
+        }
+    }
 }
