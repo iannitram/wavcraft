@@ -20,6 +20,7 @@ pub mod doc;
 pub mod document;
 pub mod dsp;
 pub mod io;
+pub mod mix;
 pub mod random;
 pub mod save;
 pub mod settings;
