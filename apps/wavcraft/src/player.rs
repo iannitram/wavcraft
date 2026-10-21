@@ -16,6 +16,8 @@ struct Shared {
     pos: AtomicU64,
     /// Frame to stop at, an `f64` stored as bits.
     end: AtomicU64,
+    /// Bumped by every play/stop; a render pass started under an older value must not write back.
+    generation: AtomicU64,
     playing: AtomicBool,
     /// Set by the stream's error callback (the device went away, for example).
     failed: AtomicBool,
@@ -38,6 +40,7 @@ impl Player {
             audio: Mutex::new(None),
             pos: AtomicU64::new(0f64.to_bits()),
             end: AtomicU64::new(0f64.to_bits()),
+            generation: AtomicU64::new(0),
             playing: AtomicBool::new(false),
             failed: AtomicBool::new(false),
         });
@@ -83,12 +86,14 @@ impl Player {
         if self.stream.is_none() {
             return;
         }
+        self.shared.generation.fetch_add(1, Ordering::AcqRel);
         self.shared.pos.store((from as f64).to_bits(), Ordering::Relaxed);
         self.shared.end.store((to as f64).to_bits(), Ordering::Relaxed);
         self.shared.playing.store(to > from, Ordering::Relaxed);
     }
 
     pub fn stop(&self) {
+        self.shared.generation.fetch_add(1, Ordering::AcqRel);
         self.shared.playing.store(false, Ordering::Relaxed);
     }
 
@@ -142,6 +147,17 @@ where
 
 /// Fill one device buffer. Runs on the audio thread.
 fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T], channels: usize, device_rate: f64) {
+    render_with(shared, out, channels, device_rate, || {});
+}
+
+fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce()>(
+    shared: &Shared,
+    out: &mut [T],
+    channels: usize,
+    device_rate: f64,
+    before_commit: F,
+) {
+    let generation = shared.generation.load(Ordering::Acquire);
     let silence = T::from_sample(0.0f32);
     out.iter_mut().for_each(|s| *s = silence);
     if !shared.playing.load(Ordering::Relaxed) {
@@ -156,9 +172,10 @@ fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T
     let step = f64::from(audio.sample_rate) / device_rate;
     let end = f64::from_bits(shared.end.load(Ordering::Relaxed)).min(audio.frames() as f64);
     let mut pos = f64::from_bits(shared.pos.load(Ordering::Relaxed)).max(0.0);
+    let mut finished = false;
     for frame in out.chunks_mut(channels) {
         if pos >= end {
-            shared.playing.store(false, Ordering::Relaxed);
+            finished = true;
             break;
         }
         let i = pos as usize;
@@ -185,7 +202,13 @@ fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T
         }
         pos += step;
     }
-    shared.pos.store(pos.to_bits(), Ordering::Relaxed);
+    before_commit();
+    if shared.generation.load(Ordering::Acquire) == generation {
+        if finished {
+            shared.playing.store(false, Ordering::Relaxed);
+        }
+        shared.pos.store(pos.to_bits(), Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -197,15 +220,49 @@ mod tests {
             audio: Mutex::new(Some(Arc::new(audio))),
             pos: AtomicU64::new(0f64.to_bits()),
             end: AtomicU64::new(0f64.to_bits()),
+            generation: AtomicU64::new(0),
             playing: AtomicBool::new(false),
             failed: AtomicBool::new(false),
         }
     }
 
     fn play(shared: &Shared, from: f64, to: f64) {
+        shared.generation.fetch_add(1, Ordering::AcqRel);
         shared.pos.store(from.to_bits(), Ordering::Relaxed);
         shared.end.store(to.to_bits(), Ordering::Relaxed);
         shared.playing.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_stale_callback_does_not_overwrite_a_restart() {
+        let ramp: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        play(&shared, 0.0, 1000.0);
+        let mut out = vec![0.0f32; 64];
+        render_with(&shared, &mut out, 1, 48_000.0, || {
+            shared.generation.fetch_add(1, Ordering::AcqRel);
+            shared.pos.store(500.0f64.to_bits(), Ordering::Relaxed);
+            shared.end.store(1000.0f64.to_bits(), Ordering::Relaxed);
+            shared.playing.store(true, Ordering::Relaxed);
+        });
+        assert_eq!(f64::from_bits(shared.pos.load(Ordering::Relaxed)), 500.0);
+        assert!(shared.playing.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_stale_callback_does_not_clear_a_restart_at_end_of_range() {
+        let ramp = vec![0.0f32; 1000];
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        play(&shared, 10.0, 20.0);
+        let mut out = vec![0.0f32; 64];
+        render_with(&shared, &mut out, 1, 48_000.0, || {
+            shared.generation.fetch_add(1, Ordering::AcqRel);
+            shared.pos.store(500.0f64.to_bits(), Ordering::Relaxed);
+            shared.end.store(1000.0f64.to_bits(), Ordering::Relaxed);
+            shared.playing.store(true, Ordering::Relaxed);
+        });
+        assert!(shared.playing.load(Ordering::Relaxed));
+        assert_eq!(f64::from_bits(shared.pos.load(Ordering::Relaxed)), 500.0);
     }
 
     #[test]
