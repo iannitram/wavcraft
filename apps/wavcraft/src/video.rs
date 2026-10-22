@@ -6,6 +6,7 @@
 //! thread only sends times and receives finished pictures, so it never waits for a decode. Frames
 //! are scaled down on the worker to at most [`MAX_W`] x [`MAX_H`] before they become a texture.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,6 +32,37 @@ pub fn frame_index(secs: f64, fps: f64, frames: usize) -> Option<usize> {
     // under its frame's start.
     let i = (secs * fps + 1e-6).floor();
     Some(if i >= frames as f64 { frames - 1 } else { i as usize })
+}
+
+/// How a decoded picture is sized in the panel body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PictureScale {
+    /// Scale to fill the body, keeping the aspect ratio (the current behaviour). The default.
+    #[default]
+    Fit,
+    /// Like Fit, but never larger than the picture's own size.
+    BestFit,
+    /// The picture's own size, whatever the body is.
+    Actual,
+}
+
+/// The size to draw a picture of `tex` (width, height in pixels) in a body of `body` points.
+/// If a texture dimension is not finite or is <= 0, returns [0.0, 0.0]. A non-finite body
+/// component counts as 0.0. Fit: s = min(bw / tw, bh / th).max(0.01). BestFit: s = min(s_fit, 1.0).
+/// Actual: s = 1.0. Returns [tw * s, th * s].
+pub fn picture_size(tex: [f32; 2], body: [f32; 2], scale: PictureScale) -> [f32; 2] {
+    if !tex[0].is_finite() || tex[0] <= 0.0 || !tex[1].is_finite() || tex[1] <= 0.0 {
+        return [0.0, 0.0];
+    }
+    let bw = if body[0].is_finite() { body[0] } else { 0.0 };
+    let bh = if body[1].is_finite() { body[1] } else { 0.0 };
+    let fit = (bw / tex[0]).min(bh / tex[1]).max(0.01);
+    let s = match scale {
+        PictureScale::Fit => fit,
+        PictureScale::BestFit => fit.min(1.0),
+        PictureScale::Actual => 1.0,
+    };
+    [tex[0] * s, tex[1] * s]
 }
 
 /// What the attached file is.
@@ -107,6 +139,8 @@ pub struct VideoPanel {
     pub shown: Option<(usize, f64, u32, u32)>,
     /// The last decode error (a time that has no picture, say), shown under the picture.
     pub last_error: Option<String>,
+    scale: Cell<PictureScale>,
+    full_screen: Cell<bool>,
 }
 
 impl VideoPanel {
@@ -131,6 +165,8 @@ impl VideoPanel {
             texture: None,
             shown: None,
             last_error: None,
+            scale: Cell::new(PictureScale::default()),
+            full_screen: Cell::new(false),
         }
     }
 
@@ -201,12 +237,28 @@ impl VideoPanel {
     pub fn ui(&self, ui: &mut egui::Ui) {
         ui.label(self.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
         ui.small(self.status.text());
+        ui.horizontal(|ui| {
+            if ui.small_button("Fit").clicked() {
+                self.scale.set(PictureScale::Fit);
+            }
+            if ui.small_button("Best fit").clicked() {
+                self.scale.set(PictureScale::BestFit);
+            }
+            if ui.small_button("Actual").clicked() {
+                self.scale.set(PictureScale::Actual);
+            }
+            let full_screen_label = if self.full_screen.get() { "Windowed" } else { "Full screen" };
+            if ui.small_button(full_screen_label).clicked() {
+                self.full_screen.set(!self.full_screen.get());
+            }
+        });
         let avail = ui.available_size();
         match (&self.texture, &self.status) {
             (Some(tex), Status::Ready(_)) => {
                 let t = tex.size_vec2();
-                let scale = (avail.x / t.x).min((avail.y - 40.0).max(40.0) / t.y).max(0.01);
-                ui.image((tex.id(), vec2(t.x * scale, t.y * scale)));
+                let body = if self.full_screen.get() { [avail.x, avail.y] } else { [avail.x, (avail.y - 40.0).max(40.0)] };
+                let [w, h] = picture_size([t.x, t.y], body, self.scale.get());
+                ui.image((tex.id(), vec2(w, h)));
                 if let Some((index, time, ..)) = self.shown {
                     ui.small(format!("Frame {index}  {time:.3} s"));
                 }
@@ -335,6 +387,8 @@ mod tests {
             texture: None,
             shown: None,
             last_error: None,
+            scale: Cell::new(PictureScale::default()),
+            full_screen: Cell::new(false),
         };
         panel.request(0.0, true);
         drop(message_tx);
@@ -365,6 +419,35 @@ mod tests {
         assert_eq!(frame_index(0.0, 24.0, 0), None);
         assert_eq!(frame_index(0.0, 0.0, 10), None);
         assert_eq!(frame_index(0.0, f64::NAN, 10), None);
+    }
+
+    #[test]
+    fn fit_scales_up_and_down_keeping_the_aspect() {
+        let [w, h] = picture_size([1920.0, 1080.0], [960.0, 500.0], PictureScale::Fit);
+        assert!((w - 888.888_9).abs() < 1e-2 && (h - 500.0).abs() < 1e-2);
+        let [w, h] = picture_size([320.0, 240.0], [960.0, 500.0], PictureScale::Fit);
+        assert!((w - 666.666_7).abs() < 1e-2 && (h - 500.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn best_fit_never_enlarges_the_picture() {
+        assert_eq!(picture_size([320.0, 240.0], [960.0, 500.0], PictureScale::BestFit), [320.0, 240.0]);
+        let [w, h] = picture_size([1920.0, 1080.0], [960.0, 500.0], PictureScale::BestFit);
+        assert!((w - 888.888_9).abs() < 1e-2 && (h - 500.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn actual_is_the_native_size() {
+        assert_eq!(picture_size([320.0, 240.0], [960.0, 500.0], PictureScale::Actual), [320.0, 240.0]);
+        assert_eq!(picture_size([1920.0, 1080.0], [960.0, 500.0], PictureScale::Actual), [1920.0, 1080.0]);
+    }
+
+    #[test]
+    fn a_picture_without_a_size_has_no_size() {
+        for scale in [PictureScale::Fit, PictureScale::BestFit, PictureScale::Actual] {
+            assert_eq!(picture_size([0.0, 100.0], [960.0, 500.0], scale), [0.0, 0.0]);
+            assert_eq!(picture_size([f32::NAN, 100.0], [960.0, 500.0], scale), [0.0, 0.0]);
+        }
     }
 
     fn scratch(name: &str) -> PathBuf {
