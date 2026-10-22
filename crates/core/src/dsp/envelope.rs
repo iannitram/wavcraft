@@ -44,6 +44,84 @@ pub fn piecewise_linear(points: &[(f32, f32)], times: &[f32]) -> Vec<f32> {
     result
 }
 
+/// Interpolation mode for [`gain_envelope`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interp {
+    Linear,
+    Spline,
+}
+
+/// Reasons [`gain_envelope`] rejects its keyframes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GainError {
+    TooFewPoints,
+    NonFinite,
+    NotIncreasing,
+}
+
+/// Evaluates a time-varying gain curve through `points` (time, gain) at `times`.
+///
+/// Checks run in order: at least two points, all times and gains finite, and
+/// strictly increasing times; the first failure is returned as a [`GainError`].
+/// Times before the first point or after the last point clamp to that point's
+/// gain in both modes. `Interp::Linear` reuses [`piecewise_linear`];
+/// `Interp::Spline` is a cubic Hermite curve with Catmull-Rom tangents, so it
+/// passes through every point and equals the linear result for two points.
+pub fn gain_envelope(points: &[(f32, f32)], times: &[f32], interp: Interp) -> Result<Vec<f32>, GainError> {
+    if points.len() < 2 {
+        return Err(GainError::TooFewPoints);
+    }
+    if points.iter().any(|&(t, g)| !t.is_finite() || !g.is_finite()) {
+        return Err(GainError::NonFinite);
+    }
+    if points.windows(2).any(|w| w[1].0.partial_cmp(&w[0].0) != Some(std::cmp::Ordering::Greater)) {
+        return Err(GainError::NotIncreasing);
+    }
+
+    match interp {
+        Interp::Linear => Ok(piecewise_linear(points, times)),
+        Interp::Spline => Ok(spline_eval(points, times)),
+    }
+}
+
+/// Cubic Hermite evaluation with Catmull-Rom tangents. Expects validated points.
+fn spline_eval(points: &[(f32, f32)], times: &[f32]) -> Vec<f32> {
+    let n = points.len();
+    let ts = |k: usize| f64::from(points[k].0);
+    let gs = |k: usize| f64::from(points[k].1);
+
+    let mut tangents = vec![0.0_f64; n];
+    tangents[0] = (gs(1) - gs(0)) / (ts(1) - ts(0));
+    tangents[n - 1] = (gs(n - 1) - gs(n - 2)) / (ts(n - 1) - ts(n - 2));
+    for (k, m) in tangents.iter_mut().enumerate().take(n - 1).skip(1) {
+        *m = (gs(k + 1) - gs(k - 1)) / (ts(k + 1) - ts(k - 1));
+    }
+
+    let first = points[0];
+    let last = points[n - 1];
+    let mut result = Vec::with_capacity(times.len());
+    for &t in times {
+        if t <= first.0 {
+            result.push(first.1);
+        } else if t >= last.0 {
+            result.push(last.1);
+        } else {
+            let k = points.partition_point(|p| p.0 <= t).saturating_sub(1).min(n - 2);
+            let h = ts(k + 1) - ts(k);
+            let s = (f64::from(t) - ts(k)) / h;
+            let s2 = s * s;
+            let s3 = s2 * s;
+            let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
+            let h10 = s3 - 2.0 * s2 + s;
+            let h01 = -2.0 * s3 + 3.0 * s2;
+            let h11 = s3 - s2;
+            let value = h00 * gs(k) + h10 * h * tangents[k] + h01 * gs(k + 1) + h11 * h * tangents[k + 1];
+            result.push(value as f32);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +162,64 @@ mod tests {
         let times = [0.0, 0.5];
         let result = piecewise_linear(&points, &times);
         assert!(result.is_empty());
+    }
+
+    fn assert_close(got: Result<Vec<f32>, GainError>, want: &[f32]) {
+        let got = match got {
+            Ok(values) => values,
+            Err(e) => panic!("unexpected error: {e:?}"),
+        };
+        assert_eq!(got.len(), want.len());
+        for (a, b) in got.iter().zip(want.iter()) {
+            assert!((a - b).abs() < 1e-5, "got {a}, want {b}");
+        }
+    }
+
+    #[test]
+    fn linear_interpolates_and_clamps() {
+        let points = [(0.0, 0.0), (1.0, 1.0)];
+        let times = [-1.0, 0.0, 0.25, 1.0, 2.0];
+        assert_close(gain_envelope(&points, &times, Interp::Linear), &[0.0, 0.0, 0.25, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn linear_multi_segment_values() {
+        let points = [(0.0, 0.0), (0.5, 1.0), (1.0, 0.2)];
+        assert_close(gain_envelope(&points, &[0.25, 0.75], Interp::Linear), &[0.5, 0.6]);
+    }
+
+    #[test]
+    fn spline_passes_through_every_knot() {
+        let points = [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)];
+        assert_close(gain_envelope(&points, &[0.0, 1.0, 2.0], Interp::Spline), &[0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn spline_midpoints_match_hermite() {
+        let points = [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)];
+        assert_close(gain_envelope(&points, &[0.5, 1.25], Interp::Spline), &[0.625, 0.890625]);
+    }
+
+    #[test]
+    fn spline_reproduces_straight_line_data() {
+        let points = [(0.0, 0.0), (1.0, 0.5), (2.0, 1.0)];
+        assert_close(gain_envelope(&points, &[0.3, 1.7], Interp::Spline), &[0.15, 0.85]);
+    }
+
+    #[test]
+    fn non_finite_points_are_an_error() {
+        assert_eq!(gain_envelope(&[(0.0, 0.0), (f32::NAN, 1.0)], &[0.5], Interp::Linear), Err(GainError::NonFinite));
+        assert_eq!(gain_envelope(&[(0.0, 0.0), (1.0, f32::INFINITY)], &[0.5], Interp::Spline), Err(GainError::NonFinite));
+    }
+
+    #[test]
+    fn times_must_strictly_increase() {
+        assert_eq!(gain_envelope(&[(0.0, 0.0), (0.0, 1.0)], &[0.5], Interp::Linear), Err(GainError::NotIncreasing));
+        assert_eq!(gain_envelope(&[(0.0, 0.0), (1.0, 1.0), (0.5, 0.0)], &[0.5], Interp::Spline), Err(GainError::NotIncreasing));
+    }
+
+    #[test]
+    fn fewer_than_two_points_is_an_error() {
+        assert_eq!(gain_envelope(&[(0.0, 0.0)], &[0.5], Interp::Linear), Err(GainError::TooFewPoints));
     }
 }
