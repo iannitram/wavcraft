@@ -49,6 +49,9 @@ pub fn piecewise_linear(points: &[(f32, f32)], times: &[f32]) -> Vec<f32> {
 pub enum Interp {
     Linear,
     Spline,
+    /// Monotone cubic Hermite (Fritsch-Butland PCHIP tangents): passes through
+    /// every point and never overshoots the values of neighbouring knots.
+    Monotone,
 }
 
 /// Reasons [`gain_envelope`] rejects its keyframes.
@@ -81,7 +84,69 @@ pub fn gain_envelope(points: &[(f32, f32)], times: &[f32], interp: Interp) -> Re
     match interp {
         Interp::Linear => Ok(piecewise_linear(points, times)),
         Interp::Spline => Ok(spline_eval(points, times)),
+        Interp::Monotone => Ok(monotone_eval(points, times)),
     }
+}
+
+/// Monotone PCHIP evaluation. Expects validated points.
+fn monotone_eval(points: &[(f32, f32)], times: &[f32]) -> Vec<f32> {
+    let n = points.len();
+    let ts = |k: usize| f64::from(points[k].0);
+    let gs = |k: usize| f64::from(points[k].1);
+
+    // Compute segment widths and slopes
+    let mut h = vec![0.0_f64; n - 1];
+    let mut d = vec![0.0_f64; n - 1];
+    for k in 0..n - 1 {
+        h[k] = ts(k + 1) - ts(k);
+        d[k] = (gs(k + 1) - gs(k)) / h[k];
+    }
+
+    // Compute tangents
+    let mut tangents = vec![0.0_f64; n];
+    tangents[0] = d[0];
+    tangents[n - 1] = d[n - 2];
+
+    for k in 1..n - 1 {
+        if d[k - 1] * d[k] <= 0.0 {
+            // Flat or extremum knot
+            tangents[k] = 0.0;
+        } else {
+            // Weighted harmonic mean of slopes
+            let w1 = 2.0 * h[k] + h[k - 1];
+            let w2 = h[k] + 2.0 * h[k - 1];
+            tangents[k] = (w1 + w2) / (w1 / d[k - 1] + w2 / d[k]);
+        }
+    }
+
+    let first = points[0];
+    let last = points[n - 1];
+    let mut result = Vec::with_capacity(times.len());
+    for &t in times {
+        if t <= first.0 {
+            result.push(first.1);
+        } else if t >= last.0 {
+            result.push(last.1);
+        } else {
+            // Find the segment
+            let k = points.partition_point(|p| p.0 <= t).saturating_sub(1).min(n - 2);
+
+            let s = (f64::from(t) - ts(k)) / h[k];
+            let s2 = s * s;
+            let s3 = s2 * s;
+
+            // Hermite basis functions
+            let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
+            let h10 = s3 - 2.0 * s2 + s;
+            let h01 = -2.0 * s3 + 3.0 * s2;
+            let h11 = s3 - s2;
+
+            // Evaluate
+            let value = h00 * gs(k) + h10 * h[k] * tangents[k] + h01 * gs(k + 1) + h11 * h[k] * tangents[k + 1];
+            result.push(value as f32);
+        }
+    }
+    result
 }
 
 /// Cubic Hermite evaluation with Catmull-Rom tangents. Expects validated points.
@@ -221,5 +286,67 @@ mod tests {
     #[test]
     fn fewer_than_two_points_is_an_error() {
         assert_eq!(gain_envelope(&[(0.0, 0.0)], &[0.5], Interp::Linear), Err(GainError::TooFewPoints));
+    }
+
+    #[test]
+    fn monotone_passes_through_every_knot() {
+        let points = [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)];
+        assert_close(gain_envelope(&points, &[0.0, 1.0, 2.0], Interp::Monotone), &[0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn monotone_flat_segments_stay_flat() {
+        let points = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)];
+        assert_close(gain_envelope(&points, &[0.5, 1.5], Interp::Monotone), &[0.0, 0.0]);
+    }
+
+    #[test]
+    fn monotone_step_has_no_overshoot() {
+        let points = [(0.0, 0.0), (1.0, 0.0), (2.0, 1.0), (3.0, 1.0)];
+        assert_close(gain_envelope(&points, &[0.5, 1.5, 2.5], Interp::Monotone), &[0.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn monotone_unequal_spacing_uses_weighted_tangent() {
+        let points = [(0.0, 0.0), (1.0, 1.0), (3.0, 1.5), (4.0, 1.5)];
+        assert_close(gain_envelope(&points, &[0.5, 2.0, 3.5], Interp::Monotone), &[0.5714286, 1.3571428, 1.5]);
+    }
+
+    #[test]
+    fn monotone_zeroes_tangent_at_extremum() {
+        let points = [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)];
+        assert_close(gain_envelope(&points, &[0.25, 1.75], Interp::Monotone), &[0.296875, 0.296875]);
+    }
+
+    #[test]
+    fn monotone_never_overshoots_neighbouring_knots() {
+        let sequences: [&[(f32, f32)]; 4] = [
+            &[(0.0, 0.0), (1.0, 0.0), (2.0, 1.0), (3.0, 1.0)],
+            &[(0.0, 1.0), (1.0, 0.0), (2.0, 1.0), (3.0, 0.5), (4.0, 0.5)],
+            &[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)],
+            &[(0.0, 0.2), (1.0, 0.2), (2.0, 0.9), (3.0, 0.2)],
+        ];
+        for points in sequences {
+            for pair in points.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let lo = a.1.min(b.1);
+                let hi = a.1.max(b.1);
+                let times: Vec<f32> = (0..=100).map(|j| (f64::from(a.0) + (f64::from(b.0) - f64::from(a.0)) * f64::from(j) / 100.0) as f32).collect();
+                let Ok(values) = gain_envelope(points, &times, Interp::Monotone) else {
+                    panic!("valid points rejected");
+                };
+                for v in values {
+                    assert!(v >= lo - 1e-6 && v <= hi + 1e-6, "value {v} outside [{lo}, {hi}]");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn monotone_rejects_bad_points_like_linear() {
+        assert_eq!(gain_envelope(&[(0.0, 0.0), (f32::NAN, 1.0)], &[0.5], Interp::Monotone), Err(GainError::NonFinite));
+        assert_eq!(gain_envelope(&[(0.0, 0.0), (1.0, f32::INFINITY)], &[0.5], Interp::Monotone), Err(GainError::NonFinite));
+        assert_eq!(gain_envelope(&[(0.0, 0.0), (0.0, 1.0)], &[0.5], Interp::Monotone), Err(GainError::NotIncreasing));
+        assert_eq!(gain_envelope(&[(0.0, 0.0)], &[0.5], Interp::Monotone), Err(GainError::TooFewPoints));
     }
 }
