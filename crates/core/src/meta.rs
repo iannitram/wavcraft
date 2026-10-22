@@ -498,6 +498,49 @@ fn is_pattern(s: &str, pattern: &[u8]) -> bool {
     s.len() == pattern.len() && s.bytes().zip(pattern).all(|(c, p)| if *p == b'd' { c.is_ascii_digit() } else { c == *p })
 }
 
+/// The body of a Vorbis comment (the FLAC VORBIS_COMMENT block body; for Opus, the bytes after `OpusTags`).
+/// Layout: u32 LE vendor length, vendor UTF-8, u32 LE comment count, then per comment u32 LE length and
+/// the UTF-8 bytes of `KEY=value`. Entries whose key is empty or has a byte outside 0x20..=0x7D or is `=`
+/// are skipped and not counted. Order and duplicates are kept.
+pub fn vorbis_comment_body(vendor: &str, comments: &[(&str, &str)]) -> Vec<u8> {
+    let mut out = Vec::new();
+
+    // Step 1: Add vendor length and UTF-8 bytes
+    let vendor_bytes = vendor.as_bytes();
+    let vendor_len = u32::try_from(vendor_bytes.len()).unwrap_or(u32::MAX);
+    out.extend_from_slice(&vendor_len.to_le_bytes());
+    out.extend_from_slice(vendor_bytes);
+
+    // Step 2 & 3: Filter comments and add them
+    let mut comment_count = 0u32;
+    let mut filtered_comments = Vec::new();
+
+    for &(key, value) in comments {
+        // Skip empty keys or keys with invalid bytes
+        if key.is_empty() || key.bytes().any(|b| !(0x20..=0x7D).contains(&b) || b == b'=') {
+            continue;
+        }
+
+        filtered_comments.push((key, value));
+        comment_count += 1;
+    }
+
+    // Add comment count
+    out.extend_from_slice(&comment_count.to_le_bytes());
+
+    // Add each valid comment
+    for (key, value) in filtered_comments {
+        let key_value = format!("{}={}", key, value);
+        let key_value_bytes = key_value.as_bytes();
+        let len = u32::try_from(key_value_bytes.len()).unwrap_or(u32::MAX);
+
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(key_value_bytes);
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +644,42 @@ mod tests {
         assert_eq!(Bext::with_history_line("X\r\n", "A"), "X\r\nA\r\n");
         assert_eq!(Bext::with_history_line("X", "A"), "X\r\nA\r\n");
         assert_eq!(unescape_lines(&escape_lines("a\r\nb\\c")), "a\r\nb\\c");
+    }
+
+    #[test]
+    fn vorbis_body_with_no_comments() {
+        assert_eq!(vorbis_comment_body("wavcraft", &[]), vec![8, 0, 0, 0, 119, 97, 118, 99, 114, 97, 102, 116, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn vorbis_body_one_comment_layout() {
+        assert_eq!(
+            vorbis_comment_body("wavcraft", &[("TITLE", "Hi")]),
+            vec![8, 0, 0, 0, 119, 97, 118, 99, 114, 97, 102, 116, 1, 0, 0, 0, 8, 0, 0, 0, 84, 73, 84, 76, 69, 61, 72, 105]
+        );
+    }
+
+    #[test]
+    fn vorbis_body_length_counts_utf8_bytes() {
+        assert_eq!(
+            vorbis_comment_body("x", &[("ARTIST", "Zoë")]),
+            vec![1, 0, 0, 0, 120, 1, 0, 0, 0, 11, 0, 0, 0, 65, 82, 84, 73, 83, 84, 61, 90, 111, 195, 171]
+        );
+    }
+
+    #[test]
+    fn vorbis_body_skips_invalid_keys_and_does_not_count_them() {
+        assert_eq!(
+            vorbis_comment_body("x", &[("", "a"), ("A=B", "a"), ("T\u{7f}", "a"), ("BAD\tKEY", "a"), ("ALBUM", "A")]),
+            vec![1, 0, 0, 0, 120, 1, 0, 0, 0, 7, 0, 0, 0, 65, 76, 66, 85, 77, 61, 65]
+        );
+    }
+
+    #[test]
+    fn vorbis_body_keeps_order_and_duplicates() {
+        assert_eq!(
+            vorbis_comment_body("", &[("GENRE", "Pop"), ("GENRE", "Rock")]),
+            vec![0, 0, 0, 0, 2, 0, 0, 0, 9, 0, 0, 0, 71, 69, 78, 82, 69, 61, 80, 111, 112, 10, 0, 0, 0, 71, 69, 78, 82, 69, 61, 82, 111, 99, 107]
+        );
     }
 }
