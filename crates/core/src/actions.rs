@@ -496,3 +496,60 @@ impl Editor {
         Ok(Outcome { doc_changed: changed, selection: selection.start.min(new_len)..selection.end.min(new_len), message: changed.then_some(label) })
     }
 }
+
+pub const HUD_DB_PER_PX: f64 = 0.1;
+pub const HUD_MIN_DB: f64 = -60.0;
+pub const HUD_MAX_DB: f64 = 12.0;
+
+/// New HUD gain after a vertical drag. `drag_up_px` is positive when the pointer moves up.
+/// A non-finite `db` becomes 0.0. A non-finite `drag_up_px` leaves `db` unchanged (clamped).
+/// The result is clamped to [HUD_MIN_DB, HUD_MAX_DB].
+pub fn hud_drag_gain_db(db: f64, drag_up_px: f64) -> f64 {
+    let db = if db.is_finite() { db } else { 0.0 };
+    if !drag_up_px.is_finite() {
+        return db.clamp(HUD_MIN_DB, HUD_MAX_DB);
+    }
+    (db + drag_up_px * HUD_DB_PER_PX).clamp(HUD_MIN_DB, HUD_MAX_DB)
+}
+
+/// Whether the HUD is drawn. Hidden always wins; "show only for selections" needs a selection.
+pub fn hud_visible(hidden: bool, only_for_selection: bool, has_selection: bool) -> bool {
+    !hidden && (!only_for_selection || has_selection)
+}
+
+#[cfg(test)]
+mod hud_tests {
+    use super::*;
+
+    #[test]
+    fn hud_drag_moves_by_rate_per_pixel() {
+        assert!((hud_drag_gain_db(0.0, 100.0) - 10.0).abs() < 1e-9);
+        assert!((hud_drag_gain_db(0.0, -100.0) + 10.0).abs() < 1e-9);
+        assert!((hud_drag_gain_db(-12.5, 25.0) + 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hud_drag_clamps_to_the_range() {
+        assert!((hud_drag_gain_db(10.0, 100.0) - 12.0).abs() < 1e-9);
+        assert!((hud_drag_gain_db(-55.0, -100.0) + 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hud_drag_ignores_non_finite_input() {
+        assert!((hud_drag_gain_db(-3.0, f64::NAN) + 3.0).abs() < 1e-9);
+        assert!((hud_drag_gain_db(f64::NAN, 50.0) - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hud_visibility_table() {
+        // (hidden, only_for_selection, has_selection) -> visible
+        assert!(hud_visible(false, false, false));
+        assert!(hud_visible(false, false, true));
+        assert!(!hud_visible(false, true, false));
+        assert!(hud_visible(false, true, true));
+        assert!(!hud_visible(true, false, false));
+        assert!(!hud_visible(true, false, true));
+        assert!(!hud_visible(true, true, false));
+        assert!(!hud_visible(true, true, true));
+    }
+}

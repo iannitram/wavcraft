@@ -83,6 +83,15 @@ enum Tool {
     Zoom,
 }
 
+#[derive(Default)]
+struct HudState {
+    gain_db: f64,
+    pinned: bool,
+    hidden: bool,
+    only_for_selection: bool,
+    drag_start_db: Option<f64>,
+}
+
 impl Tool {
     fn name(self) -> &'static str {
         match self {
@@ -140,6 +149,7 @@ pub struct WaveApp {
     allow_close: bool,
     /// The editor's width last frame, for zoom keys (which have no pointer to zoom around).
     editor_width: f32,
+    hud: HudState,
     /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
@@ -211,6 +221,7 @@ impl WaveApp {
             confirm_close: false,
             allow_close: false,
             editor_width: 800.0,
+            hud: HudState::default(),
             insert_silence: None,
             confirm_clear_history: false,
             show_metadata: false,
@@ -1353,6 +1364,37 @@ impl WaveApp {
         });
     }
 
+    fn draw_hud(&mut self, ctx: &egui::Context) {
+        if !actions::hud_visible(self.hud.hidden, self.hud.only_for_selection, !self.selection.is_empty()) {
+            return;
+        }
+        egui::Area::new(egui::Id::new("amplitude-hud")).movable(!self.hud.pinned).order(egui::Order::Foreground).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Gain {:.1} dB", self.hud.gain_db));
+                    if ui.button(if self.hud.pinned { "Unpin" } else { "Pin" }).clicked() {
+                        self.hud.pinned = !self.hud.pinned;
+                    }
+                    if ui.button("Hide").clicked() {
+                        self.hud.hidden = true;
+                    }
+                });
+                let drag = ui.add(egui::Label::new("Drag vertically to change").sense(Sense::drag()));
+                if drag.drag_started() {
+                    self.hud.drag_start_db = Some(self.hud.gain_db);
+                }
+                if drag.dragged() {
+                    let start = self.hud.drag_start_db.unwrap_or(self.hud.gain_db);
+                    self.hud.gain_db = actions::hud_drag_gain_db(start, -f64::from(drag.drag_delta().y));
+                }
+                if drag.drag_stopped() {
+                    self.hud.drag_start_db = None;
+                }
+                ui.checkbox(&mut self.hud.only_for_selection, "Show only for selections");
+            });
+        });
+    }
+
     fn editor(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
@@ -1660,6 +1702,7 @@ impl eframe::App for WaveApp {
         self.insert_silence_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
+        self.draw_hud(&ctx);
     }
 }
 
