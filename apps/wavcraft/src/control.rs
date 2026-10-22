@@ -13,6 +13,9 @@
 //! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
 //! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1>` (which panels are shown)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
+//! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
+//! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
+//! - `EFFECT_DIALOG <name> [key=value ...]` opens the effect's dialog on those values; `EFFECT_DIALOG` → `OK open=<id|none> values=[..]`; `EFFECT_DIALOG OK|CANCEL` presses the button
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `META get [field]` / `META set <field> <value>` → `OK <value>` / `OK changed=<0|1>` (one undo step "Edit Metadata" per set; `\r` and `\n` in a value are line breaks)
