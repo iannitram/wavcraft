@@ -1,15 +1,31 @@
+/// Maximum number of bins; larger requests are treated as invalid parameters.
+const MAX_BINS: usize = 1 << 20;
+
+/// Tolerance, in bins, added to the bin index before flooring.
+const BIN_EPSILON: f64 = 1e-9;
+
 /// Counts RMS levels (in dB) into equal-width bins covering `min_db..max_db`.
 ///
 /// Bin `i` covers `[min_db + i * bin_db, min_db + (i + 1) * bin_db)`, so a level
 /// exactly on a bin edge belongs to the upper bin, and the bin count is rounded
 /// up for uneven ranges. Non-finite levels, levels below `min_db` and levels at
 /// or above `max_db` are dropped. Invalid parameters (non-finite values,
-/// `bin_db <= 0.0`, or `max_db <= min_db`) return an empty vector.
+/// `bin_db <= 0.0`, `max_db <= min_db`, or a range that would need more than
+/// `MAX_BINS` (2^20) bins, including one whose width overflows to infinity)
+/// return an empty vector.
+///
+/// The bin index carries a tolerance of `1e-9` bins: a level within about 1e-9
+/// bins below an edge counts as on the edge, so float rounding (for example
+/// `(0.3 - 0.1) / 0.1 == 1.9999999999999998`) does not push it down a bin.
 pub fn rms_level_histogram(levels_db: &[f64], min_db: f64, max_db: f64, bin_db: f64) -> Vec<u64> {
     if !min_db.is_finite() || !max_db.is_finite() || !bin_db.is_finite() || bin_db <= 0.0 || max_db <= min_db {
         return Vec::new();
     }
-    let n = ((max_db - min_db) / bin_db).ceil() as usize;
+    let bins = (max_db - min_db) / bin_db;
+    if !bins.is_finite() || bins.ceil() > MAX_BINS as f64 {
+        return Vec::new();
+    }
+    let n = bins.ceil() as usize;
     let mut counts = vec![0u64; n];
     if n == 0 {
         return counts;
@@ -19,7 +35,7 @@ pub fn rms_level_histogram(levels_db: &[f64], min_db: f64, max_db: f64, bin_db: 
             continue;
         }
         if min_db <= v && v < max_db {
-            let idx = (((v - min_db) / bin_db).floor() as usize).min(n - 1);
+            let idx = ((((v - min_db) / bin_db) + BIN_EPSILON).floor() as usize).min(n - 1);
             counts[idx] += 1;
         }
     }
@@ -67,6 +83,16 @@ mod tests {
         assert!(rms_level_histogram(&levels, -60.0, 0.0, f64::INFINITY).is_empty());
         assert!(rms_level_histogram(&levels, 0.0, -60.0, 10.0).is_empty());
         assert!(rms_level_histogram(&levels, NAN, 0.0, 10.0).is_empty());
+    }
+
+    #[test]
+    fn float_rounding_does_not_push_an_edge_level_down_a_bin() {
+        assert_eq!(rms_level_histogram(&[0.3], 0.1, 0.5, 0.1), vec![0, 0, 1, 0]);
+    }
+
+    #[test]
+    fn extreme_finite_range_returns_no_bins() {
+        assert!(rms_level_histogram(&[-30.0], -f64::MAX, f64::MAX, 1.0).is_empty());
     }
 
     #[test]
