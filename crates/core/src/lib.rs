@@ -20,6 +20,7 @@ pub mod cd;
 pub mod doc;
 pub mod document;
 pub mod dsp;
+pub mod effects;
 pub mod generate;
 pub mod io;
 pub mod meta;
