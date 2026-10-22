@@ -20,6 +20,9 @@ craft-log = { path = "crates/craft-log" }
 # app's old name (WaveCraft, renamed WavCraft 2026-10-15) on purpose: it lives on another repo,
 # and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
 soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
+# f27: the biquad filter designs (RBJ cookbook shelves, peaks, notch, high/low-pass), MIT OR Apache-2.0,
+# from the same pinned commit as soundcraft-audio-io.
+soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
 
 # f122 (the Video panel): SoundCraft's `soundcraft-video` (MIT OR Apache-2.0: pure Rust H.264, ProRes
 # and Motion JPEG decode, ISO base media demux), from the head of our fork's `ours` branch. It brings
