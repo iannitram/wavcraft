@@ -1,6 +1,9 @@
 /// Maximum feedback gain (roadmap row B043: feedback 0..0.95).
 pub const MAX_FEEDBACK: f32 = 0.95;
 
+/// Maximum tail length for `echo_with_tail`: 60 seconds at 48 kHz.
+pub const MAX_TAIL_SAMPLES: usize = 2_880_000;
+
 /// Applies a feedback delay to mono samples.
 pub fn echo(input: &[f32], delay_samples: usize, feedback: f32, mix: f32) -> Vec<f32> {
     if delay_samples == 0 {
@@ -38,11 +41,12 @@ pub fn ms_to_samples(ms: f32, sample_rate: f32) -> usize {
 }
 
 /// Applies the echo and appends `tail_samples` of silence first, so the last
-/// repeats are not cut. Output length is `input.len() + tail_samples`.
+/// repeats are not cut. Output length is `input.len() + min(tail_samples, MAX_TAIL_SAMPLES)`.
 pub fn echo_with_tail(input: &[f32], delay_samples: usize, feedback: f32, mix: f32, tail_samples: usize) -> Vec<f32> {
-    let mut padded = Vec::with_capacity(input.len().saturating_add(tail_samples));
+    let clamped_tail = tail_samples.min(MAX_TAIL_SAMPLES);
+    let mut padded = Vec::with_capacity(input.len().saturating_add(clamped_tail));
     padded.extend_from_slice(input);
-    padded.resize(input.len().saturating_add(tail_samples), 0.0);
+    padded.resize(input.len().saturating_add(clamped_tail), 0.0);
     echo(&padded, delay_samples, feedback, mix)
 }
 
@@ -77,7 +81,7 @@ pub fn echo_stereo_interleaved(input: &[f32], left: EchoChannel, right: EchoChan
 
 #[cfg(test)]
 mod tests {
-    use super::{echo, echo_stereo_interleaved, echo_with_tail, ms_to_samples, EchoChannel};
+    use super::{EchoChannel, echo, echo_stereo_interleaved, echo_with_tail, ms_to_samples};
 
     fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
         assert_eq!(actual.len(), expected.len());
@@ -295,5 +299,24 @@ mod tests {
         assert_eq!(ms_to_samples(5.0, f32::NAN), 0);
         assert_eq!(ms_to_samples(f32::INFINITY, 48000.0), 0);
         assert_eq!(ms_to_samples(f32::NAN, 48000.0), 0);
+    }
+
+    #[test]
+    fn tail_above_cap_is_clamped_without_abort() {
+        let output = echo_with_tail(&[0.5], 1, 0.5, 0.5, usize::MAX);
+        assert_eq!(output.len(), 2_880_001);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn tail_at_cap_is_not_changed() {
+        let output = echo_with_tail(&[0.5], 1, 0.5, 0.5, 2_880_000);
+        assert_eq!(output.len(), 2_880_001);
+    }
+
+    #[test]
+    fn tail_below_cap_is_exact() {
+        let output = echo_with_tail(&[0.5, 0.25], 1, 0.5, 0.5, 10);
+        assert_eq!(output.len(), 12);
     }
 }
