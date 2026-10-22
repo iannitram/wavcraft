@@ -259,3 +259,53 @@ fn first_frame_is_the_absolute_frame_for_a_selection_not_at_zero() {
         }
     }
 }
+
+/// A stateful effect whose run records the `first_frame` each chunk gets (the `run.process`
+/// path that a chain effect with state takes; #459's test covers the stateless path).
+struct RunRecorder(std::sync::Arc<std::sync::Mutex<Vec<u64>>>);
+
+struct RunRecorderRun(std::sync::Arc<std::sync::Mutex<Vec<u64>>>);
+
+impl effects::Run for RunRecorderRun {
+    fn process(&mut self, first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> std::io::Result<()> {
+        if let Ok(mut seen) = self.0.lock() {
+            seen.push(first_frame);
+        }
+        for (i, o) in input.iter().zip(output.iter_mut()) {
+            for (a, b) in i.iter().zip(o.iter_mut()) {
+                *b = *a;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl effects::Effect for RunRecorder {
+    fn id(&self) -> &'static str {
+        "run-recorder"
+    }
+    fn name(&self) -> &'static str {
+        "Run Recorder"
+    }
+    fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn begin(&self, _params: &[f64], _ctx: &effects::RunContext) -> std::io::Result<Option<Box<dyn effects::Run>>> {
+        Ok(Some(Box::new(RunRecorderRun(self.0.clone()))))
+    }
+}
+
+#[test]
+fn a_stateful_run_gets_its_absolute_first_frame_inside_a_selection() {
+    // The run.process path: chunks start at start, start + BLOCK_FRAMES and start + 2 * BLOCK_FRAMES.
+    let start = 1_000u64;
+    let block = BLOCK_FRAMES as u64;
+    let range = start..start + 2 * block + 17;
+    let tmp = TempDir::new("run-first-frame-sel");
+    let frames = (start + 2 * block + 17 + 500) as usize;
+    let e = editor(&tmp.0, &stereo(frames));
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    effects::apply(&RunRecorder(seen.clone()), &[], e.history.current(), range, wavcraft_core::ChannelMask::ALL, Crossfades::NONE, &cancel).unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![start, start + block, start + 2 * block]);
+}

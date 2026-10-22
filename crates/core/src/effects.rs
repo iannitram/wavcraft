@@ -31,8 +31,6 @@ pub enum ParamKind {
     Time,
     /// A frequency in Hz (a dialog may draw it on a log scale).
     Frequency,
-    /// A plain number (a filter's Q, say); `unit` may be empty.
-    Number,
     /// One of [`ParamDesc::choices`]; the value is the index.
     Choice,
     /// A plain number in `unit` (`Hz`, or none); a dialog draws a logarithmic slider for `Hz`

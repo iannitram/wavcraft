@@ -2713,6 +2713,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-dsp"
+version = "0.6.1"
+source = "git+https://github.com/iannitram/soundcraft?rev=dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a#dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a"
+dependencies = [
+ "log",
+ "rustfft",
+ "serde",
+]
+
+[[package]]
 name = "soundcraft-video"
 version = "0.10.0"
 source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
@@ -3307,6 +3317,7 @@ dependencies = [
  "rustfft",
  "rustix 1.1.5",
  "soundcraft-audio-io",
+ "soundcraft-dsp",
  "symphonia",
  "sysinfo",
 ]
