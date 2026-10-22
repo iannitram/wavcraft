@@ -56,9 +56,28 @@ pub struct Reading {
     pub clipped: bool,
 }
 
+/// What a held peak tick does (A214).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PeakMode {
+    /// The tick holds for the hold time, then falls (the meter's own behaviour).
+    #[default]
+    Dynamic,
+    /// The tick stays at the highest peak seen until it is reset.
+    Static,
+}
+
+/// The level a channel with no signal ever seen reports for its static peak, dBFS.
+pub const SILENT_DB: f32 = -120.0;
+/// Longest hold time that can be set, seconds.
+pub const MAX_HOLD_SECS: f32 = 60.0;
+
 /// The window's side: two channel meters.
 pub struct Levels {
     meters: [PeakMeter; 2],
+    mode: PeakMode,
+    hold_secs: f32,
+    static_db: [f32; 2],
+    valley_db: [Option<f32>; 2],
 }
 
 impl Default for Levels {
@@ -73,7 +92,7 @@ impl Levels {
         for m in &mut meters {
             m.set_hold_secs(HOLD_SECS);
         }
-        Levels { meters }
+        Levels { meters, mode: PeakMode::Dynamic, hold_secs: HOLD_SECS, static_db: [SILENT_DB; 2], valley_db: [None; 2] }
     }
 
     /// Feed the peaks taken from the tap (linear) covering `dt_secs` since the previous call.
@@ -81,6 +100,24 @@ impl Levels {
         let frames = (dt_secs.clamp(0.0, 1.0) * METER_RATE) as usize;
         for (m, p) in self.meters.iter_mut().zip(peaks) {
             m.feed(p, frames);
+        }
+        // Process peaks for static tracking and valleys
+        for (i, &p) in peaks.iter().enumerate() {
+            let mut p = p;
+            if !p.is_finite() || p < 0.0 {
+                p = 0.0;
+            }
+            let d = if p > 0.0 { 20.0 * p.log10() } else { SILENT_DB };
+
+            // Update static peaks
+            self.static_db[i] = self.static_db[i].max(d);
+
+            // Update valleys
+            let v = d.max(FLOOR_DB);
+            self.valley_db[i] = Some(match self.valley_db[i] {
+                Some(old) => old.min(v),
+                None => v,
+            });
         }
     }
 
@@ -102,6 +139,58 @@ impl Levels {
     /// Drop everything (a new file).
     pub fn reset(&mut self) {
         self.meters.iter_mut().for_each(PeakMeter::reset);
+        self.reset_valleys();
+        self.reset_static_peaks();
+    }
+
+    /// Choose how the peak tick behaves (A214). Default [`PeakMode::Dynamic`].
+    pub fn set_peak_mode(&mut self, mode: PeakMode) {
+        self.mode = mode;
+    }
+
+    pub fn peak_mode(&self) -> PeakMode {
+        self.mode
+    }
+
+    /// Set how long the dynamic tick holds, seconds (A214). Non-finite values are ignored; the
+    /// value is clamped to `0..=MAX_HOLD_SECS`.
+    pub fn set_hold_secs(&mut self, secs: f32) {
+        if secs.is_finite() {
+            self.hold_secs = secs.clamp(0.0, MAX_HOLD_SECS);
+            for m in &mut self.meters {
+                m.set_hold_secs(self.hold_secs);
+            }
+        }
+    }
+
+    pub fn hold_secs(&self) -> f32 {
+        self.hold_secs
+    }
+
+    /// The tick to draw for channel `ch` (0 or 1; higher clamps to 1): the meter's decaying hold in
+    /// [`PeakMode::Dynamic`], the highest peak since the last reset in [`PeakMode::Static`].
+    pub fn shown_hold_db(&self, ch: usize) -> f32 {
+        let i = ch.min(1);
+        match self.mode {
+            PeakMode::Dynamic => self.meters[i].peak_hold_db(),
+            PeakMode::Static => self.static_db[i],
+        }
+    }
+
+    /// The lowest per-update level channel `ch` showed since the last reset (a valley), dBFS, never
+    /// below `FLOOR_DB`; `None` before the first update.
+    pub fn valley_db(&self, ch: usize) -> Option<f32> {
+        self.valley_db[ch.min(1)]
+    }
+
+    /// Forget the valleys only.
+    pub fn reset_valleys(&mut self) {
+        self.valley_db = [None; 2];
+    }
+
+    /// Forget the static peaks only.
+    pub fn reset_static_peaks(&mut self) {
+        self.static_db = [SILENT_DB; 2];
     }
 }
 
