@@ -43,6 +43,50 @@ pub fn to_db(x: f64) -> f64 {
     if x <= 0.0 { f64::NEG_INFINITY } else { 20.0 * x.log10() }
 }
 
+/// Which wave reads 0 dB in the RMS figures (roadmap A315). A full-scale square wave has RMS 1.0;
+/// a full-scale sine has RMS 1/sqrt(2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RmsReference {
+    /// 0 dB is a full-scale square wave, i.e. plain dBFS of the RMS value (the default).
+    #[default]
+    Square,
+    /// 0 dB is a full-scale sine wave: a full-scale sine reads 0 dB, a full-scale square +3.01 dB.
+    Sine,
+}
+
+impl RmsReference {
+    /// dB to add to a plain dBFS RMS figure so that this reference wave reads 0 dB.
+    pub fn offset_db(self) -> f64 {
+        match self {
+            RmsReference::Square => 0.0,
+            RmsReference::Sine => 20.0 * std::f64::consts::FRAC_1_SQRT_2.recip().log10(),
+        }
+    }
+
+    /// An RMS value (linear, 1.0 = full-scale square) in dB relative to this reference
+    /// (`-inf` for 0).
+    pub fn db(self, rms: f64) -> f64 {
+        to_db(rms) + self.offset_db()
+    }
+}
+
+/// RMS settings (roadmap A315). The window and the DC option change what [`scan_with`] measures;
+/// the reference only changes how the RMS values are shown ([`RmsReference::db`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RmsSettings {
+    pub window_ms: u32,
+    /// Remove the mean (the window's own mean for window RMS, the whole range's for the total)
+    /// before taking the RMS.
+    pub account_for_dc: bool,
+    pub reference: RmsReference,
+}
+
+impl Default for RmsSettings {
+    fn default() -> RmsSettings {
+        RmsSettings { window_ms: DEFAULT_RMS_WINDOW_MS, account_for_dc: false, reference: RmsReference::Square }
+    }
+}
+
 /// The numbers for one channel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChannelStats {
@@ -106,7 +150,9 @@ pub struct ChannelScan {
     sum: f64,
     sum_sq: f64,
     win_sq: f64,
+    win_sum: f64,
     win_n: u64,
+    account_dc: bool,
     windows: u64,
     rms_min_quiet: f64,
     rms_min: f64,
@@ -139,7 +185,9 @@ impl ChannelScan {
             sum: 0.0,
             sum_sq: 0.0,
             win_sq: 0.0,
+            win_sum: 0.0,
             win_n: 0,
+            account_dc: false,
             windows: 0,
             rms_min_quiet: f64::INFINITY,
             rms_min: f64::INFINITY,
@@ -156,6 +204,13 @@ impl ChannelScan {
         }
     }
 
+    /// Take the mean out before the RMS (A315): window RMS uses each window's own mean, total RMS
+    /// the mean of everything added. Off by default.
+    pub fn with_account_for_dc(mut self, on: bool) -> ChannelScan {
+        self.account_dc = on;
+        self
+    }
+
     fn close_run(&mut self) {
         if self.run_len >= MIN_CLIP_RUN {
             self.runs += 1;
@@ -168,7 +223,14 @@ impl ChannelScan {
     }
 
     fn close_window(&mut self) {
-        let rms = (self.win_sq / self.win_n as f64).sqrt();
+        let n = self.win_n as f64;
+        let mean_sq = self.win_sq / n;
+        let rms = if self.account_dc {
+            let mean = self.win_sum / n;
+            (mean_sq - mean * mean).max(0.0).sqrt()
+        } else {
+            mean_sq.sqrt()
+        };
         self.windows += 1;
         self.rms_sum += rms;
         self.rms_min = self.rms_min.min(rms);
@@ -177,6 +239,7 @@ impl ChannelScan {
         }
         self.rms_max = self.rms_max.max(rms);
         self.win_sq = 0.0;
+        self.win_sum = 0.0;
         self.win_n = 0;
     }
 
@@ -202,6 +265,7 @@ impl ChannelScan {
             self.sum += v;
             self.sum_sq += v * v;
             self.win_sq += v * v;
+            self.win_sum += v;
             self.win_n += 1;
             if self.win_n == self.window {
                 self.close_window();
@@ -261,7 +325,17 @@ impl ChannelScan {
             rms_min: if self.windows > 0 { self.rms_min } else { 0.0 },
             rms_max: self.rms_max,
             rms_avg: if self.windows > 0 { self.rms_sum / self.windows as f64 } else { 0.0 },
-            rms_total: if have { (self.sum_sq / n as f64).sqrt() } else { 0.0 },
+            rms_total: if have {
+                if self.account_dc {
+                    let nf = n as f64;
+                    let mean = self.sum / nf;
+                    (self.sum_sq / nf - mean * mean).max(0.0).sqrt()
+                } else {
+                    (self.sum_sq / n as f64).sqrt()
+                }
+            } else {
+                0.0
+            },
             windows: self.windows,
             clipped_runs: self.runs,
             clipped_samples: self.clipped,
@@ -343,16 +417,23 @@ impl Stats {
     }
 }
 
-/// Measure `range` of `state` (clamped to the document) in 64 K-frame chunks. `progress` gets
-/// 0..=1; `Ok(None)` when `cancel` was set. An empty range measures nothing and gives zeros.
-pub fn scan(state: &DocState, range: Range<u64>, window_ms: u32, progress: &mut dyn FnMut(f64), cancel: &AtomicBool) -> io::Result<Option<Stats>> {
+/// [`scan`] with RMS settings (A315): the window from `settings.window_ms`, the mean taken out of
+/// the RMS values when `settings.account_for_dc` is set. With `RmsSettings::default()` it gives
+/// exactly what [`scan`] gives.
+pub fn scan_with(
+    state: &DocState,
+    range: Range<u64>,
+    settings: &RmsSettings,
+    progress: &mut dyn FnMut(f64),
+    cancel: &AtomicBool,
+) -> io::Result<Option<Stats>> {
     let len = state.len_frames();
     let start = range.start.min(len);
     let end = range.end.clamp(start, len);
     let rate = state.sample_rate();
-    let window_frames = (u64::from(rate) * u64::from(window_ms) / 1000).max(1);
+    let window_frames = (u64::from(rate) * u64::from(settings.window_ms) / 1000).max(1);
     let n = state.channel_count();
-    let mut scans: Vec<ChannelScan> = (0..n).map(|_| ChannelScan::new(start, window_frames)).collect();
+    let mut scans: Vec<ChannelScan> = (0..n).map(|_| ChannelScan::new(start, window_frames).with_account_for_dc(settings.account_for_dc)).collect();
     let mut buf = vec![0.0f32; SCAN_CHUNK_FRAMES];
     let mut at = start;
     while at < end {
@@ -374,6 +455,12 @@ pub fn scan(state: &DocState, range: Range<u64>, window_ms: u32, progress: &mut 
     let dynamic_range_db = scans.iter().map(ChannelScan::dynamic_range_db).collect();
     let channels = scans.into_iter().map(ChannelScan::finish).collect();
     Ok(Some(Stats { range: start..end, sample_rate: rate, window_frames, channels, dynamic_range_db }))
+}
+
+/// Measure `range` of `state` (clamped to the document) in 64 K-frame chunks. `progress` gets
+/// 0..=1; `Ok(None)` when `cancel` was set. An empty range measures nothing and gives zeros.
+pub fn scan(state: &DocState, range: Range<u64>, window_ms: u32, progress: &mut dyn FnMut(f64), cancel: &AtomicBool) -> io::Result<Option<Stats>> {
+    scan_with(state, range, &RmsSettings { window_ms, ..RmsSettings::default() }, progress, cancel)
 }
 
 #[cfg(test)]
