@@ -36,4 +36,34 @@ mod tests {
             assert!((got - want).abs() < 1e-6, "got {got}, want {want}");
         }
     }
+
+    #[test]
+    fn fractional_ratio_half_interpolates_between_samples() {
+        let out = resample_linear(&[0.0, 1.0, 4.0, 9.0, 16.0], 0.5);
+        let expected = [0.0_f32, 0.5, 1.0, 2.5, 4.0, 6.5, 9.0, 12.5, 16.0, 16.0];
+        assert_eq!(out.len(), expected.len());
+        for (got, want) in out.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < 1e-6, "got {got}, want {want}");
+        }
+    }
+
+    #[test]
+    fn fractional_ratio_one_and_half_interpolates_between_samples() {
+        let out = resample_linear(&[0.0, 1.0, 4.0, 9.0, 16.0], 1.5);
+        let expected = [0.0_f32, 2.5, 9.0, 16.0];
+        assert_eq!(out.len(), expected.len());
+        for (got, want) in out.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < 1e-6, "got {got}, want {want}");
+        }
+    }
+
+    #[test]
+    fn non_integer_position_one_and_quarter_interpolates() {
+        let out = resample_linear(&[0.0, 1.0, 4.0, 9.0, 16.0], 1.25);
+        let expected = [0.0_f32, 1.75, 6.5, 14.25];
+        assert_eq!(out.len(), expected.len());
+        for (got, want) in out.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < 1e-6, "got {got}, want {want}");
+        }
+    }
 }
