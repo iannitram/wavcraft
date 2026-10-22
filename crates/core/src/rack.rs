@@ -292,6 +292,43 @@ pub fn apply(
     })
 }
 
+/// Like [`apply`], but lets the rack ring out (B019, "Apply with tail"): after `range` (the whole
+/// file when empty) it feeds `tail_frames` frames of silence through the same rack and keeps what
+/// comes out, so a delay or reverb tail is not cut off at the selection end. The document grows
+/// by `tail_frames` on every channel (channels not in `channels` get silence there); everything
+/// after the range moves later. One edit named [`LABEL`] whose change is `LengthFrom` the range
+/// start. With `tail_frames == 0`, or no active channel, it is exactly [`apply`].
+pub fn apply_with_tail(
+    config: &RackConfig,
+    doc: &DocState,
+    range: Range<u64>,
+    channels: ChannelMask,
+    xf: Crossfades,
+    cancel: &AtomicBool,
+    tail_frames: u64,
+) -> Result<Edit, EditError> {
+    let invalid = |why: String| EditError::Io(io::Error::new(io::ErrorKind::InvalidInput, why));
+    let k = channels.active(doc.channel_count()).len();
+    let mut rack = RackProcessor::new(config, k.max(1), doc.sample_rate()).map_err(invalid)?;
+    let range = if range.start < range.end { range } else { 0..doc.len_frames() };
+
+    if tail_frames == 0 || k == 0 {
+        return apply(config, doc, range, channels, xf, cancel);
+    }
+
+    let widened = edit::insert_silence(doc, range.end, tail_frames, Crossfades::NONE)?;
+    let mut done = edit::replace_range(&widened.state, range.start..range.end + tail_frames, channels, LABEL, xf, cancel, |_at, input, output| {
+        for (i, o) in input.iter().zip(output.iter_mut()) {
+            o.copy_from_slice(i);
+        }
+        rack.process_block(output);
+        Ok(())
+    })?;
+
+    done.change = edit::Change::LengthFrom { frame: range.start };
+    Ok(done)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
