@@ -309,8 +309,9 @@ impl WaveApp {
     }
 
     fn pick_file(&mut self, ctx: &egui::Context) {
-        let picked =
-            rfd::FileDialog::new().add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "mp4", "mov", "caf"]).pick_file();
+        let picked = rfd::FileDialog::new()
+            .add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "mp4", "mov", "caf"])
+            .pick_file();
         if let Some(path) = picked {
             self.open(path, ctx);
         }
