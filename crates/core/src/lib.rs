@@ -34,6 +34,7 @@ pub mod spectral_dirty;
 pub mod spectrogram;
 pub mod store;
 pub mod tempo;
+pub mod transcript_cut;
 pub mod view;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
