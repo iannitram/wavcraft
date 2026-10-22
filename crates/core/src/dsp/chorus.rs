@@ -220,6 +220,36 @@ mod tests {
     }
 
     #[test]
+    fn independent_peak_two_voices_50hz_full_depth() {
+        let mut input = vec![0.0_f32; 80];
+        input[0] = 1.0;
+        let output = chorus(&input, 1000.0, 2, 50.0, 1.0, 1.0);
+        let peak = output.iter().enumerate().max_by(|(_, a), (_, b)| a.total_cmp(b)).map(|(index, _)| index);
+        assert_eq!(peak, Some(13));
+        assert!((output[13] - 0.20819).abs() <= 1e-4);
+    }
+
+    #[test]
+    fn independent_peak_two_voices_25hz_half_depth() {
+        let mut input = vec![0.0_f32; 40];
+        input[0] = 1.0;
+        let output = chorus(&input, 1000.0, 2, 25.0, 0.5, 1.0);
+        let peak = output.iter().enumerate().max_by(|(_, a), (_, b)| a.total_cmp(b)).map(|(index, _)| index);
+        assert_eq!(peak, Some(20));
+        assert!((output[20] - 0.686047).abs() <= 1e-4);
+    }
+
+    #[test]
+    fn independent_peak_three_voices_25hz_half_depth() {
+        let mut input = vec![0.0_f32; 40];
+        input[0] = 1.0;
+        let output = chorus(&input, 1000.0, 3, 25.0, 0.5, 1.0);
+        let peak = output.iter().enumerate().max_by(|(_, a), (_, b)| a.total_cmp(b)).map(|(index, _)| index);
+        assert_eq!(peak, Some(15));
+        assert!((output[15] - 0.276543).abs() <= 1e-4);
+    }
+
+    #[test]
     fn detuned_voices_have_different_late_impulse_positions() {
         let sample_rate = 1000.0;
         let rate_hz = 3.0;
