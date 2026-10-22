@@ -167,3 +167,54 @@ fn an_empty_document_is_refused_by_enabled() {
     let e = editor(&tmp.0, &[vec![], vec![]]);
     assert!(!e.enabled(invert(), &(0..0)));
 }
+
+/// Copies its input and records the `first_frame` of every chunk it is given, in order.
+struct Recorder(std::sync::Mutex<Vec<u64>>);
+
+impl effects::Effect for Recorder {
+    fn id(&self) -> &'static str {
+        "recorder"
+    }
+    fn name(&self) -> &'static str {
+        "Recorder"
+    }
+    fn process(&self, _params: &[f64], first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> std::io::Result<()> {
+        if let Ok(mut seen) = self.0.lock() {
+            seen.push(first_frame);
+        }
+        for (i, o) in input.iter().zip(output.iter_mut()) {
+            for (a, b) in i.iter().zip(o.iter_mut()) {
+                *b = *a;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Runs [`Recorder`] over `range` of a stereo document of `frames` frames and returns the
+/// `first_frame` it was given for each chunk.
+fn recorded_first_frames(name: &str, range: std::ops::Range<u64>, frames: usize) -> Vec<u64> {
+    let tmp = TempDir::new(name);
+    let e = editor(&tmp.0, &stereo(frames));
+    let rec = Recorder(std::sync::Mutex::new(Vec::new()));
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    effects::apply(&rec, &[], e.history.current(), range, wavcraft_core::ChannelMask::ALL, Crossfades::NONE, &cancel).unwrap();
+    rec.0.into_inner().unwrap()
+}
+
+#[test]
+fn a_chunk_gets_its_absolute_first_frame_inside_a_selection() {
+    // Chunks start at start, start + BLOCK_FRAMES and start + 2 * BLOCK_FRAMES (the last one 17 frames).
+    let start = 1_000u64;
+    let block = BLOCK_FRAMES as u64;
+    let range = start..start + 2 * block + 17;
+    let seen = recorded_first_frames("first-frame-sel", range, (start + 2 * block + 17 + 500) as usize);
+    assert_eq!(seen, vec![start, start + block, start + 2 * block]);
+}
+
+#[test]
+fn a_selection_from_frame_zero_gets_frames_from_zero() {
+    let block = BLOCK_FRAMES as u64;
+    let seen = recorded_first_frames("first-frame-zero", 0..2 * block + 17, (2 * block + 17) as usize);
+    assert_eq!(seen, vec![0, block, 2 * block]);
+}

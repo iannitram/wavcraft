@@ -101,7 +101,5 @@ pub fn apply(
     cancel: &AtomicBool,
 ) -> Result<Edit, EditError> {
     let range = if range.start < range.end { range } else { 0..doc.len_frames() };
-    edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, input, output| {
-        effect.process(params, range.start + at, input, output)
-    })
+    edit::replace_range(doc, range.clone(), channels, effect.name(), xf, cancel, |at, input, output| effect.process(params, at, input, output))
 }
