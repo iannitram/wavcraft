@@ -141,6 +141,40 @@ pub fn normalize(doc: &DocState, range: Range<u64>, channels: ChannelMask, targe
     })
 }
 
+/// Headroom: the largest gain in dB that keeps the loudest sample of `range` (over the active
+/// channels together) at or below `ceiling_db` dBFS. `None` for silence (any gain is safe). The
+/// result is negative when the range already passes the ceiling, and never above [`MAX_GAIN_DB`].
+pub fn headroom_db(doc: &DocState, range: Range<u64>, channels: ChannelMask, ceiling_db: f32) -> Result<Option<f32>, EditError> {
+    let ceiling = if ceiling_db.is_finite() { ceiling_db.clamp(-144.0, 24.0) } else { 0.0 };
+    let p = peak(doc, range, channels)?;
+    if p <= 0.0 {
+        return Ok(None);
+    }
+    let headroom = gain_to_db(db_to_gain(ceiling) / p).min(MAX_GAIN_DB);
+    Ok(Some(headroom))
+}
+
+/// Amplify with a clip guard: `db` of gain, but never more than the headroom to `ceiling_db`
+/// dBFS (a range already past the ceiling gets no boost, and is never attenuated by the guard).
+/// Negative `db` always passes through. Returns the edit and the gain in dB actually applied.
+pub fn amplify_guarded(
+    doc: &DocState,
+    range: Range<u64>,
+    channels: ChannelMask,
+    db: f32,
+    ceiling_db: f32,
+    xf: Crossfades,
+) -> Result<(Edit, f32), EditError> {
+    let db = if db.is_finite() { db.min(MAX_GAIN_DB) } else { 0.0 };
+    let headroom = headroom_db(doc, range.clone(), channels, ceiling_db)?;
+    let applied = match headroom {
+        Some(h) => db.min(h.max(0.0)),
+        None => db,
+    };
+    let edit = amplify(doc, range, channels, applied, xf)?;
+    Ok((edit, applied))
+}
+
 /// The label a fade gets in the history: "Fade In (Linear)".
 pub fn fade_label(dir: FadeDir, curve: FadeCurve) -> String {
     format!("Fade {} ({})", if dir == FadeDir::In { "In" } else { "Out" }, curve.name())
