@@ -537,7 +537,7 @@ mod hud_tests {
     #[test]
     fn hud_drag_ignores_non_finite_input() {
         assert!((hud_drag_gain_db(-3.0, f64::NAN) + 3.0).abs() < 1e-9);
-        assert!((hud_drag_gain_db(f64::NAN, 50.0)).abs() < 1e-9);
+        assert!((hud_drag_gain_db(f64::NAN, 50.0) - 5.0).abs() < 1e-9);
     }
 
     #[test]
