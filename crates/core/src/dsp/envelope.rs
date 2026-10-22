@@ -1,25 +1,60 @@
 //! Piecewise-linear fade envelope implementation.
+//!
+//! Sanitizes inputs according to these rules:
+//! 1. Drop every point whose time is not finite (NaN or infinity).
+//! 2. Replace every non-finite gain (NaN or infinity) with 1.0. Keep the point.
+//! 3. Keep the order of the remaining points. Drop a point whose time is not strictly greater than
+//!    the time of the last kept point.
+//! 4. If no points remain, return an empty Vec.
+//! 5. Otherwise run the existing algorithm unchanged, on the kept points only.
 
 pub fn piecewise_linear(points: &[(f32, f32)], times: &[f32]) -> Vec<f32> {
     if points.is_empty() {
         return Vec::new();
     }
 
+    // Sanitize input points according to the rules
+    let mut sanitized_points = Vec::with_capacity(points.len());
+    let mut last_time = f32::NEG_INFINITY;
+
+    for &(time, gain) in points {
+        // Rule 1: Drop points with non-finite time
+        if !time.is_finite() {
+            continue;
+        }
+
+        // Rule 2: Replace non-finite gains with 1.0
+        let sanitized_gain = if gain.is_finite() { gain } else { 1.0 };
+
+        // Rule 3: Drop points whose time is not strictly greater than the last kept point
+        if time <= last_time {
+            continue;
+        }
+
+        sanitized_points.push((time, sanitized_gain));
+        last_time = time;
+    }
+
+    // Rule 4: Return empty Vec if no points remain after sanitization
+    if sanitized_points.is_empty() {
+        return Vec::new();
+    }
+
     let mut result = Vec::with_capacity(times.len());
 
     for &t in times {
-        if t <= points[0].0 {
+        if t <= sanitized_points[0].0 {
             // Clamp low
-            result.push(points[0].1);
-        } else if t >= points[points.len() - 1].0 {
+            result.push(sanitized_points[0].1);
+        } else if t >= sanitized_points[sanitized_points.len() - 1].0 {
             // Clamp high
-            result.push(points[points.len() - 1].1);
+            result.push(sanitized_points[sanitized_points.len() - 1].1);
         } else {
             // Find the segment and interpolate
             let mut found = false;
-            for i in 0..points.len() - 1 {
-                let (t0, g0) = points[i];
-                let (t1, g1) = points[i + 1];
+            for i in 0..sanitized_points.len() - 1 {
+                let (t0, g0) = sanitized_points[i];
+                let (t1, g1) = sanitized_points[i + 1];
 
                 if t0 <= t && t <= t1 {
                     // Handle the case where t1 == t0 (avoid division by zero)
@@ -36,7 +71,7 @@ pub fn piecewise_linear(points: &[(f32, f32)], times: &[f32]) -> Vec<f32> {
 
             // This shouldn't happen due to the earlier clamping, but just in case
             if !found {
-                result.push(points[points.len() - 1].1);
+                result.push(sanitized_points[sanitized_points.len() - 1].1);
             }
         }
     }
@@ -162,6 +197,54 @@ mod tests {
         let times = [0.0, 0.5];
         let result = piecewise_linear(&points, &times);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn non_finite_gain_becomes_unity() {
+        let points = [(0.0, 0.0), (0.5, f32::NAN), (1.0, 1.0)];
+        let times = [0.25, 0.5, 0.75];
+        let expected = [0.5, 1.0, 1.0];
+        assert_eq!(piecewise_linear(&points, &times), expected);
+    }
+
+    #[test]
+    fn infinite_gain_becomes_unity() {
+        let points = [(0.0, f32::INFINITY), (1.0, 0.5)];
+        let times = [0.0, 0.5, 1.0];
+        let expected = [1.0, 0.75, 0.5];
+        assert_eq!(piecewise_linear(&points, &times), expected);
+    }
+
+    #[test]
+    fn non_increasing_time_point_is_dropped() {
+        let points = [(0.0, 0.0), (1.0, 1.0), (0.5, 0.25), (2.0, 0.0)];
+        let times = [0.25, 1.25, 2.5];
+        let expected = [0.25, 0.75, 0.0];
+        assert_eq!(piecewise_linear(&points, &times), expected);
+    }
+
+    #[test]
+    fn equal_time_point_is_dropped() {
+        let points = [(0.0, 0.0), (1.0, 1.0), (1.0, 0.5), (2.0, 0.0)];
+        let times = [0.5, 1.5];
+        let expected = [0.5, 0.5];
+        assert_eq!(piecewise_linear(&points, &times), expected);
+    }
+
+    #[test]
+    fn non_finite_time_point_is_dropped() {
+        let points = [(f32::NAN, 0.3), (0.0, 0.0), (1.0, 1.0)];
+        let times = [-1.0, 0.5];
+        let expected = [0.0, 0.5];
+        assert_eq!(piecewise_linear(&points, &times), expected);
+    }
+
+    #[test]
+    fn all_points_dropped_gives_empty() {
+        let points = [(f32::NAN, 0.3)];
+        let times = [0.5];
+        let expected: [f32; 0] = [];
+        assert_eq!(piecewise_linear(&points, &times), expected);
     }
 
     fn assert_close(got: Result<Vec<f32>, GainError>, want: &[f32]) {
