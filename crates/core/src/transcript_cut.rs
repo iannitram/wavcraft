@@ -31,9 +31,10 @@ pub fn cut_ranges(words: &[(f64, f64)], deleted: &[usize], sample_rate: u32, fra
     let mut runs: Vec<(f64, f64)> = Vec::new();
     let mut current_start = words[valid_indices[0]].0;
     let mut current_end = words[valid_indices[0]].1;
+    let mut prev_idx = valid_indices[0];
 
     for &idx in valid_indices.iter().skip(1) {
-        if idx == valid_indices[0] + 1 {
+        if idx == prev_idx + 1 {
             // Adjacent indices
             current_end = current_end.max(words[idx].1);
         } else {
@@ -41,6 +42,7 @@ pub fn cut_ranges(words: &[(f64, f64)], deleted: &[usize], sample_rate: u32, fra
             current_start = words[idx].0;
             current_end = words[idx].1;
         }
+        prev_idx = idx;
     }
     runs.push((current_start, current_end));
 
@@ -140,5 +142,23 @@ mod tests {
     #[test]
     fn rate_scales_frames() {
         assert_eq!(cut_ranges(&[(0.01, 0.02)], &[0], 48000, 100000), vec![(480, 960)]);
+    }
+
+    #[test]
+    fn index_equal_to_len_is_ignored() {
+        let words = [(0.0, 0.5), (0.5, 1.0), (1.2, 1.6), (2.0, 2.4)];
+        assert_eq!(cut_ranges(&words, &[1, 4], 1000, 3000), vec![(500, 1000)]);
+    }
+
+    #[test]
+    fn run_of_three_cuts_every_gap() {
+        let words = [(0.0, 0.5), (0.5, 1.0), (1.2, 1.6), (2.0, 2.4)];
+        assert_eq!(cut_ranges(&words, &[0, 1, 2], 1000, 3000), vec![(0, 1600)]);
+    }
+
+    #[test]
+    fn duplicates_do_not_split_or_drop_runs() {
+        let words = [(0.0, 0.5), (0.5, 1.0), (1.2, 1.6), (2.0, 2.4)];
+        assert_eq!(cut_ranges(&words, &[2, 0, 2], 1000, 3000), vec![(0, 500), (1200, 1600)]);
     }
 }
