@@ -99,4 +99,24 @@ mod tests {
     fn empty_levels_give_zero_bins_of_the_right_length() {
         assert_eq!(rms_level_histogram(&[], -60.0, 0.0, 10.0), vec![0, 0, 0, 0, 0, 0]);
     }
+
+    #[test]
+    fn oversized_bin_count_returns_no_bins() {
+        // 60 dB / 0.00005 dB = 1_200_000 bins, above MAX_BINS (1 << 20 = 1_048_576).
+        assert!(rms_level_histogram(&[-30.0], -60.0, 0.0, 0.00005).is_empty());
+    }
+
+    #[test]
+    fn extreme_range_guard_has_positive_control() {
+        // Same kind of call as extreme_finite_range_returns_no_bins, with a range far below the cap.
+        let counts = rms_level_histogram(&[-30.0], -60.0, 0.0, 1.0);
+        assert_eq!(counts.len(), 60);
+        assert_eq!(counts[30], 1);
+        assert_eq!(counts.iter().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn invalid_parameter_guard_has_positive_control() {
+        assert_eq!(rms_level_histogram(&[-30.0], -60.0, 0.0, 10.0), vec![0, 0, 0, 1, 0, 0]);
+    }
 }
