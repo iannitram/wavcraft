@@ -18,9 +18,11 @@ use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 mod delay;
 mod dsp_run;
 mod gain;
+mod plate;
 mod reverb;
 pub use delay::Delay;
 pub use gain::Gain;
+pub use plate::Plate;
 pub use reverb::Reverb;
 
 /// Block size hint given to wrapped plugins (chunks are 64 K frames; plugins loop internally).
@@ -210,7 +212,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &Reverb, &Delay];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &Reverb, &Delay, &Plate];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
