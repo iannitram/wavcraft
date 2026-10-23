@@ -34,6 +34,7 @@ pub mod space;
 pub mod spectral_dirty;
 pub mod spectrogram;
 pub mod store;
+pub mod strip_eq;
 pub mod tempo;
 pub mod transcript_cut;
 pub mod view;
