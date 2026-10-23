@@ -27,6 +27,7 @@ pub mod smpte;
 pub mod space;
 pub mod spectrogram;
 pub mod store;
+pub mod video_snap;
 pub mod view;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
