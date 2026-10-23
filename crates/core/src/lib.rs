@@ -18,6 +18,7 @@
 
 pub mod actions;
 pub mod batch;
+pub mod batch_cli;
 pub mod doc;
 pub mod document;
 pub mod io;
