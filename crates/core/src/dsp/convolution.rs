@@ -4,8 +4,8 @@
 //!
 //! Not in this change: IR file loading; EQ.
 
-use rustfft::num_complex::Complex64;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex64;
 
 /// Inputs whose direct cost `n * m` is at most this use the direct path.
 const DIRECT_LIMIT: usize = 64;

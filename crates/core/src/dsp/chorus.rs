@@ -83,7 +83,7 @@ pub fn chorus(input: &[f32], sample_rate: f32, voices: usize, rate_hz: f32, dept
 
 #[cfg(test)]
 mod tests {
-    use super::{chorus, voice_rate_factor, MAX_DELAY_MS, MIN_DELAY_MS};
+    use super::{MAX_DELAY_MS, MIN_DELAY_MS, chorus, voice_rate_factor};
 
     #[test]
     fn voice_rate_factors_are_detuned() {
