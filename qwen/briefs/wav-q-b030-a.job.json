@@ -1,0 +1,124 @@
+{
+  "id": "wav-q-b030-a",
+  "title": "B030-a: Dynamics graph: curve, reduction and unity points",
+  "kind": "small-code-change-exact-brief",
+  "size": "S",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "repo": "iannitram/wavcraft",
+  "base": "feat/b029-dynamics",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "wav-q-b030-a.md",
+  "verify": [
+    {
+      "name": "mod-line",
+      "cmd": "grep -n \"^pub mod dynamics_graph;$\" crates/core/src/effects.rs",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-default_params_give_the_unity_line_below_the_thresholds",
+      "cmd": "cargo test -p wavcraft-core default_params_give_the_unity_line_below_the_thresholds 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-compressor_points_match_the_formula_by_hand",
+      "cmd": "cargo test -p wavcraft-core compressor_points_match_the_formula_by_hand 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-limiter_is_flat_at_the_ceiling",
+      "cmd": "cargo test -p wavcraft-core limiter_is_flat_at_the_ceiling 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-n_of_zero_one_and_two",
+      "cmd": "cargo test -p wavcraft-core n_of_zero_one_and_two 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-lo_not_below_hi_gives_no_points",
+      "cmd": "cargo test -p wavcraft-core lo_not_below_hi_gives_no_points 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-reduction_is_at_most_zero_for_a_compressor",
+      "cmd": "cargo test -p wavcraft-core reduction_is_at_most_zero_for_a_compressor 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-unity_line_joins_the_two_ends",
+      "cmd": "cargo test -p wavcraft-core unity_line_joins_the_two_ends 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-wrong_parameter_count_gives_no_points",
+      "cmd": "cargo test -p wavcraft-core wrong_parameter_count_gives_no_points 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-default_params_give_the_unity_line_below_the_thresholds",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(i as f64) \\/ last#(i as f64) \\/ (last + 1.0)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core default_params_give_the_unity_line_below_the_thresholds 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-compressor_points_match_the_formula_by_hand",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#|x| (x, static_curve(params, x))#|x| (x, x)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core compressor_points_match_the_formula_by_hand 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-limiter_is_flat_at_the_ceiling",
+      "cmd": "f=crates/core/src/effects/dynamics.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#\\.min(params\\[LIMIT\\])#.min(params[LIMIT] + 3.0)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core limiter_is_flat_at_the_ceiling 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-n_of_zero_one_and_two",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if n == 1 {#if n == 2 {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core n_of_zero_one_and_two 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-lo_not_below_hi_gives_no_points",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#|| lo_db >= hi_db {#|| lo_db > hi_db {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core lo_not_below_hi_gives_no_points 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-reduction_is_at_most_zero_for_a_compressor",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#static_curve(params, x) - x#static_curve(params, x)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core reduction_is_at_most_zero_for_a_compressor 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-unity_line_joins_the_two_ends",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#\\[(lo_db, lo_db), (hi_db, hi_db)\\]#[(lo_db, hi_db), (hi_db, hi_db)]#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core unity_line_joins_the_two_ends 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-wrong_parameter_count_gives_no_points",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#params\\.len() == Dynamics\\.parameters()\\.len()#params.len() > 0#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core wrong_parameter_count_gives_no_points 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core dynamics_graph 2>&1 | grep -E \"test result: ok[.] 8 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/effects/dynamics_graph.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/effects/dynamics_graph.rs",
+    "crates/core/src/effects.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "B030-a: Dynamics graph: curve, reduction and unity points (alpha) (Refs #312)",
+  "est_minutes": 20,
+  "priority": 110,
+  "created_by": "api-qwen-briefs"
+}
