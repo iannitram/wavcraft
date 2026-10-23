@@ -7,6 +7,7 @@
 
 use std::io;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, PasteAt};
 use crate::doc::history::History;
@@ -52,6 +53,9 @@ pub enum ActionId {
     RepeatLastDialog,
     /// A registered effect: its index in [`effects::all`].
     Effect(u16),
+    MarkerAdd,
+    MarkerNext,
+    MarkerPrev,
 }
 
 /// Which part of the program carries an action out.
@@ -80,6 +84,9 @@ const fn cmd(key: &'static str) -> Shortcut {
 }
 const fn cmd_shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: true, shift: true, alt: false, key }
+}
+const fn cmd_alt(key: &'static str) -> Shortcut {
+    Shortcut { cmd: true, shift: false, alt: true, key }
 }
 const fn shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: false, shift: true, alt: false, key }
@@ -166,6 +173,10 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::RightChannel, "edit.rightChannel", "Right Channel Only", &[key("ArrowDown")]),
     edit(ActionId::CursorToStart, "view.cursorToStart", "Playhead to Start", &[key("Home")]),
     edit(ActionId::CursorToEnd, "view.cursorToEnd", "Playhead to End", &[key("End")]),
+    // Markers (A171, A176, A121): Add Marker is M; the playhead jumps with Ctrl+Alt+Left/Right.
+    edit(ActionId::MarkerAdd, "marker.add", "Add Marker", &[key("M")]),
+    edit(ActionId::MarkerPrev, "marker.prev", "Playhead to Previous Marker", &[cmd_alt("ArrowLeft")]),
+    edit(ActionId::MarkerNext, "marker.next", "Playhead to Next Marker", &[cmd_alt("ArrowRight")]),
     window(ActionId::ZoomIn, "view.zoomIn", "Zoom In", &[key("Equals")]),
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
@@ -327,6 +338,9 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::MarkerAdd => self.len() > 0,
+            ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
+            ActionId::MarkerPrev => self.history.current().markers().prev_before(selection.start).is_some(),
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
             ActionId::ZoomToSelection => has_sel,
@@ -543,6 +557,20 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => return unchanged(sel.start..sel.start),
             ActionId::CursorToStart => return unchanged(0..0),
             ActionId::CursorToEnd => return unchanged(len..len),
+            ActionId::MarkerAdd => {
+                // A selection makes a range marker; otherwise a point at the cursor.
+                let Some(markers) = doc.markers().with_added(sel.clone(), None) else {
+                    return Ok(Outcome { doc_changed: false, selection: sel, message: Some("There is a marker here already".to_string()) });
+                };
+                self.history.push_markers("Add Marker", Arc::new(markers));
+                // Markers draw over the same audio: the views need no rebuild.
+                return Ok(Outcome { doc_changed: false, selection: sel, message: Some("Add Marker".to_string()) });
+            }
+            ActionId::MarkerNext | ActionId::MarkerPrev => {
+                let m = doc.markers();
+                let to = if id == ActionId::MarkerNext { m.next_after(sel.start) } else { m.prev_before(sel.start) };
+                return unchanged(to.map_or(sel.clone(), |f| f..f));
+            }
             ActionId::InsertSilence
             | ActionId::SetIn
             | ActionId::SetOut

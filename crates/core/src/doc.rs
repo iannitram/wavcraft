@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use soundcraft_audio_io::{AudioBuffer, BwfInfo, FileFormat, SampleFormat};
 
+use crate::markers::Markers;
 use crate::meta::Metadata;
 use crate::store::{BLOCK_FRAMES, BlockHandle, BlockId, Store};
 
@@ -330,6 +331,7 @@ pub struct DocState {
     channels: Vec<Arc<Channel>>,
     sample_rate: u32,
     source: Arc<SourceFormat>,
+    markers: Arc<Markers>,
 }
 
 impl DocState {
@@ -349,7 +351,7 @@ impl DocState {
         if lens.windows(2).any(|w| w[0] != w[1]) {
             return Err(DocError::LengthMismatch(lens));
         }
-        let doc = DocState { store, channels, sample_rate, source };
+        let doc = DocState { store, channels, sample_rate, source, markers: Arc::default() };
         debug_assert!(doc.channels.iter().all(|c| c.len() == doc.len_frames()), "all channels of a DocState are the same length");
         Ok(doc)
     }
@@ -376,6 +378,16 @@ impl DocState {
         let Some(piece) = self.channels.first().and_then(|c| c.pieces().first()) else { return 0 };
         let id = piece.block().block().id;
         self.source.origin.iter().find(|(b, _)| *b == id).map_or(0, |(_, at)| at + u64::from(piece.offset()))
+    }
+
+    /// The markers of this state (A170); undo and redo restore them with the audio.
+    pub fn markers(&self) -> &Arc<Markers> {
+        &self.markers
+    }
+
+    /// This state with other markers (the audio is shared, not copied).
+    pub fn with_markers(&self, markers: Arc<Markers>) -> DocState {
+        DocState { markers, ..self.clone() }
     }
 
     pub fn store(&self) -> &Store {
