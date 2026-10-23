@@ -17,9 +17,69 @@ PRs opened 2026-10-22, all marked alpha and all core only (nothing is reachable 
 - #477 A214: dynamic and static peak modes, settable hold time and valley tracking are built and tested in core; LED, gradient and range styling and all drawing are not done, and the panel does not call the new methods.
 - Rows A033 and B024 were found already built (A033 in #113, B024 in #146), so no new PR was opened for them.
 
-**Date (as of):** 2026-10-22.
+Overnight PRs opened 2026-10-23 (#479 to #501), also alpha and core only; none is reachable from the app yet:
 
-**How the categories were made.** Categories come from matching feature ids (A###, B###, C###) in pull request text, including the "Roadmap rows ..." lists in open PR bodies, and were corrected after a screening pass of the Low-complexity rows (some were found already built in an open PR). Nothing was built or run to check them, so a row can be marked Merged because a PR names its id while only part of it landed. **The live source of truth is the GitHub PR state**; this file is a snapshot of 2026-10-22 and is not updated by coding PRs.
+- #479 B169: `AbCompare` (A and B settings for one effect, toggle, copy A to B, differs) is built and tested; the dialog buttons are not wired, nothing is stored per rack slot or in presets.
+- #480 A217: `RmsMeter` and `RmsLevels` (sliding-window RMS in dBFS, settable window) are built and tested; the player tap does not feed them and no RMS bar is drawn.
+- #481 A319: `band_filter` (Butterworth highpass then lowpass, edges in Hz) and `BandOnly` settings are built and tested; not hooked into playback and no toggle or spectral-selection input.
+- #482 B111: 15 named Pitch Shifter presets (octave, fifth, fourth, thirds, semitone, quarter tone, A440 to A432) with lookup are built; no formant presets (the Pitch Shifter has no formant parameter) and no menu entry.
+- #483 B112: `fit_ratio` and `target_frames` (stretch ratio to reach a target length, with limits) are built and tested; no dialog, menu or control command.
+- #484 B086: a Plate reverb effect (size, decay, damping, pre-delay, diffusion, wet) is registered and tested; only the generic effect dialog shows it, no presets and no tail extension.
+- #485 C041: `PunchAgain` (remember the last punch range and re-arm it) is built and tested; no command, key or button, and nothing records a finished punch yet.
+- #486 C104: `Multitrack::move_track(from, to)` is built and tested; no drag gesture on the headers, no control verb, no undo.
+- #487 C110: per-track polarity flag (`set_invert`, `apply_invert`, saved with the session) is built and tested; the mixdown does not call it and the track header has no button.
+- #488 C094: session title and notes get/set with length and text rules, round-tripping through the session JSON, are built and tested; no UI or control verb.
+- #489 C111: `split_to_mono` (one stereo track into a left and a right track, settings and playlists copied) is built and tested; no menu, no undo, stereo only.
+- #490 C179: step and hold segment shapes for automation keyframes (`SegmentShape`, `shape_value`) are built and tested; playback evaluation still ramps linearly and shapes are not saved.
+- #491 C080: `RecentSessions` (newest-first list, dedupe, maximum, prune) is built and tested; not saved to settings, not called from open or save, no menu.
+- #492 C202: `plan_record_count_in` (pre-roll frames and the clicks to sound before recording) is built and tested; no recorder uses it and there is no setting in the UI.
+- #493 C245: `TrackFade` (fade-in and fade-out lengths, half-track limit, linear curve) is built and tested; not applied on export or in the CUE sheet, no UI.
+- #494 A283: three Multitrack preference keys (track height, clip crossfade, clip colour) with ranges and defaults are built and tested; no Preferences page and nothing reads them.
+- #495 A326: `SourceLink` (an encoded, parseable link back to the source session) is built and tested; nothing writes it into an exported file and there is no Edit Original action.
+- #496 C171: `MasterMode` (mono, stereo, 5.1) with parsing and the mono fold-down rule is built and tested; session creation, mixdown and the dialog do not use it.
+- #497 C078: session property setters for opening tempo, meter and sample rate (each returns the old value) are built and tested; no dialog, menu or undo.
+- #498 C105: track colour setter, hex parsing and a named palette are built and tested; no picker, no notes box, new tracks do not use the palette.
+- #499 A324: `rate_from_fps` and `rate_from_ratio` (a video's frame rate mapped to the nearest SMPTE rate) are built and tested; the app does not read a video's rate and the snap still uses the display format.
+- #500 C083: a ruler model (`ruler_ticks`, step table, decimal seconds and minutes:seconds labels) is built and tested; the multitrack view still draws its own seconds-only ruler.
+- #501 A287: four Video preference keys (timecode overlay on or off, corner, size, spot frame on scrub) are built and tested; no Preferences page and nothing draws an overlay.
+
+### Merge order
+
+Each stacked PR needs the PR it sits on merged first. Chains recorded in the PR bodies:
+
+- #326 on #290 (bars and beats, itself on #113); #492 on #326.
+- #205 on #113 (time display); #499 on #205.
+- #355 on #318 (multitrack session); #493 on #355.
+- Straight on #318 (multitrack session): #323, #327, #339, #345, #346, #353, #355, #486, #487, #488, #497, #498, #500. Second level: #490 on #327, #489 on #339, #491 on #346, #496 on #345.
+- #364 on #352 (on #342 and #318); #485 on #364.
+- On #153 (effect run state, on #106 and #93): #356, #357, #362; #482 on #356, #484 on #357, #483 on #362.
+- #473 on #146 (on #106 and #93).
+- #475 and #477 on #131; #480 on #131.
+- #474 on #91; #476 on #159.
+- #494 and #501 on #123.
+- Stand-alone on main: #479, #481, #495.
+
+### Known conflict points
+
+- The registry and module lines: `effects.rs` (#482, #484 each add a `pub mod` or registry line), `multitrack.rs` (#486, #487, #488, #489, #490, #497, #498 each add one `pub mod` line), plus `lib.rs` (#499, #500), `settings.rs` (#494, #501), `metronome.rs` (#492), `cd.rs` (#493), `meta.rs` (#495), `dsp/mod.rs` (#481) and `timepitch.rs` (#483). Each is a one-line clash; keep every line.
+- `levels.rs`: #477 (peak modes) and #480 (RMS module) both touch the levels code on top of #131.
+- `Settings::save`: it rewrites `settings.txt` from its own five keys, so the new preference lines from #494 are dropped on the next save until the save is changed or the dialog calls the new save; #501 was written to avoid this.
+
+### Rows left for Qwen
+
+Low-complexity rows still unwritten and not suited to a core-only job:
+
+- A044: needs UI panels (#330, #325, Session Properties), so it is not core work.
+- B083: Studio Reverb, a preset variant of the reverb in #357.
+- C224: Essential Sound presets: vendor-named, and there is no panel to apply them to.
+- A187: probably drop.
+- C207 and A234: the row text is vague.
+
+Medium and Hard rows have not been started.
+
+**Date (as of):** 2026-10-23.
+
+**How the categories were made.** Categories come from matching feature ids (A###, B###, C###) in pull request text, including the "Roadmap rows ..." lists in open PR bodies, and were corrected after a screening pass of the Low-complexity rows (some were found already built in an open PR). Nothing was built or run to check them, so a row can be marked Merged because a PR names its id while only part of it landed. **The live source of truth is the GitHub PR state**; this file is a snapshot of 2026-10-23 and is not updated by coding PRs.
 
 - **Merged** = the 46 rows the source already marks "have", plus any row whose id appears in a merged PR.
 - **PR** = the id appears in an open PR and in no merged PR. The open PR numbers are listed.
@@ -35,8 +95,8 @@ PRs opened 2026-10-22, all marked alpha and all core only (nothing is reachable 
 | Category | Rows |
 |---|---|
 | Merged | 106 |
-| PR | 309 |
-| Unwritten | 270 |
+| PR | 332 |
+| Unwritten | 247 |
 | **Total** | **685** |
 
 ### Tier by category
@@ -48,21 +108,21 @@ PRs opened 2026-10-22, all marked alpha and all core only (nothing is reachable 
 | T2 UI shell and layout | 5 | 88 | 0 | 93 |
 | T3 Playback | 0 | 16 | 0 | 16 |
 | T4 Recording | 0 | 27 | 2 | 29 |
-| T5 Effects rack and core effects | 8 | 35 | 13 | 56 |
-| T6 Metering and analysis | 2 | 10 | 6 | 18 |
+| T5 Effects rack and core effects | 8 | 36 | 12 | 56 |
+| T6 Metering and analysis | 2 | 12 | 4 | 18 |
 | T7 Spectral tools and repair | 2 | 13 | 14 | 29 |
 | T8 Output, export, batch | 8 | 26 | 21 | 55 |
-| T9 Multitrack and everything else | 18 | 38 | 213 | 269 |
+| T9 Multitrack and everything else | 18 | 58 | 193 | 269 |
 | none (already-have rows; the source gives them no tier) | 46 | 0 | 0 | 46 |
-| **Total** | **106** | **309** | **270** | **685** |
+| **Total** | **106** | **332** | **247** | **685** |
 
 ### Category by complexity
 
 | Category | Low | Medium | Hard | n/a | Total |
 |---|---|---|---|---|---|
 | Merged | 32 | 20 | 8 | 46 | 106 |
-| PR | 147 | 102 | 60 | 0 | 309 |
-| Unwritten | 57 | 93 | 120 | 0 | 270 |
+| PR | 170 | 102 | 60 | 0 | 332 |
+| Unwritten | 34 | 93 | 120 | 0 | 247 |
 | **Total** | **236** | **215** | **188** | **46** | **685** |
 
 ## Merged (106)
@@ -178,7 +238,7 @@ Rows in the app on `main`. Rows from merged PRs come first, in source rank order
 | A352 | none | Undo covers edits only, not view | n/a |  | already in app |  |
 | C320 | none | Waveform playback with playhead | n/a |  | already in app |  |
 
-## PR (309)
+## PR (332)
 
 Rows whose code exists only in an open PR. Merge state and conflicts change daily; check the PR itself.
 
@@ -404,6 +464,7 @@ Rows whose code exists only in an open PR. Merge state and conflicts change dail
 | B026 | T5 | Amplify: clip-guard / Calculate Now | Low |  | #474 | A334 |
 | B041 | T5 | Match Volume (gain, selection to ref) (merged: C144) | Low |  | #475 | B125 |
 | B165 | T5 | Time Shift (Insert delay) | Low |  | #178 | B001 |
+| B169 | T5 | A/B compare effect settings | Low |  | #479 | B006 |
 | B055 | T5 | Graphic EQ (10, 20, 30 band) | Medium |  | #216 | B001, B002 |
 | A313 | T6 | Amplitude statistics (peak, RMS, DC, clipped, bit depth, dynamic range, loudness) (merged: A038, B053, B131, C070, C071) | Hard |  | #159 | B125 |
 | A316 | T6 | Navigate to clipped sample / peak | Low |  | #159 | A313 |
@@ -411,10 +472,12 @@ Rows whose code exists only in an open PR. Merge state and conflicts change dail
 | A309 | T6 | Frequency analysis (FFT graph) (merged: A037, B052, C068) | Hard |  | #198 | B011 |
 | A214 | T6 | Dynamic/static peaks, valleys, LED, gradient, ranges (merged: C054, C057, C072) | Low |  | #131, #477 | A213 |
 | A215 | T6 | Reset clip indicators (merged: C056, C168) | Low |  | #131 | A213 |
+| A217 | T6 | RMS display (merged: C055) | Low |  | #480 | A213 |
 | A310 | T6 | Frequency hold snapshots (8) | Low |  | #198 | A309 |
 | A311 | T6 | Scan selection | Low |  | #198 | A309 |
 | A312 | T6 | Copy graph data | Low |  | #198 | A309 |
 | A315 | T6 | RMS settings (sine/square reference, account for DC, window width) | Low |  | #159, #476 | A313 |
+| A319 | T6 | Play only selected frequencies toggle | Low |  | #481 |  |
 | B047 | T7 | Delete Silence (merged: A158) | Medium |  | #187 | B002 |
 | B046 | T7 | DeClicker (Diagnostics) | Hard |  | #211 | B001 |
 | B045 | T7 | DeClipper (Diagnostics) | Hard |  | #177 | B001 |
@@ -484,17 +547,37 @@ Rows whose code exists only in an open PR. Merge state and conflicts change dail
 | C043 | T9 | Take numbering and take stacking | Medium |  | #352 | C038 |
 | A168 | T9 | Edit Tempo | Low |  | #290 | A101 |
 | A190 | T9 | Reorder and remove playlist items | Low |  | #325 | A188 |
+| A283 | T9 | Multitrack / Multitrack Clips (merged: C016) | Low |  | #494 | A273 |
+| A287 | T9 | Video (spot frame, timecode overlay) | Low |  | #501 | A273, A321 |
+| A324 | T9 | Snap to video frames and spot frame preview | Low |  | #499 | A128, A321 |
+| A326 | T9 | Edit Original link data in mixdown | Low |  | #495 |  |
+| B086 | T9 | Plate reverb | Low |  | #484 | B081 |
+| B111 | T9 | Pitch presets (octave, formant shift) | Low |  | #482 | B107 |
+| B112 | T9 | Time-stretch to fit duration | Low |  | #483 | B108 |
+| C041 | T9 | Punch Again | Low |  | #485 | C039 |
 | C061 | T9 | Master meter | Low |  | #330 | C060 |
+| C078 | T9 | Session properties | Low |  | #497 | C074 |
+| C080 | T9 | Recent sessions list | Low |  | #491 | C075 |
+| C083 | T9 | Time ruler formats | Low |  | #500 | C074 |
+| C094 | T9 | Session notes/metadata | Low |  | #488 | C074 |
+| C104 | T9 | Reorder tracks by dragging | Low |  | #486 | C097 |
+| C105 | T9 | Track names, colours, notes | Low |  | #498 | C097 |
+| C110 | T9 | Invert phase per track | Low |  | #487 | C097 |
+| C111 | T9 | Split stereo to mono tracks | Low |  | #489 | C098 |
 | C153 | T9 | Mute | Low |  | #330 | C152 |
 | C155 | T9 | Track volume fader | Low |  | #330 | C152 |
+| C171 | T9 | Master output mode mono/stereo/5.1 | Low |  | #496 | C100 |
+| C179 | T9 | Curve/hold shapes for keyframes | Low |  | #490 | C178 |
 | C188 | T9 | Mixdown of selected clips | Low |  | #336 | C185 |
 | C193 | T9 | Normalize on export | Low |  | #336 | C185 |
+| C202 | T9 | Count-in / pre-roll click | Low |  | #492 | C201 |
 | C211 | T9 | Insert a waveform file into multitrack | Low |  | #318 | C074 |
+| C245 | T9 | Track gap and fades | Low |  | #493 | C241 |
 | C131 | T9 | Clip properties panel | Medium |  | #348 | C116 |
 | C190 | T9 | Mix down session to new waveform (Bounce to new file) (merged: C212) | Medium |  | #336 | C185, C208 |
 | C322 | T0 | Disk-backed sample source trait for soundcraft-model (unlocks SoundCraft multitrack reuse) | Hard | CP | #315 | A348 |
 
-## Unwritten (270)
+## Unwritten (247)
 
 Rows with no PR. Where a closed, unmerged PR names the row it is shown in the PR column.
 
@@ -512,14 +595,11 @@ Rows with no PR. Where a closed, unmerged PR names the row it is shown in the PR
 | B009 | T5 | Default Favorites (Fade In/Out, Normalize to 0 dB, Dynamics presets, etc.) | Low |  |  | B008 |
 | B023 | T5 | Rack Favorites / Rack to Favorite | Low |  |  | B008, B013 |
 | B080 | T5 | Output noise only (monitor residue) | Medium | CP |  | B067 |
-| B169 | T5 | A/B compare effect settings | Low |  |  | B006 |
 | B030 | T5 | Dynamics graph editor (transfer curve) | Medium |  |  | B029 |
 | B069 | T5 | DeNoise (real-time) | Hard | CP |  | B005, B067 |
 | B168 | T5 | Preview of destructive processes (NR) using partial render | Hard | CP |  | B004, B067 |
 | A041 | T6 | Loudness Radar panel (merged: B091, C066) | Hard |  |  | B125 |
-| A217 | T6 | RMS display (merged: C055) | Low |  |  | A213 |
 | A218 | T6 | Dock horizontally or vertically | Low |  |  | A002, A213 |
-| A319 | T6 | Play only selected frequencies toggle | Low |  |  |  |
 | A040 | T6 | Phase Analysis panel (merged: B051, C063) | Medium |  |  | A317 |
 | C069 | T6 | Spectral/spectrogram meter during record | Medium |  |  | A309 |
 | B071 | T7 | Hiss Reduction | Hard |  |  | A337, B011 |
@@ -586,34 +666,18 @@ Rows with no PR. Where a closed, unmerged PR names the row it is shown in the PR
 | A044 | T9 | Session Properties / Mixer / Playlist panels | Low |  |  |  |
 | A187 | T9 | CD track markers (merged: C242) | Low |  |  | C084 |
 | A191 | T9 | Save playlist in WAV | Low |  |  | A183, A188 |
-| A283 | T9 | Multitrack / Multitrack Clips (merged: C016) | Low |  |  | A273 |
-| A287 | T9 | Video (spot frame, timecode overlay) | Low |  |  | A273, A321 |
 | A323 | T9 | Timecode overlay | Low |  |  | A321 |
-| A324 | T9 | Snap to video frames and spot frame preview | Low |  |  | A128, A321 |
-| A326 | T9 | Edit Original link data in mixdown | Low |  |  |  |
 | A349 | T9 | Help menu / About / tutorials (merged: C309) | Low |  |  |  |
 | B061 | T9 | EQ analysis overlay (Spectrum behind curves) | Low |  |  | B011, B058 |
 | B083 | T9 | Studio Reverb | Low |  |  | B081 |
-| B086 | T9 | Plate reverb | Low |  |  | B081 |
-| B111 | T9 | Pitch presets (octave, formant shift) | Low |  |  | B107 |
-| B112 | T9 | Time-stretch to fit duration | Low |  |  | B108 |
-| C041 | T9 | Punch Again | Low |  |  | C039 |
 | C047 | T9 | Record-enable key and transport keys | Low |  |  | C036 |
 | C052 | T9 | Recording trouble and error reporting | Low |  |  | C036 |
-| C078 | T9 | Session properties | Low |  |  | C074 |
-| C080 | T9 | Recent sessions list | Low |  |  | C075 |
-| C083 | T9 | Time ruler formats | Low |  |  | C074 |
 | C087 | T9 | Edit cursor vs playhead | Low |  |  | C086 |
 | C088 | T9 | Snapping | Hard |  |  | C074 |
 | C089 | T9 | Snap to options | Low |  |  | C088 |
 | C092 | T9 | Loop range playback | Low |  |  | C091 |
 | C093 | T9 | Metering of preview/audition | Low |  |  |  |
-| C094 | T9 | Session notes/metadata | Low |  |  | C074 |
-| C104 | T9 | Reorder tracks by dragging | Low |  |  | C097 |
-| C105 | T9 | Track names, colours, notes | Low |  |  | C097 |
 | C106 | T9 | Track height presets | Low |  |  | C097 |
-| C110 | T9 | Invert phase per track | Low |  |  | C097 |
-| C111 | T9 | Split stereo to mono tracks | Low |  |  | C098 |
 | C123 | T9 | Clip fade-in/out handles | Hard |  |  | C116 |
 | C124 | T9 | Fade curve shapes (linear, cosine, logarithmic) | Low |  |  | C123 |
 | C125 | T9 | Crossfades between overlapping clips | Hard |  |  | C123 |
@@ -622,18 +686,14 @@ Rows with no PR. Where a closed, unmerged PR names the row it is shown in the PR
 | C133 | T9 | Clip colour and naming | Low |  |  | C116 |
 | C135 | T9 | Mute clip | Low |  |  | C116 |
 | C166 | T9 | Show/hide mixer sections | Low |  |  | C152 |
-| C171 | T9 | Master output mode mono/stereo/5.1 | Low |  |  | C100 |
-| C179 | T9 | Curve/hold shapes for keyframes | Low |  |  | C178 |
 | C181 | T9 | Snap keyframes to grid | Low |  |  | C088, C178 |
 | C176 | T9 | Automation modes (Off, Read, Write, Touch, Latch) | Hard |  |  | C152, C174 |
 | C183 | T9 | Automation Read/write lanes bypass | Low |  |  | C176 |
 | C194 | T9 | Render tail for effects | Low |  |  | C185 |
-| C202 | T9 | Count-in / pre-roll click | Low |  |  | C201 |
 | C207 | T9 | MIDI clip-to-audio for click | Low |  |  | C201 |
 | C210 | T9 | Convert multitrack clip to new waveform | Low |  |  | C116 |
 | C225 | T9 | Custom presets for the panel | Low |  |  | C224 |
 | C230 | T9 | Reset panel | Low |  |  | C226 |
-| C245 | T9 | Track gap and fades | Low |  |  | C241 |
 | A024 | T9 | Media Browser panel | Medium |  |  | A020 |
 | A189 | T9 | Play list items/loops | Medium |  |  | A188 |
 | A231 | T9 | Open audio of video files (AVI, MOV, MP4, MPEG, 3GP, FLV, WMV...) (merged: A320, C287, C213) | Medium |  |  | C101, C284 |
