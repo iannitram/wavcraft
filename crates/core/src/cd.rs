@@ -20,6 +20,8 @@ use crate::doc::DocState;
 use crate::save::{SampleType, quantize, save_atomic, write_header};
 use crate::store::BLOCK_FRAMES;
 
+pub mod fade;
+
 pub const CD_RATE: u32 = 44_100;
 /// Sample frames in one CD frame (1/75 s).
 pub const SAMPLES_PER_FRAME: u64 = 588;
