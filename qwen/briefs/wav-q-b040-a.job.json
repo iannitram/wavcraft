@@ -1,0 +1,149 @@
+{
+  "id": "wav-q-b040-a",
+  "title": "Sidechain: key-driven gain computer (key_gain, apply_gain, duck)",
+  "kind": "small-code-change-exact-brief",
+  "size": "S",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "repo": "iannitram/wavcraft",
+  "base": "feat/ap-f28-dynamics",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "wav-q-b040-a.md",
+  "verify": [
+    {
+      "name": "new-test-a_silent_key_leaves_the_program_un",
+      "cmd": "cargo test -p wavcraft-core a_silent_key_leaves_the_program_untouched 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-a_loud_key_reduces_the_gain_by_the",
+      "cmd": "cargo test -p wavcraft-core a_loud_key_reduces_the_gain_by_the_ratio_math_at_steady_state 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-the_attack_covers_63_percent_of_th",
+      "cmd": "cargo test -p wavcraft-core the_attack_covers_63_percent_of_the_way_in_one_time_constant 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-the_release_covers_63_percent_of_t",
+      "cmd": "cargo test -p wavcraft-core the_release_covers_63_percent_of_the_way_in_one_time_constant 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-different_lengths_use_the_shorter",
+      "cmd": "cargo test -p wavcraft-core different_lengths_use_the_shorter 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-a_ratio_not_above_one_is_the_ident",
+      "cmd": "cargo test -p wavcraft-core a_ratio_not_above_one_is_the_identity 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-a_threshold_above_the_peak_is_the_",
+      "cmd": "cargo test -p wavcraft-core a_threshold_above_the_peak_is_the_identity 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-non_finite_key_samples_give_no_red",
+      "cmd": "cargo test -p wavcraft-core non_finite_key_samples_give_no_reduction 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-an_infinite_ratio_is_a_hard_limit",
+      "cmd": "cargo test -p wavcraft-core an_infinite_ratio_is_a_hard_limit 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-a_zero_negative_or_nan_time_reacts",
+      "cmd": "cargo test -p wavcraft-core a_zero_negative_or_nan_time_reacts_at_once 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-duck_applies_the_key_gain_to_the_p",
+      "cmd": "cargo test -p wavcraft-core duck_applies_the_key_gain_to_the_program 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_silent_key_leaves_the_program_un-1",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#const SILENCE_DB: f64 = -180\\.0;#const SILENCE_DB: f64 = 0.0;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_silent_key_leaves_the_program_untouched 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_loud_key_reduces_the_gain_by_the-2",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#1\\.0 - 1\\.0 / f64::from(ratio)#1.0 / f64::from(ratio)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_loud_key_reduces_the_gain_by_the_ratio_math_at_steady_state 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-the_attack_covers_63_percent_of_th-3",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if target < gain { attack } else { release }#if target < gain { release } else { attack }#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core the_attack_covers_63_percent_of_the_way_in_one_time_constant 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-the_release_covers_63_percent_of_t-4",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(-1\\.0 / n)\\.exp()#(-2.0 / n).exp()#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core the_release_covers_63_percent_of_the_way_in_one_time_constant 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-different_lengths_use_the_shorter-5",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#\\.zip(gain)#.zip(gain.iter().chain(std::iter::repeat(\\&0.0)))#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core different_lengths_use_the_shorter 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_ratio_not_above_one_is_the_ident-6",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if ratio > 1\\.0 {#if ratio > 0.0 {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_ratio_not_above_one_is_the_identity 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_threshold_above_the_peak_is_the_-7",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#over > 0\\.0 {#over > -100.0 {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_threshold_above_the_peak_is_the_identity 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-non_finite_key_samples_give_no_red-8",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#over\\.is_finite() && over > 0\\.0#over > 0.0#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core non_finite_key_samples_give_no_reduction 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-an_infinite_ratio_is_a_hard_limit-9",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#1\\.0 - 1\\.0 / f64::from(ratio)#1.0 - 1.0 / f64::from(ratio.min(100.0))#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core an_infinite_ratio_is_a_hard_limit 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_zero_negative_or_nan_time_reacts-10",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if n > 0\\.0 {#if n != 0.0 {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_zero_negative_or_nan_time_reacts_at_once 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-duck_applies_the_key_gain_to_the_p-11",
+      "cmd": "f=crates/core/src/effects/sidechain.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#apply_gain(program, &gain);#let _ = (\\&program, \\&gain);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core duck_applies_the_key_gain_to_the_program 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core effects::sidechain",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/effects/sidechain.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/effects/sidechain.rs",
+    "crates/core/src/effects.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "B040-a: Sidechain key gain computer (alpha) (Refs #122)",
+  "est_minutes": 20,
+  "priority": 121,
+  "created_by": "api-qwen-briefs"
+}
