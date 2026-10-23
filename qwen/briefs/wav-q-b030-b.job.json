@@ -1,0 +1,136 @@
+{
+  "id": "wav-q-b030-b",
+  "title": "B030-b: Dynamics graph: drag the nodes",
+  "kind": "small-code-change-exact-brief",
+  "size": "S",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "repo": "iannitram/wavcraft",
+  "base": "qwen/wav-q-b030-a",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "wav-q-b030-b.md",
+  "verify": [
+    {
+      "name": "new-test-gate_drag_sets_the_threshold_and_the_point_lies_on_the_curve",
+      "cmd": "cargo test -p wavcraft-core gate_drag_sets_the_threshold_and_the_point_lies_on_the_curve 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-comp_drag_sets_the_threshold_and_the_point_lies_on_the_curve",
+      "cmd": "cargo test -p wavcraft-core comp_drag_sets_the_threshold_and_the_point_lies_on_the_curve 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-ratio_drag_puts_the_point_on_the_curve",
+      "cmd": "cargo test -p wavcraft-core ratio_drag_puts_the_point_on_the_curve 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-ratio_is_clamped_to_the_parameter_range",
+      "cmd": "cargo test -p wavcraft-core ratio_is_clamped_to_the_parameter_range 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-limiter_drag_sets_the_ceiling",
+      "cmd": "cargo test -p wavcraft-core limiter_drag_sets_the_ceiling 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-drags_are_clamped_to_the_parameter_ranges",
+      "cmd": "cargo test -p wavcraft-core drags_are_clamped_to_the_parameter_ranges 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-bad_numbers_and_wrong_length_leave_the_settings_alone",
+      "cmd": "cargo test -p wavcraft-core bad_numbers_and_wrong_length_leave_the_settings_alone 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-positions_of_the_defaults_and_drag_back_is_stable",
+      "cmd": "cargo test -p wavcraft-core positions_of_the_defaults_and_drag_back_is_stable 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-wrong_length_params_give_the_default_positions",
+      "cmd": "cargo test -p wavcraft-core wrong_length_params_give_the_default_positions 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-gate_drag_sets_the_threshold_and_the_point_lies_on_the_curve",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#set_clamped(params, \"gate_db\", in_db);#set_clamped(params, \"comp_db\", in_db);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core gate_drag_sets_the_threshold_and_the_point_lies_on_the_curve 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-comp_drag_sets_the_threshold_and_the_point_lies_on_the_curve",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#set_clamped(params, \"comp_db\", in_db);#set_clamped(params, \"gate_db\", in_db);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core comp_drag_sets_the_threshold_and_the_point_lies_on_the_curve 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-ratio_drag_puts_the_point_on_the_curve",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(in_db - comp) \\/ rise#(out_db - comp) \\/ rise#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core ratio_drag_puts_the_point_on_the_curve 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-ratio_is_clamped_to_the_parameter_range",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#{ f64::INFINITY }#{ 1.0 }#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core ratio_is_clamped_to_the_parameter_range 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-limiter_drag_sets_the_ceiling",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#set_clamped(params, \"limit_db\", out_db);#set_clamped(params, \"limit_db\", in_db);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core limiter_drag_sets_the_ceiling 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-drags_are_clamped_to_the_parameter_ranges",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#value\\.clamp(desc\\.min, desc\\.max)#value.max(desc.min)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core drags_are_clamped_to_the_parameter_ranges 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-bad_numbers_and_wrong_length_leave_the_settings_alone",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#|| in_db <= comp {#|| in_db < comp - 10.0 {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core bad_numbers_and_wrong_length_leave_the_settings_alone 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-bad_numbers_and_wrong_length_leave_the_settings_alone-length",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if params\\.len() != Dynamics\\.parameters()\\.len() {#if params.len() > 100 {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core bad_numbers_and_wrong_length_leave_the_settings_alone 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-positions_of_the_defaults_and_drag_back_is_stable",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(Node::Limiter, 0\\.0, limit),#(Node::Limiter, 1.0, limit),#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core positions_of_the_defaults_and_drag_back_is_stable 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-wrong_length_params_give_the_default_positions",
+      "cmd": "f=crates/core/src/effects/dynamics_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if params\\.len() == defaults\\.len() {#if params.len() > 0 {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core wrong_length_params_give_the_default_positions 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core dynamics_graph 2>&1 | grep -E \"test result: ok[.] 9 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/effects/dynamics_graph.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/effects/dynamics_graph.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "B030-b: Dynamics graph: drag the nodes (alpha) (Refs #312)",
+  "est_minutes": 20,
+  "priority": 120,
+  "created_by": "api-qwen-briefs",
+  "depends_on": [
+    "wav-q-b030-a"
+  ]
+}
