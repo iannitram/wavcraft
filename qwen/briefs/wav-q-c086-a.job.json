@@ -1,0 +1,119 @@
+{
+  "id": "wav-q-c086-a",
+  "title": "C086-a: Track selection and clips in the time selection",
+  "kind": "small-code-change-exact-brief",
+  "size": "S",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "repo": "iannitram/wavcraft",
+  "base": "feat/ap-f110-session-markers",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "wav-q-c086-a.md",
+  "verify": [
+    {
+      "name": "mod-line",
+      "cmd": "grep -n \"^pub mod track_selection;$\" crates/core/src/multitrack.rs",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-extend_range_picks_the_tracks_between_in_both_directions",
+      "cmd": "cargo test -p wavcraft-core extend_range_picks_the_tracks_between_in_both_directions 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-toggle_twice_leaves_the_selection_as_it_was",
+      "cmd": "cargo test -p wavcraft-core toggle_twice_leaves_the_selection_as_it_was 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-select_only_replaces_and_clear_empties",
+      "cmd": "cargo test -p wavcraft-core select_only_replaces_and_clear_empties 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-no_time_range_gives_no_clips",
+      "cmd": "cargo test -p wavcraft-core no_time_range_gives_no_clips 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-a_clip_touching_the_edge_only_is_left_out",
+      "cmd": "cargo test -p wavcraft-core a_clip_touching_the_edge_only_is_left_out 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-only_chosen_tracks_count_and_the_result_follows_track_order",
+      "cmd": "cargo test -p wavcraft-core only_chosen_tracks_count_and_the_result_follows_track_order 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-a_removed_track_is_ignored_and_extend_range_refuses_it",
+      "cmd": "cargo test -p wavcraft-core a_removed_track_is_ignored_and_extend_range_refuses_it 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-extend_range_picks_the_tracks_between_in_both_directions",
+      "cmd": "f=crates/core/src/multitrack/track_selection.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let (lo, hi) = (a\\.min(b), a\\.max(b));#let (lo, hi) = (a, b);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core extend_range_picks_the_tracks_between_in_both_directions 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-toggle_twice_leaves_the_selection_as_it_was",
+      "cmd": "f=crates/core/src/multitrack/track_selection.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#self\\.0\\.remove(i);#self.0.push(id);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core toggle_twice_leaves_the_selection_as_it_was 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-select_only_replaces_and_clear_empties",
+      "cmd": "f=crates/core/src/multitrack/track_selection.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#self\\.0 = vec!\\[id\\];#self.0.push(id);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core select_only_replaces_and_clear_empties 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-select_only_replaces_and_clear_empties-clear",
+      "cmd": "f=crates/core/src/multitrack/track_selection.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#self\\.0\\.clear();#self.0.pop();#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core select_only_replaces_and_clear_empties 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-no_time_range_gives_no_clips",
+      "cmd": "f=crates/core/src/multitrack/track_selection.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if range\\.end <= range\\.start {#if range.end < range.start {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core no_time_range_gives_no_clips 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_clip_touching_the_edge_only_is_left_out",
+      "cmd": "f=crates/core/src/multitrack/track_selection.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#clip\\.start < range\\.end &&#clip.start <= range.end \\&\\&#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_clip_touching_the_edge_only_is_left_out 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-only_chosen_tracks_count_and_the_result_follows_track_order",
+      "cmd": "f=crates/core/src/multitrack/track_selection.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if !sel\\.contains(id) {#if sel.contains(id) {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core only_chosen_tracks_count_and_the_result_follows_track_order 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_removed_track_is_ignored_and_extend_range_refuses_it",
+      "cmd": "f=crates/core/src/multitrack/track_selection.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#return err(\"no such track\");#return Ok(());#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_removed_track_is_ignored_and_extend_range_refuses_it 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core track_selection 2>&1 | grep -E \"test result: ok[.] 7 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/multitrack/track_selection.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/multitrack/track_selection.rs",
+    "crates/core/src/multitrack.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "C086-a: Track selection and clips in the time selection (alpha) (Refs #321)",
+  "est_minutes": 20,
+  "priority": 114,
+  "created_by": "api-qwen-briefs"
+}
