@@ -5,6 +5,7 @@ pub mod chorus;
 pub mod convolution;
 pub mod distortion;
 pub mod echo;
+pub mod eq_graph;
 pub mod envelope;
 pub mod flanger;
 pub mod midside;
