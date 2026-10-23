@@ -241,7 +241,17 @@ fn home_and_end_move_the_cursor_and_insert_silence_selects_what_it_inserted() {
 fn window_actions_are_left_to_the_window() {
     let t = TempDir::new("window");
     let mut e = editor(&t.0, &stereo(100));
-    for id in [ActionId::ZoomIn, ActionId::ZoomOut, ActionId::SetIn, ActionId::SetOut, ActionId::InsertSilence, ActionId::ZoomOutFull] {
+    for id in [
+        ActionId::ZoomIn,
+        ActionId::ZoomOut,
+        ActionId::SetIn,
+        ActionId::SetOut,
+        ActionId::InsertSilence,
+        ActionId::ZoomOutFull,
+        ActionId::ToolSelect,
+        ActionId::ToolHand,
+        ActionId::ToolZoom,
+    ] {
         assert_eq!(action(id).kind, wavcraft_core::actions::Kind::Window, "{id:?}");
         let out = e.run(id, 5..9).unwrap();
         assert!(!out.doc_changed && out.selection == (5..9), "{id:?}: the editor leaves it alone");
@@ -253,6 +263,10 @@ fn window_actions_are_left_to_the_window() {
     assert_eq!(text(ActionId::ZoomOutFull), ["Ctrl+\\"]);
     assert_eq!(text(ActionId::SetIn), ["I"]);
     assert_eq!(text(ActionId::ZoomIn), ["="]);
+    assert_eq!(wavcraft_core::actions::by_name("tool.hand").map(|a| a.id), Some(ActionId::ToolHand));
+    assert_eq!(wavcraft_core::actions::by_name("tool.zoom").map(|a| a.id), Some(ActionId::ToolZoom));
+    assert_eq!(text(ActionId::ToolHand), ["H"]);
+    assert_eq!(text(ActionId::ToolZoom), ["Z"]);
 }
 
 /// A 1 kHz sine at 48 kHz (48 frames a cycle), phase-shifted so no sample is exactly 0.

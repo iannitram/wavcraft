@@ -8,14 +8,30 @@
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
-//! - `ACTION <name>` (an action table name, `edit.delete`) → `OK selection=<a>-<b> changed=<0|1>`
+//! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)
+//! - `ACTION <name>` (an action table name, `edit.delete`, or an effect, `effect.invert`) → `OK selection=<a>-<b> changed=<0|1>`
+//! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
+//! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1>` (which panels are shown)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
+//! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
+//! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
+//! - `EFFECT_DIALOG <name> [key=value ...]` opens the effect's dialog on those values; `EFFECT_DIALOG` → `OK open=<id|none> values=[..]`; `EFFECT_DIALOG OK|CANCEL` presses the button
+//! - `GENERATE` → the generators and their settings; `GENERATE <tone|noise> key=value ... [seed=N]` → `OK selection=<a>-<b> changed=<0|1>` (insert at the cursor or replace the selection)
+//! - `GENERATE_DIALOG <name> [key=value ...]` opens a Generate dialog; `GENERATE_DIALOG PREVIEW` → `OK preview=<frames>`; `GENERATE_DIALOG OK|CANCEL` presses the button
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
+//! - `META get [field]` / `META set <field> <value>` → `OK <value>` / `OK changed=<0|1>` (one undo step "Edit Metadata" per set; `\r` and `\n` in a value are line breaks)
+//! - `CHNAME get` / `CHNAME set <ch from 1> <name>` → `OK <names>` / `OK changed=<0|1>` (channel names; one undo step "Edit Metadata"); `META set INFO.INAM <v>` (or any `INFO.XXXX`) sets a RIFF INFO tag
+//! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
+//! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)
+//! - `HISTORY_KEY up|down` → `OK cursor=<i>` (the panel's arrow keys)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
 //! - `SESSION new <name> [rate=48000] [depth=24]`, `SESSION state`, `TRACK add|remove|rename|mute|solo|volume …`,
 //!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`
 //!   (multitrack basics, f103; see `multitrack_ui.rs`; `SESSION state` answers `OK view=… <json>`)
+//! - `VIDEO attach <path>` → `OK` (the Video panel opens the file on a worker; `ERR` with no file open)
+//! - `VIDEO frame <seconds>` → `OK index=<i> size=<w>x<h> time=<t>` once the worker has decoded it, or `ERR <why>`
+//! - `VIDEO status` → `OK <text>` (what the panel says about the file); `VIDEO detach` → `OK`
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
@@ -106,7 +122,7 @@ fn check_private(_path: &Path, meta: &std::fs::Metadata) -> std::io::Result<()> 
 
 /// Windows: an existing token file is used only when its DACL is protected (nothing inherited)
 /// and every allow entry is this process's user (by SID). Anything else is refused, as on Unix;
-/// it is never repaired, since others may already have read it (Hyperion's check of wavcraft#8).
+/// it is never repaired, since others may already have read it (the Windows dev machine's check of wavcraft#8).
 #[cfg(not(unix))]
 fn check_private(path: &Path, _meta: &std::fs::Metadata) -> std::io::Result<()> {
     match crate::win_acl::others_can_read(path)? {
@@ -216,7 +232,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Hyperion's check of wavcraft#8 (2026-10-19): on Windows an existing token file whose ACL
+    /// The Windows dev machine's check of wavcraft#8 (2026-10-19): on Windows an existing token file whose ACL
     /// lets others read it (inherited entries, or the Users group) is refused, not repaired.
     #[cfg(windows)]
     #[test]

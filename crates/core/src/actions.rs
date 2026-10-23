@@ -5,10 +5,14 @@
 //! Keys follow Adobe Audition's defaults (`plan/audition-parity.md` and task 07's table): only
 //! the binding is matched, never Adobe's text. `cmd` is Command on a Mac and Ctrl elsewhere.
 
+use std::io;
 use std::ops::Range;
 
 use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, PasteAt};
 use crate::doc::history::History;
+use crate::effects;
+use crate::generate;
+use std::sync::OnceLock;
 
 /// An action's id, as the menu, the keys and the control channel name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,6 +39,9 @@ pub enum ActionId {
     ZoomOut,
     ZoomToSelection,
     ZoomOutFull,
+    ToolSelect,
+    ToolHand,
+    ToolZoom,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -43,6 +50,8 @@ pub enum ActionId {
     ZeroRightToRight,
     RepeatLast,
     RepeatLastDialog,
+    /// A registered effect: its index in [`effects::all`].
+    Effect(u16),
 }
 
 /// Which part of the program carries an action out.
@@ -161,16 +170,44 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
+    // The mouse tools (f64): a minimal switch; a fuller tool model is on another branch.
+    window(ActionId::ToolSelect, "tool.select", "Time Selection Tool", &[key("V")]),
+    window(ActionId::ToolHand, "tool.hand", "Hand Tool", &[key("H")]),
+    window(ActionId::ToolZoom, "tool.zoom", "Zoom Tool", &[key("Z")]),
 ];
+
+/// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
+/// leaked once so rows can be `'static` like the table's.
+fn effect_rows() -> &'static [Action] {
+    static ROWS: OnceLock<Vec<Action>> = OnceLock::new();
+    ROWS.get_or_init(|| {
+        effects::all()
+            .iter()
+            .enumerate()
+            .map(|(i, e)| Action {
+                id: ActionId::Effect(i as u16),
+                name: Box::leak(format!("effect.{}", e.id()).into_boxed_str()),
+                menu: e.name(),
+                keys: &[],
+                kind: Kind::Edit,
+            })
+            .collect()
+    })
+}
+
+/// The table's rows followed by one row per registered effect: the whole action table.
+pub fn all_actions() -> impl Iterator<Item = &'static Action> {
+    TABLE.iter().chain(effect_rows())
+}
 
 /// The table row for `id`.
 pub fn action(id: ActionId) -> &'static Action {
-    TABLE.iter().find(|a| a.id == id).unwrap_or(&TABLE[0])
+    all_actions().find(|a| a.id == id).unwrap_or(&TABLE[0])
 }
 
 /// The action the control channel calls `name`.
 pub fn by_name(name: &str) -> Option<&'static Action> {
-    TABLE.iter().find(|a| a.name == name)
+    all_actions().find(|a| a.name == name)
 }
 
 /// What a run did, for the window to follow.
@@ -196,12 +233,14 @@ pub struct Editor {
 }
 
 /// A command Repeat Last Command can run again, with its settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Repeat {
     /// An action from the table, on the selection at the time of the repeat.
     Action(ActionId),
     /// Insert › Silence of this many frames, at the cursor.
     InsertSilence(u64),
+    /// A registered effect (its index in [`effects::all`]) with the settings it last ran with.
+    Effect(u16, Vec<f64>),
 }
 
 /// Whether Repeat Last Command may run `id` again. Delete is not repeatable (Audition), nor are
@@ -289,6 +328,7 @@ impl Editor {
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
+            ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
@@ -296,9 +336,11 @@ impl Editor {
             | ActionId::ZeroLeftToRight
             | ActionId::ZeroRightToLeft
             | ActionId::ZeroRightToRight => has_sel,
+            // An effect takes the selection, or the whole file when there is none.
+            ActionId::Effect(_) => self.len() > 0,
             ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
                 Some(Repeat::Action(last)) => self.enabled(last, selection),
-                Some(Repeat::InsertSilence(_)) => true,
+                Some(Repeat::InsertSilence(_) | Repeat::Effect(..)) => self.len() > 0,
                 None => false,
             },
         }
@@ -314,6 +356,12 @@ impl Editor {
             ActionId::RightChannel if self.channels == ChannelMask::only(1) => "Both Channels".to_string(),
             ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
                 Some(Repeat::Action(last)) => format!("Repeat {}", action(last).menu),
+                Some(Repeat::Effect(i, _)) => {
+                    let name = effects::all().get(usize::from(i)).map_or("Effect", |e| e.name());
+                    // "Repeat Gain" runs at once; the dialog version keeps the "…" when it has one.
+                    let has_dialog = effects::all().get(usize::from(i)).is_some_and(|e| !e.parameters().is_empty());
+                    if id == ActionId::RepeatLastDialog && has_dialog { format!("Repeat {name}…") } else { format!("Repeat {name}") }
+                }
                 // "Repeat Insert Silence" runs it at once; the dialog version keeps the "…".
                 Some(Repeat::InsertSilence(_)) if id == ActionId::RepeatLast => "Repeat Insert Silence".to_string(),
                 Some(Repeat::InsertSilence(_)) => format!("Repeat {}", action(ActionId::InsertSilence).menu),
@@ -326,8 +374,9 @@ impl Editor {
     /// Repeat Last Command: the last repeatable command again, with the same settings, on
     /// `selection` (Insert Silence: the same length at the cursor).
     pub fn repeat(&mut self, selection: Range<u64>) -> Result<Outcome, EditError> {
-        match self.last {
+        match self.last.clone() {
             Some(Repeat::Action(id)) => self.run(id, selection),
+            Some(Repeat::Effect(i, params)) => self.run_effect(i, params, selection),
             Some(Repeat::InsertSilence(frames)) => self.insert_silence(selection.start, frames),
             None => Ok(Outcome { doc_changed: false, selection, message: Some("There is no command to repeat yet".to_string()) }),
         }
@@ -383,8 +432,45 @@ impl Editor {
         Ok(Outcome { doc_changed: changed, selection: at..at + frames, message: changed.then_some(label) })
     }
 
+    /// Generate › Tones / Noise (f21): the generator at index `i` of [`generate::all`] with these
+    /// settings, inserted at the cursor (`selection.start`) or replacing the selection, on every
+    /// channel, as one undoable step. The new audio ends up selected. `seed` makes noise
+    /// repeatable. Not remembered for Repeat Last Command.
+    pub fn generate(&mut self, i: u16, params: &[f64], selection: Range<u64>, seed: u64) -> Result<Outcome, EditError> {
+        let Some(generator) = generate::all().get(usize::from(i)) else {
+            return Err(EditError::Io(io::Error::new(io::ErrorKind::InvalidInput, "no such generator")));
+        };
+        generate::validate(*generator, params).map_err(|why| EditError::Io(io::Error::new(io::ErrorKind::InvalidInput, why)))?;
+        let doc = self.history.current().clone();
+        let len = doc.len_frames();
+        let range = selection.start.min(len)..selection.end.min(len);
+        let rate = doc.sample_rate();
+        let frames = (generator.duration(params) * f64::from(rate)).round() as u64;
+        let mut sources: Vec<_> = (0..doc.channel_count()).map(|c| generator.source(params, rate, c, seed)).collect();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let edit = edit::generate(&doc, range.clone(), frames, generator.name(), &cancel, |c, out| {
+            sources[c].fill(out);
+            Ok(())
+        })?;
+        let changed = !edit.is_noop();
+        let label = edit.label.clone();
+        self.history.push_edit(edit);
+        Ok(Outcome { doc_changed: changed, selection: range.start..range.start + frames, message: changed.then_some(label) })
+    }
+
     /// Run `id` on `selection`. A disabled action does nothing and says why.
     pub fn run(&mut self, id: ActionId, selection: Range<u64>) -> Result<Outcome, EditError> {
+        self.run_with(id, selection, None)
+    }
+
+    /// Run the effect at index `i` of [`effects::all`] with these settings on `selection` (the
+    /// whole file when empty), and remember both for Repeat Last Command. Settings outside the
+    /// effect's ranges are refused and nothing changes.
+    pub fn run_effect(&mut self, i: u16, params: Vec<f64>, selection: Range<u64>) -> Result<Outcome, EditError> {
+        self.run_with(ActionId::Effect(i), selection, Some(params))
+    }
+
+    fn run_with(&mut self, id: ActionId, selection: Range<u64>, params: Option<Vec<f64>>) -> Result<Outcome, EditError> {
         let len = self.len();
         let sel = selection.start.min(len)..selection.end.min(len);
         let unchanged = |selection: Range<u64>| Ok(Outcome { doc_changed: false, selection, message: None });
@@ -445,6 +531,14 @@ impl Editor {
                 let at = if new_len < len { 0..new_len } else { sel.clone() };
                 (e, at)
             }
+            ActionId::Effect(i) => {
+                let Some(effect) = effects::all().get(usize::from(i)) else { return unchanged(sel) };
+                let cancel = std::sync::atomic::AtomicBool::new(false);
+                let params = params.unwrap_or_else(|| effects::Params::defaults(*effect));
+                let e = effects::apply(*effect, &params, &doc, sel.clone(), channels, xf, &cancel)?;
+                self.last = Some(Repeat::Effect(i, params));
+                (e, sel.clone())
+            }
             ActionId::SelectAll => return unchanged(0..len),
             ActionId::DeselectAll | ActionId::ClearTimeSelection => return unchanged(sel.start..sel.start),
             ActionId::CursorToStart => return unchanged(0..0),
@@ -456,6 +550,9 @@ impl Editor {
             | ActionId::ZoomOut
             | ActionId::ZoomToSelection
             | ActionId::ZoomOutFull
+            | ActionId::ToolSelect
+            | ActionId::ToolHand
+            | ActionId::ToolZoom
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast
@@ -483,5 +580,62 @@ impl Editor {
         self.history.push_edit(edit);
         let new_len = self.len();
         Ok(Outcome { doc_changed: changed, selection: selection.start.min(new_len)..selection.end.min(new_len), message: changed.then_some(label) })
+    }
+}
+
+pub const HUD_DB_PER_PX: f64 = 0.1;
+pub const HUD_MIN_DB: f64 = -60.0;
+pub const HUD_MAX_DB: f64 = 12.0;
+
+/// New HUD gain after a vertical drag. `drag_up_px` is positive when the pointer moves up.
+/// A non-finite `db` becomes 0.0. A non-finite `drag_up_px` leaves `db` unchanged (clamped).
+/// The result is clamped to [HUD_MIN_DB, HUD_MAX_DB].
+pub fn hud_drag_gain_db(db: f64, drag_up_px: f64) -> f64 {
+    let db = if db.is_finite() { db } else { 0.0 };
+    if !drag_up_px.is_finite() {
+        return db.clamp(HUD_MIN_DB, HUD_MAX_DB);
+    }
+    (db + drag_up_px * HUD_DB_PER_PX).clamp(HUD_MIN_DB, HUD_MAX_DB)
+}
+
+/// Whether the HUD is drawn. Hidden always wins; "show only for selections" needs a selection.
+pub fn hud_visible(hidden: bool, only_for_selection: bool, has_selection: bool) -> bool {
+    !hidden && (!only_for_selection || has_selection)
+}
+
+#[cfg(test)]
+mod hud_tests {
+    use super::*;
+
+    #[test]
+    fn hud_drag_moves_by_rate_per_pixel() {
+        assert!((hud_drag_gain_db(0.0, 100.0) - 10.0).abs() < 1e-9);
+        assert!((hud_drag_gain_db(0.0, -100.0) + 10.0).abs() < 1e-9);
+        assert!((hud_drag_gain_db(-12.5, 25.0) + 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hud_drag_clamps_to_the_range() {
+        assert!((hud_drag_gain_db(10.0, 100.0) - 12.0).abs() < 1e-9);
+        assert!((hud_drag_gain_db(-55.0, -100.0) + 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hud_drag_ignores_non_finite_input() {
+        assert!((hud_drag_gain_db(-3.0, f64::NAN) + 3.0).abs() < 1e-9);
+        assert!((hud_drag_gain_db(f64::NAN, 50.0) - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hud_visibility_table() {
+        // (hidden, only_for_selection, has_selection) -> visible
+        assert!(hud_visible(false, false, false));
+        assert!(hud_visible(false, false, true));
+        assert!(!hud_visible(false, true, false));
+        assert!(hud_visible(false, true, true));
+        assert!(!hud_visible(true, false, false));
+        assert!(!hud_visible(true, false, true));
+        assert!(!hud_visible(true, true, false));
+        assert!(!hud_visible(true, true, true));
     }
 }

@@ -9,16 +9,20 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
+use wavcraft_core::meta;
+use wavcraft_core::panels::{self, PanelSet};
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{DocState, Document, FileFormat, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
 
 use crate::control;
+use crate::effect_dialog::{Answer, EffectDialog};
 use crate::multitrack_ui::MtView;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
+use crate::video::{VideoPanel, Waiters};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
 const WAVE: Color32 = Color32::from_rgb(64, 200, 140);
@@ -26,6 +30,17 @@ const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
 const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
 const RULER_HEIGHT: f32 = 22.0;
+
+/// Longest silence Insert Silence accepts, in seconds (24 hours).
+const MAX_SILENCE_SECS: f64 = 86_400.0;
+
+/// Frames for an Insert Silence of `secs` seconds at `rate` Hz, or an error message when it is longer than 24 hours.
+fn silence_frames(secs: f64, rate: u32) -> Result<u64, String> {
+    if !secs.is_finite() || secs <= 0.0 || secs > MAX_SILENCE_SECS {
+        return Err("Insert Silence: the length can be at most 24 hours".to_string());
+    }
+    Ok((secs * f64::from(rate)).round() as u64)
+}
 
 /// A file being opened on a worker thread.
 struct Opening {
@@ -58,16 +73,50 @@ struct SpectrumCache {
     textures: Vec<TextureHandle>,
 }
 
+/// What a primary-button drag in the editor does (f64: a minimal switch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Tool {
+    /// Click places the cursor, drag selects.
+    #[default]
+    Select,
+    /// Drag scrolls the view.
+    Hand,
+    /// Click zooms in at the point (Alt: out), drag zooms to the range.
+    Zoom,
+}
+
+#[derive(Default)]
+struct HudState {
+    gain_db: f64,
+    pinned: bool,
+    hidden: bool,
+    only_for_selection: bool,
+    drag_start_db: Option<f64>,
+}
+
+impl Tool {
+    fn name(self) -> &'static str {
+        match self {
+            Tool::Select => "select",
+            Tool::Hand => "hand",
+            Tool::Zoom => "zoom",
+        }
+    }
+}
+
 pub struct WaveApp {
     doc: Option<Document>,
+    tool: Tool,
+    /// Where the current drag began (set when a drag starts, for the Zoom tool and the ruler).
+    drag_origin: Option<Pos2>,
     /// Bumped on every open, so cached pictures of the previous file are dropped.
     generation: usize,
     view: Viewport,
     selection: Selection,
     player: Player,
     params: SpectrogramParams,
-    show_waveform: bool,
-    show_spectrum: bool,
+    /// Which registered panels are shown (Window menu; kept in the settings file).
+    panels: PanelSet,
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
@@ -102,14 +151,32 @@ pub struct WaveApp {
     allow_close: bool,
     /// The editor's width last frame, for zoom keys (which have no pointer to zoom around).
     editor_width: f32,
-    /// Window › History.
-    show_history: bool,
+    hud: HudState,
     /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
     /// The Multitrack session and its editor view (f103).
     mtv: MtView,
+    /// Window › Metadata.
+    show_metadata: bool,
+    /// The Metadata panel's text boxes (one per `meta::FIELDS`) and the source they were filled
+    /// from: refilled whenever the current step's metadata is another one.
+    meta_draft: Vec<String>,
+    meta_for: Option<Arc<wavcraft_core::SourceFormat>>,
+    /// Video › Attach video file…: the picture of a video file at the playhead (f122).
+    video: Option<VideoPanel>,
+    show_video: bool,
+    /// Control-channel `VIDEO frame` requests waiting for their picture.
+    video_waiters: Waiters,
+    /// A History row had keyboard focus last frame: Up and Down move through the states then.
+    history_focus: bool,
+    /// The History row to give keyboard focus next frame (after an arrow key moved the cursor).
+    history_refocus: Option<usize>,
+    /// The effect parameter dialog (f14), while it is up.
+    effect_dialog: Option<EffectDialog>,
+    /// A Generate dialog's Preview is playing (f21): the player holds the preview, not the file.
+    previewing: bool,
 }
 
 impl WaveApp {
@@ -137,11 +204,12 @@ impl WaveApp {
             doc: None,
             generation: 0,
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
+            tool: Tool::default(),
+            drag_origin: None,
             selection: Selection::default(),
             player: Player::new(),
             params: SpectrogramParams::default(),
-            show_waveform: true,
-            show_spectrum: true,
+            panels: PanelSet::from_hidden(&settings.hidden_panels),
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
@@ -161,10 +229,20 @@ impl WaveApp {
             confirm_close: false,
             allow_close: false,
             editor_width: 800.0,
-            show_history: true,
+            hud: HudState::default(),
             insert_silence: None,
             confirm_clear_history: false,
             mtv: MtView::default(),
+            show_metadata: false,
+            meta_draft: Vec::new(),
+            meta_for: None,
+            video: None,
+            show_video: true,
+            video_waiters: Waiters::default(),
+            history_focus: false,
+            history_refocus: None,
+            effect_dialog: None,
+            previewing: false,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -223,6 +301,7 @@ impl WaveApp {
                 self.doc_id += 1;
                 self.rebuilding = None;
                 self.doc = Some(doc);
+                self.drop_video();
                 self.generation += 1;
                 self.selection = Selection::default();
                 self.spectrum = None;
@@ -242,6 +321,37 @@ impl WaveApp {
     }
 
     /// File › Session Folder…: pick a folder, check it, use it from the next open and save it.
+    /// Associate a video file with the open document (Video › Attach video file…).
+    fn attach_video(&mut self, path: PathBuf, ctx: &egui::Context) -> Result<(), String> {
+        if self.editor.is_none() {
+            return Err("open a file first: the video goes with the open document".to_string());
+        }
+        self.drop_video();
+        self.video = Some(VideoPanel::attach(path, ctx));
+        self.show_video = true;
+        Ok(())
+    }
+
+    fn drop_video(&mut self) {
+        self.video_waiters.fail_all("ERR video detached");
+        self.video = None;
+    }
+
+    fn pick_video(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new().add_filter("Video", &["mov", "mp4", "m4v"]).pick_file()
+            && let Err(e) = self.attach_video(path, ctx)
+        {
+            self.error = Some(e);
+        }
+    }
+
+    /// Where the playhead is (or the cursor when stopped), in seconds.
+    fn playhead_secs(&self) -> Option<f64> {
+        let rate = self.editor.as_ref()?.history.current().sample_rate();
+        let frame = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
+        (rate > 0).then(|| frame as f64 / f64::from(rate))
+    }
+
     fn pick_session_folder(&mut self) {
         let Some(path) = rfd::FileDialog::new().set_directory(&self.sessions.path).pick_folder() else { return };
         self.set_session_folder(Some(path));
@@ -273,6 +383,19 @@ impl WaveApp {
         }
         self.error = None;
         self.notice = Some(msg);
+    }
+
+    /// Show or hide a registered panel and keep the choice in the settings file.
+    fn set_panel(&mut self, id: &str, shown: bool) {
+        if !self.panels.set(id, shown) {
+            return;
+        }
+        self.settings.hidden_panels = self.panels.hidden_ids();
+        if let Some(file) = &self.settings_path
+            && let Err(e) = self.settings.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not save the panel choice to {}: {e}", file.display());
+        }
     }
 
     fn toggle_play(&mut self) {
@@ -335,11 +458,14 @@ impl WaveApp {
         }
         let width = self.editor_width.max(1.0);
         // Where play is, or the cursor when stopped.
-        let playhead = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
+        let playhead = if self.player.is_playing() && !self.previewing { self.player.position() } else { self.selection.start() };
         match id {
             ActionId::ZoomIn => self.view.zoom_at(2.0, width * 0.5, width, frames),
             ActionId::ZoomOut => self.view.zoom_at(0.5, width * 0.5, width, frames),
             ActionId::ZoomOutFull => self.fit_on_next_frame = true,
+            ActionId::ToolSelect => self.tool = Tool::Select,
+            ActionId::ToolHand => self.tool = Tool::Hand,
+            ActionId::ToolZoom => self.tool = Tool::Zoom,
             ActionId::ZoomToSelection if !self.selection.is_empty() => {
                 let (a, b) = (self.selection.start() as f64, self.selection.end() as f64);
                 self.view.frames_per_px = ((b - a) / f64::from(width)).max(1.0 / 64.0);
@@ -365,6 +491,9 @@ impl WaveApp {
                 if let Some(Repeat::InsertSilence(frames)) = editor.last {
                     let secs = frames as f64 / f64::from(editor.history.current().sample_rate().max(1));
                     self.insert_silence = Some(format!("{secs:.3}"));
+                } else if let Some(Repeat::Effect(i, params)) = editor.last.clone().filter(|r| matches!(r, Repeat::Effect(_, p) if !p.is_empty())) {
+                    // An effect with settings reopens its dialog on the last values.
+                    self.effect_dialog = EffectDialog::new(i, Some(params));
                 } else {
                     return self.run_action(ActionId::RepeatLast, ctx);
                 }
@@ -413,7 +542,14 @@ impl WaveApp {
     fn run_insert_silence(&mut self, secs: f64, ctx: &egui::Context) -> Option<String> {
         let at = self.selection.start() as u64;
         let editor = self.editor.as_mut()?;
-        let frames = (secs * f64::from(editor.history.current().sample_rate())).round() as u64;
+        let rate = editor.history.current().sample_rate();
+        let frames = match silence_frames(secs, rate) {
+            Ok(f) => f,
+            Err(why) => {
+                self.error = Some(why.clone());
+                return Some(why);
+            }
+        };
         match editor.insert_silence(at, frames) {
             Ok(out) => {
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
@@ -446,27 +582,278 @@ impl WaveApp {
             ui.label(format!("Oldest {dropped} steps removed to stay under {:.1} GB", editor.history.cap_disk_bytes() as f64 / 1e9));
         }
         let mut go = None;
+        let mut delete = None;
+        let mut focus = false;
+        let refocus = self.history_refocus.take();
         egui::ScrollArea::vertical().max_height(ui.available_height() - 60.0).show(ui, |ui| {
             for (i, label) in labels.iter().enumerate() {
-                if ui.selectable_label(i == cursor, label).clicked() && i != cursor {
+                let r = ui.selectable_label(i == cursor, label);
+                if refocus == Some(i) {
+                    r.request_focus();
+                    r.scroll_to_me(None);
+                }
+                focus |= r.has_focus();
+                if r.clicked() && i != cursor {
                     go = Some(i);
                 }
+                r.context_menu(|ui| {
+                    if ui.add_enabled(i > 0, egui::Button::new("Delete State")).on_hover_text("Removes this state and every later one").clicked() {
+                        delete = Some(i);
+                        ui.close();
+                    }
+                });
             }
         });
+        self.history_focus = focus || refocus.is_some();
         ui.separator();
         let free = wavcraft_core::space::free_space(&dir).map_or_else(|| "unknown".to_string(), |b| format!("{:.1} GB", b as f64 / 1e9));
         ui.label(format!("Session: {:.1} MB · free {free}", held as f64 / 1e6));
-        if ui.add_enabled(labels.len() > 1, egui::Button::new("Clear History…")).clicked() {
-            self.confirm_clear_history = true;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(cursor > 0, egui::Button::new("Delete State"))
+                .on_hover_text("Removes the highlighted state and every later one")
+                .clicked()
+            {
+                delete = Some(cursor);
+            }
+            if ui.add_enabled(labels.len() > 1, egui::Button::new("Clear History…")).clicked() {
+                self.confirm_clear_history = true;
+            }
+        });
+        if self.saving.is_none() {
+            if let Some(i) = delete {
+                self.history_delete(i, ui.ctx());
+            } else if let Some(i) = go {
+                self.history_go(i, ui.ctx());
+            }
         }
-        if let Some(i) = go
-            && self.saving.is_none()
-            && let Some(editor) = self.editor.as_mut()
-            && editor.history.go_to(i).is_some()
-        {
-            let len = editor.history.current().len_frames() as usize;
-            self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
-            self.rebuild(ui.ctx());
+    }
+
+    /// Go to History step `i` (a click, an arrow key or the control channel). False if there is none.
+    fn history_go(&mut self, i: usize, ctx: &egui::Context) -> bool {
+        let Some(editor) = self.editor.as_mut() else { return false };
+        if editor.history.go_to(i).is_none() {
+            return false;
+        }
+        self.history_changed(ctx);
+        true
+    }
+
+    /// Delete History step `i` and the steps after it. The steps removed, or `None`.
+    fn history_delete(&mut self, i: usize, ctx: &egui::Context) -> Option<usize> {
+        let editor = self.editor.as_mut()?;
+        let before = editor.history.current().clone();
+        let gone = editor.history.delete_step(i)?;
+        if !Arc::ptr_eq(&before, editor.history.current()) {
+            self.history_changed(ctx);
+        }
+        Some(gone)
+    }
+
+    /// The current step changed: keep the selection inside it and redraw.
+    fn history_changed(&mut self, ctx: &egui::Context) {
+        let Some(editor) = self.editor.as_ref() else { return };
+        let len = editor.history.current().len_frames() as usize;
+        self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
+        self.rebuild(ctx);
+    }
+
+    /// Up or Down with the History panel focused: move one state. The cursor's new index.
+    fn history_arrow(&mut self, down: bool, ctx: &egui::Context) -> Option<usize> {
+        let cursor = self.editor.as_ref()?.history.cursor();
+        let to = history_arrow_target(cursor, self.editor.as_ref()?.history.steps().len(), down)?;
+        self.history_go(to, ctx).then_some(to)
+    }
+
+    /// Set metadata fields as ONE undoable step ("Edit Metadata"). Nothing changes (and no step
+    /// is made) when every value is already what the file has.
+    fn apply_metadata(&mut self, changes: &[(String, String)]) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let current = editor.history.current().clone();
+        let mut meta = current.source().meta.clone();
+        for (field, value) in changes {
+            if meta.get(field).as_deref() != Some(value.as_str()) {
+                meta.set(field, value)?;
+            }
+        }
+        if meta == current.source().meta {
+            return Ok(false);
+        }
+        editor.history.push_metadata("Edit Metadata", current.with_metadata(meta));
+        self.error = None;
+        Ok(true)
+    }
+
+    /// Window › Metadata: the Broadcast Wave fields and the INFO title, artist and comment of the
+    /// current step. Apply makes one history step.
+    fn metadata_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Metadata");
+        let Some(editor) = self.editor.as_ref() else {
+            ui.label("No file open.");
+            return;
+        };
+        let src = editor.history.current().source().clone();
+        let keys = src.meta.keys();
+        if self.meta_for.as_ref().is_none_or(|a| !Arc::ptr_eq(a, &src)) || self.meta_draft.len() != keys.len() {
+            self.meta_draft = keys.iter().map(|f| src.meta.get(f).unwrap_or_default()).collect();
+            self.meta_for = Some(src.clone());
+        }
+        let mut apply = false;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (field, text) in keys.iter().zip(self.meta_draft.iter_mut()) {
+                match field.strip_prefix("chname.") {
+                    Some(n) => ui.label(format!("channel {n} name")),
+                    None => ui.label(field.replace('_', " ")),
+                };
+                if *field == "coding_history" {
+                    ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY));
+                } else {
+                    ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                }
+            }
+            ui.add_space(6.0);
+            apply = ui.button("Apply").clicked();
+        });
+        if apply {
+            let changes: Vec<(String, String)> = keys.iter().cloned().zip(self.meta_draft.iter().cloned()).collect();
+            match self.apply_metadata(&changes) {
+                Ok(_) => self.meta_for = None,
+                Err(e) => self.error = Some(format!("Metadata: {e}")),
+            }
+        }
+    }
+
+    /// Draw the effect dialog, if up, and carry out its answer.
+    fn effect_dialog_ui(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.effect_dialog.as_mut() else { return };
+        match dialog.show(ctx) {
+            Some(Answer::Preview) => {
+                if let Err(why) = self.start_preview() {
+                    self.error = Some(why);
+                }
+            }
+            Some(answer) => {
+                let _ = self.finish_effect_dialog(answer == Answer::Ok, ctx);
+            }
+            None => {}
+        }
+        // The preview loops while the dialog is up.
+        if self.previewing && !self.player.is_playing() {
+            let _ = self.start_preview();
+        }
+        if self.previewing {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Play a short loop of the open Generate dialog's sound through the player (f21). The file
+    /// is put back by [`WaveApp::end_preview`] when the dialog closes. Returns the preview's
+    /// length in frames.
+    fn start_preview(&mut self) -> Result<usize, String> {
+        let Some(dialog) = self.effect_dialog.as_ref().filter(|d| d.generator) else { return Err("no generator dialog is open".to_string()) };
+        let Some(doc) = self.doc.as_ref() else { return Err("no file is open".to_string()) };
+        let g = wavcraft_core::generate::all()[usize::from(dialog.index)];
+        wavcraft_core::generate::validate(g, &dialog.values)?;
+        let rate = doc.sample_rate();
+        let secs = g.duration(&dialog.values).min(PREVIEW_SECONDS);
+        let frames = (secs * f64::from(rate)).round() as usize;
+        let channels = wavcraft_core::generate::render(g, &dialog.values, rate, doc.audio.channels.len().max(1), frames, PREVIEW_SEED);
+        self.player.set_audio(Some(Arc::new(wavcraft_core::AudioBuffer { sample_rate: rate, channels })));
+        self.player.play(0, frames);
+        self.previewing = true;
+        Ok(frames)
+    }
+
+    /// Stop a preview and give the player the open file back.
+    fn end_preview(&mut self) {
+        if self.previewing {
+            self.previewing = false;
+            self.player.set_audio(self.doc.as_ref().map(|d| d.audio.clone()));
+        }
+    }
+
+    /// Generate › Tones / Noise: insert at the cursor, or replace the selection (f21).
+    fn run_generator(&mut self, index: u16, params: Vec<f64>, seed: u64, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let sel = self.selection_range();
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let name = wavcraft_core::generate::all().get(usize::from(index)).map_or("Generate", |g| g.name());
+        match editor.generate(index, &params, sel, seed) {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.error = None;
+                self.notice = out.message;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                let why = format!("{name}: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// The Generate menu: one entry per generator, each opening its dialog.
+    fn generate_menu(&mut self, ui: &mut egui::Ui) {
+        let enabled = self.editor.is_some() && self.saving.is_none();
+        for (i, g) in wavcraft_core::generate::all().iter().enumerate() {
+            if ui.add_enabled(enabled, egui::Button::new(format!("{}…", g.name().trim_start_matches("Generate ")))).clicked() {
+                self.effect_dialog = EffectDialog::new_generator(i as u16, None);
+                ui.close();
+            }
+        }
+    }
+
+    /// Close the effect dialog; on OK apply the effect with the dialog's values. Returns whether
+    /// the document changed.
+    fn finish_effect_dialog(&mut self, ok: bool, ctx: &egui::Context) -> Result<bool, String> {
+        let Some(dialog) = self.effect_dialog.take() else { return Err("no effect dialog is open".to_string()) };
+        self.end_preview();
+        if !ok {
+            return Ok(false);
+        }
+        if dialog.generator {
+            return self.run_generator(dialog.index, dialog.values, clock_seed(), ctx);
+        }
+        self.run_effect(dialog.index, dialog.values, ctx)
+    }
+
+    /// Run the effect at `index` with `params` on the selection (the whole file when none).
+    fn run_effect(&mut self, index: u16, params: Vec<f64>, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let sel = self.selection_range();
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let name = wavcraft_core::effects::all().get(usize::from(index)).map_or("Effect", |e| e.name());
+        if !editor.enabled(ActionId::Effect(index), &sel) {
+            return Err(format!("{name} is not available now"));
+        }
+        match editor.run_effect(index, params, sel) {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.error = None;
+                self.notice = out.message;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                let why = format!("{name}: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
         }
     }
 
@@ -669,6 +1056,94 @@ impl WaveApp {
         }
     }
 
+    /// Shift+Left/Right/Home/End extend the selection (taken before the action table, whose
+    /// Home and End would otherwise also fire).
+    fn selection_keys(&mut self, ctx: &egui::Context) {
+        let Some(frames) = self.doc.as_ref().map(|d| d.frames()) else { return };
+        let step = self.view.frames_per_px.round().max(1.0) as i64;
+        let pressed = |k: Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, k));
+        for (key, name) in [(Key::ArrowLeft, "shift_left"), (Key::ArrowRight, "shift_right"), (Key::Home, "shift_home"), (Key::End, "shift_end")] {
+            if pressed(key) {
+                self.gesture(name, step, frames);
+            }
+        }
+    }
+
+    /// The selection gestures by name, shared by the keys and the control channel.
+    fn gesture(&mut self, name: &str, step: i64, frames: usize) -> bool {
+        match name {
+            "shift_left" => self.selection.extend_by(-step, frames),
+            "shift_right" => self.selection.extend_by(step, frames),
+            "shift_home" => self.selection.extend_edge_to(0, frames),
+            "shift_end" => self.selection.extend_edge_to(frames, frames),
+            _ => return false,
+        }
+        self.view.reveal(self.selection.head as f64, self.editor_width, frames);
+        true
+    }
+
+    /// Answer `GESTURE <name> [args]` (see `control.rs`): the selection gestures at a frame, as
+    /// the editor would see them, and the mouse gestures of the navigation tools
+    /// (`hand_drag <dx_px>`, `zoom_click <frame> [out]`, `ruler_rdrag <start> <end>`), through
+    /// the same code the pointer uses.
+    fn control_gesture(&mut self, rest: &str) -> String {
+        let frames = self.doc.as_ref().map_or(0, Document::frames);
+        let mut it = rest.split_whitespace();
+        let name = it.next().unwrap_or("");
+        let nums: Vec<usize> = it.map_while(|w| w.parse().ok()).collect();
+        let at = |i: usize| nums.get(i).copied().map(|f| f.min(frames));
+        // Navigation gestures answer with the view they leave.
+        let nav_width = self.editor_width.max(1.0);
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let num = |i: usize| words.get(i).and_then(|w| w.parse::<f64>().ok()).filter(|n| n.is_finite());
+        if frames == 0 && matches!(name, "hand_drag" | "zoom_click" | "ruler_rdrag") {
+            return "ERR no file is open".to_string();
+        }
+        let nav = match (name, num(1), num(2)) {
+            ("hand_drag", Some(dx), _) => {
+                self.view.drag_by(dx as f32, nav_width, frames);
+                true
+            }
+            ("zoom_click", Some(frame), _) => {
+                self.view.zoom_click(frame, words.get(2) == Some(&"out"), nav_width, frames);
+                true
+            }
+            ("ruler_rdrag", Some(a), Some(b)) => {
+                self.view.zoom_to_range(a, b, nav_width, frames);
+                true
+            }
+            _ => false,
+        };
+        if nav {
+            return format!("OK view={:.0}-{:.0}", self.view.start, self.view.end(nav_width));
+        }
+        match (name, at(0)) {
+            ("shift_click", Some(f)) => self.selection.extend_to(f),
+            ("double_click", _) => self.selection = Selection::visible(&self.view, self.editor_width, frames),
+            ("triple_click", _) => self.selection = Selection::all(frames),
+            // Press near an edge at <from>, drag to <to>.
+            ("edge_drag", Some(from)) => {
+                let (Some(to), true) = (at(1), self.view.frames_per_px > 0.0) else { return "ERR GESTURE edge_drag <from> <to>".to_string() };
+                match self.selection.edge_near(&self.view, self.view.x_of(from as f64), GRAB_PX) {
+                    Some(edge) => {
+                        self.selection.grab(edge);
+                        self.selection.head = to;
+                    }
+                    None => return format!("ERR no selection edge near frame {from}"),
+                }
+            }
+            ("shift_left" | "shift_right", _) => {
+                let step = at(0).map_or(1, |n| n as i64);
+                self.gesture(name, step, frames);
+            }
+            ("shift_home" | "shift_end", _) => {
+                self.gesture(name, 0, frames);
+            }
+            _ => return "ERR GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end | hand_drag <dx_px> | zoom_click <frame> [out] | ruler_rdrag <start> <end>".to_string(),
+        }
+        format!("OK selection={}-{}", self.selection.start(), self.selection.end())
+    }
+
     /// Answer one control-channel line (see `control.rs`).
     fn control_request(&mut self, line: &str, ctx: &egui::Context) -> String {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -677,11 +1152,13 @@ impl WaveApp {
             "STATE" => {
                 let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
                 let unsaved = u8::from(self.unsaved());
+                let width = self.editor_width.max(1.0);
+                let view = format!("tool={} view={:.0}-{:.0}", self.tool.name(), self.view.start, self.view.end(width));
                 match &self.editor {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {view} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -693,7 +1170,9 @@ impl WaveApp {
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 undo=- redo=-", u8::from(busy)),
+                    None => {
+                        format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {view} undo=- redo=-", u8::from(busy))
+                    }
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -711,6 +1190,25 @@ impl WaveApp {
                     _ => "ERR SELECT <start> <end>, in frames".to_string(),
                 }
             }
+            // Window › <panel>: `window.toggle.<id>`, `window.show.<id>`, `window.hide.<id>`.
+            "ACTION" if rest.starts_with("window.") => {
+                let mut next = self.panels.clone();
+                match next.apply_action(rest.trim()) {
+                    Some(Ok(_)) => {
+                        let ids: Vec<&str> =
+                            panels::REGISTRY.iter().map(|p| p.id).filter(|id| next.is_shown(id) != self.panels.is_shown(id)).collect();
+                        for id in ids {
+                            self.set_panel(id, next.is_shown(id));
+                        }
+                        format!("OK selection={} changed=0 {}", sel(self), self.panels.report())
+                    }
+                    Some(Err(e)) => format!("ERR {e}"),
+                    None => format!("ERR no action named {rest:?}"),
+                }
+            }
+            // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
+            "PANELS" => format!("OK {}", self.panels.report()),
+            "GESTURE" => self.control_gesture(rest),
             "ACTION" => match actions::by_name(rest) {
                 Some(a) => match self.run_action(a.id, ctx) {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
@@ -730,6 +1228,108 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
+            // `EFFECT` lists the effects and their settings; `EFFECT <name> key=value ...` runs one
+            // on the selection (the whole file when none), the unset keys at their defaults.
+            "EFFECT" if rest.is_empty() => {
+                let all: Vec<String> =
+                    wavcraft_core::effects::all().iter().map(|e| format!("{} [{}]", e.id(), wavcraft_core::effects::describe(*e))).collect();
+                format!("OK {}", all.join("; "))
+            }
+            "EFFECT" => {
+                let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                let name = name.strip_prefix("effect.").unwrap_or(name);
+                match wavcraft_core::effects::all().iter().position(|e| e.id() == name) {
+                    None => format!("ERR no effect named {name:?}"),
+                    Some(i) => match wavcraft_core::effects::parse_params(wavcraft_core::effects::all()[i], args) {
+                        Err(e) => format!("ERR {e}"),
+                        Ok(params) => match self.run_effect(i as u16, params, ctx) {
+                            Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                            Err(e) => format!("ERR {e}"),
+                        },
+                    },
+                }
+            }
+            // The effect dialog: `EFFECT_DIALOG <name> [key=value ...]` opens it on those values,
+            // `EFFECT_DIALOG` says what is open, `EFFECT_DIALOG OK|CANCEL` presses the button.
+            "EFFECT_DIALOG" => match rest.trim() {
+                "" => match &self.effect_dialog {
+                    Some(d) => format!("OK open={} values={:?}", d.id(), d.values),
+                    None => "OK open=none".to_string(),
+                },
+                "OK" | "CANCEL" => match self.finish_effect_dialog(rest.trim() == "OK", ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+                _ => {
+                    let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                    let name = name.strip_prefix("effect.").unwrap_or(name);
+                    match wavcraft_core::effects::all().iter().position(|e| e.id() == name) {
+                        Some(i) if self.editor.is_some() => match wavcraft_core::effects::parse_params(wavcraft_core::effects::all()[i], args) {
+                            Err(e) => format!("ERR {e}"),
+                            Ok(v) => {
+                                self.effect_dialog = EffectDialog::new(i as u16, Some(v));
+                                "OK".to_string()
+                            }
+                        },
+                        _ => format!("ERR no effect named {name:?}, or no file is open"),
+                    }
+                }
+            },
+            // Generate (f21): `GENERATE` lists the generators; `GENERATE tone key=value ... [seed=N]`
+            // inserts at the cursor or replaces the selection. `GENERATE_DIALOG <name> [key=value ...]`
+            // opens the dialog, `GENERATE_DIALOG PREVIEW` starts its preview (`OK preview=<frames>`),
+            // `GENERATE_DIALOG OK|CANCEL` presses a button.
+            "GENERATE" if rest.is_empty() => {
+                let all: Vec<String> = wavcraft_core::generate::all()
+                    .iter()
+                    .map(|g| format!("{} [{}]", g.id(), wavcraft_core::effects::describe_list(g.parameters())))
+                    .collect();
+                format!("OK {}", all.join("; "))
+            }
+            "GENERATE" => {
+                let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                let (seed, args) = split_seed(args);
+                match wavcraft_core::generate::find(name) {
+                    None => format!("ERR no generator named {name:?}"),
+                    Some(g) => match (wavcraft_core::generate::parse_params(g, &args), seed) {
+                        (Err(e), _) | (_, Err(e)) => format!("ERR {e}"),
+                        (Ok(params), Ok(seed)) => {
+                            let i = wavcraft_core::generate::all().iter().position(|x| x.id() == g.id()).unwrap_or(0);
+                            match self.run_generator(i as u16, params, seed, ctx) {
+                                Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                                Err(e) => format!("ERR {e}"),
+                            }
+                        }
+                    },
+                }
+            }
+            "GENERATE_DIALOG" => match rest.trim() {
+                "OK" | "CANCEL" => match self.finish_effect_dialog(rest.trim() == "OK", ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+                "PREVIEW" => match self.start_preview() {
+                    Ok(frames) => format!("OK preview={frames}"),
+                    Err(e) => format!("ERR {e}"),
+                },
+                "" => match &self.effect_dialog {
+                    Some(d) => format!("OK open={} values={:?} previewing={}", d.id(), d.values, u8::from(self.previewing)),
+                    None => "OK open=none".to_string(),
+                },
+                _ => {
+                    let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                    match wavcraft_core::generate::all().iter().position(|g| g.id() == name) {
+                        Some(i) if self.editor.is_some() => match wavcraft_core::generate::parse_params(wavcraft_core::generate::all()[i], args) {
+                            Err(e) => format!("ERR {e}"),
+                            Ok(v) => {
+                                self.effect_dialog = EffectDialog::new_generator(i as u16, Some(v));
+                                "OK".to_string()
+                            }
+                        },
+                        _ => format!("ERR no generator named {name:?}, or no file is open"),
+                    }
+                }
+            },
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
@@ -738,19 +1338,111 @@ impl WaveApp {
                 _ => "ERR INSERT_SILENCE <seconds>, above 0".to_string(),
             },
             // The History panel's click: go to step <index> (0 is Open).
-            "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.as_mut()) {
-                (Ok(i), Some(e)) if self.saving.is_none() => match e.history.go_to(i) {
-                    Some(_) => {
-                        let len = e.history.current().len_frames() as usize;
-                        self.selection = Selection { anchor: self.selection.start().min(len), head: self.selection.end().min(len) };
-                        self.rebuild(ctx);
+            "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
+                (Ok(i), true) if self.saving.is_none() => {
+                    if self.history_go(i, ctx) {
                         "OK".to_string()
+                    } else {
+                        format!("ERR no step {i}")
                     }
-                    None => format!("ERR no step {i}"),
-                },
+                }
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
             "SESSION" | "TRACK" | "CLIP" | "VIEW" => self.mtv.control(cmd, rest, self.doc.as_ref()),
+            "VIDEO" => {
+                let (sub, arg) = rest.split_once(' ').unwrap_or((rest, ""));
+                match sub {
+                    "attach" if !arg.trim().is_empty() => match self.attach_video(PathBuf::from(arg.trim()), ctx) {
+                        Ok(()) => "OK".to_string(),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    "status" => match &self.video {
+                        Some(v) => format!("OK {}", v.status.text()),
+                        None => "ERR no video attached".to_string(),
+                    },
+                    "detach" => {
+                        self.drop_video();
+                        "OK".to_string()
+                    }
+                    _ => "ERR VIDEO attach <path> | frame <seconds> | status | detach".to_string(),
+                }
+            }
+            // The panel's Delete State: step <index> and every later step go (0 can't).
+            "HISTORY_DELETE" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
+                (Ok(i), true) if self.saving.is_none() => match self.history_delete(i, ctx) {
+                    Some(n) => format!("OK removed={n}"),
+                    None => format!("ERR no step {i} to delete (Open can't be)"),
+                },
+                _ => "ERR HISTORY_DELETE <step>, with a file open".to_string(),
+            },
+            // Clear History without the panel's confirmation: the current state is all that stays.
+            "HISTORY_CLEAR" => match self.editor.as_mut() {
+                Some(e) if self.saving.is_none() => {
+                    e.history.clear();
+                    "OK".to_string()
+                }
+                _ => "ERR HISTORY_CLEAR, with a file open".to_string(),
+            },
+            // The panel's Up / Down keys.
+            "HISTORY_KEY" if self.editor.is_some() && self.saving.is_none() => match rest.trim() {
+                k @ ("up" | "down") => match self.history_arrow(k == "down", ctx) {
+                    Some(i) => format!("OK cursor={i}"),
+                    None => "OK cursor=unchanged".to_string(),
+                },
+                _ => "ERR HISTORY_KEY up|down".to_string(),
+            },
+            // META get [field] | META set <field> <value>: the metadata of the current step.
+            "META" => {
+                let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
+                let meta = &editor.history.current().source().meta;
+                match (verb, rest.trim()) {
+                    ("get", "") => format!("OK {}", meta.summary()),
+                    ("get", field) => match meta.get(field) {
+                        Some(v) => format!("OK {}", meta::escape_lines(&v)),
+                        None => format!("ERR no metadata field {field:?}"),
+                    },
+                    ("set", args) => {
+                        let (field, value) = args.split_once(' ').unwrap_or((args, ""));
+                        match self.apply_metadata(&[(field.to_string(), meta::unescape_lines(value))]) {
+                            Ok(changed) => format!("OK changed={}", u8::from(changed)),
+                            Err(e) => format!("ERR {e}"),
+                        }
+                    }
+                    _ => "ERR META get [field] | META set <field> <value>".to_string(),
+                }
+            }
+            // CHNAME get | CHNAME set <ch> <name>: channel names (<ch> counts from 1); one undo step.
+            "CHNAME" => {
+                let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
+                match verb {
+                    "get" => format!(
+                        "OK {}",
+                        editor
+                            .history
+                            .current()
+                            .source()
+                            .meta
+                            .chnames
+                            .iter()
+                            .map(|n| meta::escape_lines(n).replace(' ', "_"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ),
+                    "set" => {
+                        let (ch, name) = rest.trim_start().split_once(' ').unwrap_or((rest.trim(), ""));
+                        match ch.parse::<usize>() {
+                            Ok(n) => match self.apply_metadata(&[(format!("chname.{n}"), name.to_string())]) {
+                                Ok(changed) => format!("OK changed={}", u8::from(changed)),
+                                Err(e) => format!("ERR {e}"),
+                            },
+                            Err(_) => "ERR CHNAME set <channel from 1> <name>".to_string(),
+                        }
+                    }
+                    _ => "ERR CHNAME get | CHNAME set <channel from 1> <name>".to_string(),
+                }
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -787,6 +1479,38 @@ impl WaveApp {
         }
         if let Some(id) = chosen {
             let _ = self.run_action(id, ui.ctx());
+        }
+    }
+
+    /// The Effects menu: one entry per registered effect, run on the selection (the whole file
+    /// when nothing is selected) and the enabled channels.
+    fn effects_menu(&mut self, ui: &mut egui::Ui) {
+        let sel = self.selection_range();
+        let mut chosen = None;
+        for a in actions::all_actions().filter(|a| a.name.starts_with("effect.")) {
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
+            // An effect with settings opens its dialog (a "…" entry); one without runs at once.
+            let has_dialog =
+                matches!(a.id, ActionId::Effect(i) if wavcraft_core::effects::all().get(usize::from(i)).is_some_and(|e| !e.parameters().is_empty()));
+            let text = if has_dialog { format!("{}…", a.menu) } else { a.menu.to_string() };
+            if ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
+                chosen = Some((a.id, has_dialog));
+            }
+        }
+        match chosen {
+            Some((ActionId::Effect(i), true)) => {
+                // Start from the settings this effect last ran with, if it was the last command.
+                let last = self.editor.as_ref().and_then(|e| match &e.last {
+                    Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
+                    _ => None,
+                });
+                self.effect_dialog = EffectDialog::new(i, last);
+                ui.close();
+            }
+            Some((id, _)) => {
+                let _ = self.run_action(id, ui.ctx());
+            }
+            None => {}
         }
     }
 
@@ -829,19 +1553,27 @@ impl WaveApp {
                 }
             });
             ui.menu_button("Edit", |ui| self.edit_menu(ui));
+            ui.menu_button("Window", |ui| {
+                for p in panels::REGISTRY {
+                    let mut shown = self.panels.is_shown(p.id);
+                    if ui.checkbox(&mut shown, p.title).changed() {
+                        self.set_panel(p.id, shown);
+                    }
+                }
+            });
+            ui.menu_button("Effects", |ui| self.effects_menu(ui));
+            ui.menu_button("Generate", |ui| self.generate_menu(ui));
             ui.menu_button("View", |ui| {
                 ui.radio_value(&mut self.mtv.show, false, "Waveform editor");
                 ui.radio_value(&mut self.mtv.show, true, "Multitrack editor");
                 ui.separator();
-                ui.checkbox(&mut self.show_waveform, "Waveform");
-                ui.checkbox(&mut self.show_spectrum, "Spectral frequency display");
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
                     self.spectrum = None;
                 }
                 ui.separator();
                 let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
                 let mut chosen = None;
-                for a in TABLE.iter().filter(|a| a.name.starts_with("view.")) {
+                for a in TABLE.iter().filter(|a| a.name.starts_with("view.") || a.name.starts_with("tool.")) {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
                     let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
                     if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
@@ -852,7 +1584,16 @@ impl WaveApp {
                     let _ = self.run_action(id, ui.ctx());
                 }
                 ui.separator();
-                ui.checkbox(&mut self.show_history, "History panel");
+                ui.checkbox(&mut self.show_metadata, "Metadata panel");
+            });
+            ui.menu_button("Video", |ui| {
+                if ui.add_enabled(self.editor.is_some(), egui::Button::new("Attach video file…")).clicked() {
+                    self.pick_video(ui.ctx());
+                }
+                if ui.add_enabled(self.video.is_some(), egui::Button::new("Detach video")).clicked() {
+                    self.drop_video();
+                }
+                ui.checkbox(&mut self.show_video, "Video panel");
             });
             let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -914,12 +1655,44 @@ impl WaveApp {
         });
     }
 
+    fn draw_hud(&mut self, ctx: &egui::Context) {
+        if !actions::hud_visible(self.hud.hidden, self.hud.only_for_selection, !self.selection.is_empty()) {
+            return;
+        }
+        egui::Area::new(egui::Id::new("amplitude-hud")).movable(!self.hud.pinned).order(egui::Order::Foreground).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Gain {:.1} dB", self.hud.gain_db));
+                    if ui.button(if self.hud.pinned { "Unpin" } else { "Pin" }).clicked() {
+                        self.hud.pinned = !self.hud.pinned;
+                    }
+                    if ui.button("Hide").clicked() {
+                        self.hud.hidden = true;
+                    }
+                });
+                let drag = ui.add(egui::Label::new("Drag vertically to change").sense(Sense::drag()));
+                if drag.drag_started() {
+                    self.hud.drag_start_db = Some(self.hud.gain_db);
+                }
+                if drag.dragged() {
+                    let start = self.hud.drag_start_db.unwrap_or(self.hud.gain_db);
+                    self.hud.gain_db = actions::hud_drag_gain_db(start, -f64::from(drag.drag_delta().y));
+                }
+                if drag.drag_stopped() {
+                    self.hud.drag_start_db = None;
+                }
+                ui.checkbox(&mut self.hud.only_for_selection, "Show only for selections");
+            });
+        });
+    }
+
     fn editor(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
         painter.rect_filled(rect, 0.0, BACKGROUND);
         let Some(doc) = &self.doc else { return };
         let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
+        let chnames: Vec<String> = self.editor.as_ref().map(|e| e.history.current().source().meta.chnames.clone()).unwrap_or_default();
         let width = rect.width().max(1.0);
         self.editor_width = width;
         if self.fit_on_next_frame {
@@ -951,23 +1724,78 @@ impl WaveApp {
         }
         self.view.clamp(width, frames);
 
-        // Click places the cursor, drag selects.
+        // Select tool: click places the cursor, drag selects; near a selection edge a drag adjusts
+        // it, Shift-click extends, double-click selects what is on screen, triple-click everything.
         let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
-        if response.drag_started()
+        let edge_at = |sel: &Selection, view: &Viewport, pos: Pos2| sel.edge_near(view, pos.x - rect.left(), GRAB_PX);
+        if let Some(pos) = response.hover_pos().or(response.interact_pointer_pos())
+            && edge_at(&self.selection, &self.view, pos).is_some()
+        {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        let ruler_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
+        if response.drag_started() {
+            self.drag_origin = ui.input(|i| i.pointer.press_origin()).or_else(|| response.interact_pointer_pos());
+        }
+        let drag_dx = response.drag_delta().x;
+        // Middle-button drag scrolls whatever the tool (A084); the Hand tool does it with the
+        // primary button (A050).
+        if response.dragged_by(egui::PointerButton::Middle) || (self.tool == Tool::Hand && response.dragged_by(egui::PointerButton::Primary)) {
+            self.view.drag_by(drag_dx, width, frames);
+        }
+        // A range drag zooms to it: right-drag in the ruler (A091), or the Zoom tool's drag (A051).
+        let range_zoom = (response.drag_stopped_by(egui::PointerButton::Secondary) && self.drag_origin.is_some_and(|o| ruler_rect.contains(o)))
+            || (self.tool == Tool::Zoom && response.drag_stopped_by(egui::PointerButton::Primary));
+        if range_zoom
+            && let (Some(origin), Some(end)) = (self.drag_origin, ui.input(|i| i.pointer.latest_pos()).or_else(|| response.interact_pointer_pos()))
+        {
+            let (a, b) = (self.view.frame_at(origin.x - rect.left()), self.view.frame_at(end.x - rect.left()));
+            self.view.zoom_to_range(a, b, width, frames);
+        }
+        if self.tool == Tool::Zoom
+            && response.clicked_by(egui::PointerButton::Primary)
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let out = ui.input(|i| i.modifiers.alt);
+            self.view.zoom_click(self.view.frame_at(pos.x - rect.left()), out, width, frames);
+        }
+
+        // Selection gestures belong to the Select tool, primary button only.
+        let select = self.tool == Tool::Select;
+        let shift = ui.input(|i| i.modifiers.shift);
+        if select
+            && response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             // A drag is only reported once the pointer has moved a few pixels: anchor the
             // selection where the button went down, not where the pointer has got to.
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
-            self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
-        } else if response.dragged()
+            if let Some(edge) = edge_at(&self.selection, &self.view, origin) {
+                self.selection.grab(edge);
+                self.selection.head = frame_at(&self.view, pos);
+            } else if shift {
+                self.selection.extend_to(frame_at(&self.view, pos));
+            } else {
+                self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
+            }
+        } else if select
+            && response.dragged_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
             self.selection.head = frame_at(&self.view, pos);
-        } else if response.clicked()
+        } else if select && response.triple_clicked_by(egui::PointerButton::Primary) {
+            self.selection = Selection::all(frames);
+        } else if select && response.double_clicked_by(egui::PointerButton::Primary) {
+            self.selection = Selection::visible(&self.view, width, frames);
+        } else if select
+            && response.clicked_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
-            self.selection = Selection::at(frame_at(&self.view, pos));
+            if shift {
+                self.selection.extend_to(frame_at(&self.view, pos));
+            } else {
+                self.selection = Selection::at(frame_at(&self.view, pos));
+            }
         }
 
         let (start, end) = (self.view.start, self.view.end(width));
@@ -975,7 +1803,7 @@ impl WaveApp {
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate);
 
-        let (wave_area, spectrum_area) = match (self.show_waveform, self.show_spectrum) {
+        let (wave_area, spectrum_area) = match (self.panels.is_shown("waveform"), self.panels.is_shown("spectral")) {
             (true, true) => {
                 let split = body.top() + body.height() * 0.5;
                 (Some(Rect::from_min_max(body.min, pos2(body.right(), split))), Some(Rect::from_min_max(pos2(body.left(), split), body.max)))
@@ -992,6 +1820,15 @@ impl WaveApp {
                 let mid = lane.center().y;
                 painter.line_segment([pos2(lane.left(), mid), pos2(lane.right(), mid)], Stroke::new(1.0, Color32::from_gray(50)));
                 let half = lane.height() * 0.5 - 2.0;
+                if let Some(name) = chnames.get(ch).filter(|n| !n.is_empty()) {
+                    painter.text(
+                        pos2(lane.left() + 4.0, lane.top() + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        name,
+                        egui::FontId::proportional(12.0),
+                        Color32::from_gray(170),
+                    );
+                }
                 for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
                     let x = lane.left() + i as f32 + 0.5;
                     let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);
@@ -1043,7 +1880,7 @@ impl WaveApp {
             }
         };
         line(self.selection.start(), CURSOR);
-        if self.player.is_playing() {
+        if self.player.is_playing() && !self.previewing {
             line(self.player.position(), PLAYHEAD);
             ui.ctx().request_repaint();
         }
@@ -1060,8 +1897,29 @@ impl eframe::App for WaveApp {
         self.finish_rebuild();
         self.finish_saving(ctx);
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            // `VIDEO frame` is answered when the worker has the picture, not before.
+            if let Some(arg) = req.line.strip_prefix("VIDEO frame") {
+                match (arg.trim().parse::<f64>(), self.video.as_mut()) {
+                    (Ok(secs), Some(v)) if secs.is_finite() => {
+                        let seq = v.request(secs, true);
+                        self.video_waiters.add(seq, req.reply);
+                    }
+                    (_, None) => {
+                        let _ = req.reply.send("ERR no video attached".to_string());
+                    }
+                    _ => {
+                        let _ = req.reply.send("ERR VIDEO frame <seconds>".to_string());
+                    }
+                }
+                continue;
+            }
             let answer = self.control_request(&req.line, ctx);
             let _ = req.reply.send(answer);
+        }
+        if let Some(v) = self.video.as_mut() {
+            for (seq, text) in v.poll(ctx) {
+                self.video_waiters.answer(seq, text);
+            }
         }
     }
 
@@ -1076,6 +1934,16 @@ impl eframe::App for WaveApp {
             && let Err(e) = self.save(&ctx, save_as, None, false)
         {
             self.error = Some(e);
+        }
+        self.selection_keys(&ctx);
+        // Up and Down belong to the History panel while one of its rows has focus (before the
+        // action table gets them: there they pick the left or right channel).
+        if self.history_focus && self.saving.is_none() {
+            let (up, down) =
+                ctx.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, Key::ArrowDown)));
+            if let Some(to) = (up || down).then(|| self.history_arrow(down, &ctx)).flatten() {
+                self.history_refocus = Some(to);
+            }
         }
         for id in pressed_actions(&ctx) {
             let _ = self.run_action(id, &ctx);
@@ -1107,10 +1975,23 @@ impl eframe::App for WaveApp {
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
-        if self.show_history {
+        if self.show_video && self.video.is_some() {
+            let secs = self.playhead_secs();
+            if let Some(v) = self.video.as_mut() {
+                if let Some(secs) = secs {
+                    v.follow(secs);
+                }
+                egui::Panel::right("video").default_size(360.0).show(ui, |ui| v.ui(ui));
+            }
+        }
+        if self.panels.is_shown("history") {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
+        if self.show_metadata {
+            egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));
+        }
         self.insert_silence_dialog(&ctx);
+        self.effect_dialog_ui(&ctx);
         self.clear_history_prompt(&ctx);
         self.mtv.dialog_ui(&ctx);
         if self.mtv.show {
@@ -1120,12 +2001,23 @@ impl eframe::App for WaveApp {
         } else {
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
         }
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
+        self.draw_hud(&ctx);
     }
+}
+
+/// The History step an Up or Down key moves to from `cursor` among `len` steps (none at an end).
+fn history_arrow_target(cursor: usize, len: usize, down: bool) -> Option<usize> {
+    if down { (cursor + 1 < len).then_some(cursor + 1) } else { cursor.checked_sub(1) }
 }
 
 /// The actions whose keys were pressed this frame. Keys with more modifiers are taken first, so
 /// Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
 fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
+    // A text field being edited owns the keyboard: Backspace, Delete and Cmd+Z there edit the text, not the audio (#368).
+    if ctx.text_edit_focused() {
+        return Vec::new();
+    }
     let mut keys: Vec<(ActionId, actions::Shortcut)> = TABLE.iter().flat_map(|a| a.keys.iter().map(move |k| (a.id, *k))).collect();
     keys.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
@@ -1208,9 +2100,70 @@ fn palette() -> Vec<Color32> {
         .collect()
 }
 
+/// How much of a generator a dialog's Preview plays, in seconds, looped.
+const PREVIEW_SECONDS: f64 = 2.0;
+/// Previews of noise are the same every time, so a changed setting is what you hear change.
+const PREVIEW_SEED: u64 = 0x5EED;
+
+/// A seed for noise that differs between runs.
+fn clock_seed() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64)
+}
+
+/// `seed=N` pulled out of a `GENERATE` argument string: the seed (the clock's when absent) and
+/// the rest.
+fn split_seed(args: &str) -> (Result<u64, String>, String) {
+    let mut seed = Ok(clock_seed());
+    let rest: Vec<&str> = args
+        .split_whitespace()
+        .filter(|w| match w.strip_prefix("seed=") {
+            Some(n) => {
+                seed = n.parse::<u64>().map_err(|_| format!("seed={n}: a whole number"));
+                false
+            }
+            None => true,
+        })
+        .collect();
+    (seed, rest.join(" "))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn history_arrows_stop_at_the_ends() {
+        use super::history_arrow_target as t;
+        assert_eq!(t(0, 3, false), None);
+        assert_eq!(t(0, 3, true), Some(1));
+        assert_eq!(t(2, 3, true), None);
+        assert_eq!(t(2, 3, false), Some(1));
+        assert_eq!(t(0, 1, true), None);
+    }
+
     use super::*;
+
+    /// Runs three frames on a fresh context: frame 1 draws a text field and (when `focus`) asks for focus,
+    /// frame 2 lets that focus settle, frame 3 delivers one key press and returns what `pressed_actions` reports.
+    fn actions_for_key(focus: bool, key: Key, modifiers: egui::Modifiers) -> Vec<ActionId> {
+        let ctx = egui::Context::default();
+        let mut text = String::from("10");
+        let mut frame = |events: Vec<egui::Event>, ask_focus: bool| -> Vec<ActionId> {
+            let raw = egui::RawInput { events, ..Default::default() };
+            let mut found = Vec::new();
+            let mut output = ctx.run_ui(raw, |ui| {
+                let r = ui.text_edit_singleline(&mut text);
+                if ask_focus {
+                    r.request_focus();
+                }
+                found = pressed_actions(ui.ctx());
+            });
+            output.textures_delta.clear();
+            found
+        };
+        let _ = frame(Vec::new(), focus);
+        let _ = frame(Vec::new(), false);
+        let press = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        frame(vec![press], false)
+    }
 
     #[test]
     fn ruler_steps_are_round_and_wide_enough() {
@@ -1240,10 +2193,64 @@ mod tests {
     }
 
     #[test]
+    fn silence_longer_than_a_day_is_rejected() {
+        assert_eq!(silence_frames(1.0, 44_100), Ok(44_100));
+        assert_eq!(silence_frames(86_400.0, 48_000), Ok(4_147_200_000));
+        assert!(silence_frames(86_400.5, 48_000).is_err());
+        assert!(silence_frames(1e20, 44_100).is_err());
+        assert!(silence_frames(f64::INFINITY, 44_100).is_err());
+        assert!(silence_frames(0.0, 44_100).is_err());
+    }
+
+    #[test]
     fn lanes_stack_without_gaps() {
         let area = Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 300.0));
         assert_eq!(lane(area, 0, 2), Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 200.0)));
         assert_eq!(lane(area, 1, 2), Rect::from_min_max(pos2(0.0, 200.0), pos2(800.0, 300.0)));
         assert_eq!(lane(area, 0, 0), area);
+    }
+
+    #[test]
+    fn backspace_in_a_focused_text_field_runs_no_action() {
+        let got = actions_for_key(true, Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(got, Vec::<ActionId>::new());
+    }
+
+    #[test]
+    fn cmd_z_in_a_focused_text_field_runs_no_action() {
+        let got = actions_for_key(true, Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(got, Vec::<ActionId>::new());
+    }
+
+    #[test]
+    fn delete_key_in_a_focused_text_field_runs_no_action() {
+        let got = actions_for_key(true, Key::Delete, egui::Modifiers::NONE);
+        assert_eq!(got, Vec::<ActionId>::new());
+    }
+
+    #[test]
+    fn backspace_without_a_focused_text_field_runs_delete() {
+        let got = actions_for_key(false, Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(got, vec![ActionId::Delete]);
+    }
+
+    #[test]
+    fn cmd_z_without_a_focused_text_field_runs_undo() {
+        let got = actions_for_key(false, Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(got, vec![ActionId::Undo]);
+    }
+
+    #[test]
+    fn cmd_shift_z_without_a_focused_text_field_runs_redo_only() {
+        let got = actions_for_key(false, Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
+        assert_eq!(got, vec![ActionId::Redo]);
+    }
+
+    #[test]
+    fn split_seed_pulls_the_seed_out() {
+        let (seed, rest) = split_seed("freq=440 seed=7 dur=2");
+        assert_eq!((seed, rest.as_str()), (Ok(7), "freq=440 dur=2"));
+        assert!(split_seed("seed=x").0.is_err());
+        assert!(split_seed("dur=2").0.is_ok());
     }
 }

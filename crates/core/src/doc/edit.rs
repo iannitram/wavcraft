@@ -52,6 +52,10 @@ pub const PASTE: &str = "Paste";
 pub const SILENCE: &str = "Silence";
 pub const INSERT_SILENCE: &str = "Insert Silence";
 pub const CROP: &str = "Crop";
+/// Cut, Paste and Crop with only some channels active (Audition's labels).
+pub const CUT_AUDIO: &str = "Cut Audio";
+pub const PASTE_AUDIO: &str = "Paste Audio";
+pub const CROP_AUDIO: &str = "Crop Audio";
 
 /// Which channels an edit acts on: bit `n` is channel `n` (up to 64 channels).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -308,7 +312,7 @@ pub fn copy(doc: &DocState, range: Range<u64>, channels: ChannelMask) -> Result<
 pub fn cut(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Crossfades) -> Result<(Edit, Clip), EditError> {
     let clip = copy(doc, range.clone(), channels)?;
     let mut edit = delete(doc, range, channels, xf)?;
-    edit.label = CUT.to_string();
+    edit.label = if channels.covers_all(doc.channel_count()) { CUT } else { CUT_AUDIO }.to_string();
     Ok((edit, clip))
 }
 
@@ -358,7 +362,7 @@ pub fn paste(doc: &DocState, at: PasteAt, clip: &Clip, channels: ChannelMask, xf
             let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(&src, 0, written, edge), Seg::new(ch, end, len - end, edge)];
             out[c] = Arc::new(build(store, &segs)?);
         }
-        return finish(doc, out, PASTE, Change::SameLength { range: range.start..end, channels: mask });
+        return finish(doc, out, PASTE_AUDIO, Change::SameLength { range: range.start..end, channels: mask });
     }
     let mut out = Vec::with_capacity(n);
     for (c, src) in paste_sources(store, clip, n, &mask.active(n))? {
@@ -483,7 +487,7 @@ pub fn crop(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Crossf
             out.push(ch.clone());
         }
     }
-    finish(doc, out, CROP, Change::SameLength { range: 0..len, channels: mask })
+    finish(doc, out, CROP_AUDIO, Change::SameLength { range: 0..len, channels: mask })
 }
 
 /// The general path effects use: new audio for `range` of `channels`, made chunk by chunk.
@@ -558,6 +562,47 @@ where
     }
     let mask = active.iter().fold(ChannelMask::NONE, |m, &c| m.with(c));
     finish(doc, out, label, Change::SameLength { range, channels: mask })
+}
+
+/// Generated audio (f21): `frames` of new samples inserted at `range.start`, replacing `range`
+/// when it is not empty. Every channel gets a signal; `producer(channel, out)` fills the next
+/// `out.len()` frames of that channel's signal (called in order for each channel, in chunks of at
+/// most [`BLOCK_FRAMES`], so a long tone is never held in RAM). One undoable edit named `label`.
+/// `cancel` stops it between chunks ([`EditError::Cancelled`], nothing changed).
+pub fn generate<F>(doc: &DocState, range: Range<u64>, frames: u64, label: &str, cancel: &AtomicBool, mut producer: F) -> Result<Edit, EditError>
+where
+    F: FnMut(usize, &mut [f32]) -> io::Result<()>,
+{
+    check_range(doc, &range)?;
+    let n = doc.channel_count();
+    if frames == 0 || n == 0 {
+        return Ok(Edit::noop(doc, label));
+    }
+    let store = doc.store();
+    let mut buf = vec![0.0f32; BLOCK_FRAMES];
+    let mut made: Vec<Channel> = vec![Channel::new(); n];
+    let mut done = 0u64;
+    while done < frames {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EditError::Cancelled);
+        }
+        let m = (frames - done).min(BLOCK_FRAMES as u64) as usize;
+        for (c, ch) in made.iter_mut().enumerate() {
+            producer(c, &mut buf[..m])?;
+            if let Some(p) = Piece::whole(store.append(&buf[..m])?) {
+                ch.push(p);
+            }
+        }
+        done += m as u64;
+    }
+    let len = doc.len_frames();
+    let mut out: Vec<Arc<Channel>> = Vec::with_capacity(n);
+    for (c, new) in made.iter().enumerate() {
+        let ch = doc.channel(c).ok_or_else(|| io::Error::other("channel missing"))?;
+        let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(new, 0, frames, 0), Seg::new(ch, range.end, len - range.end, 0)];
+        out.push(Arc::new(build(store, &segs)?));
+    }
+    finish(doc, out, label, Change::LengthFrom { frame: range.start })
 }
 
 // ---------------------------------------------------------------------------------------------

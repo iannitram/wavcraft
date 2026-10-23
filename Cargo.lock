@@ -1203,6 +1203,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2741,6 +2743,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-dsp"
+version = "0.6.1"
+source = "git+https://github.com/iannitram/soundcraft?rev=dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a#dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a"
+dependencies = [
+ "log",
+ "rustfft",
+ "serde",
+]
+
+[[package]]
 name = "soundcraft-midi"
 version = "0.10.0"
 source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
@@ -2767,6 +2779,16 @@ name = "soundcraft-time"
 version = "0.10.0"
 source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
 dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "soundcraft-video"
+version = "0.10.0"
+source = "git+https://github.com/iannitram/soundcraft?rev=734761cd31832c551994716815516ce70fb05f4b#734761cd31832c551994716815516ce70fb05f4b"
+dependencies = [
+ "image",
  "serde",
  "thiserror 2.0.21",
 ]
@@ -3338,6 +3360,7 @@ dependencies = [
  "egui",
  "log",
  "rfd",
+ "soundcraft-video",
  "wavcraft-core",
  "windows-sys 0.61.2",
 ]
@@ -3357,6 +3380,7 @@ dependencies = [
  "serde_json",
  "soundcraft-audio-io 0.10.0",
  "soundcraft-audio-io 0.6.1",
+ "soundcraft-dsp",
  "soundcraft-model",
  "symphonia",
  "sysinfo",

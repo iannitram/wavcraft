@@ -53,6 +53,39 @@ impl Viewport {
         self.clamp(width_px, total_frames);
     }
 
+    /// The Zoom tool's click: zoom in (or out, with `out`) by 2x around `frame`, which stays
+    /// where it is on screen.
+    pub fn zoom_click(&mut self, frame: f64, out: bool, width_px: f32, total_frames: usize) {
+        let anchor_x = self.x_of(frame).clamp(0.0, width_px.max(0.0));
+        let factor = if out { 0.5 } else { 2.0 };
+        self.zoom_at(factor, anchor_x, width_px, total_frames);
+    }
+
+    /// Fill the view with the range between frames `a` and `b` (either order), as the Zoom
+    /// tool's drag and a right-drag in the ruler do. A range too small to show at the closest
+    /// zoom is centred at that zoom; an empty or non-finite range changes nothing.
+    pub fn zoom_to_range(&mut self, a: f64, b: f64, width_px: f32, total_frames: usize) {
+        if !a.is_finite() || !b.is_finite() || a == b {
+            return;
+        }
+        let (lo, hi) = (a.min(b).max(0.0), a.max(b).min(total_frames as f64));
+        if hi <= lo {
+            return;
+        }
+        let width = f64::from(width_px.max(1.0));
+        let closest = 1.0 / MAX_PX_PER_FRAME;
+        let scale = ((hi - lo) / width).max(closest);
+        self.frames_per_px = scale;
+        self.start = (lo + hi) * 0.5 - scale * width * 0.5;
+        self.clamp(width_px, total_frames);
+    }
+
+    /// The Hand tool and middle-button drag: the picture follows the pointer, so dragging right
+    /// by `dx_px` shows earlier audio.
+    pub fn drag_by(&mut self, dx_px: f32, width_px: f32, total_frames: usize) {
+        self.scroll_by(-dx_px, width_px, total_frames);
+    }
+
     /// Scroll just enough to bring `frame` on screen, leaving a small margin.
     pub fn reveal(&mut self, frame: f64, width_px: f32, total_frames: usize) {
         let margin = self.frames_per_px * f64::from(width_px) * 0.1;
@@ -111,6 +144,77 @@ impl Selection {
     /// Whether nothing is selected (the selection is only a cursor position).
     pub fn is_empty(&self) -> bool {
         self.anchor == self.head
+    }
+}
+
+/// Which end of a selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Start,
+    End,
+}
+
+/// How close (in pixels) the pointer must be to a selection edge to grab it.
+pub const GRAB_PX: f32 = 5.0;
+
+impl Selection {
+    /// The whole file `0..total_frames`.
+    pub fn all(total_frames: usize) -> Selection {
+        Selection { anchor: 0, head: total_frames }
+    }
+
+    /// What is on screen in `view` (`width_px` wide), clamped to the file.
+    pub fn visible(view: &Viewport, width_px: f32, total_frames: usize) -> Selection {
+        let a = view.start.max(0.0).round().min(total_frames as f64) as usize;
+        let b = view.end(width_px).max(0.0).round().min(total_frames as f64) as usize;
+        Selection { anchor: a.min(b), head: b }
+    }
+
+    /// The edge of a non-empty selection within `tol_px` of pixel `x_px` (the nearer one when
+    /// both are), or `None`. A bare cursor has no edges to grab.
+    pub fn edge_near(&self, view: &Viewport, x_px: f32, tol_px: f32) -> Option<Edge> {
+        if self.is_empty() {
+            return None;
+        }
+        let ds = (view.x_of(self.start() as f64) - x_px).abs();
+        let de = (view.x_of(self.end() as f64) - x_px).abs();
+        match (ds <= tol_px, de <= tol_px) {
+            (true, true) => Some(if ds <= de { Edge::Start } else { Edge::End }),
+            (true, false) => Some(Edge::Start),
+            (false, true) => Some(Edge::End),
+            _ => None,
+        }
+    }
+
+    /// Pick up `edge`: the opposite edge becomes the anchor and the grabbed edge the head, so
+    /// setting `head` afterwards moves that edge (and flips the selection if it crosses).
+    pub fn grab(&mut self, edge: Edge) {
+        let (s, e) = (self.start(), self.end());
+        *self = match edge {
+            Edge::Start => Selection { anchor: e, head: s },
+            Edge::End => Selection { anchor: s, head: e },
+        };
+    }
+
+    /// Shift-click: move the nearer edge to `frame` (a cursor extends toward it).
+    pub fn extend_to(&mut self, frame: usize) {
+        if !self.is_empty() {
+            let (s, e) = (self.start(), self.end());
+            let near_start = frame.abs_diff(s) <= frame.abs_diff(e);
+            self.grab(if near_start { Edge::Start } else { Edge::End });
+        }
+        self.head = frame;
+    }
+
+    /// Shift+arrow: move the moving end by `delta` frames, within `0..=total_frames`.
+    pub fn extend_by(&mut self, delta: i64, total_frames: usize) {
+        let h = (self.head as i64).saturating_add(delta).clamp(0, total_frames as i64);
+        self.head = h as usize;
+    }
+
+    /// Shift+Home / Shift+End: move the moving end to `frame` (clamped to the file).
+    pub fn extend_edge_to(&mut self, frame: usize, total_frames: usize) {
+        self.head = frame.min(total_frames);
     }
 }
 
@@ -195,10 +299,122 @@ mod tests {
     }
 
     #[test]
+    fn hand_drag_moves_the_picture_with_the_pointer() {
+        let mut v = Viewport { start: 100_000.0, frames_per_px: 100.0 };
+        v.drag_by(50.0, 1000.0, HOUR);
+        assert_eq!(v.start, 95_000.0, "drag right: earlier audio");
+        v.drag_by(-50.0, 1000.0, HOUR);
+        assert_eq!(v.start, 100_000.0);
+        v.drag_by(1e9, 1000.0, HOUR);
+        assert_eq!(v.start, 0.0, "stops at the start");
+        v.drag_by(-1e12, 1000.0, HOUR);
+        assert!((v.end(1000.0) - HOUR as f64).abs() < 1e-6, "stops at the end");
+    }
+
+    #[test]
+    fn zoom_click_keeps_the_clicked_frame_under_the_pointer() {
+        let mut v = Viewport::fit(HOUR, 1200.0);
+        let frame = 1_000_000.0;
+        let x = v.x_of(frame);
+        v.zoom_click(frame, false, 1200.0, HOUR);
+        assert!((v.x_of(frame) - x).abs() < 1e-3);
+        assert!((v.frames_per_px - Viewport::fit(HOUR, 1200.0).frames_per_px / 2.0).abs() < 1e-9);
+        v.zoom_click(frame, true, 1200.0, HOUR);
+        assert_eq!(v, Viewport::fit(HOUR, 1200.0), "out again is the whole file");
+    }
+
+    #[test]
+    fn zoom_to_range_fills_the_view() {
+        let mut v = Viewport::fit(HOUR, 1200.0);
+        v.zoom_to_range(480_000.0, 240_000.0, 1200.0, HOUR);
+        assert!((v.start - 240_000.0).abs() < 1e-6 && (v.end(1200.0) - 480_000.0).abs() < 1e-6);
+        // Past the file's ends it is clipped to the file.
+        v.zoom_to_range(-5_000.0, 96_000.0, 1200.0, HOUR);
+        assert_eq!(v.start, 0.0);
+        assert!((v.end(1200.0) - 96_000.0).abs() < 1e-6);
+        // Empty or bad ranges change nothing.
+        let before = v;
+        v.zoom_to_range(500.0, 500.0, 1200.0, HOUR);
+        v.zoom_to_range(f64::NAN, 10.0, 1200.0, HOUR);
+        assert_eq!(v, before);
+        // Tiny ranges stop at the closest zoom, centred on the range.
+        v.zoom_to_range(100_000.0, 100_002.0, 1200.0, HOUR);
+        assert_eq!(v.frames_per_px, 1.0 / 16.0);
+        assert!((v.frame_at(600.0) - 100_001.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn selections_are_ordered_whichever_way_they_were_dragged() {
         let s = Selection { anchor: 900, head: 100 };
         assert_eq!((s.start(), s.end(), s.len(), s.is_empty()), (100, 900, 800, false));
         assert!(Selection::at(42).is_empty());
+    }
+
+    #[test]
+    fn edges_are_grabbed_within_a_few_pixels_and_cross_cleanly() {
+        let v = Viewport { start: 0.0, frames_per_px: 10.0 };
+        let mut s = Selection { anchor: 1000, head: 500 }; // 500..1000 = px 50..100
+        assert_eq!(s.edge_near(&v, 52.0, GRAB_PX), Some(Edge::Start));
+        assert_eq!(s.edge_near(&v, 97.0, GRAB_PX), Some(Edge::End));
+        assert_eq!(s.edge_near(&v, 75.0, GRAB_PX), None);
+        assert_eq!(Selection::at(500).edge_near(&v, 50.0, GRAB_PX), None, "a cursor has no edges");
+        // Both edges in reach: the nearer wins.
+        let thin = Selection { anchor: 500, head: 540 };
+        assert_eq!(thin.edge_near(&v, 51.0, GRAB_PX), Some(Edge::Start));
+        assert_eq!(thin.edge_near(&v, 52.0, GRAB_PX), Some(Edge::Start));
+        assert_eq!(thin.edge_near(&v, 53.0, GRAB_PX), Some(Edge::End));
+        // Drag the start edge right past the end: the selection flips, the other edge stays.
+        s.grab(Edge::Start);
+        s.head = 1500;
+        assert_eq!((s.start(), s.end()), (1000, 1500));
+        s.grab(Edge::End);
+        s.head = 200;
+        assert_eq!((s.start(), s.end()), (200, 1000));
+    }
+
+    #[test]
+    fn shift_click_moves_the_nearer_edge() {
+        let mut s = Selection { anchor: 500, head: 1000 };
+        s.extend_to(1400);
+        assert_eq!((s.start(), s.end()), (500, 1400));
+        s.extend_to(100);
+        assert_eq!((s.start(), s.end()), (100, 1400));
+        s.extend_to(120);
+        assert_eq!((s.start(), s.end()), (120, 1400));
+        let mut c = Selection::at(700);
+        c.extend_to(300);
+        assert_eq!((c.start(), c.end()), (300, 700));
+        let mut c = Selection::at(700);
+        c.extend_to(900);
+        assert_eq!((c.start(), c.end()), (700, 900));
+    }
+
+    #[test]
+    fn double_click_is_the_visible_range_and_triple_is_everything() {
+        let v = Viewport { start: 1000.0, frames_per_px: 10.0 };
+        let s = Selection::visible(&v, 200.0, 100_000);
+        assert_eq!((s.start(), s.end()), (1000, 3000));
+        let past = Selection::visible(&Viewport { start: 99_000.0, frames_per_px: 10.0 }, 500.0, 100_000);
+        assert_eq!((past.start(), past.end()), (99_000, 100_000), "clamped to the file");
+        let a = Selection::all(100_000);
+        assert_eq!((a.start(), a.end()), (0, 100_000));
+    }
+
+    #[test]
+    fn shift_arrows_move_the_head_within_the_file() {
+        let mut s = Selection::at(100);
+        s.extend_by(50, 1000);
+        assert_eq!((s.start(), s.end()), (100, 150));
+        s.extend_by(-80, 1000);
+        assert_eq!((s.start(), s.end()), (70, 100), "crosses the anchor and flips");
+        s.extend_by(-1_000_000, 1000);
+        assert_eq!((s.start(), s.end()), (0, 100));
+        s.extend_by(i64::MAX, 1000);
+        assert_eq!((s.start(), s.end()), (100, 1000));
+        s.extend_edge_to(0, 1000);
+        assert_eq!((s.start(), s.end()), (0, 100));
+        s.extend_edge_to(5000, 1000);
+        assert_eq!((s.start(), s.end()), (100, 1000));
     }
 
     #[test]
