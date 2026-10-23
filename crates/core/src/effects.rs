@@ -19,6 +19,7 @@ mod gain;
 pub use gain::Gain;
 mod pitch_saturate;
 pub use pitch_saturate::{PitchShift, Saturator};
+pub mod pitch_presets;
 
 /// What a setting means, so a dialog can pick the right control and units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
