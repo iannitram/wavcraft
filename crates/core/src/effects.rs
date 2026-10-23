@@ -15,8 +15,10 @@ use std::sync::atomic::AtomicBool;
 use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
+mod compare;
 mod eq;
 mod gain;
+pub use compare::{AbCompare, Side};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
 
