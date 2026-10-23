@@ -1,0 +1,149 @@
+{
+  "id": "wav-q-c106",
+  "title": "C106: track height presets (core setters on Multitrack)",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "kind": "small-code-change-exact-brief",
+  "size": "S",
+  "repo": "iannitram/wavcraft",
+  "base": "feat/ap-f103-multitrack-session",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "wav-q-c106.md",
+  "verify": [
+    {
+      "name": "new-test-new_track_height_is_medium_88",
+      "cmd": "cargo test -p wavcraft-core new_track_height_is_medium_88 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-set_track_height_returns_old_an",
+      "cmd": "cargo test -p wavcraft-core set_track_height_returns_old_and_applies 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-set_track_height_named_ignores_",
+      "cmd": "cargo test -p wavcraft-core set_track_height_named_ignores_case_and_spaces 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-named_unknown_and_custom_are_re",
+      "cmd": "cargo test -p wavcraft-core named_unknown_and_custom_are_refused_and_change_nothing 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-custom_height_points_are_clampe",
+      "cmd": "cargo test -p wavcraft-core custom_height_points_are_clamped 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-step_taller_from_medium_is_larg",
+      "cmd": "cargo test -p wavcraft-core step_taller_from_medium_is_large 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-step_taller_stops_at_extreme",
+      "cmd": "cargo test -p wavcraft-core step_taller_stops_at_extreme 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-step_shorter_stops_at_micro",
+      "cmd": "cargo test -p wavcraft-core step_shorter_stops_at_micro 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-step_from_custom_goes_to_the_ne",
+      "cmd": "cargo test -p wavcraft-core step_from_custom_goes_to_the_next_preset 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-unknown_track_is_refused_everyw",
+      "cmd": "cargo test -p wavcraft-core unknown_track_is_refused_everywhere 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-setting_one_track_leaves_the_ot",
+      "cmd": "cargo test -p wavcraft-core setting_one_track_leaves_the_others 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-new_track_height_is_medium_88",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#Some(t) => Ok(t.height),#Some(_) => Ok(TrackHeight::Large),#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core new_track_height_is_medium_88 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-set_track_height_returns_old_and_ap",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#Ok(std::mem::replace(&mut t.height, height))#{ t.height = height; Ok(height) }#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core set_track_height_returns_old_and_applies 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-set_track_height_named_ignores_case",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#TrackHeight::from_id(name.trim())#TrackHeight::from_id(name)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core set_track_height_named_ignores_case_and_spaces 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-named_unknown_and_custom_are_refuse",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#return err(format!(\"a track height is one of#return err(format!(\"a height is one of#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core named_unknown_and_custom_are_refused_and_change_nothing 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-custom_height_points_are_clamped",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#Ok(self.track_height(id)?.points())#Ok(self.track_height(id)?.points() + 1.0)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core custom_height_points_are_clamped 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-step_taller_from_medium_is_large",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#t.height = t.height.step(taller);#t.height = t.height.step(!taller);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core step_taller_from_medium_is_large 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-step_taller_stops_at_extreme",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#^        Ok(t.height)$#        Ok(TrackHeight::Jumbo)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core step_taller_stops_at_extreme 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-step_shorter_stops_at_micro",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#t.height = t.height.step(taller);#t.height = t.height.step(taller).step(taller);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core step_shorter_stops_at_micro 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-step_from_custom_goes_to_the_next_p",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#t.height = t.height.step(taller);#t.height = t.height.step(true);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core step_from_custom_goes_to_the_next_preset 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-unknown_track_is_refused_everywhere",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i '/pub fn step_track_height/,/^    }/s#else { return err(\"no such track\") };#else { return Ok(TrackHeight::Medium) };#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core unknown_track_is_refused_everywhere 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-setting_one_track_leaves_the_others",
+      "cmd": "f=crates/core/src/multitrack/track_height.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i '/pub fn set_track_height(/,/^    }/s#self.session.track_mut(id)#self.session.tracks.last_mut()#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core setting_one_track_leaves_the_others 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core track_height",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/multitrack/track_height.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/multitrack/track_height.rs",
+    "crates/core/src/multitrack.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "C106: track height presets (alpha) (Refs #305)",
+  "est_minutes": 20,
+  "priority": 101,
+  "created_by": "api-qwen-briefs"
+}
