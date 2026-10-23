@@ -318,6 +318,8 @@ fn clean_name(name: &str) -> Result<String, MtError> {
     Ok(n)
 }
 
+pub mod invert;
+
 #[cfg(test)]
 mod tests {
     use super::*;
