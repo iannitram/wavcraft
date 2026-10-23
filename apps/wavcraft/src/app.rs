@@ -15,7 +15,10 @@ use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport, format_time};
+use wavcraft_core::view::nav_hit;
+use wavcraft_core::{
+    AmpScale, AmpZoom, DocState, Document, FileFormat, GRAB_PX, History, NavPart, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport,
+};
 
 use crate::control;
 use crate::effect_dialog::{Answer, EffectDialog};
@@ -29,6 +32,9 @@ const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
 const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
 const RULER_HEIGHT: f32 = 22.0;
+/// The amplitude ruler's column, left of the editor.
+const AMP_RULER_WIDTH: f32 = 46.0;
+const NAV_HEIGHT: f32 = 34.0;
 
 /// Longest silence Insert Silence accepts, in seconds (24 hours).
 const MAX_SILENCE_SECS: f64 = 86_400.0;
@@ -111,6 +117,11 @@ pub struct WaveApp {
     /// Bumped on every open, so cached pictures of the previous file are dropped.
     generation: usize,
     view: Viewport,
+    /// Vertical (amplitude) zoom of the waveform.
+    amp_zoom: AmpZoom,
+    /// The zoom navigator drag in progress: the part grabbed and the frames between the view's
+    /// start and the pointer when it was grabbed.
+    nav_drag: Option<(NavPart, f64)>,
     selection: Selection,
     player: Player,
     params: SpectrogramParams,
@@ -207,6 +218,8 @@ impl WaveApp {
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
             tool: Tool::default(),
             drag_origin: None,
+            amp_zoom: AmpZoom::full(),
+            nav_drag: None,
             selection: Selection::default(),
             player: Player::new(),
             params: SpectrogramParams::default(),
@@ -429,6 +442,22 @@ impl WaveApp {
     }
 
     /// The selection as a frame range (`start == end` is just the cursor).
+    /// The visible range as `<first>-<last>` frames, for STATE and NAV.
+    fn view_text(&self) -> String {
+        let frames = self.doc.as_ref().map_or(0, Document::frames) as f64;
+        format!("{}-{}", self.view.start.round(), self.view.end(self.editor_width).min(frames).round())
+    }
+
+    /// Use `scale` on the amplitude ruler and keep it in the settings file.
+    fn set_amp_scale(&mut self, scale: AmpScale) {
+        self.settings.amp_scale = scale;
+        if let Some(file) = &self.settings_path
+            && let Err(e) = self.settings.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not save the ruler scale to {}: {e}", file.display());
+        }
+    }
+
     fn selection_range(&self) -> Range<u64> {
         self.selection.start() as u64..self.selection.end() as u64
     }
@@ -496,6 +525,9 @@ impl WaveApp {
             ActionId::ToolSelect => self.tool = Tool::Select,
             ActionId::ToolHand => self.tool = Tool::Hand,
             ActionId::ToolZoom => self.tool = Tool::Zoom,
+            ActionId::ZoomAmpIn => self.amp_zoom.by(2.0),
+            ActionId::ZoomAmpOut => self.amp_zoom.by(0.5),
+            ActionId::ZoomAmpReset => self.amp_zoom = AmpZoom::full(),
             ActionId::ZoomToSelection if !self.selection.is_empty() => {
                 let (a, b) = (self.selection.start() as f64, self.selection.end() as f64);
                 self.view.frames_per_px = ((b - a) / f64::from(width)).max(1.0 / 64.0);
@@ -616,7 +648,7 @@ impl WaveApp {
 
     /// Window › Selection/View panel: begin, end and duration of the selection and of the visible
     /// view, in the chosen format. Type a value and press Enter (or leave the box) to apply it.
-    fn selection_view_panel(&mut self, ui: &mut egui::Ui) {
+    fn selview_panel(&mut self, ui: &mut egui::Ui) {
         let (frames, rate) = self.doc.as_ref().map_or((0, 0), |d| (d.frames(), d.sample_rate()));
         let width = self.editor_width.max(1.0);
         let (vs, ve) = (self.view.start.round() as usize, (self.view.end(width).round() as usize).min(frames));
@@ -624,7 +656,7 @@ impl WaveApp {
         let values =
             [("sel_start", ss), ("sel_end", se), ("sel_len", se - ss), ("view_start", vs), ("view_end", ve), ("view_len", ve.saturating_sub(vs))];
         let mut committed = None;
-        egui::Grid::new("selection_view").num_columns(4).show(ui, |ui| {
+        egui::Grid::new("selview").num_columns(4).show(ui, |ui| {
             ui.label("");
             ui.strong("Begin");
             ui.strong("End");
@@ -1277,7 +1309,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {view} time_display={} selection_text={} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {view} time_display={} selection_text={} vzoom={:.2} ampscale={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -1287,15 +1319,18 @@ impl WaveApp {
                             u8::from(busy),
                             self.time_format.name(),
                             self.selection_text(),
+                            self.amp_zoom.get(),
+                            self.settings.amp_scale.name(),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
                     None => {
                         format!(
-                            "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {view} time_display={} selection_text=- undo=- redo=-",
+                            "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {view} time_display={} selection_text=- vzoom=1.00 ampscale={} undo=- redo=-",
                             u8::from(busy),
-                            self.time_format.name()
+                            self.time_format.name(),
+                            self.settings.amp_scale.name()
                         )
                     }
                 }
@@ -1347,6 +1382,26 @@ impl WaveApp {
                     _ => format!("ERR SELECT_TIME <start> <end>, each written as {} (no spaces inside a time)", self.time_format.menu()),
                 }
             }
+            // Set the visible range the way the zoom navigator does, in frames.
+            "NAV" => {
+                let mut it = rest.split_whitespace().map(str::parse::<f64>);
+                let frames = self.doc.as_ref().map_or(0, Document::frames);
+                match (it.next(), it.next()) {
+                    (Some(Ok(a)), Some(Ok(b))) if frames > 0 && a.is_finite() && b > a => {
+                        self.view.set_range(a, b, self.editor_width.max(1.0), frames);
+                        format!("OK view={}", self.view_text())
+                    }
+                    _ => "ERR NAV <start> <end>, in frames, with a file open".to_string(),
+                }
+            }
+            // Choose the amplitude ruler's scale (the ruler's context menu does the same).
+            "AMPSCALE" => match AmpScale::parse(rest) {
+                Some(scale) => {
+                    self.set_amp_scale(scale);
+                    format!("OK ampscale={}", scale.name())
+                }
+                None => "ERR AMPSCALE db|percent|samples|normalized".to_string(),
+            },
             "ACTION" => match actions::by_name(rest) {
                 Some(a) => match self.run_action(a.id, ctx) {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
@@ -1826,11 +1881,117 @@ impl WaveApp {
         });
     }
 
+    /// The zoom buttons and the navigator bar above the editor.
+    fn zoom_panel(&mut self, ui: &mut egui::Ui) {
+        let open = self.doc.is_some();
+        ui.horizontal(|ui| {
+            let buttons = [
+                (ActionId::ZoomIn, "Zoom In", "Zoom in on time (=)"),
+                (ActionId::ZoomOut, "Zoom Out", "Zoom out on time (-)"),
+                (ActionId::ZoomToSelection, "Selection", "Zoom to the selection (Shift+S)"),
+                (ActionId::ZoomOutFull, "Full", "Zoom out to the whole file"),
+                (ActionId::ZoomAmpIn, "Amp +", "Zoom in vertically (Alt+=, Alt+wheel)"),
+                (ActionId::ZoomAmpOut, "Amp -", "Zoom out vertically (Alt+-, Alt+wheel)"),
+            ];
+            for (id, text, tip) in buttons {
+                let usable = open && (id != ActionId::ZoomToSelection || !self.selection.is_empty());
+                if ui.add_enabled(usable, egui::Button::new(text)).on_hover_text(tip).clicked() {
+                    let _ = self.run_action(id, ui.ctx());
+                }
+            }
+        });
+        self.navigator(ui);
+    }
+
+    /// The whole file in a thin strip with the visible range as a handle: drag it to scroll,
+    /// drag its edges to zoom, click outside it to jump there.
+    fn navigator(&mut self, ui: &mut egui::Ui) {
+        let (resp, painter) = ui.allocate_painter(vec2(ui.available_width(), NAV_HEIGHT), Sense::click_and_drag());
+        let rect = resp.rect;
+        painter.rect_filled(rect, 2.0, Color32::from_gray(24));
+        let Some(doc) = &self.doc else { return };
+        let (frames, channels) = (doc.frames(), doc.channels().max(1));
+        let (nav_px, view_px) = (rect.width().max(1.0), self.editor_width.max(1.0));
+        // The overview: the loudest of the channels in each column, from the peaks.
+        let cols = nav_px.round().max(1.0) as usize;
+        let mut merged = vec![(0.0_f32, 0.0_f32); cols];
+        for ch in 0..channels {
+            for (m, (lo, hi)) in merged.iter_mut().zip(doc.waveform_columns(ch, 0.0, frames as f64, cols)) {
+                *m = (m.0.min(lo), m.1.max(hi));
+            }
+        }
+        let (mid, half) = (rect.center().y, rect.height() * 0.5 - 2.0);
+        for (i, (lo, hi)) in merged.into_iter().enumerate() {
+            let x = rect.left() + i as f32 + 0.5;
+            let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);
+            painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, Color32::from_rgb(40, 110, 80)));
+        }
+
+        // Presses and drags.
+        let frame_at = |x: f32| f64::from((x / nav_px).clamp(0.0, 1.0)) * frames as f64;
+        let handle = self.view.nav_handle(view_px, nav_px, frames);
+        let local_x = |p: Pos2| p.x - rect.left();
+        if resp.drag_started()
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            let x = local_x(ui.input(|i| i.pointer.press_origin()).unwrap_or(pos));
+            self.nav_drag = Some(match nav_hit(handle, x, 6.0) {
+                Some(part) => (part, frame_at(x) - self.view.start),
+                None => {
+                    // A press outside the handle jumps there and carries on as a drag of it.
+                    self.view.nav_jump(x, view_px, nav_px, frames);
+                    (NavPart::Body, self.view.frames_per_px * f64::from(view_px) * 0.5)
+                }
+            });
+        }
+        if let (Some((part, grab)), Some(pos)) = (self.nav_drag, resp.interact_pointer_pos()) {
+            self.view.nav_drag(part, local_x(pos), grab, view_px, nav_px, frames);
+        }
+        if resp.drag_stopped() {
+            self.nav_drag = None;
+        }
+        if resp.clicked()
+            && let Some(pos) = resp.interact_pointer_pos()
+            && nav_hit(handle, local_x(pos), 6.0).is_none()
+        {
+            self.view.nav_jump(local_x(pos), view_px, nav_px, frames);
+        }
+        if let Some(pos) = resp.hover_pos().or(resp.interact_pointer_pos()) {
+            let part = self.nav_drag.map(|(p, _)| p).or_else(|| nav_hit(handle, local_x(pos), 6.0));
+            match part {
+                Some(NavPart::Left | NavPart::Right) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal),
+                Some(NavPart::Body) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
+                None => {}
+            }
+        }
+        self.view.clamp(view_px, frames);
+
+        // The handle, drawn from the view as it is now.
+        let (l, r) = self.view.nav_handle(view_px, nav_px, frames);
+        let r = r.max(l + 3.0);
+        let handle_rect = Rect::from_min_max(pos2(rect.left() + l, rect.top()), pos2((rect.left() + r).min(rect.right()), rect.bottom()));
+        painter.rect_filled(handle_rect, 2.0, Color32::from_rgba_premultiplied(60, 80, 120, 70));
+        painter.rect_stroke(handle_rect, 2.0, Stroke::new(1.5, Color32::from_rgb(120, 160, 230)), egui::StrokeKind::Inside);
+        if !self.selection.is_empty() {
+            let (a, b) = (self.selection.start() as f32 / frames.max(1) as f32, self.selection.end() as f32 / frames.max(1) as f32);
+            let strip = Rect::from_min_max(
+                pos2(rect.left() + a * nav_px, rect.bottom() - 3.0),
+                pos2(rect.left() + (b * nav_px).max(a * nav_px + 1.0), rect.bottom()),
+            );
+            painter.rect_filled(strip, 0.0, Color32::from_rgb(130, 150, 210));
+        }
+    }
+
     fn editor(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
-        let rect = response.rect;
-        painter.rect_filled(rect, 0.0, BACKGROUND);
+        let full = response.rect;
+        painter.rect_filled(full, 0.0, BACKGROUND);
         let Some(doc) = &self.doc else { return };
+        // The amplitude ruler takes a column on the left; the time axis starts right of it.
+        let amp_col = Rect::from_min_max(full.min, pos2(full.left() + AMP_RULER_WIDTH, full.bottom()));
+        let rect = Rect::from_min_max(pos2(amp_col.right(), full.top()), full.max);
+        let ruler_resp = ui.interact(amp_col, ui.id().with("amp-ruler"), Sense::click());
+        let mut chosen_scale = None;
         let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
         let chnames: Vec<String> = self.editor.as_ref().map(|e| e.history.current().source().meta.chnames.clone()).unwrap_or_default();
         let width = rect.width().max(1.0);
@@ -1840,8 +2001,14 @@ impl WaveApp {
             self.fit_on_next_frame = false;
         }
 
+        // Alt+wheel zooms the waveform vertically.
+        let alt = ui.input(|i| i.modifiers.alt);
+        if alt && (response.hovered() || ruler_resp.hovered()) {
+            let scroll = ui.input(|i| i.smooth_scroll_delta());
+            self.amp_zoom.by(((scroll.y + scroll.x) * 0.01).exp());
+        }
         // Wheel zooms around the pointer; Shift+wheel and sideways scrolling move through time.
-        if let Some(pointer) = response.hover_pos() {
+        if let Some(pointer) = response.hover_pos().filter(|_| !alt) {
             let (scroll, pinch, shift) = ui.input(|i| (i.smooth_scroll_delta(), i.zoom_delta(), i.modifiers.shift));
             let x = pointer.x - rect.left();
             if pinch != 1.0 {
@@ -1955,6 +2122,8 @@ impl WaveApp {
 
         if let Some(area) = wave_area {
             let cols = area.width().round().max(1.0) as usize;
+            let zoom = self.amp_zoom.get();
+            let scale = self.settings.amp_scale;
             for ch in 0..channels {
                 let lane = lane(area, ch, channels);
                 let mid = lane.center().y;
@@ -1971,11 +2140,27 @@ impl WaveApp {
                 }
                 for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
                     let x = lane.left() + i as f32 + 0.5;
-                    let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);
+                    let (top, bottom) = (mid - (hi * zoom).clamp(-1.0, 1.0) * half, mid - (lo * zoom).clamp(-1.0, 1.0) * half);
                     painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, WAVE));
                 }
+                draw_amp_ruler(
+                    &painter,
+                    Rect::from_min_max(pos2(amp_col.left(), lane.top()), pos2(amp_col.right(), lane.bottom())),
+                    scale,
+                    self.amp_zoom,
+                );
             }
         }
+        painter.rect_filled(Rect::from_min_max(amp_col.min, pos2(amp_col.right(), amp_col.top() + RULER_HEIGHT)), 0.0, Color32::from_gray(32));
+        let current_scale = self.settings.amp_scale;
+        ruler_resp.context_menu(|ui| {
+            for s in AmpScale::ALL {
+                if ui.radio(current_scale == s, s.menu()).clicked() {
+                    chosen_scale = Some(s);
+                    ui.close();
+                }
+            }
+        });
 
         if let Some(area) = spectrum_area {
             // Half resolution across, capped rows: plenty for the eye. The columns sit on a grid
@@ -2023,6 +2208,9 @@ impl WaveApp {
         if self.player.is_playing() && !self.previewing {
             line(self.player.position(), PLAYHEAD);
             ui.ctx().request_repaint();
+        }
+        if let Some(scale) = chosen_scale {
+            self.set_amp_scale(scale);
         }
     }
 }
@@ -2114,6 +2302,7 @@ impl eframe::App for WaveApp {
         }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
+        egui::Panel::top("zoom").show(ui, |ui| self.zoom_panel(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.show_video && self.video.is_some() {
             let secs = self.playhead_secs();
@@ -2124,8 +2313,8 @@ impl eframe::App for WaveApp {
                 egui::Panel::right("video").default_size(360.0).show(ui, |ui| v.ui(ui));
             }
         }
-        if self.panels.is_shown("selection_view") {
-            egui::Panel::bottom("selection_view").show(ui, |ui| self.selection_view_panel(ui));
+        if self.panels.is_shown("selview") {
+            egui::Panel::bottom("selview").show(ui, |ui| self.selview_panel(ui));
         }
         if self.panels.is_shown("time") {
             egui::Panel::bottom("time_panel").show(ui, |ui| self.time_panel(ui));
@@ -2182,6 +2371,34 @@ fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
 fn lane(area: Rect, ch: usize, channels: usize) -> Rect {
     let h = area.height() / channels.max(1) as f32;
     Rect::from_min_max(pos2(area.left(), area.top() + h * ch as f32), pos2(area.right(), area.top() + h * (ch + 1) as f32))
+}
+
+/// The amplitude ruler for one lane: marks and numbers on both sides of the centre line, at the
+/// current vertical zoom.
+fn draw_amp_ruler(painter: &egui::Painter, lane: Rect, scale: AmpScale, zoom: AmpZoom) {
+    painter.rect_filled(lane, 0.0, Color32::from_gray(28));
+    let (mid, half) = (lane.center().y, lane.height() * 0.5 - 2.0);
+    let font = egui::FontId::monospace(10.0);
+    let ink = Color32::from_gray(170);
+    for tick in scale.ticks(zoom, half, 16.0) {
+        let offset = tick.amp * zoom.get() * half;
+        for sign in [1.0_f32, -1.0] {
+            if tick.amp == 0.0 && sign < 0.0 {
+                continue;
+            }
+            let y = mid - sign * offset;
+            painter.line_segment([pos2(lane.right() - 5.0, y), pos2(lane.right(), y)], Stroke::new(1.0, ink));
+            let anchor = if y - lane.top() < 6.0 {
+                egui::Align2::RIGHT_TOP
+            } else if lane.bottom() - y < 6.0 {
+                egui::Align2::RIGHT_BOTTOM
+            } else {
+                egui::Align2::RIGHT_CENTER
+            };
+            painter.text(pos2(lane.right() - 7.0, y), anchor, scale.label(sign * tick.amp), font.clone(), ink);
+        }
+    }
+    painter.line_segment([pos2(lane.right() - 0.5, lane.top()), pos2(lane.right() - 0.5, lane.bottom())], Stroke::new(1.0, Color32::from_gray(60)));
 }
 
 /// Tick marks and times along the top, at a round step that leaves room for the labels.

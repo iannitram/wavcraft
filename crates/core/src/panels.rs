@@ -32,7 +32,7 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "spectral", title: "Spectral Frequency Display", default_dock: DockSide::Center },
     PanelInfo { id: "history", title: "History", default_dock: DockSide::Right },
     PanelInfo { id: "time", title: "Time", default_dock: DockSide::Bottom },
-    PanelInfo { id: "selection_view", title: "Selection/View", default_dock: DockSide::Bottom },
+    PanelInfo { id: "selview", title: "Selection/View", default_dock: DockSide::Bottom },
 ];
 
 /// The registered panel with this id.
@@ -152,9 +152,9 @@ mod tests {
     #[test]
     fn actions_toggle_show_hide_and_report() {
         let mut s = PanelSet::default();
-        assert_eq!(s.report(), "waveform=1 spectral=1 history=1");
+        assert_eq!(s.report(), "waveform=1 spectral=1 history=1 time=1 selview=1");
         assert_eq!(s.apply_action("window.toggle.history"), Some(Ok(false)));
-        assert_eq!(s.report(), "waveform=1 spectral=1 history=0");
+        assert_eq!(s.report(), "waveform=1 spectral=1 history=0 time=1 selview=1");
         assert_eq!(s.apply_action("window.show.history"), Some(Ok(true)));
         assert_eq!(s.apply_action("window.hide.spectral"), Some(Ok(false)));
         assert!(matches!(s.apply_action("window.toggle.nope"), Some(Err(_))));

@@ -405,3 +405,16 @@ fn repeat_last_command_runs_silence_again_on_the_new_selection_but_never_delete(
     assert_eq!(text(ActionId::ZeroRightToRight), ["Shift+L"]);
     assert_eq!(by_name("edit.zeroCrossings.outward").map(|a| a.id), Some(ActionId::ZeroOutward));
 }
+
+#[test]
+fn f19_zoom_actions_answer_to_their_panel_names_and_amplitude_zoom_has_alt_keys() {
+    assert_eq!(by_name("view.zoom.in").map(|a| a.id), Some(ActionId::ZoomIn));
+    assert_eq!(by_name("view.zoom.out").map(|a| a.id), Some(ActionId::ZoomOut));
+    assert_eq!(by_name("view.zoom.selection").map(|a| a.id), Some(ActionId::ZoomToSelection));
+    assert_eq!(by_name("view.zoom.full").map(|a| a.id), Some(ActionId::ZoomOutFull));
+    let amp_in = by_name("view.zoom.ampIn").unwrap();
+    assert_eq!((amp_in.keys[0].alt, amp_in.keys[0].key), (true, "Equals"));
+    let amp_out = by_name("view.zoom.ampOut").unwrap();
+    assert_eq!((amp_out.keys[0].alt, amp_out.keys[0].key), (true, "Minus"));
+    assert_eq!(by_name("view.zoom.ampReset").map(|a| a.id), Some(ActionId::ZoomAmpReset));
+}

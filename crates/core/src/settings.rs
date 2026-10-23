@@ -25,6 +25,7 @@ const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 const KEY_TIME_DISPLAY: &str = "time_display";
+const KEY_AMP_SCALE: &str = "amp_scale";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -35,6 +36,8 @@ pub struct Settings {
     pub hidden_panels: Vec<String>,
     /// View › Time Display.
     pub time_display: crate::view::TimeFormat,
+    /// How the amplitude ruler labels its scale.
+    pub amp_scale: crate::view::AmpScale,
 }
 
 impl Settings {
@@ -71,6 +74,7 @@ impl Settings {
                 KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
                 KEY_TIME_DISPLAY => s.time_display = crate::view::TimeFormat::from_name(value).unwrap_or_default(),
+                KEY_AMP_SCALE => s.amp_scale = crate::view::AmpScale::parse(value).unwrap_or_default(),
                 _ => {}
             }
         }
@@ -89,6 +93,8 @@ impl Settings {
         }
         out.push_str("# time_display: decimal, compact, samples or smpte30 (View > Time Display).\n");
         out.push_str(&format!("{KEY_TIME_DISPLAY} = {}\n", self.time_display.name()));
+        out.push_str("# amp_scale: the amplitude ruler's scale: db, percent, samples or normalized.\n");
+        out.push_str(&format!("{KEY_AMP_SCALE} = {}\n", self.amp_scale.name()));
         out
     }
 
@@ -321,7 +327,7 @@ mod tests {
         assert_eq!(std::fs::read_link(&decoy).map_err(|e| e.to_string())?, victim);
         assert_eq!(
             std::fs::read_to_string(folder.join("settings.txt")).map_err(|e| e.to_string())?,
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n# amp_scale: the amplitude ruler's scale: db, percent, samples or normalized.\namp_scale = percent\n"
         );
         assert!(!second.exists());
         let _ = std::fs::remove_dir_all(&folder);
@@ -347,7 +353,7 @@ mod tests {
         let text = std::fs::read_to_string(folder.join("settings.txt")).map_err(|e| e.to_string())?;
         assert_eq!(
             text,
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n# amp_scale: the amplitude ruler's scale: db, percent, samples or normalized.\namp_scale = percent\n"
         );
         assert!(!second.exists());
         let _ = std::fs::remove_dir_all(&folder);
@@ -359,7 +365,7 @@ mod tests {
         let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: Vec::new(), ..Default::default() };
         assert_eq!(
             settings.to_text(),
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n# amp_scale: the amplitude ruler's scale: db, percent, samples or normalized.\namp_scale = percent\n"
         );
     }
 
@@ -373,7 +379,7 @@ mod tests {
         let text = settings.to_text();
         assert_eq!(
             text,
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\nhidden_panels = history,waveform\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\nhidden_panels = history,waveform\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n# amp_scale: the amplitude ruler's scale: db, percent, samples or normalized.\namp_scale = percent\n"
         );
         assert_eq!(Settings::parse(&text), settings);
     }

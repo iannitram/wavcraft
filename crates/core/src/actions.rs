@@ -42,6 +42,9 @@ pub enum ActionId {
     ToolSelect,
     ToolHand,
     ToolZoom,
+    ZoomAmpIn,
+    ZoomAmpOut,
+    ZoomAmpReset,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -84,6 +87,9 @@ const fn cmd(key: &'static str) -> Shortcut {
 }
 const fn cmd_shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: true, shift: true, alt: false, key }
+}
+const fn alt(key: &'static str) -> Shortcut {
+    Shortcut { cmd: false, shift: false, alt: true, key }
 }
 const fn shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: false, shift: true, alt: false, key }
@@ -182,6 +188,9 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeCompact, "view.time_display.compact", "Compact", &[]),
     window(ActionId::TimeSamples, "view.time_display.samples", "Samples", &[]),
     window(ActionId::TimeSmpte30, "view.time_display.smpte30", "SMPTE 30 fps", &[]),
+    window(ActionId::ZoomAmpIn, "view.zoom.ampIn", "Zoom In Vertically", &[alt("Equals")]),
+    window(ActionId::ZoomAmpOut, "view.zoom.ampOut", "Zoom Out Vertically", &[alt("Minus")]),
+    window(ActionId::ZoomAmpReset, "view.zoom.ampReset", "Reset Vertical Zoom", &[]),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -215,6 +224,14 @@ pub fn action(id: ActionId) -> &'static Action {
 
 /// The action the control channel calls `name`.
 pub fn by_name(name: &str) -> Option<&'static Action> {
+    // The zoom actions also answer to a `view.zoom.*` name (the zoom panel's buttons).
+    let name = match name {
+        "view.zoom.in" => "view.zoomIn",
+        "view.zoom.out" => "view.zoomOut",
+        "view.zoom.selection" => "view.zoomToSelection",
+        "view.zoom.full" => "view.zoomOutFull",
+        n => n,
+    };
     all_actions().find(|a| a.name == name)
 }
 
@@ -336,7 +353,14 @@ impl Editor {
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::TimeDecimal | ActionId::TimeCompact | ActionId::TimeSamples | ActionId::TimeSmpte30 => true,
-            ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
+            ActionId::SetIn
+            | ActionId::SetOut
+            | ActionId::ZoomIn
+            | ActionId::ZoomOut
+            | ActionId::ZoomOutFull
+            | ActionId::ZoomAmpIn
+            | ActionId::ZoomAmpOut
+            | ActionId::ZoomAmpReset => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -566,6 +590,9 @@ impl Editor {
             | ActionId::TimeCompact
             | ActionId::TimeSamples
             | ActionId::TimeSmpte30
+            | ActionId::ZoomAmpIn
+            | ActionId::ZoomAmpOut
+            | ActionId::ZoomAmpReset
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast

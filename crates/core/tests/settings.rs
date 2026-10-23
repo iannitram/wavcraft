@@ -49,6 +49,18 @@ fn the_settings_file_round_trips_and_ignores_what_it_does_not_know() {
 }
 
 #[test]
+fn the_amplitude_scale_is_saved_and_a_bad_value_is_the_default() {
+    use wavcraft_core::AmpScale;
+    let dir = TempDir::new("ampscale");
+    let file = dir.0.join("settings.txt");
+    let s = Settings { amp_scale: AmpScale::Db, ..Settings::default() };
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file).amp_scale, AmpScale::Db);
+    assert_eq!(Settings::parse("amp_scale = samples").amp_scale, AmpScale::Samples);
+    assert_eq!(Settings::parse("amp_scale = furlongs").amp_scale, AmpScale::default());
+}
+
+#[test]
 fn the_flag_beats_the_environment_beats_the_settings_file_beats_the_default() {
     let default = PathBuf::from("/default/sessions");
     let settings = Settings { session_folder: Some(PathBuf::from("/from/settings")), ..Settings::default() };
