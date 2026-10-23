@@ -17,6 +17,7 @@
 
 pub mod actions;
 pub mod cd;
+pub mod clipboard;
 pub mod doc;
 pub mod document;
 pub mod dsp;
