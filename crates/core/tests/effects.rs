@@ -309,3 +309,34 @@ fn a_stateful_run_gets_its_absolute_first_frame_inside_a_selection() {
     effects::apply(&RunRecorder(seen.clone()), &[], e.history.current(), range, wavcraft_core::ChannelMask::ALL, Crossfades::NONE, &cancel).unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![start, start + block, start + 2 * block]);
 }
+
+/// Records the `first_frame` of every chunk it is handed (stateless path and run path alike).
+struct Probe(std::sync::Mutex<Vec<(u64, usize)>>);
+
+impl effects::Effect for Probe {
+    fn id(&self) -> &'static str {
+        "probe"
+    }
+    fn name(&self) -> &'static str {
+        "Probe"
+    }
+    fn process(&self, _params: &[f64], first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> std::io::Result<()> {
+        self.0.lock().unwrap().push((first_frame, input[0].len()));
+        for (i, o) in input.iter().zip(output.iter_mut()) {
+            o.copy_from_slice(i);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn chunks_carry_document_frames_without_adding_the_range_start_twice() {
+    use wavcraft_core::doc::edit::ChannelMask;
+    let t = TempDir::new("first-frame");
+    let e = editor(&t.0, &[vec![0.25; 200_000]]);
+    let probe = Probe(std::sync::Mutex::new(Vec::new()));
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    effects::apply(&probe, &[], e.history.current(), 70_000..150_000, ChannelMask::ALL, Crossfades::NONE, &cancel).unwrap();
+    // 80_000 frames from frame 70_000: a 65_536 chunk, then the 14_464 left, which starts at 135_536.
+    assert_eq!(*probe.0.lock().unwrap(), vec![(70_000, 65_536), (135_536, 14_464)]);
+}
