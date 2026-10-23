@@ -1,5 +1,6 @@
 //! Digital signal processing helpers for channel layout and panning.
 
+pub mod band_only;
 pub mod bass_enhancer;
 pub mod chorus;
 pub mod convolution;
