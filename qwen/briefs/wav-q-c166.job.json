@@ -1,0 +1,149 @@
+{
+  "id": "wav-q-c166",
+  "title": "C166: show and hide mixer sections (core state and text form)",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "kind": "small-code-change-exact-brief",
+  "size": "S",
+  "repo": "iannitram/wavcraft",
+  "base": "feat/ap-f104-mixer-panel",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "wav-q-c166.md",
+  "verify": [
+    {
+      "name": "new-test-default_shows_all_four",
+      "cmd": "cargo test -p wavcraft-core default_shows_all_four 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-toggle_returns_new_state_and_fl",
+      "cmd": "cargo test -p wavcraft-core toggle_returns_new_state_and_flips_only_that_section 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-set_shown_is_idempotent",
+      "cmd": "cargo test -p wavcraft-core set_shown_is_idempotent 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-shown_keeps_the_fixed_order",
+      "cmd": "cargo test -p wavcraft-core shown_keeps_the_fixed_order 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-from_id_ignores_case_and_spaces",
+      "cmd": "cargo test -p wavcraft-core from_id_ignores_case_and_spaces 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-ids_and_labels_are_fixed",
+      "cmd": "cargo test -p wavcraft-core ids_and_labels_are_fixed 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-to_text_lists_shown_in_order",
+      "cmd": "cargo test -p wavcraft-core to_text_lists_shown_in_order 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-from_text_round_trips_every_cho",
+      "cmd": "cargo test -p wavcraft-core from_text_round_trips_every_choice 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-from_text_ignores_case_spaces_a",
+      "cmd": "cargo test -p wavcraft-core from_text_ignores_case_spaces_and_repeats 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-from_text_refuses_bad_text",
+      "cmd": "cargo test -p wavcraft-core from_text_refuses_bad_text 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-default_shows_all_four",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#shown: 0b1111#shown: 0b0111#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core default_shows_all_four 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-toggle_returns_new_state_and_flips_",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let on = !self.is_shown(section);#let on = self.is_shown(section);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core toggle_returns_new_state_and_flips_only_that_section 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-set_shown_is_idempotent",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#self.shown &= !section.bit();#self.shown = 0;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core set_shown_is_idempotent 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-shown_keeps_the_fixed_order",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#ALL.into_iter().filter(|s| self.is_shown(\\*s)).collect()#ALL.into_iter().rev().filter(|s| self.is_shown(*s)).collect()#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core shown_keeps_the_fixed_order 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-from_id_ignores_case_and_spaces",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#s.id().eq_ignore_ascii_case(t)#s.id() == t#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core from_id_ignores_case_and_spaces 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-ids_and_labels_are_fixed",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#MixerSection::Io => \"I/O\",#MixerSection::Io => \"IO\",#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core ids_and_labels_are_fixed 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-to_text_lists_shown_in_order",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#.join(\",\")#.join(\" \")#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core to_text_lists_shown_in_order 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-from_text_round_trips_every_choice",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let mut out = MixerSections::none_shown();#let mut out = MixerSections::all_shown();#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core from_text_round_trips_every_choice 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-from_text_ignores_case_spaces_and_r",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#t.eq_ignore_ascii_case(\"none\")#t == \"none\"#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core from_text_ignores_case_spaces_and_repeats 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-from_text_refuses_bad_text",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let tok = raw.trim();#let tok = raw;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core from_text_refuses_bad_text 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-from_text_refuses_bad_text-2",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#return Err(\"a section list has an empty item\"#return Err(\"a section list has an empty entry\"#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core from_text_refuses_bad_text 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-from_text_refuses_bad_text-3",
+      "cmd": "f=crates/core/src/mixer_sections.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if t.is_empty() {#if t.is_empty() \\&\\& false {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core from_text_refuses_bad_text 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core mixer_sections",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/mixer_sections.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/mixer_sections.rs",
+    "crates/core/src/lib.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "C166: show and hide mixer sections (alpha) (Refs #306)",
+  "est_minutes": 20,
+  "priority": 102,
+  "created_by": "api-qwen-briefs"
+}
