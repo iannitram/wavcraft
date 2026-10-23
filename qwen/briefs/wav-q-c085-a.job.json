@@ -1,0 +1,174 @@
+{
+  "id": "wav-q-c085-a",
+  "title": "C085-a: Marker list CSV export and import",
+  "kind": "small-code-change-exact-brief",
+  "size": "S",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "repo": "iannitram/wavcraft",
+  "base": "feat/ap-f110-session-markers",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "wav-q-c085-a.md",
+  "verify": [
+    {
+      "name": "mod-line",
+      "cmd": "grep -n \"^pub mod marker_export;$\" crates/core/src/multitrack.rs",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-csv_quotes_commas_quotes_and_newlines_in_a_name",
+      "cmd": "cargo test -p wavcraft-core csv_quotes_commas_quotes_and_newlines_in_a_name 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-point_marker_has_an_empty_end",
+      "cmd": "cargo test -p wavcraft-core point_marker_has_an_empty_end 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-csv_round_trips_through_parse",
+      "cmd": "cargo test -p wavcraft-core csv_round_trips_through_parse 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-bad_number_names_its_line",
+      "cmd": "cargo test -p wavcraft-core bad_number_names_its_line 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-line_numbers_count_newlines_inside_quotes",
+      "cmd": "cargo test -p wavcraft-core line_numbers_count_newlines_inside_quotes 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-empty_list_is_only_the_header",
+      "cmd": "cargo test -p wavcraft-core empty_list_is_only_the_header 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-parse_accepts_lf_blank_lines_and_a_missing_final_newline",
+      "cmd": "cargo test -p wavcraft-core parse_accepts_lf_blank_lines_and_a_missing_final_newline 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-parse_refuses_a_bad_header_short_row_and_backwards_range",
+      "cmd": "cargo test -p wavcraft-core parse_refuses_a_bad_header_short_row_and_backwards_range 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-an_unclosed_quote_is_reported_at_its_line",
+      "cmd": "cargo test -p wavcraft-core an_unclosed_quote_is_reported_at_its_line 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-marker_rows_are_in_time_order_with_point_and_range",
+      "cmd": "cargo test -p wavcraft-core marker_rows_are_in_time_order_with_point_and_range 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-import_adds_in_order",
+      "cmd": "cargo test -p wavcraft-core import_adds_in_order 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-import_refuses_a_bad_row_and_adds_nothing",
+      "cmd": "cargo test -p wavcraft-core import_refuses_a_bad_row_and_adds_nothing 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-import_then_export_round_trips",
+      "cmd": "cargo test -p wavcraft-core import_then_export_round_trips 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-csv_quotes_commas_quotes_and_newlines_in_a_name",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#name\\.replace('\\''\"'\\'', \"\\\\\"\\\\\"\")#name.replace('\\''\"'\\'', \"\\\\\"\")#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core csv_quotes_commas_quotes_and_newlines_in_a_name 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-point_marker_has_an_empty_end",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#out\\.push_str(&end\\.to_string());#out.push_str(\"0\");#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core point_marker_has_an_empty_end 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-csv_round_trips_through_parse",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#field\\.push('\\''\"'\\'');#field.push('\\''x'\\'');#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core csv_round_trips_through_parse 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-bad_number_names_its_line",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#return err(format!(\"line {line}: start_s is not#return err(format!(\"row {line}: start_s is not#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core bad_number_names_its_line 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-line_numbers_count_newlines_inside_quotes",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#^                    line += 1;#                    line += 0;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core line_numbers_count_newlines_inside_quotes 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-empty_list_is_only_the_header",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let mut out = String::from(HEADER);#let mut out = String::new();#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core empty_list_is_only_the_header 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-parse_accepts_lf_blank_lines_and_a_missing_final_newline",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if fields\\.len() == 1 && fields\\[0\\]\\.trim()\\.is_empty() {#if false {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core parse_accepts_lf_blank_lines_and_a_missing_final_newline 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-parse_refuses_a_bad_header_short_row_and_backwards_range",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if end < row\\.start_s {#if end < row.start_s - 100.0 {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core parse_refuses_a_bad_header_short_row_and_backwards_range 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-an_unclosed_quote_is_reported_at_its_line",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#err(format!(\"line {record_line}: a quoted#err(format!(\"line {record_line}: an open#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core an_unclosed_quote_is_reported_at_its_line 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-marker_rows_are_in_time_order_with_point_and_range",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#\\.then(|| rate\\.seconds(m\\.end))#.then(|| rate.seconds(m.start))#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core marker_rows_are_in_time_order_with_point_and_range 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-import_adds_in_order",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#^        for row in rows {#        for row in rows.iter().rev() {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core import_adds_in_order 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-import_refuses_a_bad_row_and_adds_nothing",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#return err(format!(\"row {}: {why}\", i + 1));#break;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core import_refuses_a_bad_row_and_adds_nothing 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-import_then_export_round_trips",
+      "cmd": "f=crates/core/src/multitrack/marker_export.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#self\\.add_marker(Some(&row\\.name), row\\.start_s, row\\.end_s)?;#self.add_marker(None, row.start_s, row.end_s)?;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core import_then_export_round_trips 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core marker_export 2>&1 | grep -E \"test result: ok[.] 13 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/multitrack/marker_export.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/multitrack/marker_export.rs",
+    "crates/core/src/multitrack.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "C085-a: Marker list CSV export and import (alpha) (Refs #321)",
+  "est_minutes": 20,
+  "priority": 106,
+  "created_by": "api-qwen-briefs"
+}
