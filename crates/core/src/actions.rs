@@ -1,9 +1,9 @@
-//! The edit actions (task 07, first part): one table of ids, menu labels and Audition's keys,
-//! and an [`Editor`] that runs them on a document's [`History`] without a window. The app's Edit
-//! menu, its keys and the control channel all run actions from here, and so do the tests.
+//! The edit actions (task 07, first part): one table of ids and menu labels (the keys are in
+//! [`crate::shortcuts`]), and an [`Editor`] that runs them on a document's [`History`] without a
+//! window. The app's Edit menu, its keys and the control channel all run actions from here, and
+//! so do the tests.
 //!
-//! Keys follow Adobe Audition's defaults (`plan/audition-parity.md` and task 07's table): only
-//! the binding is matched, never Adobe's text. `cmd` is Command on a Mac and Ctrl elsewhere.
+//! Keys follow Adobe Audition's defaults and live in [`crate::shortcuts`].
 
 use std::io;
 use std::ops::Range;
@@ -63,57 +63,8 @@ pub enum Kind {
     Window,
 }
 
-/// A key with its modifiers. `key` is egui's key name (`"Z"`, `"Delete"`, `"ArrowUp"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Shortcut {
-    pub cmd: bool,
-    pub shift: bool,
-    pub alt: bool,
-    pub key: &'static str,
-}
-
-const fn key(key: &'static str) -> Shortcut {
-    Shortcut { cmd: false, shift: false, alt: false, key }
-}
-const fn cmd(key: &'static str) -> Shortcut {
-    Shortcut { cmd: true, shift: false, alt: false, key }
-}
-const fn cmd_shift(key: &'static str) -> Shortcut {
-    Shortcut { cmd: true, shift: true, alt: false, key }
-}
-const fn shift(key: &'static str) -> Shortcut {
-    Shortcut { cmd: false, shift: true, alt: false, key }
-}
-
 /// How far a zero-crossing adjust looks for a sign change (v1 D6: 10 ms).
 pub const ZERO_CROSSING_REACH_MS: u64 = 10;
-
-impl Shortcut {
-    /// How a menu shows it: `⌘⇧Z` on a Mac, `Ctrl+Shift+Z` elsewhere.
-    pub fn text(&self, mac: bool) -> String {
-        let key = match self.key {
-            "ArrowUp" => "↑",
-            "ArrowDown" => "↓",
-            "Delete" if mac => "⌦",
-            "Backspace" if mac => "⌫",
-            "Equals" => "=",
-            "Minus" => "−",
-            "Backslash" => "\\",
-            k => k,
-        };
-        if mac {
-            format!("{}{}{}{key}", if self.alt { "⌥" } else { "" }, if self.shift { "⇧" } else { "" }, if self.cmd { "⌘" } else { "" })
-        } else {
-            let mut s = String::new();
-            for (on, name) in [(self.cmd, "Ctrl+"), (self.alt, "Alt+"), (self.shift, "Shift+")] {
-                if on {
-                    s.push_str(name);
-                }
-            }
-            s + key
-        }
-    }
-}
 
 /// One row of the table.
 #[derive(Debug, Clone, Copy)]
@@ -123,57 +74,55 @@ pub struct Action {
     pub name: &'static str,
     /// The menu text when it does not name a step (Undo and Redo add the step's name).
     pub menu: &'static str,
-    /// Audition's default keys; empty where Audition has none (menu only, as there).
-    pub keys: &'static [Shortcut],
     pub kind: Kind,
 }
 
-const fn edit(id: ActionId, name: &'static str, menu: &'static str, keys: &'static [Shortcut]) -> Action {
-    Action { id, name, menu, keys, kind: Kind::Edit }
+const fn edit(id: ActionId, name: &'static str, menu: &'static str) -> Action {
+    Action { id, name, menu, kind: Kind::Edit }
 }
-const fn window(id: ActionId, name: &'static str, menu: &'static str, keys: &'static [Shortcut]) -> Action {
-    Action { id, name, menu, keys, kind: Kind::Window }
+const fn window(id: ActionId, name: &'static str, menu: &'static str) -> Action {
+    Action { id, name, menu, kind: Kind::Window }
 }
 
-/// Every action, in Edit-menu order. Keys: Audition 26.5's defaults (task 07, marked † there).
+/// Every action, in Edit-menu order. Their keys are in `shortcuts::BINDINGS`.
 pub const TABLE: &[Action] = &[
-    edit(ActionId::Undo, "edit.undo", "Undo", &[cmd("Z")]),
-    edit(ActionId::Redo, "edit.redo", "Redo", &[cmd_shift("Z"), cmd("Y")]),
+    edit(ActionId::Undo, "edit.undo", "Undo"),
+    edit(ActionId::Redo, "edit.redo", "Redo"),
     // Repeat the last repeatable command on the current selection: without its dialog (F3,
     // Shift+R), or with its dialog when it has one (F2, Ctrl+R), as in Audition.
-    edit(ActionId::RepeatLast, "edit.repeatLast", "Repeat Last Command", &[key("F3"), shift("R")]),
-    window(ActionId::RepeatLastDialog, "edit.repeatLastDialog", "Repeat Last Command…", &[key("F2"), cmd("R")]),
-    edit(ActionId::Cut, "edit.cut", "Cut", &[cmd("X")]),
-    edit(ActionId::Copy, "edit.copy", "Copy", &[cmd("C")]),
-    edit(ActionId::Paste, "edit.paste", "Paste", &[cmd("V")]),
-    edit(ActionId::Delete, "edit.delete", "Delete", &[key("Delete"), key("Backspace")]),
-    edit(ActionId::Silence, "edit.silence", "Silence", &[]),
+    edit(ActionId::RepeatLast, "edit.repeatLast", "Repeat Last Command"),
+    window(ActionId::RepeatLastDialog, "edit.repeatLastDialog", "Repeat Last Command…"),
+    edit(ActionId::Cut, "edit.cut", "Cut"),
+    edit(ActionId::Copy, "edit.copy", "Copy"),
+    edit(ActionId::Paste, "edit.paste", "Paste"),
+    edit(ActionId::Delete, "edit.delete", "Delete"),
+    edit(ActionId::Silence, "edit.silence", "Silence"),
     // Insert › Silence… asks for a length (the window's dialog), then runs `Editor::insert_silence`.
-    window(ActionId::InsertSilence, "edit.insertSilence", "Insert Silence…", &[]),
-    edit(ActionId::Crop, "edit.crop", "Crop", &[cmd("T")]),
-    edit(ActionId::SelectAll, "edit.selectAll", "Select All", &[cmd("A")]),
-    edit(ActionId::DeselectAll, "edit.deselectAll", "Deselect All", &[cmd_shift("A"), cmd("D")]),
-    edit(ActionId::ClearTimeSelection, "edit.clearTimeSelection", "Clear Time Selection", &[key("G")]),
-    edit(ActionId::ZeroInward, "edit.zeroCrossings.inward", "Zero Crossings: Adjust Selection Inward", &[shift("I")]),
-    edit(ActionId::ZeroOutward, "edit.zeroCrossings.outward", "Zero Crossings: Adjust Selection Outward", &[shift("O")]),
-    edit(ActionId::ZeroLeftToLeft, "edit.zeroCrossings.leftToLeft", "Zero Crossings: Left Side to Left", &[shift("H")]),
-    edit(ActionId::ZeroLeftToRight, "edit.zeroCrossings.leftToRight", "Zero Crossings: Left Side to Right", &[shift("J")]),
-    edit(ActionId::ZeroRightToLeft, "edit.zeroCrossings.rightToLeft", "Zero Crossings: Right Side to Left", &[shift("K")]),
-    edit(ActionId::ZeroRightToRight, "edit.zeroCrossings.rightToRight", "Zero Crossings: Right Side to Right", &[shift("L")]),
-    window(ActionId::SetIn, "edit.setIn", "Set In Point to Playhead", &[key("I")]),
-    window(ActionId::SetOut, "edit.setOut", "Set Out Point to Playhead", &[key("O")]),
-    edit(ActionId::LeftChannel, "edit.leftChannel", "Left Channel Only", &[key("ArrowUp")]),
-    edit(ActionId::RightChannel, "edit.rightChannel", "Right Channel Only", &[key("ArrowDown")]),
-    edit(ActionId::CursorToStart, "view.cursorToStart", "Playhead to Start", &[key("Home")]),
-    edit(ActionId::CursorToEnd, "view.cursorToEnd", "Playhead to End", &[key("End")]),
-    window(ActionId::ZoomIn, "view.zoomIn", "Zoom In", &[key("Equals")]),
-    window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out", &[key("Minus")]),
-    window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
-    window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
+    window(ActionId::InsertSilence, "edit.insertSilence", "Insert Silence…"),
+    edit(ActionId::Crop, "edit.crop", "Crop"),
+    edit(ActionId::SelectAll, "edit.selectAll", "Select All"),
+    edit(ActionId::DeselectAll, "edit.deselectAll", "Deselect All"),
+    edit(ActionId::ClearTimeSelection, "edit.clearTimeSelection", "Clear Time Selection"),
+    edit(ActionId::ZeroInward, "edit.zeroCrossings.inward", "Zero Crossings: Adjust Selection Inward"),
+    edit(ActionId::ZeroOutward, "edit.zeroCrossings.outward", "Zero Crossings: Adjust Selection Outward"),
+    edit(ActionId::ZeroLeftToLeft, "edit.zeroCrossings.leftToLeft", "Zero Crossings: Left Side to Left"),
+    edit(ActionId::ZeroLeftToRight, "edit.zeroCrossings.leftToRight", "Zero Crossings: Left Side to Right"),
+    edit(ActionId::ZeroRightToLeft, "edit.zeroCrossings.rightToLeft", "Zero Crossings: Right Side to Left"),
+    edit(ActionId::ZeroRightToRight, "edit.zeroCrossings.rightToRight", "Zero Crossings: Right Side to Right"),
+    window(ActionId::SetIn, "edit.setIn", "Set In Point to Playhead"),
+    window(ActionId::SetOut, "edit.setOut", "Set Out Point to Playhead"),
+    edit(ActionId::LeftChannel, "edit.leftChannel", "Left Channel Only"),
+    edit(ActionId::RightChannel, "edit.rightChannel", "Right Channel Only"),
+    edit(ActionId::CursorToStart, "view.cursorToStart", "Playhead to Start"),
+    edit(ActionId::CursorToEnd, "view.cursorToEnd", "Playhead to End"),
+    window(ActionId::ZoomIn, "view.zoomIn", "Zoom In"),
+    window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out"),
+    window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection"),
+    window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full"),
     // The mouse tools (f64): a minimal switch; a fuller tool model is on another branch.
-    window(ActionId::ToolSelect, "tool.select", "Time Selection Tool", &[key("V")]),
-    window(ActionId::ToolHand, "tool.hand", "Hand Tool", &[key("H")]),
-    window(ActionId::ToolZoom, "tool.zoom", "Zoom Tool", &[key("Z")]),
+    window(ActionId::ToolSelect, "tool.select", "Time Selection Tool"),
+    window(ActionId::ToolHand, "tool.hand", "Hand Tool"),
+    window(ActionId::ToolZoom, "tool.zoom", "Zoom Tool"),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -188,7 +137,6 @@ fn effect_rows() -> &'static [Action] {
                 id: ActionId::Effect(i as u16),
                 name: Box::leak(format!("effect.{}", e.id()).into_boxed_str()),
                 menu: e.name(),
-                keys: &[],
                 kind: Kind::Edit,
             })
             .collect()
