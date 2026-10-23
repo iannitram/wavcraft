@@ -1200,7 +1200,10 @@ impl WaveApp {
                         )
                     }
                     None => {
-                        format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {view} clipboard=1 clip_frames=0 undo=- redo=-", u8::from(busy))
+                        format!(
+                            "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {view} clipboard=1 clip_frames=0 undo=- redo=-",
+                            u8::from(busy)
+                        )
                     }
                 }
             }
