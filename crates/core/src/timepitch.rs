@@ -15,6 +15,8 @@ use soundcraft_dsp::{offline, pitch_detect};
 use crate::doc::DocState;
 use crate::doc::edit::{Change, ChannelMask, Clip, Crossfades, Edit, EditError, PasteAt, paste};
 
+pub mod fit;
+
 /// The undo step's name.
 pub const LABEL: &str = "Stretch and Pitch";
 
