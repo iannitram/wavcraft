@@ -21,6 +21,7 @@ use soundcraft_model_audio::AudioBuffer as ModelBuffer;
 use crate::Document;
 
 pub mod automation;
+pub mod automation_shape;
 
 pub use soundcraft_model;
 
