@@ -69,7 +69,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", required=True)
     exe = ap.parse_args().exe
-    scratch_root = os.path.expanduser("~/dev/craft/_wt/scratch")
+    scratch_root = os.environ.get("WAVCRAFT_SCRATCH_ROOT") or tempfile.gettempdir()
     os.makedirs(scratch_root, exist_ok=True)
     work = tempfile.mkdtemp(prefix="f19.", dir=scratch_root)
     checks = []
