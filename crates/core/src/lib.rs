@@ -21,6 +21,7 @@ pub mod document;
 pub mod io;
 pub mod multitrack;
 pub mod random;
+pub mod recent_sessions;
 pub mod save;
 pub mod session_file;
 pub mod settings;
