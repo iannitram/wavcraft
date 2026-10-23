@@ -41,6 +41,8 @@ pub const DEFAULT_EDGE_MS: u32 = 5;
 /// The longest crossfade the preferences accept.
 pub const MAX_CROSSFADE_MS: u32 = 1000;
 
+pub mod video;
+
 /// What the settings file holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
