@@ -432,4 +432,14 @@ mod tests {
         assert_eq!(gain_envelope(&[(0.0, 0.0), (0.0, 1.0)], &[0.5], Interp::Monotone), Err(GainError::NotIncreasing));
         assert_eq!(gain_envelope(&[(0.0, 0.0)], &[0.5], Interp::Monotone), Err(GainError::TooFewPoints));
     }
+
+    #[test]
+    fn monotone_validation_too_few_precedes_nonfinite() {
+        assert_eq!(gain_envelope(&[(f32::NAN, 0.0)], &[0.5], Interp::Monotone), Err(GainError::TooFewPoints));
+    }
+
+    #[test]
+    fn monotone_validation_nonfinite_precedes_not_increasing() {
+        assert_eq!(gain_envelope(&[(0.0, 0.0), (0.0, f32::NAN)], &[0.5], Interp::Monotone), Err(GainError::NonFinite));
+    }
 }
