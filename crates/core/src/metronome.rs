@@ -112,6 +112,8 @@ pub fn click_sound(rate: u32, accent: bool) -> Vec<f32> {
         .collect()
 }
 
+pub mod record_count_in;
+
 #[cfg(test)]
 mod tests {
     use super::*;
