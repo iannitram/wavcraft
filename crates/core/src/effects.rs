@@ -17,8 +17,10 @@ use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
 mod eq;
 mod gain;
+mod noise_reduction;
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
+pub use noise_reduction::NoiseReduction;
 
 /// What a setting means, so a dialog can pick the right control and units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,7 +216,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &NoiseReduction];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {

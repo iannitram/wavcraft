@@ -50,6 +50,8 @@ pub enum ActionId {
     ZeroRightToRight,
     RepeatLast,
     RepeatLastDialog,
+    /// Capture Noise Print: learn the selection's noise spectrum (kept for the session).
+    CaptureNoisePrint,
     /// A registered effect: its index in [`effects::all`].
     Effect(u16),
 }
@@ -146,6 +148,7 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::Cut, "edit.cut", "Cut", &[cmd("X")]),
     edit(ActionId::Copy, "edit.copy", "Copy", &[cmd("C")]),
     edit(ActionId::Paste, "edit.paste", "Paste", &[cmd("V")]),
+    edit(ActionId::CaptureNoisePrint, "nr.capture_print", "Capture Noise Print", &[shift("P")]),
     edit(ActionId::Delete, "edit.delete", "Delete", &[key("Delete"), key("Backspace")]),
     edit(ActionId::Silence, "edit.silence", "Silence", &[]),
     // Insert › Silence… asks for a length (the window's dialog), then runs `Editor::insert_silence`.
@@ -322,7 +325,7 @@ impl Editor {
             // With no selection, Cut and Copy take the whole file (Audition).
             ActionId::Cut | ActionId::Copy => self.len() > 0,
             ActionId::Paste => self.clipboard.is_some(),
-            ActionId::Delete | ActionId::Silence | ActionId::Crop => has_sel,
+            ActionId::Delete | ActionId::Silence | ActionId::Crop | ActionId::CaptureNoisePrint => has_sel,
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
@@ -538,6 +541,17 @@ impl Editor {
                 let e = effects::apply(*effect, &params, &doc, sel.clone(), channels, xf, &cancel)?;
                 self.last = Some(Repeat::Effect(i, params));
                 (e, sel.clone())
+            }
+            ActionId::CaptureNoisePrint => {
+                let print = crate::noise::capture(&doc, sel.clone()).map_err(|why| EditError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, why)))?;
+                let message = format!(
+                    "Noise print captured: {:.2} s, {} channel(s), {} frames averaged",
+                    (sel.end - sel.start) as f64 / f64::from(doc.sample_rate().max(1)),
+                    print.density.len(),
+                    print.frames
+                );
+                crate::noise::set_current(print);
+                return Ok(Outcome { doc_changed: false, selection: sel, message: Some(message) });
             }
             ActionId::SelectAll => return unchanged(0..len),
             ActionId::DeselectAll | ActionId::ClearTimeSelection => return unchanged(sel.start..sel.start),
