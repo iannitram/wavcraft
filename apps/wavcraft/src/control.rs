@@ -12,6 +12,7 @@
 //! - `ACTION <name>` (an action table name, `edit.delete`, or an effect, `effect.invert`) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
 //! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1>` (which panels are shown)
+//! - `MIXPASTE mode=insert|overlap|overwrite|modulate [copied=<pct>[,<pct>]] [existing=<pct>[,<pct>]] [invert=0|1] [fade=<ms>] [loops=<n>] [file=<path>]` → `OK selection=<a>-<b>` (Edit › Mix Paste at the cursor; the clipboard unless `file=`)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
 //! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)

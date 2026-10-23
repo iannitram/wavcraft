@@ -11,6 +11,7 @@
 mod app;
 mod control;
 mod effect_dialog;
+mod mixpaste;
 mod player;
 // Not called yet: the Reveal in file manager menu item will use it.
 #[allow(dead_code)]
