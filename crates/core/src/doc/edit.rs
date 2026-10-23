@@ -49,6 +49,8 @@ pub const DELETE: &str = "Delete";
 pub const DELETE_AUDIO: &str = "Delete Audio";
 pub const CUT: &str = "Cut";
 pub const PASTE: &str = "Paste";
+/// The step Insert > Audio from File makes (Audition's wording was not seen; our choice).
+pub const INSERT_FILE: &str = "Insert Audio from File";
 pub const SILENCE: &str = "Silence";
 pub const INSERT_SILENCE: &str = "Insert Silence";
 pub const CROP: &str = "Crop";
@@ -258,6 +260,11 @@ impl Clip {
         self.channels.first().map_or(0, |c| c.len())
     }
 
+    /// All of `doc` as a clip (shares its blocks; no sample copy).
+    pub fn of_document(doc: &DocState) -> Clip {
+        Clip { store: doc.store().clone(), channels: doc.channels().to_vec(), sample_rate: doc.sample_rate() }
+    }
+
     /// Copy frames of channel `ch` from `start` into `out`, as [`DocState::read`].
     pub fn read(&self, ch: usize, start: u64, out: &mut [f32]) -> io::Result<usize> {
         let channel = self.channels.get(ch).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("no channel {ch}")))?;
@@ -376,6 +383,19 @@ pub fn paste(doc: &DocState, at: PasteAt, clip: &Clip, channels: ChannelMask, xf
         Change::LengthFrom { frame: range.start }
     };
     finish(doc, out, PASTE, change)
+}
+
+/// Insert > Audio from File: put all of `file` (opened into the same store as `doc`, so its blocks
+/// are shared and nothing is copied) at `at`, into every channel, as one step labelled
+/// [`INSERT_FILE`]. Channels and sample rate follow [`paste`]: a mono file goes to every channel,
+/// a stereo file into a mono document is mixed to mono, and another sample rate is refused
+/// ([`EditError::SampleRate`]; converting is another feature).
+pub fn insert_file(doc: &DocState, at: PasteAt, file: &DocState, xf: Crossfades) -> Result<Edit, EditError> {
+    let mut edit = paste(doc, at, &Clip::of_document(file), ChannelMask::ALL, xf)?;
+    if !edit.is_noop() {
+        edit.label = INSERT_FILE.to_string();
+    }
+    Ok(edit)
 }
 
 /// The clip channel each of the document channels in `active` gets, as `(channel, source)`:

@@ -144,6 +144,11 @@ pub struct OpenOptions {
     /// How free space is measured before writing ([`space::free_space`](crate::space::free_space)
     /// when `None`; tests pass their own). When it returns `None` the check is skipped.
     pub free_space: Option<FreeSpaceFn>,
+    /// Stream the file into this existing store instead of making a new session (Insert > Audio
+    /// from File: the inserted audio then shares the open document's store, with no copy).
+    /// `sessions_root` is not used then. A cancelled or failed open leaves the store alone; the
+    /// blocks it had written are freed when the dropped pieces release them.
+    pub into_store: Option<Store>,
 }
 
 /// Frames per chunk read (and per block written).
@@ -169,9 +174,14 @@ pub fn open(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), canc
     let ext = path.extension().and_then(|e| e.to_str());
 
     // The file was read above, so an error from here on is the session folder's, not the file's.
-    let root = opts.sessions_root.clone().unwrap_or_else(crate::store::default_sessions_root);
-    let store = Store::create_session(Some(root.as_path()), opts.store.clone())
-        .map_err(|e| OpenError::SessionFolder { folder: root.clone(), reason: e.to_string() })?;
+    let store = match &opts.into_store {
+        Some(store) => store.clone(),
+        None => {
+            let root = opts.sessions_root.clone().unwrap_or_else(crate::store::default_sessions_root);
+            Store::create_session(Some(root.as_path()), opts.store.clone())
+                .map_err(|e| OpenError::SessionFolder { folder: root.clone(), reason: e.to_string() })?
+        }
+    };
     let mut src = SourceFormat::synthetic(0, 0);
     src.path = path.to_path_buf();
     let free_space = opts.free_space.unwrap_or(crate::space::free_space);
