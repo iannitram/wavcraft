@@ -43,6 +43,17 @@ Overnight PRs opened 2026-10-23 (#479 to #501), also alpha and core only; none i
 - #500 C083: a ruler model (`ruler_ticks`, step table, decimal seconds and minutes:seconds labels) is built and tested; the multitrack view still draws its own seconds-only ruler.
 - #501 A287: four Video preference keys (timecode overlay on or off, corner, size, spot frame on scrub) are built and tested; no Preferences page and nothing draws an overlay.
 
+Medium-trial PRs opened 2026-10-23 (#503 to #506), sub-job `a` only (core logic, none wired to the UI; rows in the PR table marked "(part a)" are not complete):
+
+- #503 A077 (part a): `fade_curve` module with `CurveKind` (linear, logarithmic, cosine, exponential), `fade_gain`, `fade_in`, `fade_out` and `curve_from_drag` is built and tested; no handles, drawing or editor action, and not connected to the Fade effects on #91.
+- #504 C082 (part a): `TimelineView` (fit, zoom around an anchor, scroll clamping, vertical zoom, time and pixel conversion) is built and tested; `multitrack_ui.rs` still uses its own zoom slider and scroll area. Stacked on #318.
+- #505 A040 (part a): `scope_points` (goniometer points), `balance` and `mid_side_rms_db` are built and tested; no Phase Analysis panel, no drawing, no running meter.
+- #506 C239 (part a): `parse_batch_args` (the `--batch` command-line parser into a `BatchCli`) is built and tested; no runner, no exit codes, the app does not call it. Stacked on #259.
+
+Medium trial: 4 Medium sub-jobs gave 4 PRs from 4 single Qwen runs with 0 fix runs, plus 1 row (B080, built in #139) that was already built. Qwen time was about 1 to 2 minutes per job; driver time was about 35 to 55 minutes per job (design, hand-computed expected values, mutation checks). The briefs need real-code checks (signatures, SoundCraft crates, target folders) before they go to Qwen.
+
+Rows found already built in this pass: B080 (Output noise only) in #139, and C156 (track pan) through the pan law of the pinned SoundCraft crate in #330 (mixer demo session only).
+
 ### Merge order
 
 Each stacked PR needs the PR it sits on merged first. Chains recorded in the PR bodies:
@@ -57,11 +68,12 @@ Each stacked PR needs the PR it sits on merged first. Chains recorded in the PR 
 - #475 and #477 on #131; #480 on #131.
 - #474 on #91; #476 on #159.
 - #494 and #501 on #123.
-- Stand-alone on main: #479, #481, #495.
+- Stand-alone on main: #479, #481, #495, #503, #505.
+- #504 on #318 (multitrack session); #506 on #259 (batch), which is on main.
 
 ### Known conflict points
 
-- The registry and module lines: `effects.rs` (#482, #484 each add a `pub mod` or registry line), `multitrack.rs` (#486, #487, #488, #489, #490, #497, #498 each add one `pub mod` line), plus `lib.rs` (#499, #500), `settings.rs` (#494, #501), `metronome.rs` (#492), `cd.rs` (#493), `meta.rs` (#495), `dsp/mod.rs` (#481) and `timepitch.rs` (#483). Each is a one-line clash; keep every line.
+- The registry and module lines: `effects.rs` (#482, #484 each add a `pub mod` or registry line), `multitrack.rs` (#486, #487, #488, #489, #490, #497, #498 each add one `pub mod` line), plus `lib.rs` (#499, #500, #506), `settings.rs` (#494, #501), `metronome.rs` (#492), `cd.rs` (#493), `meta.rs` (#495), `dsp/mod.rs` (#481, #503), `meters/mod.rs` (#505) and `timepitch.rs` (#483). #504 adds one `pub mod` line to `multitrack.rs`. Each is a one-line clash; keep every line.
 - `levels.rs`: #477 (peak modes) and #480 (RMS module) both touch the levels code on top of #131.
 - `Settings::save`: it rewrites `settings.txt` from its own five keys, so the new preference lines from #494 are dropped on the next save until the save is changed or the dialog calls the new save; #501 was written to avoid this.
 
@@ -75,7 +87,9 @@ Low-complexity rows still unwritten and not suited to a core-only job:
 - A187: probably drop.
 - C207 and A234: the row text is vague.
 
-Medium and Hard rows have not been started.
+Medium rows: the remaining Medium queue lives in the Qwen queue file `wavcraft-medium.md` (about 28 jobs). 7 Medium rows need a decision before they can be queued: B044, B093, B109, C220, C221, C222, C261.
+
+Hard rows have not been started.
 
 **Date (as of):** 2026-10-23.
 
@@ -95,8 +109,8 @@ Medium and Hard rows have not been started.
 | Category | Rows |
 |---|---|
 | Merged | 106 |
-| PR | 332 |
-| Unwritten | 247 |
+| PR | 338 |
+| Unwritten | 241 |
 | **Total** | **685** |
 
 ### Tier by category
@@ -108,21 +122,21 @@ Medium and Hard rows have not been started.
 | T2 UI shell and layout | 5 | 88 | 0 | 93 |
 | T3 Playback | 0 | 16 | 0 | 16 |
 | T4 Recording | 0 | 27 | 2 | 29 |
-| T5 Effects rack and core effects | 8 | 36 | 12 | 56 |
-| T6 Metering and analysis | 2 | 12 | 4 | 18 |
+| T5 Effects rack and core effects | 8 | 38 | 10 | 56 |
+| T6 Metering and analysis | 2 | 13 | 3 | 18 |
 | T7 Spectral tools and repair | 2 | 13 | 14 | 29 |
-| T8 Output, export, batch | 8 | 26 | 21 | 55 |
-| T9 Multitrack and everything else | 18 | 58 | 193 | 269 |
+| T8 Output, export, batch | 8 | 27 | 20 | 55 |
+| T9 Multitrack and everything else | 18 | 60 | 191 | 269 |
 | none (already-have rows; the source gives them no tier) | 46 | 0 | 0 | 46 |
-| **Total** | **106** | **332** | **247** | **685** |
+| **Total** | **106** | **338** | **241** | **685** |
 
 ### Category by complexity
 
 | Category | Low | Medium | Hard | n/a | Total |
 |---|---|---|---|---|---|
 | Merged | 32 | 20 | 8 | 46 | 106 |
-| PR | 170 | 102 | 60 | 0 | 332 |
-| Unwritten | 34 | 93 | 120 | 0 | 247 |
+| PR | 170 | 108 | 60 | 0 | 338 |
+| Unwritten | 34 | 87 | 120 | 0 | 241 |
 | **Total** | **236** | **215** | **188** | **46** | **685** |
 
 ## Merged (106)
@@ -238,7 +252,7 @@ Rows in the app on `main`. Rows from merged PRs come first, in source rank order
 | A352 | none | Undo covers edits only, not view | n/a |  | already in app |  |
 | C320 | none | Waveform playback with playhead | n/a |  | already in app |  |
 
-## PR (332)
+## PR (338)
 
 Rows whose code exists only in an open PR. Merge state and conflicts change daily; check the PR itself.
 
@@ -466,6 +480,8 @@ Rows whose code exists only in an open PR. Merge state and conflicts change dail
 | B165 | T5 | Time Shift (Insert delay) | Low |  | #178 | B001 |
 | B169 | T5 | A/B compare effect settings | Low |  | #479 | B006 |
 | B055 | T5 | Graphic EQ (10, 20, 30 band) | Medium |  | #216 | B001, B002 |
+| A077 | T5 | Fade in/out handles with linear, log, cosine curves (merged: B033) | Medium |  | #503 (part a) | B001 |
+| B080 | T5 | Output noise only (monitor residue) | Medium | CP | #139 | B067 |
 | A313 | T6 | Amplitude statistics (peak, RMS, DC, clipped, bit depth, dynamic range, loudness) (merged: A038, B053, B131, C070, C071) | Hard |  | #159 | B125 |
 | A316 | T6 | Navigate to clipped sample / peak | Low |  | #159 | A313 |
 | B130 | T6 | Loudness range (LRA) (merged: C067) | Medium |  | #131 | B125 |
@@ -478,6 +494,7 @@ Rows whose code exists only in an open PR. Merge state and conflicts change dail
 | A312 | T6 | Copy graph data | Low |  | #198 | A309 |
 | A315 | T6 | RMS settings (sine/square reference, account for DC, window width) | Low |  | #159, #476 | A313 |
 | A319 | T6 | Play only selected frequencies toggle | Low |  | #481 |  |
+| A040 | T6 | Phase Analysis panel (merged: B051, C063) | Medium |  | #505 (part a) | A317 |
 | B047 | T7 | Delete Silence (merged: A158) | Medium |  | #187 | B002 |
 | B046 | T7 | DeClicker (Diagnostics) | Hard |  | #211 | B001 |
 | B045 | T7 | DeClipper (Diagnostics) | Hard |  | #177 | B001 |
@@ -517,6 +534,7 @@ Rows whose code exists only in an open PR. Merge state and conflicts change dail
 | A227 | T8 | Import Raw Data | Medium |  | #304 |  |
 | A250 | T8 | Save as OGG Vorbis (VBR quality) (merged: C259) | Hard | CP | #294 |  |
 | A252 | T8 | Other libsndfile-type formats (AU, W64, CAF, VOC, etc.) | Hard | CP | #304 |  |
+| C239 | T8 | Command line batch | Medium |  | #506 (part a) | B158 |
 | C074 | T9 | New multitrack session | Hard |  | #318 |  |
 | C097 | T9 | Audio tracks | Medium |  | #318 | C074 |
 | C152 | T9 | Mixer panel | Hard |  | #330, #335 | C097 |
@@ -575,9 +593,11 @@ Rows whose code exists only in an open PR. Merge state and conflicts change dail
 | C245 | T9 | Track gap and fades | Low |  | #493 | C241 |
 | C131 | T9 | Clip properties panel | Medium |  | #348 | C116 |
 | C190 | T9 | Mix down session to new waveform (Bounce to new file) (merged: C212) | Medium |  | #336 | C185, C208 |
+| C082 | T9 | Timeline zoom and scroll | Medium |  | #504 (part a) | C074 |
+| C156 | T9 | Track pan / balance | Medium |  | #330 (SoundCraft crate) | C152 |
 | C322 | T0 | Disk-backed sample source trait for soundcraft-model (unlocks SoundCraft multitrack reuse) | Hard | CP | #315 | A348 |
 
-## Unwritten (247)
+## Unwritten (241)
 
 Rows with no PR. Where a closed, unmerged PR names the row it is shown in the PR column.
 
@@ -587,20 +607,17 @@ Rows with no PR. Where a closed, unmerged PR names the row it is shown in the PR
 | C011 | T4 | Duplex low-latency stream | Hard | CP |  | A276 |
 | C015 | T4 | Sample-rate/clock sync (word clock/external) | Hard |  |  | A276 |
 | B008 | T5 | Favorites menu / user-recorded actions (merged: A167, C232) | Medium |  |  | B007 |
-| A077 | T5 | Fade in/out handles with linear, log, cosine curves (merged: B033) | Medium |  |  | B001 |
 | B058 | T5 | Parametric EQ graph / interactive display | Medium |  |  | B057 |
 | B068 | T5 | NR graph with threshold curve | Hard | CP |  | B067 |
 | B035 | T5 | Multiband Compressor | Hard |  |  | B001, B002 |
 | A078 | T5 | Default fade type pref and HUD pref | Low |  |  | A077, A273 |
 | B009 | T5 | Default Favorites (Fade In/Out, Normalize to 0 dB, Dynamics presets, etc.) | Low |  |  | B008 |
 | B023 | T5 | Rack Favorites / Rack to Favorite | Low |  |  | B008, B013 |
-| B080 | T5 | Output noise only (monitor residue) | Medium | CP |  | B067 |
 | B030 | T5 | Dynamics graph editor (transfer curve) | Medium |  |  | B029 |
 | B069 | T5 | DeNoise (real-time) | Hard | CP |  | B005, B067 |
 | B168 | T5 | Preview of destructive processes (NR) using partial render | Hard | CP |  | B004, B067 |
 | A041 | T6 | Loudness Radar panel (merged: B091, C066) | Hard |  |  | B125 |
 | A218 | T6 | Dock horizontally or vertically | Low |  |  | A002, A213 |
-| A040 | T6 | Phase Analysis panel (merged: B051, C063) | Medium |  |  | A317 |
 | C069 | T6 | Spectral/spectrogram meter during record | Medium |  |  | A309 |
 | B071 | T7 | Hiss Reduction | Hard |  |  | A337, B011 |
 | A053 | T7 | Lasso selection (merged: B137) | Hard |  |  | A052, B135 |
@@ -626,7 +643,6 @@ Rows with no PR. Where a closed, unmerged PR names the row it is shown in the PR
 | B162 | T8 | Batch: Noise Reduction with shared print | Hard | CP |  | B067, B158 |
 | C235 | T8 | Output folder, format, name template | Hard | CP |  | B158 |
 | C237 | T8 | Batch sample-rate/bit-depth conversion | Hard | CP |  | A161, B158 |
-| C239 | T8 | Command line batch | Medium |  |  | B158 |
 | C260 | T8 | Opus export | Medium |  |  |  |
 | C261 | T8 | Other formats (WMA, AMR, APE, CAF write) | Medium |  |  |  |
 | C277 | T8 | Streamed export for large files | Hard | CP |  |  |
@@ -714,7 +730,6 @@ Rows with no PR. Where a closed, unmerged PR names the row it is shown in the PR
 | C051 | T9 | Record to disk (not RAM) for long takes | Hard | CP |  | C036 |
 | C079 | T9 | Files panel: import into session | Medium |  |  | C074 |
 | C081 | T9 | Session-level undo/redo | Medium |  |  | C074 |
-| C082 | T9 | Timeline zoom and scroll | Medium |  |  | C074 |
 | C085 | T9 | Marker/cue list panel (Markers) | Medium |  |  | C084 |
 | C090 | T9 | Scrubbing in multitrack | Medium |  |  | C074 |
 | C107 | T9 | Collapse/hide tracks, track groups/folders | Medium |  |  | C097 |
@@ -793,7 +808,6 @@ Rows with no PR. Where a closed, unmerged PR names the row it is shown in the PR
 | C140 | T9 | Clip snapping to edges and grid | Medium |  |  | C088 |
 | C148 | T9 | Offline media / missing file replace | Medium |  |  | C076 |
 | C154 | T9 | Solo / Solo Safe | Medium |  |  | C152 |
-| C156 | T9 | Track pan / balance | Medium |  |  | C152 |
 | C189 | T9 | Mixdown of entire session or time range | Medium |  |  | C185 |
 | C191 | T9 | Dither on mixdown | Medium |  |  | A163, C185 |
 | C192 | T9 | Bounce report (peaks, LUFS) | Medium |  |  | B125, C185 |
