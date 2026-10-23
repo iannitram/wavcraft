@@ -18,6 +18,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod multitrack;
+
 /// The environment variable that sets the session folder (over the settings file).
 pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 /// How a person changes the session folder, for messages.
