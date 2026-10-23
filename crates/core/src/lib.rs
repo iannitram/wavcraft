@@ -11,6 +11,7 @@
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
 //!   and its waveform peaks.
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
+//! - [`snap`]: snapping a frame to the ruler, selection edges, the cursor and zero crossings.
 //! - [`view`]: zoom and scroll arithmetic, selections and time formatting.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -30,6 +31,7 @@ pub mod panels;
 pub mod random;
 pub mod save;
 pub mod settings;
+pub mod snap;
 pub mod space;
 pub mod spectral_dirty;
 pub mod spectrogram;
