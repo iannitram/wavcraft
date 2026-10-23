@@ -31,6 +31,8 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "waveform", title: "Waveform", default_dock: DockSide::Center },
     PanelInfo { id: "spectral", title: "Spectral Frequency Display", default_dock: DockSide::Center },
     PanelInfo { id: "history", title: "History", default_dock: DockSide::Right },
+    PanelInfo { id: "time", title: "Time", default_dock: DockSide::Bottom },
+    PanelInfo { id: "selection_view", title: "Selection/View", default_dock: DockSide::Bottom },
 ];
 
 /// The registered panel with this id.

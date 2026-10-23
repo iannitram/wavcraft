@@ -109,6 +109,26 @@ impl Viewport {
     }
 }
 
+impl Viewport {
+    /// Move the left edge to `frame`, keeping the zoom.
+    pub fn set_start(&mut self, frame: usize, width_px: f32, total_frames: usize) {
+        self.start = frame as f64;
+        self.clamp(width_px, total_frames);
+    }
+
+    /// Move the view so its right edge is at `frame`, keeping the zoom.
+    pub fn set_end(&mut self, frame: usize, width_px: f32, total_frames: usize) {
+        self.start = frame as f64 - self.frames_per_px * f64::from(width_px.max(1.0));
+        self.clamp(width_px, total_frames);
+    }
+
+    /// Zoom so the view covers `frames`, keeping the left edge (the zoom limits apply).
+    pub fn set_duration(&mut self, frames: usize, width_px: f32, total_frames: usize) {
+        self.frames_per_px = frames.max(1) as f64 / f64::from(width_px.max(1.0));
+        self.clamp(width_px, total_frames);
+    }
+}
+
 fn fit_scale(total_frames: usize, width_px: f32) -> f64 {
     (total_frames.max(1) as f64 / f64::from(width_px.max(1.0))).max(1.0 / MAX_PX_PER_FRAME)
 }
@@ -218,6 +238,165 @@ impl Selection {
     }
 }
 
+impl Selection {
+    /// Type a new start. A cursor moves; a range keeps its end (and swaps if passed).
+    pub fn with_start(&self, frame: usize, total: usize) -> Selection {
+        let f = frame.min(total);
+        if self.is_empty() { Selection::at(f) } else { Selection { anchor: f, head: self.end() } }
+    }
+
+    /// Type a new end. A cursor becomes a range from itself to `frame`; a range keeps its start.
+    pub fn with_end(&self, frame: usize, total: usize) -> Selection {
+        Selection { anchor: self.start(), head: frame.min(total) }
+    }
+
+    /// Type a new duration: the start stays, the end moves (kept inside the file).
+    pub fn with_len(&self, frames: usize, total: usize) -> Selection {
+        let a = self.start();
+        Selection { anchor: a, head: a.saturating_add(frames).min(total) }
+    }
+}
+
+/// How times are written (View › Time Display). Roadmap A099; other SMPTE rates are a later row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimeFormat {
+    /// `m:ss.mmm` / `h:mm:ss.mmm` ([`format_time`]).
+    #[default]
+    Decimal,
+    /// `m:ss` with only the fraction digits that are needed (`1:02.5`, `0:03`).
+    Compact,
+    /// The frame (sample) number.
+    Samples,
+    /// `hh:mm:ss:ff` at 30 frames a second.
+    Smpte30,
+}
+
+/// SMPTE frames per second (the only rate so far).
+pub const SMPTE_FPS: u64 = 30;
+
+impl TimeFormat {
+    pub const ALL: [TimeFormat; 4] = [TimeFormat::Decimal, TimeFormat::Compact, TimeFormat::Samples, TimeFormat::Smpte30];
+
+    /// The name used in the settings file, the control channel and action names.
+    pub fn name(self) -> &'static str {
+        match self {
+            TimeFormat::Decimal => "decimal",
+            TimeFormat::Compact => "compact",
+            TimeFormat::Samples => "samples",
+            TimeFormat::Smpte30 => "smpte30",
+        }
+    }
+
+    /// The menu text.
+    pub fn menu(self) -> &'static str {
+        match self {
+            TimeFormat::Decimal => "Decimal (mm:ss.ddd)",
+            TimeFormat::Compact => "Compact",
+            TimeFormat::Samples => "Samples",
+            TimeFormat::Smpte30 => "SMPTE 30 fps",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<TimeFormat> {
+        TimeFormat::ALL.into_iter().find(|f| f.name() == name.trim())
+    }
+
+    /// `frame` at `sample_rate` in this format.
+    pub fn format(self, frame: usize, sample_rate: u32) -> String {
+        match self {
+            TimeFormat::Decimal => format_time(frame, sample_rate),
+            TimeFormat::Compact => compact(frame, sample_rate),
+            TimeFormat::Samples => frame.to_string(),
+            TimeFormat::Smpte30 => {
+                if sample_rate == 0 {
+                    return smpte(0);
+                }
+                let rate = u64::from(sample_rate);
+                let (secs, rest) = (frame as u64 / rate, frame as u64 % rate);
+                smpte(secs * SMPTE_FPS + rest * SMPTE_FPS / rate)
+            }
+        }
+    }
+
+    /// A ruler tick at `seconds`, exact for that format (a tick is not rounded through a frame).
+    pub fn format_tick(self, seconds: f64, sample_rate: u32) -> String {
+        let seconds = seconds.max(0.0);
+        match self {
+            TimeFormat::Decimal => format_time((seconds * 1000.0).round() as usize, 1000),
+            TimeFormat::Compact => compact((seconds * 1000.0).round() as usize, 1000),
+            TimeFormat::Samples => ((seconds * f64::from(sample_rate)).round() as usize).to_string(),
+            TimeFormat::Smpte30 => smpte((seconds * SMPTE_FPS as f64).round() as u64),
+        }
+    }
+
+    /// The frame a typed time means, or `None` if it does not read in this format. The frame is
+    /// the first one whose formatted time is the typed one, so `parse(format(f))` formats the
+    /// same as `f`. Decimal and Compact take `[h:]m:ss[.fff]` or plain seconds (`12.5`); SMPTE
+    /// takes `[[hh:]mm:]ss:ff` (`;` also separates the frames).
+    pub fn parse(self, text: &str, sample_rate: u32) -> Option<usize> {
+        let text = text.trim();
+        let rate = u64::from(sample_rate);
+        if text.is_empty() || rate == 0 {
+            return None;
+        }
+        let frames = match self {
+            TimeFormat::Samples => text.replace([',', '_'], "").parse::<u64>().ok()?,
+            TimeFormat::Decimal | TimeFormat::Compact => {
+                let (whole, frac) = match text.split_once('.') {
+                    Some((w, f)) => (w, f),
+                    None => (text, ""),
+                };
+                if !frac.bytes().all(|b| b.is_ascii_digit()) || (text.contains('.') && frac.is_empty()) {
+                    return None;
+                }
+                let ms: u64 = format!("{frac:0<3}")[..3].parse().ok()?;
+                let secs = clock(whole)?;
+                // First frame at or after the instant (see the doc above).
+                secs.checked_mul(rate)?.checked_add((ms * rate).div_ceil(1000))?
+            }
+            TimeFormat::Smpte30 => {
+                let parts: Vec<&str> = text.split([':', ';']).collect();
+                if parts.len() < 2 || parts.len() > 4 {
+                    return None;
+                }
+                let (ff, head) = parts.split_last()?;
+                let ff: u64 = ff.parse().ok().filter(|f| *f < SMPTE_FPS)?;
+                let secs = clock(&head.join(":"))?;
+                secs.checked_mul(rate)?.checked_add((ff * rate).div_ceil(SMPTE_FPS))?
+            }
+        };
+        usize::try_from(frames).ok()
+    }
+}
+
+/// `[[h:]m:]s` as seconds; a field after the first must be under 60.
+fn clock(text: &str) -> Option<u64> {
+    let parts: Vec<&str> = text.split(':').collect();
+    if parts.len() > 3 || parts.iter().any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    let mut secs = 0u64;
+    for (i, p) in parts.iter().enumerate() {
+        let v: u64 = p.parse().ok()?;
+        if i > 0 && v >= 60 {
+            return None;
+        }
+        secs = secs.checked_mul(60)?.checked_add(v)?;
+    }
+    Some(secs)
+}
+
+fn smpte(total_frames: u64) -> String {
+    let (ff, secs) = (total_frames % SMPTE_FPS, total_frames / SMPTE_FPS);
+    format!("{:02}:{:02}:{:02}:{ff:02}", secs / 3600, secs / 60 % 60, secs % 60)
+}
+
+fn compact(frame: usize, sample_rate: u32) -> String {
+    let full = format_time(frame, sample_rate);
+    let trimmed = full.trim_end_matches('0');
+    trimmed.trim_end_matches('.').to_string()
+}
+
 /// `frame` at `sample_rate` as `m:ss.mmm`, or `h:mm:ss.mmm` from one hour up.
 pub fn format_time(frame: usize, sample_rate: u32) -> String {
     if sample_rate == 0 {
@@ -236,6 +415,101 @@ mod tests {
     use super::*;
 
     const HOUR: usize = 48_000 * 3600;
+
+    #[test]
+    fn formats_read_as_documented() {
+        let r = 48_000;
+        let at = 3723 * r + r / 2; // 1:02:03.500
+        assert_eq!(TimeFormat::Decimal.format(at, r as u32), "1:02:03.500");
+        assert_eq!(TimeFormat::Compact.format(at, r as u32), "1:02:03.5");
+        assert_eq!(TimeFormat::Compact.format(3 * r, r as u32), "0:03");
+        assert_eq!(TimeFormat::Compact.format(0, r as u32), "0:00");
+        assert_eq!(TimeFormat::Compact.format(62 * r, r as u32), "1:02");
+        assert_eq!(TimeFormat::Samples.format(at, r as u32), at.to_string());
+        assert_eq!(TimeFormat::Smpte30.format(at, r as u32), "01:02:03:15");
+        assert_eq!(TimeFormat::Smpte30.format(0, 0), "00:00:00:00");
+        assert_eq!(TimeFormat::Smpte30.format(r - 1, r as u32), "00:00:00:29");
+    }
+
+    #[test]
+    fn what_is_formatted_parses_back_to_the_same_text() {
+        for rate in [8000u32, 22_050, 44_100, 48_000, 96_000] {
+            for frame in [0usize, 1, 7, 441, 999, 1000, 4410, rate as usize - 1, rate as usize, 12_345_678, 3600 * rate as usize + 17] {
+                for fmt in TimeFormat::ALL {
+                    let text = fmt.format(frame, rate);
+                    let back = fmt.parse(&text, rate).unwrap_or_else(|| panic!("{fmt:?} {text:?} did not parse"));
+                    assert_eq!(fmt.format(back, rate), text, "{fmt:?} at {rate} Hz, frame {frame}");
+                    assert!(back <= frame, "{fmt:?}: the parsed frame is the first with that text");
+                    if fmt == TimeFormat::Samples {
+                        assert_eq!(back, frame);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_times_in_each_format() {
+        let r = 48_000;
+        assert_eq!(TimeFormat::Decimal.parse("1:02.5", r), Some(62 * 48_000 + 24_000));
+        assert_eq!(TimeFormat::Decimal.parse("12.25", r), Some(12 * 48_000 + 12_000));
+        assert_eq!(TimeFormat::Decimal.parse("90", r), Some(90 * 48_000));
+        assert_eq!(TimeFormat::Compact.parse("1:00:00", r), Some(HOUR));
+        assert_eq!(TimeFormat::Samples.parse("1,000", r), Some(1000));
+        assert_eq!(TimeFormat::Smpte30.parse("00:00:01:15", r), Some(48_000 + 24_000));
+        assert_eq!(TimeFormat::Smpte30.parse("1:15", r), Some(48_000 + 24_000));
+        assert_eq!(TimeFormat::Smpte30.parse("00:00:01;15", r), Some(72_000));
+        for bad in ["", "abc", "1:2:3:4:5", "1:75.0", "-3", "1.", ".5x", "1::2"] {
+            assert_eq!(TimeFormat::Decimal.parse(bad, r), None, "{bad:?}");
+        }
+        assert_eq!(TimeFormat::Smpte30.parse("00:00:01:30", r), None, "frame 30 does not exist at 30 fps");
+        assert_eq!(TimeFormat::Smpte30.parse("5", r), None);
+        assert_eq!(TimeFormat::Samples.parse("1.5", r), None);
+        assert_eq!(TimeFormat::Decimal.parse("1", 0), None);
+    }
+
+    #[test]
+    fn ticks_are_exact_in_each_format() {
+        assert_eq!(TimeFormat::Decimal.format_tick(3723.5, 44_100), "1:02:03.500");
+        assert_eq!(TimeFormat::Compact.format_tick(0.5, 44_100), "0:00.5");
+        assert_eq!(TimeFormat::Samples.format_tick(0.5, 44_100), "22050");
+        assert_eq!(TimeFormat::Smpte30.format_tick(1.0 / 3.0, 44_100), "00:00:00:10");
+        assert_eq!(TimeFormat::Smpte30.format_tick(2.0, 44_100), "00:00:02:00");
+    }
+
+    #[test]
+    fn format_names_round_trip() {
+        for f in TimeFormat::ALL {
+            assert_eq!(TimeFormat::from_name(f.name()), Some(f));
+        }
+        assert_eq!(TimeFormat::from_name("nope"), None);
+    }
+
+    #[test]
+    fn typed_selection_values_move_the_selection() {
+        let s = Selection { anchor: 100, head: 400 };
+        assert_eq!(s.with_start(150, 1000), Selection { anchor: 150, head: 400 });
+        assert_eq!(s.with_start(900, 1000).start(), 400, "passing the end swaps");
+        assert_eq!(s.with_end(2000, 1000), Selection { anchor: 100, head: 1000 });
+        assert_eq!(s.with_len(50, 1000), Selection { anchor: 100, head: 150 });
+        assert_eq!(s.with_len(5000, 1000).end(), 1000);
+        let c = Selection::at(300);
+        assert_eq!(c.with_start(10, 1000), Selection::at(10));
+        assert_eq!(c.with_end(500, 1000), Selection { anchor: 300, head: 500 });
+    }
+
+    #[test]
+    fn typed_view_values_move_and_zoom_the_view() {
+        let mut v = Viewport::fit(HOUR, 1000.0);
+        v.set_duration(48_000 * 60, 1000.0, HOUR);
+        assert!((v.end(1000.0) - v.start - 48_000.0 * 60.0).abs() < 1.0);
+        v.set_start(48_000 * 600, 1000.0, HOUR);
+        assert_eq!(v.start, 48_000.0 * 600.0);
+        v.set_end(48_000 * 1200, 1000.0, HOUR);
+        assert!((v.end(1000.0) - 48_000.0 * 1200.0).abs() < 1.0);
+        v.set_end(HOUR * 2, 1000.0, HOUR);
+        assert!(v.end(1000.0) <= HOUR as f64 + 1.0, "kept inside the file");
+    }
 
     #[test]
     fn fit_shows_the_whole_file() {
