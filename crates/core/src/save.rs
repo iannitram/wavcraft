@@ -313,6 +313,11 @@ fn plan_chunks(doc: &DocState, ty: SampleType) -> (Vec<Item>, Option<File>) {
         plan.extend(info.take());
     }
     plan.extend(ixml.take());
+    // Markers (A183): the cue list and its `adtl` labels, written fresh after everything else.
+    if let Some((cue, adtl)) = doc.markers().to_wav_bodies() {
+        plan.push(Item::Fresh { id: *b"cue ", body: cue });
+        plan.push(Item::Fresh { id: *b"LIST", body: adtl });
+    }
     (plan, file)
 }
 

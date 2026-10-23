@@ -41,6 +41,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::{Channel, DocError, DocState, Piece};
+use crate::markers::Shift;
 use crate::store::{BLOCK_FRAMES, Store};
 
 /// History labels.
@@ -296,7 +297,7 @@ pub fn delete(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Cros
         let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(ch, range.end, len - range.end, join)];
         out.push(Arc::new(build(doc.store(), &segs)?));
     }
-    finish(doc, out, DELETE, Change::LengthFrom { frame: range.start })
+    finish(doc, out, DELETE, Change::LengthFrom { frame: range.start }, Shift::Delete(range.clone()))
 }
 
 /// Copy `range` of the channels in `channels` (in channel order). Shares blocks; no sample copy.
@@ -362,7 +363,7 @@ pub fn paste(doc: &DocState, at: PasteAt, clip: &Clip, channels: ChannelMask, xf
             let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(&src, 0, written, edge), Seg::new(ch, end, len - end, edge)];
             out[c] = Arc::new(build(store, &segs)?);
         }
-        return finish(doc, out, PASTE_AUDIO, Change::SameLength { range: range.start..end, channels: mask });
+        return finish(doc, out, PASTE_AUDIO, Change::SameLength { range: range.start..end, channels: mask }, Shift::None);
     }
     let mut out = Vec::with_capacity(n);
     for (c, src) in paste_sources(store, clip, n, &mask.active(n))? {
@@ -375,7 +376,8 @@ pub fn paste(doc: &DocState, at: PasteAt, clip: &Clip, channels: ChannelMask, xf
     } else {
         Change::LengthFrom { frame: range.start }
     };
-    finish(doc, out, PASTE, change)
+    let shift = if range.end - range.start == clip_len { Shift::None } else { Shift::Replace { range: range.clone(), len: clip_len } };
+    finish(doc, out, PASTE, change, shift)
 }
 
 /// The clip channel each of the document channels in `active` gets, as `(channel, source)`:
@@ -433,7 +435,7 @@ fn silence_labelled(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf
             out.push(ch.clone());
         }
     }
-    finish(doc, out, label, Change::SameLength { range, channels: mask })
+    finish(doc, out, label, Change::SameLength { range, channels: mask }, Shift::None)
 }
 
 /// Insert `frames` of silence at `at` on every channel; the rest moves later.
@@ -450,7 +452,7 @@ pub fn insert_silence(doc: &DocState, at: u64, frames: u64, xf: Crossfades) -> R
         let segs = [Seg::new(ch, 0, at, 0), Seg::new(&zeros, 0, frames, edge), Seg::new(ch, at, len - at, edge)];
         out.push(Arc::new(build(doc.store(), &segs)?));
     }
-    finish(doc, out, INSERT_SILENCE, Change::LengthFrom { frame: at })
+    finish(doc, out, INSERT_SILENCE, Change::LengthFrom { frame: at }, Shift::Insert { at, len: frames })
 }
 
 /// Keep only `range`. With every channel in `channels`: everything else goes, on every channel,
@@ -469,7 +471,7 @@ pub fn crop(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Crossf
     }
     if mask.covers_all(n) {
         let out = doc.channels().iter().map(|ch| Arc::new(slice(ch, range.clone()))).collect();
-        return finish(doc, out, CROP, Change::LengthFrom { frame: 0 });
+        return finish(doc, out, CROP, Change::LengthFrom { frame: 0 }, Shift::Crop(range.clone()));
     }
     let edge = Crossfades::frames(xf.edge, doc.sample_rate());
     let before = zeros(range.start);
@@ -487,7 +489,7 @@ pub fn crop(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Crossf
             out.push(ch.clone());
         }
     }
-    finish(doc, out, CROP_AUDIO, Change::SameLength { range: 0..len, channels: mask })
+    finish(doc, out, CROP_AUDIO, Change::SameLength { range: 0..len, channels: mask }, Shift::None)
 }
 
 /// The general path effects use: new audio for `range` of `channels`, made chunk by chunk.
@@ -561,7 +563,7 @@ where
         out[c] = Arc::new(build(store, &segs)?);
     }
     let mask = active.iter().fold(ChannelMask::NONE, |m, &c| m.with(c));
-    finish(doc, out, label, Change::SameLength { range, channels: mask })
+    finish(doc, out, label, Change::SameLength { range, channels: mask }, Shift::None)
 }
 
 /// Generated audio (f21): `frames` of new samples inserted at `range.start`, replacing `range`
@@ -602,7 +604,7 @@ where
         let segs = [Seg::new(ch, 0, range.start, 0), Seg::new(new, 0, frames, 0), Seg::new(ch, range.end, len - range.end, 0)];
         out.push(Arc::new(build(store, &segs)?));
     }
-    finish(doc, out, label, Change::LengthFrom { frame: range.start })
+    finish(doc, out, label, Change::LengthFrom { frame: range.start }, Shift::None)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -616,11 +618,11 @@ fn check_range(doc: &DocState, range: &Range<u64>) -> Result<(), EditError> {
     Ok(())
 }
 
-fn finish(doc: &DocState, channels: Vec<Arc<Channel>>, label: &str, change: Change) -> Result<Edit, EditError> {
+fn finish(doc: &DocState, channels: Vec<Arc<Channel>>, label: &str, change: Change, shift: Shift) -> Result<Edit, EditError> {
     let mut state = DocState::from_shared(doc.store().clone(), channels, doc.sample_rate(), doc.source().clone())?;
-    // Markers ride along; moving them with the edit is a later row (A182), so for now they are
-    // only held inside the new length.
-    let markers = doc.markers().clamped(state.len_frames()).map_or_else(|| doc.markers().clone(), std::sync::Arc::new);
+    // Markers follow the audio (A182); the clamp is a safety net for a shift that left one past the end.
+    let base = doc.markers().moved_by(&shift).map_or_else(|| doc.markers().clone(), Arc::new);
+    let markers = base.clamped(state.len_frames()).map_or(base, Arc::new);
     state = state.with_markers(markers);
     Ok(Edit { state, label: label.to_string(), change })
 }
