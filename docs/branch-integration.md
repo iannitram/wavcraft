@@ -12,7 +12,7 @@ the code map for the multitrack and effects stacks.
 - Of those 195, 79 were ancestors of another unmerged remote tip. This leaves
   116 maximal tips to review, not 116 automatic merges. Alternate trials,
   recuts and old integration work can overlap without sharing ancestry.
-- After the first two batches below, 187 remote tips remain outside this
+- After the batches below, 185 remote tips remain outside this
   integration branch.
 
 ## Integration branch
@@ -36,6 +36,11 @@ The second batch adds focused tests and two more core models:
 | `qwen-T06-chorus-guard-tests` | `bf6a6df` | DSP | Chorus guard tests |
 | `fleet/wav-q-a166-a` | `d6c2cc5` | mix | Band crossover plan; filtering and track wiring remain |
 
+The next batch integrates `qwen/b098-a` (stereo-width DSP, merge `fda27c3`)
+and `feat/ap-f43-save-selection-export` (Save Selection As and Export, merge `6f05b50`).
+The export merge also validates public `Part` ranges and channel indices before
+writing so malformed requests return an error instead of panicking.
+
 The Doppler merge corrects the one blocking item recorded in
 [issue #665](https://github.com/iannitram/wavcraft/issues/665): `pub mod doppler;`
 now sits between `distortion` and `echo`. This is the path-model part of B089;
@@ -48,6 +53,9 @@ commit. Added files were formatted with rustfmt. The repository-wide
 `cargo fmt --all --check` currently reports pre-existing formatting differences
 in unrelated files with the installed Rust 1.95 toolchain; do not mix a broad
 formatting sweep into a feature merge.
+The desktop app was also built and smoke-tested under Xvfb with a one-second
+48 kHz WAV: it reported 48,000 frames through the control channel and exited
+cleanly.
 
 ## Next passes
 
