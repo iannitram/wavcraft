@@ -319,4 +319,24 @@ mod tests {
         let output = echo_with_tail(&[0.5, 0.25], 1, 0.5, 0.5, 10);
         assert_eq!(output.len(), 12);
     }
+
+    #[test]
+    fn mix_nan_is_dry_identity() {
+        assert_eq!(
+            echo(&[1.0, 0.0, 0.0], 1, 0.5, f32::NAN),
+            vec![1.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn stereo_odd_length_unlocked_keeps_independent_channels() {
+        let input = [1.0, 1.0, 0.0, 0.0, 0.0];
+        let left = EchoChannel { delay_samples: 1, feedback: 0.5 };
+        let right = EchoChannel { delay_samples: 2, feedback: 0.25 };
+        assert_close(
+            &echo_stereo_interleaved(&input, left, right, 1.0, false),
+            &[1.0, 1.0, 0.5, 0.0, 0.25],
+            1e-6,
+        );
+    }
 }
