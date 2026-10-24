@@ -21,6 +21,7 @@ use soundcraft_model_audio::AudioBuffer as ModelBuffer;
 use crate::Document;
 
 pub use soundcraft_model;
+pub mod track_height;
 
 /// The most samples (frames times channels) one imported clip may hold in RAM: 128 MiB of `f32`.
 pub const MAX_IMPORT_SAMPLES: u64 = 32 * 1024 * 1024;
