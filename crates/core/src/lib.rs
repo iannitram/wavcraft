@@ -26,6 +26,7 @@ pub mod io;
 pub mod meta;
 pub mod meters;
 pub mod mix;
+pub mod name_template;
 pub mod panels;
 pub mod random;
 pub mod save;
