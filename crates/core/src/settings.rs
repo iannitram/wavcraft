@@ -3,7 +3,7 @@
 //! Settings live in a small text file, `settings.txt` in the system's config folder under
 //! `wavcraft` (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on a
 //! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. Today it
-//! holds `session_folder` and `hidden_panels`.
+//! holds `session_folder`, `hidden_panels` and `time_display`.
 //!
 //! The **session folder** is where opening a file writes its session store (one subfolder per
 //! open file). The first of these that is set wins: the `--session-dir` command-line flag, the
@@ -24,6 +24,7 @@ pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the 
 const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
+const KEY_TIME_DISPLAY: &str = "time_display";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,6 +33,8 @@ pub struct Settings {
     pub session_folder: Option<PathBuf>,
     /// Ids of the panels the person hid (`crate::panels`); a panel not listed is shown.
     pub hidden_panels: Vec<String>,
+    /// View › Time Display.
+    pub time_display: crate::view::TimeFormat,
 }
 
 impl Settings {
@@ -67,6 +70,7 @@ impl Settings {
             match key.trim() {
                 KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
+                KEY_TIME_DISPLAY => s.time_display = crate::view::TimeFormat::from_name(value).unwrap_or_default(),
                 _ => {}
             }
         }
@@ -83,6 +87,8 @@ impl Settings {
             out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\n");
             out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}\n", self.hidden_panels.join(",")));
         }
+        out.push_str("# time_display: decimal, compact, samples or smpte30 (View > Time Display).\n");
+        out.push_str(&format!("{KEY_TIME_DISPLAY} = {}\n", self.time_display.name()));
         out
     }
 
@@ -315,7 +321,7 @@ mod tests {
         assert_eq!(std::fs::read_link(&decoy).map_err(|e| e.to_string())?, victim);
         assert_eq!(
             std::fs::read_to_string(folder.join("settings.txt")).map_err(|e| e.to_string())?,
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n"
         );
         assert!(!second.exists());
         let _ = std::fs::remove_dir_all(&folder);
@@ -341,7 +347,7 @@ mod tests {
         let text = std::fs::read_to_string(folder.join("settings.txt")).map_err(|e| e.to_string())?;
         assert_eq!(
             text,
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n"
         );
         assert!(!second.exists());
         let _ = std::fs::remove_dir_all(&folder);
@@ -349,21 +355,25 @@ mod tests {
     }
 
     #[test]
-    fn empty_hidden_panels_keep_the_old_file_format() {
-        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: Vec::new() };
+    fn empty_hidden_panels_still_save_time_format() {
+        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: Vec::new(), ..Default::default() };
         assert_eq!(
             settings.to_text(),
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n"
         );
     }
 
     #[test]
     fn hidden_panels_are_written_and_read_back() {
-        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: vec!["history".to_string(), "waveform".to_string()] };
+        let settings = Settings {
+            session_folder: Some(PathBuf::from("/w-new")),
+            hidden_panels: vec!["history".to_string(), "waveform".to_string()],
+            ..Default::default()
+        };
         let text = settings.to_text();
         assert_eq!(
             text,
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\nhidden_panels = history,waveform\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\nhidden_panels = history,waveform\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n"
         );
         assert_eq!(Settings::parse(&text), settings);
     }

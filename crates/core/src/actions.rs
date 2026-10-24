@@ -52,6 +52,10 @@ pub enum ActionId {
     RepeatLastDialog,
     /// A registered effect: its index in [`effects::all`].
     Effect(u16),
+    TimeDecimal,
+    TimeCompact,
+    TimeSamples,
+    TimeSmpte30,
 }
 
 /// Which part of the program carries an action out.
@@ -174,6 +178,10 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ToolSelect, "tool.select", "Time Selection Tool", &[key("V")]),
     window(ActionId::ToolHand, "tool.hand", "Hand Tool", &[key("H")]),
     window(ActionId::ToolZoom, "tool.zoom", "Zoom Tool", &[key("Z")]),
+    window(ActionId::TimeDecimal, "view.time_display.decimal", "Decimal (mm:ss.ddd)", &[]),
+    window(ActionId::TimeCompact, "view.time_display.compact", "Compact", &[]),
+    window(ActionId::TimeSamples, "view.time_display.samples", "Samples", &[]),
+    window(ActionId::TimeSmpte30, "view.time_display.smpte30", "SMPTE 30 fps", &[]),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -327,6 +335,7 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::TimeDecimal | ActionId::TimeCompact | ActionId::TimeSamples | ActionId::TimeSmpte30 => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
             ActionId::ZoomToSelection => has_sel,
@@ -553,6 +562,10 @@ impl Editor {
             | ActionId::ToolSelect
             | ActionId::ToolHand
             | ActionId::ToolZoom
+            | ActionId::TimeDecimal
+            | ActionId::TimeCompact
+            | ActionId::TimeSamples
+            | ActionId::TimeSmpte30
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast
