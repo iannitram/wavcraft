@@ -72,10 +72,11 @@ class Control:
         t0 = time.time()
         while True:
             answer = self.ask("STATE")
+            answer, _, docpath = answer.partition(" path=")
             head, _, labels = answer.partition(" undo=")
             fields = dict(kv.split("=", 1) for kv in head.split()[1:])
             undo, _, redo = labels.partition(" redo=")
-            fields.update(undo=undo, redo=redo)
+            fields.update(undo=undo, redo=redo, path=docpath)
             if not wait or fields.get("busy") == "0" or time.time() - t0 > timeout:
                 return fields
             time.sleep(0.2)

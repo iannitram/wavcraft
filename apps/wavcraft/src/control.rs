@@ -5,7 +5,7 @@
 //! by `WAVCRAFT_CONTROL_TOKEN_FILE` (made owner-only with a CSPRNG token when missing; an
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
-//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
+//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label> path=<path>`
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)
@@ -26,6 +26,8 @@
 //! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)
 //! - `HISTORY_KEY up|down` → `OK cursor=<i>` (the panel's arrow keys)
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `SAVE_SELECTION <path>` → `OK` (write the selected range of enabled channels to a new WAV)
+//! - `EXPORT <path>` → `OK` (write the whole document to a new WAV)
 //! - `VIDEO attach <path>` → `OK` (the Video panel opens the file on a worker; `ERR` with no file open)
 //! - `VIDEO frame <seconds>` → `OK index=<i> size=<w>x<h> time=<t>` once the worker has decoded it, or `ERR <why>`
 //! - `VIDEO status` → `OK <text>` (what the panel says about the file); `VIDEO detach` → `OK`
