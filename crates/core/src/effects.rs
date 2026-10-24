@@ -16,6 +16,7 @@ use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
 pub mod dynamics;
+pub mod dynamics_graph;
 mod gain;
 pub use gain::Gain;
 
