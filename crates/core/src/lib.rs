@@ -29,6 +29,7 @@ pub mod mix;
 pub mod panels;
 pub mod random;
 pub mod save;
+pub mod sc_source;
 pub mod settings;
 pub mod space;
 pub mod spectral_dirty;
