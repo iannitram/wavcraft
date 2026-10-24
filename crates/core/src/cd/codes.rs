@@ -111,10 +111,7 @@ pub fn ean13_check_digit(digits: &str) -> Option<u8> {
 
     let mut sum = 0;
     for (i, c) in digits.chars().enumerate() {
-        let digit = match c.to_digit(10) {
-            Some(d) => d as u8,
-            None => return None,
-        };
+        let digit = c.to_digit(10)? as u8;
         if i % 2 == 0 {
             sum += digit; // Odd position (1-indexed)
         } else {
@@ -134,10 +131,7 @@ pub fn upc_a_check_digit(digits: &str) -> Option<u8> {
 
     let mut sum = 0;
     for (i, c) in digits.chars().enumerate() {
-        let digit = match c.to_digit(10) {
-            Some(d) => d as u8,
-            None => return None,
-        };
+        let digit = c.to_digit(10)? as u8;
         // Odd positions (1-indexed) are multiplied by 3, even positions by 1
         if (i + 1) % 2 == 1 {
             sum += digit * 3;
