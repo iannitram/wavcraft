@@ -1,0 +1,141 @@
+{
+  "id": "wav-b098-a-stereo-width",
+  "title": "Stereo width control: widen, widen_interleaved, measure_width (new dsp/stereo_width.rs)",
+  "kind": "small-code-change-exact-brief",
+  "size": "M",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "repo": "iannitram/wavcraft",
+  "base": "main",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "b098-a.md",
+  "verify": [
+    {
+      "name": "stub-compiles-and-fails",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; cp qwen/briefs/b098-a.stub.rs \"$f\"; out=$(cargo test -p wavcraft-core --test stereo_width 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 5 passed; 11 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-tests-pass",
+      "cmd": "cargo test -p wavcraft-core --test stereo_width 2>&1 | grep -E \"test result: ok[.] 16 passed; 0 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "no-stub-left",
+      "cmd": "! grep -n \"STUB\" crates/core/src/dsp/stereo_width.rs",
+      "expect": "pass"
+    },
+    {
+      "name": "mod-line",
+      "cmd": "grep -n \"^pub mod stereo_width;\" crates/core/src/dsp/mod.rs",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-width_one_is_identity",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#\\*side \\*= width;#*side *= 0.5;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact width_one_is_identity 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-width_zero_makes_both_channels_the_mid",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#width\\.clamp(0\\.0, MAX_WIDTH)#width.clamp(1.0, MAX_WIDTH)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact width_zero_makes_both_channels_the_mid 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-mono_signal_is_unchanged_at_any_width",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#for side in right\\.iter_mut()#for side in left.iter_mut()#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact mono_signal_is_unchanged_at_any_width 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-width_two_doubles_the_side_and_keeps_the_mid",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#\\*side \\*= width;#*side += width - 1.0;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact width_two_doubles_the_side_and_keeps_the_mid 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-width_half_halves_the_side",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#\\*side \\*= width;#*side *= width.max(1.0);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact width_half_halves_the_side 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-width_above_four_acts_as_four",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#pub const MAX_WIDTH: f32 = 4\\.0;#pub const MAX_WIDTH: f32 = 8.0;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact width_above_four_acts_as_four 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-negative_width_acts_as_zero",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#width\\.clamp(0\\.0, MAX_WIDTH)#width.clamp(-MAX_WIDTH, MAX_WIDTH)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact negative_width_acts_as_zero 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-nan_width_leaves_the_signal_unchanged",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#return 1\\.0;#return 0.0;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact nan_width_leaves_the_signal_unchanged 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-unequal_lengths_use_the_shorter_slice",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let n = left\\.len()\\.min(right\\.len());#let n = left.len().min(right.len()).saturating_sub(1);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact unequal_lengths_use_the_shorter_slice 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-interleaved_matches_the_planar_result",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#ms_to_lr(mid, side \\* width)#ms_to_lr(mid, side)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact interleaved_matches_the_planar_result 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-interleaved_odd_length_keeps_the_last_sample",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#chunks_exact_mut(2)#chunks_exact_mut(3)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact interleaved_odd_length_keeps_the_last_sample 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-measure_width_of_a_known_signal",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(side_sum / mid_sum)\\.sqrt() as f32#(side_sum / mid_sum) as f32#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact measure_width_of_a_known_signal 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-measure_width_doubles_when_the_signal_is_widened",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#\\*side \\*= width;#*side *= 1.0;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact measure_width_doubles_when_the_signal_is_widened 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-measure_width_of_silence_and_empty_input_is_zero",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if mid_sum <= 0\\.0 {#if mid_sum < 0.0 {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact measure_width_of_silence_and_empty_input_is_zero 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-measure_width_of_a_mono_signal_is_zero",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#side_sum += f64::from(side) \\* f64::from(side);#side_sum += f64::from(side) * f64::from(side) + 1.0;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact measure_width_of_a_mono_signal_is_zero 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-measure_width_uses_the_shorter_slice",
+      "cmd": "f=crates/core/src/dsp/stereo_width.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#\\.zip(right\\.iter())#.zip(right.iter().chain(std::iter::repeat(\\&0.0)))#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test stereo_width -- --exact measure_width_uses_the_shorter_slice 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core dsp::stereo_width",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/dsp/stereo_width.rs crates/core/tests/stereo_width.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/dsp/stereo_width.rs",
+    "crates/core/tests/stereo_width.rs",
+    "crates/core/src/dsp/mod.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "Stereo width control: widen, widen_interleaved, measure_width (new dsp/stereo_width.rs) (Refs #76)",
+  "est_minutes": 30,
+  "priority": 9,
+  "created_by": "coordinator-driver",
+  "run_lane": "qwen"
+}
