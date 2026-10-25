@@ -1,0 +1,151 @@
+{
+  "id": "wav-b058-b-eq-graph",
+  "title": "EQ graph mapping: log-frequency and gain axes, node drag, nearest node (new dsp/eq_graph.rs)",
+  "kind": "small-code-change-exact-brief",
+  "size": "M",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "repo": "iannitram/wavcraft",
+  "base": "main",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "b058-b.md",
+  "verify": [
+    {
+      "name": "stub-compiles-and-fails",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; cp qwen/briefs/b058-b.stub.rs \"$f\"; out=$(cargo test -p wavcraft-core --test eq_graph 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 3 passed; 14 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-tests-pass",
+      "cmd": "cargo test -p wavcraft-core --test eq_graph 2>&1 | grep -E \"test result: ok[.] 17 passed; 0 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "no-stub-left",
+      "cmd": "! grep -n \"STUB\" crates/core/src/dsp/eq_graph.rs",
+      "expect": "pass"
+    },
+    {
+      "name": "mod-line",
+      "cmd": "grep -n \"^pub mod eq_graph;\" crates/core/src/dsp/mod.rs",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-axis_ends_map_to_the_view_edges",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(t \\* f64::from(self\\.width_px)) as f32#(t * f64::from(self.width_px) * 0.5) as f32#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact axis_ends_map_to_the_view_edges 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-axis_centre_is_the_geometric_mean",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let t = (freq / lo)\\.ln() / (hi / lo)\\.ln();#let t = (freq - lo) / (hi - lo);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact axis_centre_is_the_geometric_mean 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-frequency_round_trip_stays_within_one_hundredth_per",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(lo \\* (hi / lo)\\.powf(t)) as f32#(lo + (hi - lo) * t) as f32#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact frequency_round_trip_stays_within_one_hundredth_percent 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-octaves_have_equal_pixel_width",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let t = (freq / lo)\\.ln() / (hi / lo)\\.ln();#let t = (freq / lo).ln() / (hi / lo).log10();#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact octaves_have_equal_pixel_width 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-frequency_outside_the_view_clamps_to_the_edges",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let freq = f64::from(freq)\\.clamp(lo, hi);#let freq = f64::from(freq);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact frequency_outside_the_view_clamps_to_the_edges 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-gain_axis_maps_top_bottom_and_centre",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#((range - gain) / (2\\.0 \\* range)#((range + gain) / (2.0 * range)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact gain_axis_maps_top_bottom_and_centre 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-gain_outside_the_range_clamps_to_the_edges",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#f64::from(gain_db)\\.clamp(-range, range)#f64::from(gain_db)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact gain_outside_the_range_clamps_to_the_edges 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-gain_round_trip_stays_within_a_tolerance",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(range - y / height \\* 2\\.0 \\* range) as f32#(range - y / height * range) as f32#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact gain_round_trip_stays_within_a_tolerance 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-nan_inputs_map_to_the_axis_start_and_the_centre",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if !self\\.is_usable() || freq\\.is_nan() {#if !self.is_usable() {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact nan_inputs_map_to_the_axis_start_and_the_centre 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-node_drag_follows_the_pixel_and_clamps_to_the_view",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#view\\.gain_at_y(y_px))#view.gain_at_y(0.0))#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact node_drag_follows_the_pixel_and_clamps_to_the_view 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-nearest_node_picks_the_closest_node",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#dist < best_dist#dist > best_dist#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact nearest_node_picks_the_closest_node 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-nearest_node_first_node_wins_a_tie",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#dist < best_dist#dist <= best_dist#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact nearest_node_first_node_wins_a_tie 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-nearest_node_is_none_outside_the_radius",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if dist > limit {#if false {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact nearest_node_is_none_outside_the_radius 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-nearest_node_radius_edge_is_inclusive",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if dist > limit {#if dist >= limit {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact nearest_node_radius_edge_is_inclusive 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-nearest_node_skips_non_finite_nodes",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if !freq\\.is_finite() || !gain\\.is_finite() {#if false {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact nearest_node_skips_non_finite_nodes 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-nearest_node_bad_click_or_radius_is_none",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#|| radius_px\\.is_nan() || radius_px < 0\\.0#|| radius_px.is_nan()#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact nearest_node_bad_click_or_radius_is_none 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-nearest_node_bad_click_or_radius_is_none-2",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#|| !x_px\\.is_finite() || !y_px\\.is_finite()##' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact nearest_node_bad_click_or_radius_is_none 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-zero_size_view_is_inert",
+      "cmd": "f=crates/core/src/dsp/eq_graph.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if !self\\.is_usable() {#if false {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core --test eq_graph -- --exact zero_size_view_is_inert 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core dsp::eq_graph",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/dsp/eq_graph.rs crates/core/tests/eq_graph.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/dsp/eq_graph.rs",
+    "crates/core/tests/eq_graph.rs",
+    "crates/core/src/dsp/mod.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "EQ graph mapping: log-frequency and gain axes, node drag, nearest node (new dsp/eq_graph.rs) (Refs #76)",
+  "est_minutes": 30,
+  "priority": 9,
+  "created_by": "coordinator-driver",
+  "run_lane": "qwen"
+}
