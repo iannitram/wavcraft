@@ -131,6 +131,14 @@ impl History {
         h
     }
 
+    /// A history rebuilt from steps (label and state, oldest first) with the cursor on `cursor`:
+    /// what crash recovery restores. `None` for no steps or a cursor past them.
+    pub fn restore(steps: Vec<(String, DocState)>, cursor: usize, cap_disk_bytes: u64) -> Option<History> {
+        // Stub: card wav-c-86-a replaces this body.
+        let _ = (steps, cursor, cap_disk_bytes);
+        None
+    }
+
     /// Use another free-space query (tests).
     pub fn with_free_space(mut self, f: FreeSpaceFn) -> History {
         self.free_space = f;

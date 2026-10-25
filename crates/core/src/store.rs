@@ -235,6 +235,15 @@ pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
     out
 }
 
+/// Whether the session folder `dir` holds an autosave journal ([`crate::autosave::JOURNAL_FILE`])
+/// or the half-written one a crash may leave ([`crate::autosave::JOURNAL_TMP`]): then it may hold
+/// work that can be recovered, and no sweep removes it.
+pub fn has_journal(dir: &Path) -> bool {
+    // Stub: card wav-c-86-b replaces this body.
+    let _ = dir;
+    false
+}
+
 /// Remove the [`stale_sessions`] under `root` (the default session root when `None`), logging
 /// each one once. Returns the bytes freed.
 pub fn sweep_stale_sessions(root: Option<&Path>) -> u64 {
