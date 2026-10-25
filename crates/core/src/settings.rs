@@ -87,7 +87,7 @@ impl Settings {
             out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\n");
             out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}\n", self.hidden_panels.join(",")));
         }
-        out.push_str("# time_display: decimal, compact, samples or smpte30 (View > Time Display).\n");
+        out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30 or smpte_5994 (View > Time Display).\n");
         out.push_str(&format!("{KEY_TIME_DISPLAY} = {}\n", self.time_display.name()));
         out
     }
@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(std::fs::read_link(&decoy).map_err(|e| e.to_string())?, victim);
         assert_eq!(
             std::fs::read_to_string(folder.join("settings.txt")).map_err(|e| e.to_string())?,
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30 or smpte_5994 (View > Time Display).\ntime_display = decimal\n"
         );
         assert!(!second.exists());
         let _ = std::fs::remove_dir_all(&folder);
@@ -347,7 +347,7 @@ mod tests {
         let text = std::fs::read_to_string(folder.join("settings.txt")).map_err(|e| e.to_string())?;
         assert_eq!(
             text,
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30 or smpte_5994 (View > Time Display).\ntime_display = decimal\n"
         );
         assert!(!second.exists());
         let _ = std::fs::remove_dir_all(&folder);
@@ -359,7 +359,7 @@ mod tests {
         let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: Vec::new(), ..Default::default() };
         assert_eq!(
             settings.to_text(),
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30 or smpte_5994 (View > Time Display).\ntime_display = decimal\n"
         );
     }
 
@@ -373,7 +373,7 @@ mod tests {
         let text = settings.to_text();
         assert_eq!(
             text,
-            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\nhidden_panels = history,waveform\n# time_display: decimal, compact, samples or smpte30 (View > Time Display).\ntime_display = decimal\n"
+            "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\nhidden_panels = history,waveform\n# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30 or smpte_5994 (View > Time Display).\ntime_display = decimal\n"
         );
         assert_eq!(Settings::parse(&text), settings);
     }

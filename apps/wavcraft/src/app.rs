@@ -179,6 +179,10 @@ pub struct WaveApp {
     previewing: bool,
     /// View › Time Display (kept in the settings file).
     time_format: TimeFormat,
+    /// View › Snap to Frames: with a SMPTE time display, the cursor and selection edges set from
+    /// the ruler land on frame boundaries. (PR #95 adds the general snapping switch; once both
+    /// are merged this is "snapping is on" there, and `TimeFormat::snap_to_frame` is the call.)
+    snap_frames: bool,
     /// View › Time panel / Selection/View panel.
     show_time_panel: bool,
     show_sel_view_panel: bool,
@@ -240,6 +244,7 @@ impl WaveApp {
             allow_close: false,
             editor_width: 800.0,
             hud: HudState::default(),
+            snap_frames: true,
             show_time_panel: true,
             show_sel_view_panel: true,
             panel_edit: None,
@@ -422,6 +427,15 @@ impl WaveApp {
         }
     }
 
+    /// A frame set from the ruler, snapped to a timecode frame boundary when the display is SMPTE
+    /// and snapping to frames is on.
+    fn snap_gesture(&self, frame: usize) -> usize {
+        match &self.doc {
+            Some(d) if self.snap_frames => self.time_format.snap_to_frame(frame, d.sample_rate(), d.frames()),
+            _ => frame,
+        }
+    }
+
     /// `frame` in the chosen time format at the open file's rate.
     fn fmt_time(&self, frame: usize) -> String {
         self.time_format.format(frame, self.doc.as_ref().map_or(0, |d| d.sample_rate()))
@@ -485,9 +499,18 @@ impl WaveApp {
             ActionId::TimeDecimal => Some(TimeFormat::Decimal),
             ActionId::TimeCompact => Some(TimeFormat::Compact),
             ActionId::TimeSamples => Some(TimeFormat::Samples),
+            ActionId::TimeSmpte24 => Some(TimeFormat::Smpte24),
+            ActionId::TimeSmpte25 => Some(TimeFormat::Smpte25),
+            ActionId::TimeSmpte2997Df => Some(TimeFormat::Smpte2997Df),
+            ActionId::TimeSmpte2997Ndf => Some(TimeFormat::Smpte2997Ndf),
             ActionId::TimeSmpte30 => Some(TimeFormat::Smpte30),
+            ActionId::TimeSmpte5994 => Some(TimeFormat::Smpte5994),
             _ => None,
         };
+        if id == ActionId::SnapFrames {
+            self.snap_frames = !self.snap_frames;
+            return Ok(false);
+        }
         if let Some(fmt) = fmt {
             self.set_time_format(fmt);
             return Ok(false);
@@ -1354,7 +1377,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} time_display={} selection_text={} {view} undo={} redo={} path={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} time_display={} selection_text={} snap_frames={} {view} undo={} redo={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -1364,6 +1387,7 @@ impl WaveApp {
                             u8::from(busy),
                             self.time_format.name(),
                             self.selection_text(),
+                            u8::from(self.snap_frames),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-"),
                             self.doc_path.display()
@@ -1371,9 +1395,10 @@ impl WaveApp {
                     }
                     None => {
                         format!(
-                            "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 time_display={} selection_text=- {view} undo=- redo=- path=",
+                            "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 time_display={} selection_text=- snap_frames={} {view} undo=- redo=- path=",
                             u8::from(busy),
-                            self.time_format.name()
+                            self.time_format.name(),
+                            u8::from(self.snap_frames)
                         )
                     }
                 }
@@ -1412,6 +1437,11 @@ impl WaveApp {
             // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
             "PANELS" => format!("OK {}", self.panels.report()),
             "GESTURE" => self.control_gesture(rest),
+            // The step a ruler gesture calls, for scripted checks: `SNAP_FRAME <frame>`.
+            "SNAP_FRAME" => match rest.trim().parse::<usize>() {
+                Ok(f) => format!("OK frame={}", self.snap_gesture(f)),
+                Err(_) => "ERR SNAP_FRAME <frame>".to_string(),
+            },
             "SELECT_TIME" => {
                 let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
                 let fmt = self.time_format;
@@ -1976,7 +2006,11 @@ impl WaveApp {
 
         // Select tool: click places the cursor, drag selects; near a selection edge a drag adjusts
         // it, Shift-click extends, double-click selects what is on screen, triple-click everything.
-        let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
+        let (snap_fmt, snap_on) = (self.time_format, self.snap_frames);
+        let frame_at = |view: &Viewport, pos: Pos2| {
+            let frame = view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
+            if snap_on { snap_fmt.snap_to_frame(frame, rate, frames) } else { frame }
+        };
         let edge_at = |sel: &Selection, view: &Viewport, pos: Pos2| sel.edge_near(view, pos.x - rect.left(), GRAB_PX);
         if let Some(pos) = response.hover_pos().or(response.interact_pointer_pos())
             && edge_at(&self.selection, &self.view, pos).is_some()
@@ -2341,11 +2375,13 @@ fn ruler_step_for(fmt: TimeFormat, min_seconds: f64, rate: u32) -> f64 {
                 decade *= 10.0;
             }
         }
-        TimeFormat::Smpte30 => {
-            const FRAMES: [f64; 5] = [1.0, 2.0, 5.0, 10.0, 15.0];
-            FRAMES.iter().map(|f| f / 30.0).find(|s| *s >= min_seconds).unwrap_or_else(|| ruler_step(min_seconds.max(1.0)))
-        }
         TimeFormat::Decimal | TimeFormat::Compact => ruler_step(min_seconds),
+        _ => {
+            // SMPTE: whole frames below a second.
+            const FRAMES: [f64; 5] = [1.0, 2.0, 5.0, 10.0, 15.0];
+            let frame = fmt.smpte().map_or(1.0 / 30.0, |r| r.frame_seconds());
+            FRAMES.iter().map(|f| f * frame).find(|s| *s >= min_seconds).unwrap_or_else(|| ruler_step(min_seconds.max(1.0)))
+        }
     }
 }
 
@@ -2457,6 +2493,8 @@ mod tests {
         assert!((ruler_step_for(TimeFormat::Smpte30, 0.02, 48_000) - 1.0 / 30.0).abs() < 1e-12, "one frame");
         assert!((ruler_step_for(TimeFormat::Smpte30, 0.2, 48_000) - 10.0 / 30.0).abs() < 1e-12);
         assert_eq!(ruler_step_for(TimeFormat::Smpte30, 3.0, 48_000), 5.0);
+        assert!((ruler_step_for(TimeFormat::Smpte24, 0.02, 48_000) - 1.0 / 24.0).abs() < 1e-12);
+        assert!((ruler_step_for(TimeFormat::Smpte5994, 0.01, 48_000) - 1001.0 / 60_000.0).abs() < 1e-12);
     }
 
     #[test]
