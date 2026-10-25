@@ -28,6 +28,7 @@ pub mod io;
 pub mod meta;
 pub mod meters;
 pub mod mix;
+pub mod multitrack;
 pub mod panels;
 pub mod random;
 pub mod save;

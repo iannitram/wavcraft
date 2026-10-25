@@ -6,6 +6,23 @@
 
 Build every piece first as separate PRs (Qwen on Hyperion and Z13 does the Low-complexity unwritten features, one feature per PR, stacked on the PR it depends on, never merged by the builders). Then a merge phase fits the pieces together; that phase is also where each feature is checked against the vendor's live guide, because some rows were written from memory (verify a row before relying on it).
 
+### Integration checkpoint (2026-10-24)
+
+Draft PR #903 on `integration/branch-triage-2026-10-24` combines the reviewed
+branches recorded in [`branch-integration.md`](branch-integration.md). This is
+integration-branch status; the category tables below remain the 2026-10-23
+snapshot of `main` and open PRs.
+
+| Roadmap area | Available on the integration branch | Remaining work |
+| --- | --- | --- |
+| A099 time display (F18) | View menu and panels select decimal, compact, samples or SMPTE-30; the choice persists in settings. | Other ruler formats and related preference UI. |
+| A257 / A260 Save Selection As and Export (F43) | File menu and control verbs write a WAV copy without changing the open document's save path. | Other output formats and export options. |
+| C074 / C097 multitrack base (F103) | New session dialog, basic track/timeline view, track controls and file or document clip import. | Session open/save, undo, clip editing and waveforms, playback, mixdown and disk-backed imports. |
+| B089 Doppler, B098 stereo width and other core additions | Tested DSP, effect state, metadata and band-planning code is available to later features. | Most of these additions still need app or playback wiring; Doppler audio rendering is separate. |
+
+The desktop app opened a 48 kHz test WAV and exited cleanly in an Xvfb smoke
+run. Strict workspace Clippy and workspace tests gate each committed merge.
+
 ### Qwen run log
 
 PRs opened 2026-10-22, all marked alpha and all core only (nothing is reachable from the app yet):
