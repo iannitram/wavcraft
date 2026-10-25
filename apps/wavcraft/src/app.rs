@@ -2105,6 +2105,47 @@ fn split_seed(args: &str) -> (Result<u64, String>, String) {
     (seed, rest.join(" "))
 }
 
+// C186-c scaffolding: remove these dead-code allowances when the app uses the component.
+#[allow(dead_code)]
+struct SaveControls {
+    include_markers: bool,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<AtomicU32>,
+}
+
+#[allow(dead_code)]
+impl SaveControls {
+    fn new(_include_markers: bool) -> Self {
+        todo!("C186-c")
+    }
+
+    fn options(&self, _marker_chunks: Vec<([u8; 4], Vec<u8>)>) -> wavcraft_core::save::SaveOptions {
+        todo!("C186-c")
+    }
+
+    fn request_cancel(&self) {
+        todo!("C186-c")
+    }
+
+    fn progress_percent(&self) -> u32 {
+        todo!("C186-c")
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+enum SaveDisposition {
+    Current { close: bool },
+    Earlier,
+    Cancelled,
+    Failed(String),
+}
+
+#[allow(dead_code)]
+fn save_disposition(_result: Result<(), wavcraft_core::save::SaveError>, _same_document: bool, _then_close: bool) -> SaveDisposition {
+    todo!("C186-c")
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2230,5 +2271,62 @@ mod tests {
         assert_eq!((seed, rest.as_str()), (Ok(7), "freq=440 dur=2"));
         assert!(split_seed("seed=x").0.is_err());
         assert!(split_seed("dur=2").0.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod c186_locked {
+    use super::*;
+    use wavcraft_core::save::SaveError;
+
+    #[test]
+    fn c_worker_observes_cancel_and_new_save_resets_it() {
+        let controls = SaveControls::new(true);
+        let worker_cancel = controls.cancel.clone();
+        assert!(!worker_cancel.load(Ordering::Relaxed));
+        controls.request_cancel();
+        assert!(worker_cancel.load(Ordering::Relaxed));
+        controls.request_cancel();
+        assert!(worker_cancel.load(Ordering::Relaxed));
+        assert!(!SaveControls::new(true).cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn c_progress_uses_shared_thousandths_and_clamps() {
+        let controls = SaveControls::new(true);
+        assert_eq!(controls.progress_percent(), 0);
+        let worker_progress = controls.progress.clone();
+        worker_progress.store(125, Ordering::Relaxed);
+        assert_eq!(controls.progress_percent(), 12);
+        worker_progress.store(999, Ordering::Relaxed);
+        assert_eq!(controls.progress_percent(), 99);
+        worker_progress.store(1000, Ordering::Relaxed);
+        assert_eq!(controls.progress_percent(), 100);
+        worker_progress.store(1200, Ordering::Relaxed);
+        assert_eq!(controls.progress_percent(), 100);
+    }
+
+    #[test]
+    fn c_marker_choice_is_snapshotted_without_changing_payloads() {
+        let mut controls = SaveControls::new(true);
+        let options = controls.options(vec![(*b"cue ", vec![0, 0, 0, 0])]);
+        assert!(options.include_markers);
+        assert_eq!(options.marker_chunks, vec![(*b"cue ", vec![0, 0, 0, 0])]);
+        controls.include_markers = false;
+        let off = controls.options(vec![(*b"cue ", vec![0, 0, 0, 0])]);
+        assert!(!off.include_markers);
+        assert_eq!(off.marker_chunks, vec![(*b"cue ", vec![0, 0, 0, 0])]);
+        assert!(options.include_markers);
+    }
+
+    #[test]
+    fn c_only_current_success_can_mark_saved_or_close() {
+        assert_eq!(save_disposition(Ok(()), true, false), SaveDisposition::Current { close: false });
+        assert_eq!(save_disposition(Ok(()), true, true), SaveDisposition::Current { close: true });
+        assert_eq!(save_disposition(Ok(()), false, true), SaveDisposition::Earlier);
+        assert_eq!(save_disposition(Err(SaveError::Cancelled), true, true), SaveDisposition::Cancelled);
+        assert_eq!(save_disposition(Err(SaveError::Cancelled), false, true), SaveDisposition::Cancelled);
+        assert_eq!(save_disposition(Err(SaveError::Empty), true, true), SaveDisposition::Failed("the file has no audio to save".to_string()));
+        assert_eq!(save_disposition(Err(SaveError::Empty), false, false), SaveDisposition::Failed("the file has no audio to save".to_string()));
     }
 }

@@ -68,6 +68,8 @@ impl SampleType {
 #[derive(Debug)]
 pub enum SaveError {
     Io(io::Error),
+    /// The user stopped the save before replacement.
+    Cancelled,
     /// The document has no audio.
     Empty,
 }
@@ -76,6 +78,7 @@ impl fmt::Display for SaveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SaveError::Io(e) => write!(f, "{e}"),
+            SaveError::Cancelled => write!(f, "save cancelled"),
             SaveError::Empty => write!(f, "the file has no audio to save"),
         }
     }
@@ -483,4 +486,218 @@ pub fn quantize(x: f32, bits: u32) -> i32 {
 
 fn invalid(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg.to_string())
+}
+
+/// C186-a: cancellable whole-document WAV save; the builder fills this stub.
+pub fn save_wav_controlled(
+    _doc: &DocState,
+    _target: &Path,
+    _ty: SampleType,
+    _progress: &mut dyn FnMut(f64),
+    _cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), SaveError> {
+    todo!("C186-a")
+}
+
+/// C186-b: marker chunks are owned payloads, without RIFF headers or padding.
+#[derive(Debug, Clone)]
+pub struct SaveOptions {
+    pub include_markers: bool,
+    pub marker_chunks: Vec<([u8; 4], Vec<u8>)>,
+}
+
+impl Default for SaveOptions {
+    fn default() -> Self {
+        todo!("C186-b")
+    }
+}
+
+/// C186-b: the same save, with an explicit marker-inclusion option.
+pub fn save_wav_with_options(
+    _doc: &DocState,
+    _target: &Path,
+    _ty: SampleType,
+    _options: &SaveOptions,
+    _progress: &mut dyn FnMut(f64),
+    _cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), SaveError> {
+    todo!("C186-b")
+}
+
+#[cfg(test)]
+mod c186_locked {
+    use super::*;
+    use crate::doc::{Channel, Piece};
+    use crate::store::{Store, StoreOptions};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("wavcraft-c186-{}-{name}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn doc(&self, frames: usize) -> DocState {
+            let store = Store::create_with(&self.0.join("store"), StoreOptions::default()).unwrap();
+            let pieces = vec![0.5; frames]
+                .chunks(BLOCK_FRAMES)
+                .map(|b| Piece::whole(store.append(b).unwrap()).unwrap())
+                .collect::<Vec<_>>();
+            DocState::new(store, vec![Channel::from_pieces(pieces)], 48_000, SourceFormat::synthetic(48_000, 1)).unwrap()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn chunks(path: &Path) -> Vec<([u8; 4], Vec<u8>)> {
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(&bytes[..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize, bytes.len() - 8);
+        assert_eq!(&bytes[8..12], b"WAVE");
+        let mut at = 12;
+        let mut out = Vec::new();
+        while at < bytes.len() {
+            let id = bytes[at..at + 4].try_into().unwrap();
+            let len = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+            out.push((id, bytes[at + 8..at + 8 + len].to_vec()));
+            if len & 1 == 1 {
+                assert_eq!(bytes[at + 8 + len], 0);
+            }
+            at += 8 + len + (len & 1);
+        }
+        assert_eq!(at, bytes.len());
+        out
+    }
+
+    // Literal RIFF payloads: cue id 7 at sample 1, label A.
+    fn marker_chunks() -> Vec<([u8; 4], Vec<u8>)> {
+        vec![
+            (*b"cue ", vec![1, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 100, 97, 116, 97, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]),
+            (*b"LIST", vec![97, 100, 116, 108, 108, 97, 98, 108, 6, 0, 0, 0, 7, 0, 0, 0, 65, 0]),
+        ]
+    }
+
+    #[test]
+    fn a_cancel_before_start_preserves_target_and_relocation() {
+        let t = Scratch::new("pre");
+        let doc = t.doc(4);
+        let path = t.0.join("target.wav");
+        std::fs::write(&path, b"original").unwrap();
+        let mut progress = Vec::new();
+        let result = save_wav_controlled(&doc, &path, SampleType::Int16, &mut |p| progress.push(p), &AtomicBool::new(true));
+        assert!(matches!(result, Err(SaveError::Cancelled)));
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(progress, Vec::<f64>::new());
+        assert_eq!(temp_files(&path), Vec::<PathBuf>::new());
+        assert_eq!(doc.source().relocated.get(), None);
+    }
+
+    #[test]
+    fn a_cancel_after_first_block_preserves_existing_target() {
+        let t = Scratch::new("mid");
+        let doc = t.doc(131_072);
+        let path = t.0.join("target.wav");
+        std::fs::write(&path, b"original").unwrap();
+        let cancel = AtomicBool::new(false);
+        let mut progress = Vec::new();
+        let result = save_wav_controlled(&doc, &path, SampleType::Int16, &mut |p| {
+            progress.push(p);
+            cancel.store(true, Ordering::Relaxed);
+        }, &cancel);
+        assert!(matches!(result, Err(SaveError::Cancelled)));
+        assert_eq!(progress, vec![0.5]);
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(temp_files(&path), Vec::<PathBuf>::new());
+        assert_eq!(doc.source().relocated.get(), None);
+    }
+
+    #[test]
+    fn a_cancel_at_last_callback_does_not_create_target() {
+        let t = Scratch::new("last");
+        let doc = t.doc(4);
+        let path = t.0.join("target.wav");
+        let cancel = AtomicBool::new(false);
+        let mut progress = Vec::new();
+        let result = save_wav_controlled(&doc, &path, SampleType::Int16, &mut |p| {
+            progress.push(p);
+            cancel.store(true, Ordering::Relaxed);
+        }, &cancel);
+        assert!(matches!(result, Err(SaveError::Cancelled)));
+        assert_eq!(progress, vec![1.0]);
+        assert!(!path.exists());
+        assert_eq!(temp_files(&path), Vec::<PathBuf>::new());
+        assert_eq!(doc.source().relocated.get(), None);
+    }
+
+    #[test]
+    fn a_success_reports_each_block_and_writes_exact_pcm() {
+        let t = Scratch::new("success");
+        let doc = t.doc(131_072);
+        let path = t.0.join("target.wav");
+        let mut progress = Vec::new();
+        save_wav_controlled(&doc, &path, SampleType::Int16, &mut |p| progress.push(p), &AtomicBool::new(false)).unwrap();
+        assert_eq!(progress, vec![0.5, 1.0]);
+        let out = chunks(&path);
+        assert_eq!(out.iter().map(|c| c.0).collect::<Vec<_>>(), vec![*b"fmt ", *b"data"]);
+        assert_eq!(out[1].1, [0, 64].repeat(131_072));
+        assert_eq!(temp_files(&path), Vec::<PathBuf>::new());
+        assert_eq!(doc.source().relocated.get().unwrap().0, path);
+    }
+
+    #[test]
+    fn b_default_includes_markers() {
+        let options = SaveOptions::default();
+        assert!(options.include_markers);
+        assert_eq!(options.marker_chunks, Vec::<([u8; 4], Vec<u8>)>::new());
+        let t = Scratch::new("on");
+        let doc = t.doc(4);
+        let path = t.0.join("target.wav");
+        let options = SaveOptions { marker_chunks: marker_chunks(), ..options };
+        save_wav_with_options(&doc, &path, SampleType::Int16, &options, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        let out = chunks(&path);
+        assert_eq!(out.iter().map(|c| c.0).collect::<Vec<_>>(), vec![*b"fmt ", *b"data", *b"cue ", *b"LIST"]);
+        assert_eq!(out[1].1, vec![0, 64, 0, 64, 0, 64, 0, 64]);
+        assert_eq!(out[2].1, vec![1, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 100, 97, 116, 97, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(out[3].1, vec![97, 100, 116, 108, 108, 97, 98, 108, 6, 0, 0, 0, 7, 0, 0, 0, 65, 0]);
+    }
+
+    #[test]
+    fn b_off_keeps_info_audio_and_input_markers() {
+        let t = Scratch::new("off");
+        let doc = t.doc(4);
+        let mut meta = crate::meta::Metadata::default();
+        meta.info.0.push((*b"INAM", b"T".to_vec()));
+        let doc = doc.with_metadata(meta);
+        let path = t.0.join("target.wav");
+        let options = SaveOptions { include_markers: false, marker_chunks: marker_chunks() };
+        save_wav_with_options(&doc, &path, SampleType::Int16, &options, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        let out = chunks(&path);
+        assert_eq!(out.iter().map(|c| c.0).collect::<Vec<_>>(), vec![*b"fmt ", *b"data", *b"LIST"]);
+        assert_eq!(out[1].1, vec![0, 64, 0, 64, 0, 64, 0, 64]);
+        assert_eq!(out[2].1, vec![73, 78, 70, 79, 73, 78, 65, 77, 2, 0, 0, 0, 84, 0]);
+        assert!(!options.include_markers);
+        assert_eq!(options.marker_chunks, marker_chunks());
+    }
+
+    #[test]
+    fn b_options_save_honors_cancellation() {
+        let t = Scratch::new("options-cancel");
+        let doc = t.doc(4);
+        let path = t.0.join("target.wav");
+        std::fs::write(&path, b"original").unwrap();
+        let cancel = AtomicBool::new(false);
+        let options = SaveOptions { include_markers: true, marker_chunks: marker_chunks() };
+        let result = save_wav_with_options(&doc, &path, SampleType::Int16, &options, &mut |_| cancel.store(true, Ordering::Relaxed), &cancel);
+        assert!(matches!(result, Err(SaveError::Cancelled)));
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(temp_files(&path), Vec::<PathBuf>::new());
+        assert_eq!(doc.source().relocated.get(), None);
+    }
 }
