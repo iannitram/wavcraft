@@ -1,0 +1,59 @@
+{
+  "id": "wav-m02-envelope-tests",
+  "title": "Envelope: test validation-error precedence for Monotone",
+  "kind": "small-code-change-exact-brief",
+  "size": "S",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "repo": "iannitram/wavcraft",
+  "base": "main",
+  "clone": "/home/deck/dev/craft/wavcraft",
+  "prompt_file": "m02-new.md",
+  "verify": [
+    {
+      "name": "new-test-monotone_validation_too_few_pr",
+      "cmd": "qcargo test -p wavcraft-core monotone_validation_too_few_precedes_nonfinite 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-monotone_validation_nonfinite_",
+      "cmd": "qcargo test -p wavcraft-core monotone_validation_nonfinite_precedes_not_increasing 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-monotone_validation_too_few_pr",
+      "cmd": "f=crates/core/src/dsp/envelope.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if points.len() < 2 {#if points.len() < 1 {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(qcargo test -p wavcraft-core monotone_validation_too_few_precedes_nonfinite 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-monotone_validation_nonfinite_",
+      "cmd": "f=crates/core/src/dsp/envelope.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if points.iter().any(|&(t, g)| !t.is_finite() || !g.is_finite()) {#if false \\&\\& points.iter().any(|\\&(t, g)| !t.is_finite() || !g.is_finite()) {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(qcargo test -p wavcraft-core monotone_validation_nonfinite_precedes_not_increasing 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "qcargo test -p wavcraft-core dsp::envelope",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "qcargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/dsp/envelope.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/dsp/envelope.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "Envelope: test validation-error precedence for Monotone (Refs #76)",
+  "est_minutes": 20,
+  "priority": 9,
+  "created_by": "coordinator-driver",
+  "run_lane": "qwen"
+}
