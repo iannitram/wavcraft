@@ -5,6 +5,23 @@ Update it when the layout changes. The test kit and bench (task 02) are listed a
 Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `random_edit` and
 `content_hash`, and the `wavcraft-edit-bench` binary.*
 
+## Current integration additions (2026-10-24)
+
+This section maps code on `integration/branch-triage-2026-10-24` (draft PR #903).
+The detailed map below records the earlier 2026-10-15 architecture; its
+whole-buffer and pending-task descriptions are historical. Use the modules
+listed here and the current source when integrating another branch.
+
+| Area | Current code | Role and remaining work |
+| --- | --- | --- |
+| Time display | `crates/core/src/view.rs` (`TimeFormat`), `settings.rs`, `actions.rs`; `apps/wavcraft/src/app.rs` | Format and parse decimal, compact, sample and SMPTE-30 positions; expose View actions and persist the choice. Other ruler formats remain separate roadmap work. |
+| Partial save and export | `crates/core/src/save.rs` (`Part`, `FileKind`, `write_file`); app `save_copy` and `SAVE_SELECTION` / `EXPORT` control verbs | Write a frame range and channel subset without moving the open document's save path. Public part bounds are checked before writing. Other output formats remain separate. |
+| Effect A/B state | `crates/core/src/effects/compare.rs` | Hold and apply two parameter sets for one effect. Dialog controls and preset persistence remain. |
+| DSP groundwork | `crates/core/src/dsp/{fade_curve,band_only,doppler,stereo_width}.rs` | Fade shapes, band filter design, Doppler path distances/delays/gains, and stereo mid/side width. Editor handles, playback wiring, and Doppler audio rendering remain. |
+| Source metadata | `crates/core/src/meta/source_link.rs` | Encode and parse a link to a source session in `INFO.WCSL`; export writing and Edit Original remain. |
+| Band planning | `crates/core/src/mix/band_plan.rs` | Compute crossover ranges and band lookup; it does not yet filter or route tracks. |
+| Regression tests | `crates/core/src/dsp/{echo,chorus}.rs`; `crates/core/tests/{ab_compare,band_only,fade_curve,save_part,source_link,stereo_width}.rs` | Cover new core APIs and echo/chorus edge cases. |
+
 ## Crates and modules
 
 | Crate | Module | What it holds |
