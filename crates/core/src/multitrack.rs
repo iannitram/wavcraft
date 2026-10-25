@@ -22,6 +22,7 @@ use crate::Document;
 
 pub use soundcraft_model;
 
+pub mod invert;
 pub mod notes;
 pub mod properties;
 pub mod reorder;
