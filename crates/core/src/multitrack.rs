@@ -24,6 +24,7 @@ pub use soundcraft_model;
 
 pub mod notes;
 pub mod properties;
+pub mod reorder;
 pub mod track_info;
 
 /// The most samples (frames times channels) one imported clip may hold in RAM: 128 MiB of `f32`.
