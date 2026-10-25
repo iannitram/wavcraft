@@ -2105,6 +2105,17 @@ fn split_seed(args: &str) -> (Result<u64, String>, String) {
     (seed, rest.join(" "))
 }
 
+// I3 card stubs: remove these temporary dead-code allowances when wiring Help.
+#[allow(dead_code, clippy::unimplemented)]
+fn shortcut_help_rows(_mac: bool) -> Vec<(&'static str, &'static str, String)> {
+    unimplemented!()
+}
+
+#[allow(dead_code, clippy::unimplemented)]
+fn shortcut_help_content(_ui: &mut egui::Ui, _mac: bool) {
+    unimplemented!()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2232,3 +2243,7 @@ mod tests {
         assert!(split_seed("dur=2").0.is_ok());
     }
 }
+
+#[cfg(test)]
+#[path = "i3_shortcut_help_tests.rs"]
+mod i3_shortcut_help_tests;
