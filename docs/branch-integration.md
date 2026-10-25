@@ -12,7 +12,7 @@ the code map for the multitrack and effects stacks.
 - Of those 195, 79 were ancestors of another unmerged remote tip. This leaves
   116 maximal tips to review, not 116 automatic merges. Alternate trials,
   recuts and old integration work can overlap without sharing ancestry.
-- After the batches below, 183 remote tips remain outside this
+- After the batches below, 173 remote tips remain outside this
   integration branch.
 
 ## Integration branch
@@ -48,6 +48,22 @@ The following app-facing bases are now integrated:
 | `feat/ap-f18-time-display` | `300eb92` | View time formats, panels, actions and a saved preference | Other ruler formats and preference controls |
 | `feat/ap-f103-multitrack-session` | `4213e23` | New session dialog, basic track/timeline view, track controls and clip import | Session persistence, undo, transport, mixdown, clip waveforms and disk-backed imports |
 
+The next ten branch tips build on those bases and add two independent core
+changes:
+
+| Remote branch | Merge commit | Available on this branch | Remaining work |
+| --- | --- | --- | --- |
+| `feat/qwen-c078-session-properties` | `5d75b88` | Session property getters and setters | Property dialog and undo |
+| `feat/qwen-c094-session-notes` | `e295e2d` | Session title and notes model | App controls and editor UI |
+| `feat/qwen-c105-track-info` | `42bd2ef` | Track color and notes model | Track header controls and editor UI |
+| `feat/qwen-c104-move-track` | `d48faea` | Track reorder model | Drag gesture, control verb and undo |
+| `feat/qwen-c082-timeline-view` | `d1cfa2b` | Timeline zoom, fit and scroll model | Connect multitrack UI to this model |
+| `feat/qwen-c083-time-ruler` | `8dcef90` | Ruler tick and label model | Connect multitrack UI to this model |
+| `feat/qwen-c110-invert-phase` | `201e22e` | Per-track invert state and sample operation | Mixdown application and header button |
+| `feat/ap-f47-smpte` | `b92c835` | Six SMPTE display rates, including drop-frame, and frame snapping in the app | Other time ruler formats |
+| `qwen/b058-b` | `2904296` | EQ graph coordinate and node-drag model | Graph widget and EQ dialog wiring |
+| `qwen/m02-new` | `f44ddea` | Envelope validation-order regression tests | No app change in this test branch |
+
 The Doppler merge corrects the one blocking item recorded in
 [issue #665](https://github.com/iannitram/wavcraft/issues/665): `pub mod doppler;`
 now sits between `distortion` and `echo`. This is the path-model part of B089;
@@ -69,10 +85,10 @@ created a multitrack session and track, switched views, and exited cleanly.
 1. Review small independent fixes and tests against current code, then merge
    those that still add behavior. Avoid merging a test branch whose behavior
    has since changed.
-2. Follow the stacks in `roadmap.md`: SMPTE and bars/beats after time display;
+2. Follow the stacks in `roadmap.md`: bars/beats after time display;
    preferences before preference children; meters before meter children; rack
    before tail handling; effect run state before pitch, reverb and stretch
-   children; multitrack child branches after the session base.
+   children; remaining multitrack children after the session base.
 3. Reconcile shared registry lines and settings persistence during those
    stacks. Run formatting on changed files, strict Clippy and workspace tests
    for each merge.

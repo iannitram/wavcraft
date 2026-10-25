@@ -15,10 +15,12 @@ snapshot of `main` and open PRs.
 
 | Roadmap area | Available on the integration branch | Remaining work |
 | --- | --- | --- |
-| A099 time display (F18) | View menu and panels select decimal, compact, samples or SMPTE-30; the choice persists in settings. | Other ruler formats and related preference UI. |
+| A099 time display (F18/F47) | View menu and panels select decimal, compact, samples or six SMPTE rates; the format persists in settings. Frame snapping is available in the app. | Other ruler formats and related preference UI. |
 | A257 / A260 Save Selection As and Export (F43) | File menu and control verbs write a WAV copy without changing the open document's save path. | Other output formats and export options. |
 | C074 / C097 multitrack base (F103) | New session dialog, basic track/timeline view, track controls and file or document clip import. | Session open/save, undo, clip editing and waveforms, playback, mixdown and disk-backed imports. |
+| C078, C082, C083, C094, C104, C105, C110 multitrack children | Session properties and notes, track details and reorder, timeline and ruler models, and track polarity are present in core. | Wire these models into the app, undo and playback/mixdown where relevant. |
 | B089 Doppler, B098 stereo width and other core additions | Tested DSP, effect state, metadata and band-planning code is available to later features. | Most of these additions still need app or playback wiring; Doppler audio rendering is separate. |
+| B058 EQ graph and M02 envelope tests | EQ graph coordinate and drag model plus validation-order regression tests are present in core. | Connect EQ graph to its dialog; the M02 branch adds tests only. |
 
 The desktop app opened a 48 kHz test WAV and exited cleanly in an Xvfb smoke
 run. Strict workspace Clippy and workspace tests gate each committed merge.

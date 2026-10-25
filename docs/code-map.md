@@ -5,7 +5,7 @@ Update it when the layout changes. The test kit and bench (task 02) are listed a
 Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `random_edit` and
 `content_hash`, and the `wavcraft-edit-bench` binary.*
 
-## Current integration additions (2026-10-24)
+## Current integration additions (2026-10-25)
 
 This section maps code on `integration/branch-triage-2026-10-24` (draft PR #903).
 The detailed map below records the earlier 2026-10-15 architecture; its
@@ -14,14 +14,15 @@ listed here and the current source when integrating another branch.
 
 | Area | Current code | Role and remaining work |
 | --- | --- | --- |
-| Time display | `crates/core/src/view.rs` (`TimeFormat`), `settings.rs`, `actions.rs`; `apps/wavcraft/src/app.rs` | Format and parse decimal, compact, sample and SMPTE-30 positions; expose View menu, panel and control actions and persist the choice. Other ruler formats remain separate roadmap work. |
+| Time display and frame snap | `crates/core/src/view.rs` (`TimeFormat`), `smpte.rs`, `settings.rs`, `actions.rs`; `apps/wavcraft/src/app.rs` | Format and parse decimal, compact, sample and six SMPTE rates, including 29.97 drop-frame. View menu and control actions select a format and toggle frame snapping. The time format persists in settings. Other ruler formats remain separate roadmap work. |
 | Partial save and export | `crates/core/src/save.rs` (`Part`, `FileKind`, `write_file`); app `save_copy` and `SAVE_SELECTION` / `EXPORT` control verbs | Write WAV from the whole document or a selected frame range and channel subset on a worker, without moving the open document's save path. Public part bounds are checked before writing. Other output formats remain separate. |
 | Multitrack (F103 alpha) | `crates/core/src/multitrack.rs`; `apps/wavcraft/src/multitrack_ui.rs`, `app.rs`, `main.rs` | `Multitrack` wraps `soundcraft_model::Session`. File > New > Multitrack Session, a basic timeline and track view, file/document clip import, and `SESSION` / `TRACK` / `CLIP` / `VIEW` control verbs are reachable. Session persistence, undo, transport, mixdown, clip waveforms and disk-backed imports remain. Imports are bounded and held in RAM. |
+| Multitrack child models | `crates/core/src/multitrack/{properties,notes,track_info,reorder,timeline,invert}.rs`; `crates/core/src/ruler.rs` | Session properties and notes; track color, notes, reorder and polarity; timeline zoom/scroll and ruler ticks. These are core APIs. The app's multitrack view still needs to call them; mixdown does not apply track polarity yet. |
 | Effect A/B state | `crates/core/src/effects/compare.rs` | Hold and apply two parameter sets for one effect. Dialog controls and preset persistence remain. |
-| DSP groundwork | `crates/core/src/dsp/{fade_curve,band_only,doppler,stereo_width}.rs` | Fade shapes, band filter design, Doppler path distances/delays/gains, and stereo mid/side width. Editor handles, playback wiring, and Doppler audio rendering remain. |
+| DSP groundwork | `crates/core/src/dsp/{fade_curve,band_only,doppler,stereo_width,eq_graph}.rs` | Fade shapes, band filter design, Doppler path distances/delays/gains, stereo mid/side width, and EQ graph coordinate/node dragging. Editor handles, graph widget, playback wiring, and Doppler audio rendering remain. |
 | Source metadata | `crates/core/src/meta/source_link.rs` | Encode and parse a link to a source session in `INFO.WCSL`; export writing and Edit Original remain. |
 | Band planning | `crates/core/src/mix/band_plan.rs` | Compute crossover ranges and band lookup; it does not yet filter or route tracks. |
-| Regression tests | `crates/core/src/dsp/{echo,chorus}.rs`; `crates/core/tests/{ab_compare,band_only,fade_curve,save_part,source_link,stereo_width}.rs` | Cover new core APIs and echo/chorus edge cases. |
+| Regression tests | `crates/core/src/dsp/{echo,chorus,envelope}.rs`; `crates/core/tests/{ab_compare,band_only,eq_graph,fade_curve,save_part,source_link,stereo_width}.rs` | Cover new core APIs, echo/chorus edge cases, and envelope validation error precedence. |
 
 ## Crates and modules
 
