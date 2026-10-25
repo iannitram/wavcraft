@@ -12,7 +12,7 @@ the code map for the multitrack and effects stacks.
 - Of those 195, 79 were ancestors of another unmerged remote tip. This leaves
   116 maximal tips to review, not 116 automatic merges. Alternate trials,
   recuts and old integration work can overlap without sharing ancestry.
-- After the batches below, 185 remote tips remain outside this
+- After the batches below, 183 remote tips remain outside this
   integration branch.
 
 ## Integration branch
@@ -41,6 +41,13 @@ and `feat/ap-f43-save-selection-export` (Save Selection As and Export, merge `6f
 The export merge also validates public `Part` ranges and channel indices before
 writing so malformed requests return an error instead of panicking.
 
+The following app-facing bases are now integrated:
+
+| Remote branch | Merge commit | Available now | Remaining work |
+| --- | --- | --- | --- |
+| `feat/ap-f18-time-display` | `300eb92` | View time formats, panels, actions and a saved preference | Other ruler formats and preference controls |
+| `feat/ap-f103-multitrack-session` | `4213e23` | New session dialog, basic track/timeline view, track controls and clip import | Session persistence, undo, transport, mixdown, clip waveforms and disk-backed imports |
+
 The Doppler merge corrects the one blocking item recorded in
 [issue #665](https://github.com/iannitram/wavcraft/issues/665): `pub mod doppler;`
 now sits between `distortion` and `echo`. This is the path-model part of B089;
@@ -54,18 +61,18 @@ commit. Added files were formatted with rustfmt. The repository-wide
 in unrelated files with the installed Rust 1.95 toolchain; do not mix a broad
 formatting sweep into a feature merge.
 The desktop app was also built and smoke-tested under Xvfb with a one-second
-48 kHz WAV: it reported 48,000 frames through the control channel and exited
-cleanly.
+48 kHz WAV: it reported 48,000 frames, switched to the Samples time display,
+created a multitrack session and track, switched views, and exited cleanly.
 
 ## Next passes
 
 1. Review small independent fixes and tests against current code, then merge
    those that still add behavior. Avoid merging a test branch whose behavior
    has since changed.
-2. Follow the stacks in `roadmap.md`: time display before SMPTE and bars/beats;
+2. Follow the stacks in `roadmap.md`: SMPTE and bars/beats after time display;
    preferences before preference children; meters before meter children; rack
    before tail handling; effect run state before pitch, reverb and stretch
-   children; multitrack session before its children.
+   children; multitrack child branches after the session base.
 3. Reconcile shared registry lines and settings persistence during those
    stacks. Run formatting on changed files, strict Clippy and workspace tests
    for each merge.
