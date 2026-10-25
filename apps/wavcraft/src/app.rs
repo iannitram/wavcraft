@@ -19,6 +19,7 @@ use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError,
 
 use crate::control;
 use crate::effect_dialog::{Answer, EffectDialog};
+use crate::multitrack_ui::MtView;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 use crate::video::{VideoPanel, Waiters};
@@ -174,6 +175,8 @@ pub struct WaveApp {
     effect_dialog: Option<EffectDialog>,
     /// A Generate dialog's Preview is playing (f21): the player holds the preview, not the file.
     previewing: bool,
+    /// The Multitrack session and its editor view (f103).
+    mtv: MtView,
 }
 
 impl WaveApp {
@@ -239,6 +242,7 @@ impl WaveApp {
             history_refocus: None,
             effect_dialog: None,
             previewing: false,
+            mtv: MtView::default(),
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -1438,6 +1442,7 @@ impl WaveApp {
                     _ => "ERR CHNAME get | CHNAME set <channel from 1> <name>".to_string(),
                 }
             }
+            "SESSION" | "TRACK" | "CLIP" | "VIEW" => self.mtv.control(cmd, rest, self.doc.as_ref()),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -1528,6 +1533,12 @@ impl WaveApp {
                 {
                     self.error = Some(e);
                 }
+                ui.menu_button("New", |ui| {
+                    if ui.button("Multitrack Session…").clicked() {
+                        self.mtv.open_dialog();
+                        ui.close();
+                    }
+                });
                 ui.separator();
                 let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
                 if ui.button("Session Folder…").on_hover_text(&now).clicked() {
@@ -1553,6 +1564,9 @@ impl WaveApp {
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
             ui.menu_button("Generate", |ui| self.generate_menu(ui));
             ui.menu_button("View", |ui| {
+                ui.radio_value(&mut self.mtv.show, false, "Waveform editor");
+                ui.radio_value(&mut self.mtv.show, true, "Multitrack editor");
+                ui.separator();
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
                     self.spectrum = None;
                 }
@@ -1979,8 +1993,15 @@ impl eframe::App for WaveApp {
         self.insert_silence_dialog(&ctx);
         self.effect_dialog_ui(&ctx);
         self.clear_history_prompt(&ctx);
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
-        self.draw_hud(&ctx);
+        self.mtv.dialog_ui(&ctx);
+        if self.mtv.show {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                self.mtv.ui(ui, self.doc.as_ref());
+            });
+        } else {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
+            self.draw_hud(&ctx);
+        }
     }
 }
 
