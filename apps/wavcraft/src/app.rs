@@ -1924,6 +1924,17 @@ impl WaveApp {
             "RACK" => self.rack.command(rest),
             // `PRESET save|load|delete|list <effect|rack> [name]`.
             "PRESET" => self.rack.preset(rest, &mut self.effect_dialog),
+            // A number the effects use: `PARAM amplify.db 6`, `PARAM normalize.db -1`.
+            "PARAM" => {
+                let mut it = rest.split_whitespace();
+                match (it.next(), it.next().and_then(|v| v.parse::<f32>().ok()), self.editor.as_mut()) {
+                    (Some(name), Some(v), Some(e)) => match e.set_param(name, v) {
+                        Ok(()) => "OK".to_string(),
+                        Err(why) => format!("ERR {why}"),
+                    },
+                    _ => "ERR PARAM <amplify.db|normalize.db> <number>, with a file open".to_string(),
+                }
+            }
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),

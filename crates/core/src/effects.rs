@@ -20,6 +20,10 @@ pub mod dynamics_graph;
 mod compare;
 mod eq;
 mod gain;
+pub mod oneshot;
+pub use oneshot::{
+    EffectParams, FadeCurve, FadeDir, MAX_GAIN_DB, amplify, amplify_guarded, fade, fade_label, headroom_db, normalize, peak, reverse,
+};
 pub use compare::{AbCompare, Side};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;

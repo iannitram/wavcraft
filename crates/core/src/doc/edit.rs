@@ -169,7 +169,7 @@ impl Edit {
         self.change == Change::None
     }
 
-    fn noop(doc: &DocState, label: &str) -> Edit {
+    pub(crate) fn noop(doc: &DocState, label: &str) -> Edit {
         Edit { state: doc.clone(), label: label.to_string(), change: Change::None }
     }
 }
