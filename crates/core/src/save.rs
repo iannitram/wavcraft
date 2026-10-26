@@ -520,6 +520,7 @@ pub struct Tpdf {
     state: u64,
 }
 
+#[allow(clippy::unimplemented)] // card wav-c-12-a removes this with the stubs
 impl Tpdf {
     /// A generator whose state starts at `seed`.
     pub fn new(seed: u64) -> Tpdf {
@@ -541,6 +542,7 @@ impl Tpdf {
 
 /// `x` (full scale ±1) as a `bits`-bit integer with TPDF dither from `noise` added before
 /// rounding, then clamped; NaN is 0. Draws exactly one [`Tpdf::next_lsb`] per call.
+#[allow(clippy::unimplemented)] // card wav-c-12-a removes this with the stub
 pub fn quantize_dithered(x: f32, bits: u32, noise: &mut Tpdf) -> i32 {
     let _ = (x, bits, noise);
     unimplemented!("card wav-c-12-a")
