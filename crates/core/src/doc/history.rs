@@ -134,9 +134,18 @@ impl History {
     /// A history rebuilt from steps (label and state, oldest first) with the cursor on `cursor`:
     /// what crash recovery restores. `None` for no steps or a cursor past them.
     pub fn restore(steps: Vec<(String, DocState)>, cursor: usize, cap_disk_bytes: u64) -> Option<History> {
-        // Stub: card wav-c-86-a replaces this body.
-        let _ = (steps, cursor, cap_disk_bytes);
-        None
+        if cursor >= steps.len() {
+            return None;
+        }
+        let mut h =
+            History { steps: Vec::new(), cursor, cap_disk_bytes, counts: HashMap::new(), held_bytes: 0, current_bytes: 0, dropped: 0, free_space };
+        for (label, state) in steps {
+            let state = Arc::new(state);
+            let made = h.add_counts(&state);
+            h.steps.push(Step { label, state, made_bytes: made, change: Change::LengthFrom { frame: 0 } });
+        }
+        h.current_bytes = h.current().disk_bytes_referenced();
+        Some(h)
     }
 
     /// Use another free-space query (tests).
