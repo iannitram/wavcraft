@@ -171,7 +171,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection", &[shift("S")]),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full", &[cmd("Backslash")]),
     // The mouse tools (f64): a minimal switch; a fuller tool model is on another branch.
-    window(ActionId::ToolSelect, "tool.select", "Time Selection Tool", &[key("V")]),
+    window(ActionId::ToolSelect, "tool.select", "Time Selection Tool", &[key("T")]),
     window(ActionId::ToolHand, "tool.hand", "Hand Tool", &[key("H")]),
     window(ActionId::ToolZoom, "tool.zoom", "Zoom Tool", &[key("Z")]),
 ];
