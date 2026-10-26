@@ -15,8 +15,13 @@ use std::sync::atomic::AtomicBool;
 use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
+#[cfg(test)]
+mod card129_tests;
 mod eq;
 mod gain;
+pub mod preview;
+pub mod rack;
+pub mod rack_apply;
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
 
