@@ -17,8 +17,10 @@ use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
 mod eq;
 mod gain;
+mod normalize;
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
+pub use normalize::{Normalize, normalize_gains, target_peak};
 
 /// What a setting means, so a dialog can pick the right control and units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
