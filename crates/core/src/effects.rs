@@ -15,6 +15,8 @@ use std::sync::atomic::AtomicBool;
 use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
+pub mod dynamics;
+pub mod dynamics_graph;
 mod compare;
 mod eq;
 mod gain;
@@ -216,7 +218,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
