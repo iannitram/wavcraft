@@ -243,6 +243,19 @@ pub enum Repeat {
     Effect(u16, Vec<f64>),
 }
 
+/// What [`ActionId::RepeatLastDialog`] (`F2` / `Ctrl+R`) opens or runs for the remembered command.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RepeatDialog {
+    /// No repeatable command has run yet, or it cannot run with the current selection.
+    Unavailable,
+    /// Reopen the effect dialog for effect `index` in [`effects::all`] pre-filled with these settings.
+    Effect(u16, Vec<f64>),
+    /// Reopen the Insert › Silence dialog pre-filled with this many frames.
+    InsertSilence(u64),
+    /// The last command has no dialog (a parameterless effect or a repeatable edit action): run [`ActionId::RepeatLast`] directly.
+    RunNow,
+}
+
 /// Whether Repeat Last Command may run `id` again. Delete is not repeatable (Audition), nor are
 /// Undo/Redo, the clipboard's Cut and Copy, selection moves and the view.
 fn repeatable(id: ActionId) -> bool {
@@ -380,6 +393,13 @@ impl Editor {
             Some(Repeat::InsertSilence(frames)) => self.insert_silence(selection.start, frames),
             None => Ok(Outcome { doc_changed: false, selection, message: Some("There is no command to repeat yet".to_string()) }),
         }
+    }
+
+    /// What [`ActionId::RepeatLastDialog`] (`F2` / `Ctrl+R`) opens or runs for `selection`.
+    #[allow(clippy::todo)]
+    pub fn repeat_dialog(&self, selection: &Range<u64>) -> RepeatDialog {
+        let _ = selection;
+        todo!()
     }
 
     /// The zero-crossing adjusts: each moved edge goes to the nearest sign change within
