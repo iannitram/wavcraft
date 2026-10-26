@@ -343,8 +343,7 @@ impl Editor {
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
-            // Stub for wav-c-22-c: snapping switches are always enabled once implemented.
-            ActionId::SnapToggle | ActionId::SnapMarkersToggle | ActionId::SnapRulerToggle | ActionId::SnapZeroToggle => false,
+            ActionId::SnapToggle | ActionId::SnapMarkersToggle | ActionId::SnapRulerToggle | ActionId::SnapZeroToggle => true,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
@@ -386,6 +385,34 @@ impl Editor {
                 Some(Repeat::InsertSilence(_)) => format!("Repeat {}", action(ActionId::InsertSilence).menu),
                 None => a.menu.to_string(),
             },
+            ActionId::SnapToggle => {
+                if self.snap.enabled {
+                    format!("{} (on)", a.menu)
+                } else {
+                    format!("{} (off)", a.menu)
+                }
+            }
+            ActionId::SnapMarkersToggle => {
+                if self.snap.markers {
+                    format!("{} (on)", a.menu)
+                } else {
+                    format!("{} (off)", a.menu)
+                }
+            }
+            ActionId::SnapRulerToggle => {
+                if self.snap.ruler {
+                    format!("{} (on)", a.menu)
+                } else {
+                    format!("{} (off)", a.menu)
+                }
+            }
+            ActionId::SnapZeroToggle => {
+                if self.snap.zero_crossings {
+                    format!("{} (on)", a.menu)
+                } else {
+                    format!("{} (off)", a.menu)
+                }
+            }
             _ => a.menu.to_string(),
         }
     }
@@ -403,11 +430,30 @@ impl Editor {
 
     /// Flip one of the `Edit › Snapping` switches (`SnapToggle`, `SnapMarkersToggle`,
     /// `SnapRulerToggle`, `SnapZeroToggle`) and report its new state for the status bar.
-    // Stub for wav-c-22-c: remove the allow and the todo! when implementing.
-    #[allow(clippy::todo)]
     pub fn toggle_snap(&mut self, id: ActionId, selection: Range<u64>) -> Outcome {
-        let _ = (id, selection);
-        todo!("wav-c-22-c: toggle_snap")
+        let message = match id {
+            ActionId::SnapToggle => {
+                self.snap.enabled = !self.snap.enabled;
+                if self.snap.enabled { "Snapping on".to_string() } else { "Snapping off".to_string() }
+            }
+            ActionId::SnapMarkersToggle => {
+                self.snap.markers = !self.snap.markers;
+                if self.snap.markers { "Snap to Markers on".to_string() } else { "Snap to Markers off".to_string() }
+            }
+            ActionId::SnapRulerToggle => {
+                self.snap.ruler = !self.snap.ruler;
+                if self.snap.ruler { "Snap to Ruler on".to_string() } else { "Snap to Ruler off".to_string() }
+            }
+            ActionId::SnapZeroToggle => {
+                self.snap.zero_crossings = !self.snap.zero_crossings;
+                if self.snap.zero_crossings { "Snap to Zero Crossings on".to_string() } else { "Snap to Zero Crossings off".to_string() }
+            }
+            _ => {
+                // This shouldn't happen as we're only called for snapping actions
+                "Snap toggle error".to_string()
+            }
+        };
+        Outcome { doc_changed: false, selection, message: Some(message) }
     }
 
     /// The zero-crossing adjusts: each moved edge goes to the nearest sign change within
