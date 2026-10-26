@@ -17,8 +17,8 @@ log.workspace = true
 craft-log.workspace = true
 soundcraft-model.workspace = true
 soundcraft-mix.workspace = true
+soundcraft-audio-io.workspace = true
 soundcraft-dsp.workspace = true
-mix-audio-io.workspace = true
 dirs.workspace = true
 soundcraft-video.workspace = true
 

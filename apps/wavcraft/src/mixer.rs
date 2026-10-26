@@ -15,7 +15,7 @@ use soundcraft_mix::MixEngine;
 use soundcraft_model::time::SampleRate;
 use soundcraft_model::{ChannelFormat, Clip, Session, SourceAudio, SourceId, TrackId, TrackKind, fader_db_to_pos, fader_pos_to_db};
 
-use mix_audio_io::AudioBuffer;
+use soundcraft_audio_io::AudioBuffer;
 
 const RATE: u32 = 48_000;
 /// Frames rendered for one meter reading.

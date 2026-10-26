@@ -144,7 +144,21 @@ impl Document {
         }
         let per_col = (end - start) / cols as f64;
         if per_col >= 64.0 {
-            return peaks.columns(start, end, cols);
+            // The overview crate's own column walk (`Peaks::columns`, gone at soundcraft 274f788)
+            // was replaced there by interpolating `spans`; keep the exact bucket min/max this view
+            // has always drawn, now over `minmax(samples, ..)`.
+            let len = samples.len() as f64;
+            return (0..cols)
+                .map(|c| {
+                    let (s, e) = (start + per_col * c as f64, start + per_col * (c + 1) as f64);
+                    if e <= 0.0 || s >= len {
+                        return (0.0, 0.0);
+                    }
+                    let si = s.max(0.0).floor();
+                    let ei = e.min(len).ceil().max(si + 1.0);
+                    peaks.minmax(samples, si as usize, ei as usize)
+                })
+                .collect();
         }
         (0..cols)
             .map(|c| {

@@ -14,42 +14,36 @@ wavcraft-core = { path = "crates/core" }
 # Self-logging (SELF-LOGGING.md), the same crates the Craft forks carry, copied from PhotoCraft `ours`.
 craft-log = { path = "crates/craft-log" }
 
-# SoundCraft's engine crates, pinned to one commit of our fork (upstream v0.5.0 plus our merged
-# fixes: long-file handling, parallel WAV/AIFF decode). Bump deliberately; see README.
-# This commit is tagged `wavecraft-pin-2026-10-12` on iannitram/soundcraft. The tag keeps the
-# app's old name (WaveCraft, renamed WavCraft 2026-10-15) on purpose: it lives on another repo,
-# and renaming it would break the pin for every existing clone and bundle. Leave it as it is.
-soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
+# SoundCraft's engine crates, ALL pinned to one commit of our fork since 2026-10-26: 274f788, the
+# head of `feat/streamed-readahead` (upstream v0.5.0 plus our merged fixes: long-file handling,
+# parallel WAV/AIFF decode, the session model, the disk-backed `SampleSource` trait, the mix
+# engine's `ReadAheadSource`). Every soundcraft-* line below names the same rev so the family
+# holds one copy of each crate (two copies of soundcraft-model make `TrackId`/`Session` two
+# types). Bump deliberately, all together; see README. (The older tag `wavecraft-pin-2026-10-12`
+# keeps the app's old name on purpose: it lives on another repo, and renaming it would break old pins.)
+soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
 # f27: the biquad filter designs (RBJ cookbook shelves, peaks, notch, high/low-pass), MIT OR Apache-2.0,
 # from the same pinned commit as soundcraft-audio-io.
-soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
+soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
 
 # f122 (the Video panel): SoundCraft's `soundcraft-video` (MIT OR Apache-2.0: pure Rust H.264, ProRes
 # and Motion JPEG decode, ISO base media demux), from the head of our fork's `ours` branch. It brings
 # the `image` crate (MIT OR Apache-2.0) with its jpeg feature, for Motion JPEG.
-soundcraft-video = { git = "https://github.com/iannitram/soundcraft", rev = "734761cd31832c551994716815516ce70fb05f4b" }
+soundcraft-video = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
 
 # f102 (C322): SoundCraft's session model (`SampleSource`, the disk-backed source trait) and its
-# time crate, pinned to the commit of the fork's feat/disk-backed-source branch. A separate pin from
-# soundcraft-audio-io above; it can move to the fork's `ours` once that branch is merged.
-# Licences MIT OR Apache-2.0.
-soundcraft-model = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
-soundcraft-time = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
+# time crate. Licences MIT OR Apache-2.0.
+soundcraft-model = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
+soundcraft-time = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
 
 serde_json = "1" # MIT OR Apache-2.0; already in Cargo.lock through the SoundCraft crates
 
-# Multitrack basics (f103): SoundCraft's session model (MIT OR Apache-2.0), pinned to the head of
-# `ours` on the same fork, SEPARATELY from the audio-io pin above (the model needs a newer audio-io).
-# The model's own audio-io is named `soundcraft-model-audio` here so the two never meet in a type.
-soundcraft-model-audio = { package = "soundcraft-audio-io", git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
 # Session state for the control channel and tests (already in the tree through the model). MIT OR Apache-2.0.
-# f104 (Mixer panel): the mix engine (its metering) and its own audio-io, at the same pin as
-# soundcraft-model above (e85de96, which has the mix and audio-io crates). MIT OR Apache-2.0. The mix
+# f104 (Mixer panel): the mix engine (its metering), same pin as the rest. MIT OR Apache-2.0. The mix
 # crate pulls in SoundCraft's plugin hosts (CLAP, VST3, AU), which only compile into the build; none is loaded.
-soundcraft-mix = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
-# The mix crates' own audio-io (same rev), kept apart from the older audio-io pin above so the file
-# decoding does not change with this feature; only the panel's synthetic tones use it.
-mix-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829", package = "soundcraft-audio-io" }
+soundcraft-mix = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
+# (The former `soundcraft-model-audio` and `mix-audio-io` aliases of soundcraft-audio-io went with the
+# single pin: cargo refuses one package under two names in a crate, and the family now shares one.)
 
 rustfft = "6"
 rayon = "1"
