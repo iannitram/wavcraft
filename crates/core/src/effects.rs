@@ -17,6 +17,7 @@ use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
 pub mod dynamics;
 pub mod dynamics_graph;
+mod amplify;
 mod compare;
 mod delay;
 mod dsp_run;
@@ -32,6 +33,9 @@ pub use oneshot::{
     EffectParams, FadeCurve, FadeDir, MAX_GAIN_DB, amplify, amplify_guarded, fade, fade_label, headroom_db, normalize, peak, reverse,
 };
 pub use compare::{AbCompare, Side};
+// E2 (issue #28). The amplify module's own MAX_GAIN_DB (+40 dB, f64) is aliased because
+// oneshot::MAX_GAIN_DB (+96 dB, f32) already owns that name here.
+pub use amplify::{Amplify, DEFAULT_GAIN_DB, MAX_GAIN_DB as AMPLIFY_MAX_GAIN_DB, MIN_GAIN_DB, amplify_gains, db_to_linear};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use delay::Delay;
 pub use fade::{FadeIn, FadeOut};
