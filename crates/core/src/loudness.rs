@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use soundcraft_dsp::meter::LoudnessMeter;
 
 use crate::doc::DocState;
+use crate::doc::edit::{ChannelMask, Crossfades, Edit, EditError, replace_range};
 
 /// The result of [`measure`]. Levels with nothing to measure (silence, or a range too short for
 /// a 400 ms block) are `f64::NEG_INFINITY`.
@@ -142,4 +143,111 @@ pub fn measure(doc: &DocState, range: Range<u64>, cancel: &AtomicBool, progress:
         sample_peak_dbfs: if sample_peak > 0.0 { 20.0 * f64::from(sample_peak).log10() } else { f64::NEG_INFINITY },
         max_momentary_lufs: level(meter.max_momentary_lufs()),
     })
+}
+
+/// Label of the edit [`match_volume`] makes (the undo menu shows it).
+pub const MATCH_VOLUME_LABEL: &str = "Match Volume";
+
+/// The gain, dB, that brings audio measured as `selection` to the integrated loudness of `reference`:
+/// `reference.integrated_lufs - selection.integrated_lufs`. `None` when either integrated loudness
+/// is not finite (silence, or under 400 ms), because there is nothing to match.
+pub fn match_gain_db(selection: &Loudness, reference: &Loudness) -> Option<f64> {
+    if !selection.integrated_lufs.is_finite() || !reference.integrated_lufs.is_finite() {
+        None
+    } else {
+        Some(reference.integrated_lufs - selection.integrated_lufs)
+    }
+}
+
+/// Why [`match_volume`] made no edit.
+#[derive(Debug)]
+pub enum MatchVolumeError {
+    /// The selection has no loudness (silent, or under 400 ms).
+    SelectionSilent,
+    /// The reference has no loudness (silent, or under 400 ms).
+    ReferenceSilent,
+    /// Measuring was cancelled, failed to read, or the edit failed.
+    Edit(EditError),
+}
+
+impl std::fmt::Display for MatchVolumeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MatchVolumeError::SelectionSilent => write!(f, "the selection is silent or shorter than 400 ms"),
+            MatchVolumeError::ReferenceSilent => write!(f, "the reference is silent or shorter than 400 ms"),
+            MatchVolumeError::Edit(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for MatchVolumeError {}
+
+impl From<EditError> for MatchVolumeError {
+    fn from(e: EditError) -> Self {
+        MatchVolumeError::Edit(e)
+    }
+}
+
+impl From<io::Error> for MatchVolumeError {
+    fn from(e: io::Error) -> Self {
+        MatchVolumeError::Edit(e.into())
+    }
+}
+
+/// What [`match_volume`] produced.
+#[derive(Debug)]
+pub struct MatchVolume {
+    /// The one undoable edit: the selection times the gain.
+    pub edit: Edit,
+    /// The gain applied, dB.
+    pub gain_db: f64,
+    /// The selection's loudness before the edit.
+    pub selection: Loudness,
+    /// The reference's loudness.
+    pub reference: Loudness,
+}
+
+/// Match Volume (roadmap B041): measure `selection` of `doc` and `reference` of `reference_doc`,
+/// and return ONE edit of `doc` that multiplies the selection (every channel) by the gain that
+/// brings its integrated loudness to the reference's.
+pub fn match_volume(
+    doc: &DocState,
+    selection: Range<u64>,
+    reference_doc: &DocState,
+    reference: Range<u64>,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<MatchVolume, MatchVolumeError> {
+    let sel = measure(doc, selection.clone(), cancel, &mut |p| progress(p * 0.25))?;
+    let refm = measure(reference_doc, reference, cancel, &mut |p| progress(0.25 + p * 0.25))?;
+
+    if !sel.integrated_lufs.is_finite() {
+        return Err(MatchVolumeError::SelectionSilent);
+    }
+
+    if !refm.integrated_lufs.is_finite() {
+        return Err(MatchVolumeError::ReferenceSilent);
+    }
+
+    let gain_db = match match_gain_db(&sel, &refm) {
+        Some(g) => g,
+        None => return Err(MatchVolumeError::SelectionSilent),
+    };
+
+    let gain = 10f64.powf(gain_db / 20.0) as f32;
+    let span = (selection.end - selection.start).max(1) as f64;
+
+    let edit = replace_range(doc, selection.clone(), ChannelMask::ALL, MATCH_VOLUME_LABEL, Crossfades::NONE, cancel, |at, ins, outs| {
+        progress(0.5 + 0.5 * (at - selection.start) as f64 / span);
+        for (o, i) in outs.iter_mut().zip(ins) {
+            for (o, i) in o.iter_mut().zip(*i) {
+                *o = *i * gain;
+            }
+        }
+        Ok(())
+    })?;
+
+    progress(1.0);
+
+    Ok(MatchVolume { edit, gain_db, selection: sel, reference: refm })
 }
