@@ -165,13 +165,12 @@ pub fn remove_leftover_temps(target: &Path) -> usize {
 /// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically.
 /// `progress` gets 0 to 1 as the samples go out.
 pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
-    save_wav_inner(doc, target, ty, progress, None)
+    save_wav_inner(doc, target, ty, DitherOptions::default(), progress, None)
 }
 
 /// Save `doc` to `target` as a WAV file of `ty` samples, with `dither` applied when the samples
 /// are reduced to 16 or 24 bits (item A4). With `dither.enabled` false this writes exactly what
 /// [`save_wav`] writes.
-#[allow(clippy::unimplemented)] // card wav-c-12-b removes this with the stub
 pub fn save_wav_dithered(
     doc: &DocState,
     target: &Path,
@@ -179,18 +178,24 @@ pub fn save_wav_dithered(
     dither: DitherOptions,
     progress: &mut dyn FnMut(f64),
 ) -> Result<(), SaveError> {
-    let _ = (doc, target, ty, dither, progress);
-    unimplemented!("card wav-c-12-b")
+    save_wav_inner(doc, target, ty, dither, progress, None)
 }
 
 /// [`save_wav`] that fails with an I/O error once `fail_after` frames are out (tests: a save
 /// that dies halfway must leave the target whole).
 #[doc(hidden)]
 pub fn save_wav_failing_after(doc: &DocState, target: &Path, ty: SampleType, fail_after: u64) -> Result<(), SaveError> {
-    save_wav_inner(doc, target, ty, &mut |_| {}, Some(fail_after))
+    save_wav_inner(doc, target, ty, DitherOptions::default(), &mut |_| {}, Some(fail_after))
 }
 
-fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> Result<(), SaveError> {
+fn save_wav_inner(
+    doc: &DocState,
+    target: &Path,
+    ty: SampleType,
+    dither: DitherOptions,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+) -> Result<(), SaveError> {
     let frames = doc.len_frames();
     if frames == 0 {
         return Err(SaveError::Empty);
@@ -199,7 +204,7 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
     let tmp = TempFile::create(target).map_err(SaveError::Io)?;
     let TempFile { path: tmp, file } = tmp;
     // Written through the handle made by the exclusive create, never reopened by name.
-    let (file, written) = match write_wav(doc, file, ty, progress, fail_after) {
+    let (file, written) = match write_wav(doc, file, ty, dither, progress, fail_after) {
         Ok(done) => done,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
@@ -342,6 +347,7 @@ fn write_wav(
     doc: &DocState,
     file: File,
     ty: SampleType,
+    dither: DitherOptions,
     progress: &mut dyn FnMut(f64),
     fail_after: Option<u64>,
 ) -> io::Result<(File, Vec<ChunkInfo>)> {
@@ -365,7 +371,7 @@ fn write_wav(
                 table.push(ChunkInfo { id: *b"data", offset: pos, size: data_len });
                 out.write_all(b"data")?;
                 out.write_all(&u32::try_from(data_len).unwrap_or(u32::MAX).to_le_bytes())?;
-                write_samples(&mut out, doc, ty, progress, fail_after)?;
+                write_samples(&mut out, doc, ty, dither, progress, fail_after)?;
                 if data_len & 1 == 1 {
                     out.write_all(&[0])?;
                 }
@@ -408,10 +414,18 @@ fn write_wav(
 }
 
 /// The samples, 64 K frames at a time.
-fn write_samples(out: &mut impl Write, doc: &DocState, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> io::Result<()> {
+fn write_samples(
+    out: &mut impl Write,
+    doc: &DocState,
+    ty: SampleType,
+    dither: DitherOptions,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+) -> io::Result<()> {
     let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * channels * ty.bytes());
+    let mut noise: Vec<Tpdf> = (0..channels).map(|c| Tpdf::new(c as u64)).collect();
     let mut at = 0u64;
     while at < frames {
         let n = (frames - at).min(BLOCK_FRAMES as u64) as usize;
@@ -423,10 +437,16 @@ fn write_samples(out: &mut impl Write, doc: &DocState, ty: SampleType, progress:
         }
         bytes.clear();
         for i in 0..n {
-            for buf in &bufs {
+            for (ch, buf) in bufs.iter().enumerate() {
                 let x = buf[i];
                 match ty {
+                    SampleType::Int16 if dither.enabled => {
+                        bytes.extend_from_slice(&(quantize_dithered(x, 16, &mut noise[ch]) as i16).to_le_bytes());
+                    }
                     SampleType::Int16 => bytes.extend_from_slice(&(quantize(x, 16) as i16).to_le_bytes()),
+                    SampleType::Int24 if dither.enabled => {
+                        bytes.extend_from_slice(&quantize_dithered(x, 24, &mut noise[ch]).to_le_bytes()[..3]);
+                    }
                     SampleType::Int24 => bytes.extend_from_slice(&quantize(x, 24).to_le_bytes()[..3]),
                     SampleType::Int32 => bytes.extend_from_slice(&quantize(x, 32).to_le_bytes()),
                     SampleType::Float32 => bytes.extend_from_slice(&x.to_le_bytes()),
