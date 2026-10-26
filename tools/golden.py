@@ -8,7 +8,7 @@ wavcraft-core but not yet in the app (plan tasks 05-07), and it has no control c
 a 10-minute synthetic 48 kHz stereo WAV is opened from the command line in a scratch HOME and
 session folder; checked: the app stays up, the file is decoded into the session store (its full
 length in float samples), a window is on screen (macOS, when tools/winlist is built), nothing
-on stderr looks like a panic or an error, and the app quits on SIGTERM. With --core, the
+on stderr looks like a panic or an error, and the app quits on SIGTERM (checked in a run of its own). With --core, the
 wavcraft-core suites (edits with undo/redo, open, hostile input) run from that clone as well.
 v2 (task 07a): through the app's control channel (WAVCRAFT_CONTROL_PORT), on the opened
 file: Delete 10 s, Undo, Redo, Silence on the left channel only, Cut then Paste, checking the
@@ -228,6 +228,29 @@ def save_then_open(exe, env, port, token, work, a_path, a_frames):
         return {"check": "a save finishing after another file opened keeps each file's own path", "ok": False, "detail": f"{type(e).__name__}: {e}"}
 
 
+def sigterm_quits(exe, env, work, wav):
+    """The v1 check, carried over from the branch: a run with a file open quits on SIGTERM within 10 s."""
+    sessions = os.path.join(work, "sessions-sigterm")
+    env = dict(env, WAVCRAFT_SESSION_DIR=sessions, WAVCRAFT_LOG_DIR=os.path.join(work, "logs-sigterm"),
+               WAVCRAFT_CONTROL_PORT=str(free_port()), WAVCRAFT_CONTROL_TOKEN_FILE=os.path.join(work, "control-sigterm.token"))
+    proc = subprocess.Popen([exe, wav], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(5)
+    alive = proc.poll() is None
+    if alive:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    # Session folders the SIGTERM quit leaves behind (informational).
+    left = len(os.listdir(sessions)) if os.path.isdir(sessions) else 0
+    if not alive:
+        return {"check": "quits on SIGTERM within 10 s", "ok": False, "detail": f"exited before SIGTERM, exit {proc.returncode}"}
+    return {"check": "quits on SIGTERM within 10 s", "ok": proc.returncode is not None and proc.returncode != -9,
+            "detail": f"exit {proc.returncode}; {left} session folder(s) left after SIGTERM"}
+
+
 def run(exe, keep):
     work = tempfile.mkdtemp(prefix="wavcraft-golden.")
     home, sessions = os.path.join(work, "home"), os.path.join(work, "sessions")
@@ -327,6 +350,7 @@ def run(exe, keep):
         except Exception as e:
             checks.append({"check": "the saved file reopens at the edited length", "ok": False, "detail": f"{type(e).__name__}: {e}"})
             proc2.kill()
+    checks.append(sigterm_quits(exe, env, work, wav))
     if os.path.exists(saved_path) and edited_len:
         checks.append(save_then_open(exe, env, port, token, work, saved_path, edited_len))
     leftover = [d for d in os.listdir(sessions)] if os.path.isdir(sessions) else []
