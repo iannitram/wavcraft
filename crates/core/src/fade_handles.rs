@@ -20,7 +20,7 @@ pub enum FadeHandle {
 }
 
 /// The fade edit produced by dragging a top-corner handle inward.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FadeGesture {
     pub handle: FadeHandle,
     pub range: Range<u64>,
