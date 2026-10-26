@@ -3,7 +3,10 @@
 //! Settings live in a small text file, `settings.txt` in the system's config folder under
 //! `wavcraft` (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on a
 //! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. Today it
-//! holds `session_folder`, `hidden_panels` and `input_device`.
+//! holds `session_folder`, `hidden_panels` and the preferences of the Preferences dialog (see
+//! [`KEYS`]; `input_device` is one of them); a file from an older build, with fewer keys, loads
+//! with the defaults for the rest, and an older build reading a newer file ignores the keys it
+//! doesn't know.
 //!
 //! The **session folder** is where opening a file writes its session store (one subfolder per
 //! open file). The first of these that is set wins: the `--session-dir` command-line flag, the
@@ -15,6 +18,9 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+pub mod multitrack;
 
 /// The environment variable that sets the session folder (over the settings file).
 pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
@@ -23,18 +29,53 @@ pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the 
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
-const KEY_INPUT_DEVICE: &str = "input_device";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
+const KEY_CUT_JOIN: &str = "crossfade_cut_join_ms";
+const KEY_EDGE: &str = "crossfade_edge_ms";
+const KEY_OUTPUT: &str = "output_device";
+const KEY_INPUT: &str = "input_device";
+
+/// Every preference key the Preferences dialog and `PREF` use, in the order the file lists them
+/// (`hidden_panels` belongs to the Window menu and is not one of them).
+pub const KEYS: [&str; 5] = [KEY_SESSION_FOLDER, KEY_CUT_JOIN, KEY_EDGE, KEY_OUTPUT, KEY_INPUT];
+
+/// What a device preference shows (and accepts) for "no device chosen: use the system's".
+pub const SYSTEM_DEFAULT: &str = "System default";
+
+/// The edit crossfade defaults, in milliseconds (Audition's Preferences > Data).
+pub const DEFAULT_CUT_JOIN_MS: u32 = 2;
+pub const DEFAULT_EDGE_MS: u32 = 5;
+/// The longest crossfade the preferences accept.
+pub const MAX_CROSSFADE_MS: u32 = 1000;
 
 /// What the settings file holds.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
     /// Ids of the panels the person hid (`crate::panels`); a panel not listed is shown.
     pub hidden_panels: Vec<String>,
+    /// Crossfade where Delete or Cut closes a gap, in ms (0: none).
+    pub cut_join_ms: u32,
+    /// Crossfade at every other edit boundary, in ms (0: none).
+    pub edge_ms: u32,
+    /// The output device's name (`None`: the system default).
+    pub output_device: Option<String>,
     /// Preferred recording input by device name (`None`: the system default).
     pub input_device: Option<String>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            session_folder: None,
+            hidden_panels: Vec::new(),
+            cut_join_ms: DEFAULT_CUT_JOIN_MS,
+            edge_ms: DEFAULT_EDGE_MS,
+            output_device: None,
+            input_device: None,
+        }
+    }
 }
 
 impl Settings {
@@ -68,13 +109,51 @@ impl Settings {
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
             match key.trim() {
-                KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
-                KEY_INPUT_DEVICE => s.input_device = (!value.is_empty()).then(|| value.to_string()),
-                _ => {}
+                // A value that doesn't fit its key leaves the default, as an unknown key is ignored.
+                other => {
+                    let _ = s.set(other, value);
+                }
             }
         }
         s
+    }
+
+    /// The crossfade lengths as durations: `(cut_join, edge)`.
+    pub fn crossfades(&self) -> (Duration, Duration) {
+        (Duration::from_millis(u64::from(self.cut_join_ms)), Duration::from_millis(u64::from(self.edge_ms)))
+    }
+
+    /// The value of preference `key` as text (a device none is chosen for reads
+    /// [`SYSTEM_DEFAULT`], an unset session folder reads empty).
+    pub fn get(&self, key: &str) -> Result<String, String> {
+        Ok(match key {
+            KEY_SESSION_FOLDER => self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+            KEY_CUT_JOIN => self.cut_join_ms.to_string(),
+            KEY_EDGE => self.edge_ms.to_string(),
+            KEY_OUTPUT => self.output_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
+            KEY_INPUT => self.input_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
+            _ => return Err(unknown_key(key)),
+        })
+    }
+
+    /// Set preference `key` from text. A value that doesn't fit changes nothing.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
+        let value = value.trim();
+        let device = |v: &str| (!v.is_empty() && v != SYSTEM_DEFAULT).then(|| v.to_string());
+        let ms = |v: &str| match v.parse::<u32>() {
+            Ok(n) if n <= MAX_CROSSFADE_MS => Ok(n),
+            _ => Err(format!("{key} is a whole number of milliseconds, 0 to {MAX_CROSSFADE_MS}")),
+        };
+        match key {
+            KEY_SESSION_FOLDER => self.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+            KEY_CUT_JOIN => self.cut_join_ms = ms(value)?,
+            KEY_EDGE => self.edge_ms = ms(value)?,
+            KEY_OUTPUT => self.output_device = device(value),
+            KEY_INPUT => self.input_device = device(value),
+            _ => return Err(unknown_key(key)),
+        }
+        Ok(())
     }
 
     /// The file's text for these settings.
@@ -84,11 +163,26 @@ impl Settings {
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
         if !self.hidden_panels.is_empty() {
-            out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\n");
-            out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}\n", self.hidden_panels.join(",")));
+            out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).
+");
+            out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}
+", self.hidden_panels.join(",")));
+        }
+        // Only what differs from the defaults is written, so a default file keeps the old format.
+        if self.cut_join_ms != DEFAULT_CUT_JOIN_MS || self.edge_ms != DEFAULT_EDGE_MS {
+            out.push_str("# crossfade_*_ms: edit crossfades in milliseconds (Delete/Cut join, every other boundary); 0 turns one off.
+");
+            out.push_str(&format!("{KEY_CUT_JOIN} = {}
+{KEY_EDGE} = {}
+", self.cut_join_ms, self.edge_ms));
+        }
+        if let Some(output_device) = &self.output_device {
+            out.push_str(&format!("{KEY_OUTPUT} = {output_device}
+"));
         }
         if let Some(input_device) = &self.input_device {
-            out.push_str(&format!("{KEY_INPUT_DEVICE} = {input_device}\n"));
+            out.push_str(&format!("{KEY_INPUT} = {input_device}
+"));
         }
         out
     }
@@ -132,6 +226,28 @@ impl Settings {
     }
 }
 
+fn unknown_key(key: &str) -> String {
+    format!("unknown preference {key:?}; the keys are {}", KEYS.join(", "))
+}
+
+/// Reset the preferences: move the settings file at `path` aside (to `settings.txt.reset-1`,
+/// `-2`, … in the same folder, never over an earlier one) so the next load gives the defaults.
+/// Returns where it went, or `None` when there was no file.
+pub fn reset_aside(path: &Path) -> io::Result<Option<PathBuf>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "settings.txt".into());
+    for n in 1..10_000u32 {
+        let aside = path.with_file_name(format!("{name}.reset-{n}"));
+        if !aside.exists() {
+            std::fs::rename(path, &aside)?;
+            return Ok(Some(aside));
+        }
+    }
+    Err(io::Error::other("too many earlier reset copies"))
+}
+
 /// Make `path` if it is missing and check that a file can be written in it. The error says why
 /// not, in words.
 pub fn check_folder(path: &Path) -> Result<(), String> {
@@ -171,7 +287,7 @@ pub enum FolderSource {
 }
 
 impl FolderSource {
-    fn describe(self) -> &'static str {
+    pub fn describe(self) -> &'static str {
         match self {
             FolderSource::CommandLine => "set by --session-dir",
             FolderSource::Environment => "set by WAVCRAFT_SESSION_DIR",
@@ -357,7 +473,7 @@ mod tests {
 
     #[test]
     fn empty_hidden_panels_keep_the_old_file_format() {
-        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: Vec::new(), input_device: None };
+        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: Vec::new(), ..Default::default() };
         assert_eq!(
             settings.to_text(),
             "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
@@ -369,7 +485,7 @@ mod tests {
         let settings = Settings {
             session_folder: Some(PathBuf::from("/w-new")),
             hidden_panels: vec!["history".to_string(), "waveform".to_string()],
-            input_device: None,
+            ..Default::default()
         };
         let text = settings.to_text();
         assert_eq!(
