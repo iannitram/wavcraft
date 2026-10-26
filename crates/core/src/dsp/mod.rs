@@ -6,7 +6,6 @@ pub mod chorus;
 pub mod convolution;
 pub mod doppler;
 pub mod distortion;
-pub mod doppler;
 pub mod echo;
 pub mod eq_graph;
 pub mod envelope;
