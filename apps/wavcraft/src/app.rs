@@ -13,6 +13,7 @@ use wavcraft_core::meta;
 use wavcraft_core::panels::{self, PanelSet};
 use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
+use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
@@ -174,6 +175,8 @@ pub struct WaveApp {
     effect_dialog: Option<EffectDialog>,
     /// A Generate dialog's Preview is playing (f21): the player holds the preview, not the file.
     previewing: bool,
+    /// The keyboard shortcuts in use (the defaults; the user's key file will override them).
+    keymap: Keymap,
 }
 
 impl WaveApp {
@@ -197,6 +200,10 @@ impl WaveApp {
                 wavcraft_core::store::sweep_stale_sessions(Some(&root));
             }
         });
+        let keymap = Keymap::new();
+        if let Err(e) = keymap.check() {
+            log::error!(target: "wavcraft", "keyboard shortcuts conflict: {e}");
+        }
         let mut app = WaveApp {
             doc: None,
             generation: 0,
@@ -239,6 +246,7 @@ impl WaveApp {
             history_refocus: None,
             effect_dialog: None,
             previewing: false,
+            keymap,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -408,6 +416,23 @@ impl WaveApp {
     /// The selection as a frame range (`start == end` is just the cursor).
     fn selection_range(&self) -> Range<u64> {
         self.selection.start() as u64..self.selection.end() as u64
+    }
+
+    /// Run what a shortcut is bound to (a key press or the control channel's `KEY`). Returns
+    /// whether the document changed.
+    fn run_command(&mut self, command: Command, ctx: &egui::Context) -> Result<bool, String> {
+        match command {
+            Command::Action(id) => self.run_action(id, ctx),
+            Command::Save | Command::SaveAs => self.save(ctx, command == Command::SaveAs, None, false).map(|()| false),
+            Command::PlayStop => {
+                self.toggle_play();
+                Ok(false)
+            }
+            Command::Open => {
+                self.pick_file(ctx);
+                Ok(false)
+            }
+        }
     }
 
     /// Run an action from the table on the open file (menu, key or control channel). Returns
@@ -1212,6 +1237,16 @@ impl WaveApp {
                 },
                 None => format!("ERR no action named {rest:?}"),
             },
+            // Press a shortcut: `KEY Ctrl+Z` runs what the table binds it to, as the key would.
+            // (Open is refused: it would wait for a file dialog nobody can answer.)
+            "KEY" => match self.keymap.resolve_text(rest) {
+                Ok(Command::Open) => "ERR file.open opens a dialog: use OPEN <path>".to_string(),
+                Ok(command) => match self.run_command(command, ctx) {
+                    Ok(changed) => format!("OK command={} selection={} changed={}", command.name(), sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+                Err(e) => format!("ERR {e}"),
+            },
             // Minimise or restore the window (scripted checks of hidden-window behaviour).
             "WINDOW" => match rest {
                 "minimize" => {
@@ -1467,7 +1502,7 @@ impl WaveApp {
             }
             let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
             let enabled = enabled && self.saving.is_none();
-            let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
+            let keys = self.keymap.menu_text(Command::Action(a.id), mac);
             if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
                 chosen = Some(a.id);
             }
@@ -1512,12 +1547,13 @@ impl WaveApp {
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("Open…  Ctrl+O").clicked() {
+                let open = format!("Open…  {}", self.keymap.menu_text(Command::Open, cfg!(target_os = "macos")));
+                if ui.button(open).clicked() {
                     self.pick_file(ui.ctx());
                 }
                 let mac = cfg!(target_os = "macos");
                 let has_doc = self.editor.is_some() && self.saving.is_none();
-                let (save, save_as) = if mac { ("⌘S", "⇧⌘S") } else { ("Ctrl+S", "Ctrl+Shift+S") };
+                let (save, save_as) = (self.keymap.menu_text(Command::Save, mac), self.keymap.menu_text(Command::SaveAs, mac));
                 if ui.add_enabled(has_doc, egui::Button::new("Save").shortcut_text(save)).clicked()
                     && let Err(e) = self.save(ui.ctx(), false, None, false)
                 {
@@ -1561,7 +1597,7 @@ impl WaveApp {
                 let mut chosen = None;
                 for a in TABLE.iter().filter(|a| a.name.starts_with("view.") || a.name.starts_with("tool.")) {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
-                    let keys = a.keys.first().map(|k| k.text(mac)).unwrap_or_default();
+                    let keys = self.keymap.menu_text(Command::Action(a.id), mac);
                     if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
                         chosen = Some(a.id);
                     }
@@ -1912,15 +1948,6 @@ impl eframe::App for WaveApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.close_prompt(&ctx);
-        let (save_as, save) = ctx.input_mut(|i| {
-            let save_as = i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::S);
-            (save_as, i.consume_key(egui::Modifiers::COMMAND, Key::S))
-        });
-        if (save || save_as)
-            && let Err(e) = self.save(&ctx, save_as, None, false)
-        {
-            self.error = Some(e);
-        }
         self.selection_keys(&ctx);
         // Up and Down belong to the History panel while one of its rows has focus (before the
         // action table gets them: there they pick the left or right channel).
@@ -1931,24 +1958,16 @@ impl eframe::App for WaveApp {
                 self.history_refocus = Some(to);
             }
         }
-        for id in pressed_actions(&ctx) {
-            let _ = self.run_action(id, &ctx);
+        for command in pressed_commands(&ctx, &self.keymap) {
+            if let Err(e) = self.run_command(command, &ctx) {
+                // A key that can't act now (no file open, a save running) is not an error to show,
+                // except a failed save, which the old key handler reported.
+                if matches!(command, Command::Save | Command::SaveAs) {
+                    self.error = Some(e);
+                }
+            }
         }
-        // Home and Zoom Out Full come from the action table now (Audition's Home and Cmd+\).
-        let (space, open, dropped) = ctx.input(|i| {
-            (
-                // Not `key_pressed`: that also counts auto-repeat, so a long press would toggle again.
-                i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Space, pressed: true, repeat: false, .. })),
-                i.modifiers.command && i.key_pressed(Key::O),
-                i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()),
-            )
-        });
-        if space {
-            self.toggle_play();
-        }
-        if open {
-            self.pick_file(&ctx);
-        }
+        let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()));
         if let Some(path) = dropped {
             self.open(path, &ctx);
         }
@@ -1989,18 +2008,18 @@ fn history_arrow_target(cursor: usize, len: usize, down: bool) -> Option<usize> 
     if down { (cursor + 1 < len).then_some(cursor + 1) } else { cursor.checked_sub(1) }
 }
 
-/// The actions whose keys were pressed this frame. Keys with more modifiers are taken first, so
-/// Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
-fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
+/// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
+/// so Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
+fn pressed_commands(ctx: &egui::Context, keymap: &Keymap) -> Vec<Command> {
     // A text field being edited owns the keyboard: Backspace, Delete and Cmd+Z there edit the text, not the audio (#368).
     if ctx.text_edit_focused() {
         return Vec::new();
     }
-    let mut keys: Vec<(ActionId, actions::Shortcut)> = TABLE.iter().flat_map(|a| a.keys.iter().map(move |k| (a.id, *k))).collect();
-    keys.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
+    let mut rows: Vec<(Command, Shortcut)> = keymap.bindings().iter().map(|b| (b.command, b.chord)).collect();
+    rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
-        keys.iter()
-            .filter_map(|(id, k)| {
+        rows.iter()
+            .filter_map(|(command, k)| {
                 let key = Key::from_name(k.key)?;
                 let mut mods = egui::Modifiers::NONE;
                 if k.cmd {
@@ -2012,7 +2031,10 @@ fn pressed_actions(ctx: &egui::Context) -> Vec<ActionId> {
                 if k.alt {
                     mods |= egui::Modifiers::ALT;
                 }
-                i.consume_key(mods, key).then_some(*id)
+                // Play/Stop must not toggle again on auto-repeat during a long press.
+                let fresh = *command != Command::PlayStop
+                    || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
+                (i.consume_key(mods, key) && fresh).then_some(*command)
             })
             .collect()
     })
@@ -2120,11 +2142,12 @@ mod tests {
     use super::*;
 
     /// Runs three frames on a fresh context: frame 1 draws a text field and (when `focus`) asks for focus,
-    /// frame 2 lets that focus settle, frame 3 delivers one key press and returns what `pressed_actions` reports.
-    fn actions_for_key(focus: bool, key: Key, modifiers: egui::Modifiers) -> Vec<ActionId> {
+    /// frame 2 lets that focus settle, frame 3 delivers one key press and returns what `pressed_commands` reports.
+    fn commands_for_key(focus: bool, key: Key, modifiers: egui::Modifiers) -> Vec<Command> {
         let ctx = egui::Context::default();
         let mut text = String::from("10");
-        let mut frame = |events: Vec<egui::Event>, ask_focus: bool| -> Vec<ActionId> {
+        let keymap = Keymap::new();
+        let mut frame = |events: Vec<egui::Event>, ask_focus: bool| -> Vec<Command> {
             let raw = egui::RawInput { events, ..Default::default() };
             let mut found = Vec::new();
             let mut output = ctx.run_ui(raw, |ui| {
@@ -2132,7 +2155,7 @@ mod tests {
                 if ask_focus {
                     r.request_focus();
                 }
-                found = pressed_actions(ui.ctx());
+                found = pressed_commands(ui.ctx(), &keymap);
             });
             output.textures_delta.clear();
             found
@@ -2190,38 +2213,38 @@ mod tests {
 
     #[test]
     fn backspace_in_a_focused_text_field_runs_no_action() {
-        let got = actions_for_key(true, Key::Backspace, egui::Modifiers::NONE);
-        assert_eq!(got, Vec::<ActionId>::new());
+        let got = commands_for_key(true, Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(got, Vec::<Command>::new());
     }
 
     #[test]
     fn cmd_z_in_a_focused_text_field_runs_no_action() {
-        let got = actions_for_key(true, Key::Z, egui::Modifiers::COMMAND);
-        assert_eq!(got, Vec::<ActionId>::new());
+        let got = commands_for_key(true, Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(got, Vec::<Command>::new());
     }
 
     #[test]
     fn delete_key_in_a_focused_text_field_runs_no_action() {
-        let got = actions_for_key(true, Key::Delete, egui::Modifiers::NONE);
-        assert_eq!(got, Vec::<ActionId>::new());
+        let got = commands_for_key(true, Key::Delete, egui::Modifiers::NONE);
+        assert_eq!(got, Vec::<Command>::new());
     }
 
     #[test]
     fn backspace_without_a_focused_text_field_runs_delete() {
-        let got = actions_for_key(false, Key::Backspace, egui::Modifiers::NONE);
-        assert_eq!(got, vec![ActionId::Delete]);
+        let got = commands_for_key(false, Key::Backspace, egui::Modifiers::NONE);
+        assert_eq!(got, vec![Command::Action(ActionId::Delete)]);
     }
 
     #[test]
     fn cmd_z_without_a_focused_text_field_runs_undo() {
-        let got = actions_for_key(false, Key::Z, egui::Modifiers::COMMAND);
-        assert_eq!(got, vec![ActionId::Undo]);
+        let got = commands_for_key(false, Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(got, vec![Command::Action(ActionId::Undo)]);
     }
 
     #[test]
     fn cmd_shift_z_without_a_focused_text_field_runs_redo_only() {
-        let got = actions_for_key(false, Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
-        assert_eq!(got, vec![ActionId::Redo]);
+        let got = commands_for_key(false, Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
+        assert_eq!(got, vec![Command::Action(ActionId::Redo)]);
     }
 
     #[test]
