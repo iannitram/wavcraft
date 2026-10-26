@@ -520,32 +520,41 @@ pub struct Tpdf {
     state: u64,
 }
 
-#[allow(clippy::unimplemented)] // card wav-c-12-a removes this with the stubs
 impl Tpdf {
     /// A generator whose state starts at `seed`.
     pub fn new(seed: u64) -> Tpdf {
-        let _ = seed;
-        unimplemented!("card wav-c-12-a")
+        Tpdf { state: seed }
     }
 
     /// One SplitMix64 step: the next 64 random bits.
     pub fn next_u64(&mut self) -> u64 {
-        let _ = self.state;
-        unimplemented!("card wav-c-12-a")
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
     }
 
     /// The next dither value in LSBs, in (-1, 1): two uniform values in [-0.5, 0.5) added.
     pub fn next_lsb(&mut self) -> f64 {
-        unimplemented!("card wav-c-12-a")
+        let r1 = self.next_u64();
+        let r2 = self.next_u64();
+        let divisor = 9_007_199_254_740_992.0; // 2^53
+        let val1 = (r1 >> 11) as f64 / divisor - 0.5;
+        let val2 = (r2 >> 11) as f64 / divisor - 0.5;
+        val1 + val2
     }
 }
 
 /// `x` (full scale ±1) as a `bits`-bit integer with TPDF dither from `noise` added before
 /// rounding, then clamped; NaN is 0. Draws exactly one [`Tpdf::next_lsb`] per call.
-#[allow(clippy::unimplemented)] // card wav-c-12-a removes this with the stub
 pub fn quantize_dithered(x: f32, bits: u32, noise: &mut Tpdf) -> i32 {
-    let _ = (x, bits, noise);
-    unimplemented!("card wav-c-12-a")
+    let d = noise.next_lsb();
+    if x.is_nan() {
+        return 0;
+    }
+    let scale = (1u64 << (bits - 1)) as f64;
+    (f64::from(x) * scale + d).round().clamp(-scale, scale - 1.0) as i32
 }
 
 /// `x` (full scale ±1) as a `bits`-bit integer, rounded and clamped; NaN is 0.
