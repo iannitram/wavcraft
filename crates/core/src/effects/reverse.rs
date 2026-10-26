@@ -1,13 +1,10 @@
 //! Reverse (E4, #30): play a range backwards, bit for bit.
 //!
-//! [`mirror_range`] and [`reverse_frames`] are the pure arithmetic and slice reversal;
-//! [`Reverse`] reads each output chunk's mirror range from the document in [`Effect::begin`]
-//! and reverses its samples chunk by chunk.
+//! Pure helpers behind Reverse: [`mirror_range`] says which source frames supply an output
+//! chunk, and [`reverse_frames`] reverses a slice bit for bit. The Reverse action itself is the
+//! one-shot in [`super::oneshot::reverse`], which computes the same mirror range inline.
 
-use std::io;
 use std::ops::Range;
-
-use super::{Effect, ParamDesc, Run, RunContext};
 
 /// The document frame range that supplies the output chunk `[chunk_first_frame, chunk_first_frame + chunk_len)`
 /// when `range` (`start..end`) is reversed.
@@ -17,35 +14,18 @@ use super::{Effect, ParamDesc, Run, RunContext};
 /// before `range.end`: `(range.end - (chunk_first_frame - range.start) - chunk_len)..(range.end - (chunk_first_frame - range.start))`
 /// (with saturating subtraction).
 pub fn mirror_range(range: Range<u64>, chunk_first_frame: u64, chunk_len: usize) -> Range<u64> {
-    let _ = (range, chunk_first_frame, chunk_len);
-    0..0
+    let offset = chunk_first_frame.saturating_sub(range.start);
+    let end = range.end.saturating_sub(offset);
+    let start = end.saturating_sub(chunk_len as u64);
+    start..end
 }
 
 /// Copy `input` into `output` in reverse frame order (`output[k] = input[n - 1 - k]` for
 /// `n = input.len().min(output.len())`), bit for bit without changing sign or rounding.
 pub fn reverse_frames(input: &[f32], output: &mut [f32]) {
-    let _ = (input, output);
-}
-
-/// Time reversal: every active channel's samples in the range in reverse order, bit for bit.
-pub struct Reverse;
-
-impl Effect for Reverse {
-    fn id(&self) -> &'static str {
-        "reverse"
-    }
-    fn name(&self) -> &'static str {
-        "Reverse"
-    }
-    fn parameters(&self) -> &'static [ParamDesc] {
-        &[]
-    }
-    fn begin(&self, _params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
-        let _ = ctx;
-        Err(io::Error::new(io::ErrorKind::Unsupported, "Reverse is not built yet"))
-    }
-    fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "Reverse reads mirror chunks from the document: run it through effects::apply"))
+    let n = input.len().min(output.len());
+    for (o, i) in output[..n].iter_mut().zip(input[..n].iter().rev()) {
+        *o = *i;
     }
 }
 

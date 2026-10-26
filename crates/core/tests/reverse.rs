@@ -8,7 +8,6 @@ use wavcraft_core::actions::{ActionId, Editor, by_name};
 use wavcraft_core::doc::edit::{ChannelMask, Crossfades};
 use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
-use wavcraft_core::effects::{self, Params};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 const RATE: u32 = 48_000;
@@ -56,19 +55,6 @@ fn reverse_id() -> ActionId {
 
 fn invert_id() -> ActionId {
     by_name("effect.invert").expect("invert is in the action table").id
-}
-
-#[test]
-fn reverse_is_registered_with_no_parameters() {
-    let r = effects::find("reverse").expect("reverse is in the registry");
-    assert_eq!(r.id(), "reverse");
-    assert_eq!(r.name(), "Reverse");
-    assert!(r.parameters().is_empty());
-    let a = by_name("effect.reverse").expect("effect.reverse in the action table");
-    assert_eq!(a.menu, "Reverse");
-    assert_eq!(Params::defaults(r), Vec::<f64>::new());
-    assert_eq!(effects::parse_params(r, "").unwrap(), Vec::<f64>::new());
-    assert!(effects::parse_params(r, "x=1").is_err());
 }
 
 #[test]

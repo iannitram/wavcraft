@@ -44,7 +44,7 @@ pub use gain::Gain;
 pub use pitch_saturate::{PitchShift, Saturator};
 pub use plate::Plate;
 pub use reverb::Reverb;
-pub use reverse::{Reverse, mirror_range, reverse_frames};
+pub use reverse::{mirror_range, reverse_frames};
 
 /// Block size hint given to wrapped plugins (chunks are 64 K frames; plugins loop internally).
 pub(crate) const CHUNK_HINT: usize = 4096;
