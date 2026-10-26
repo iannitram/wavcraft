@@ -16,8 +16,10 @@ use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
 mod eq;
+pub mod fade;
 mod gain;
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
+pub use fade::{FadeIn, FadeOut};
 pub use gain::Gain;
 
 /// What a setting means, so a dialog can pick the right control and units.
@@ -214,7 +216,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &FadeIn, &FadeOut];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
