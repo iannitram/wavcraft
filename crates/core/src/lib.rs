@@ -43,6 +43,7 @@ pub mod shortcuts;
 pub mod space;
 pub mod spectral_dirty;
 pub mod spectrogram;
+pub mod stats;
 pub mod store;
 pub mod strip_eq;
 pub mod take_readout;

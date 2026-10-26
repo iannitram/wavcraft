@@ -26,6 +26,7 @@ use crate::meters_ui::{self, MetersUi};
 use crate::player::{Devices, Player};
 use crate::spectrum::{Job, Renderer};
 use crate::video::{VideoPanel, Waiters};
+use crate::statspanel::{Nav, StatsPanel};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
 const WAVE: Color32 = Color32::from_rgb(64, 200, 140);
@@ -226,6 +227,8 @@ pub struct WaveApp {
     devices_rx: Option<Receiver<Devices>>,
     /// Frames still to look at for a held Shift (Shift at launch resets the preferences).
     shift_frames: u32,
+    /// Window › Sample Statistics.
+    stats: StatsPanel,
 }
 
 impl WaveApp {
@@ -289,6 +292,7 @@ impl WaveApp {
             show_mixer: false,
             mixer: MixerModel::demo(4),
             insert_silence: None,
+            stats: StatsPanel::default(),
             confirm_clear_history: false,
             show_metadata: false,
             meta_draft: Vec::new(),
@@ -550,6 +554,7 @@ impl WaveApp {
                 self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
                 self.doc_path = doc.path.clone();
                 self.doc_id += 1;
+                self.stats.forget();
                 self.rebuilding = None;
                 self.doc = Some(doc);
                 self.drop_video();
@@ -717,6 +722,46 @@ impl WaveApp {
         }
     }
 
+    /// What Scan would measure: the selection, or the whole file when there is none.
+    fn stats_scope(&self) -> (Range<u64>, bool) {
+        let len = self.editor.as_ref().map_or(0, |e| e.history.current().len_frames());
+        if self.selection.is_empty() { (0..len, true) } else { (self.selection_range(), false) }
+    }
+
+    /// Start the panel's scan on a worker thread.
+    fn start_stats(&mut self, ctx: &egui::Context) {
+        let (range, whole) = self.stats_scope();
+        let Some(state) = self.editor.as_ref().map(|e| e.history.current().clone()) else { return };
+        self.stats.start(state, range, whole, ctx);
+    }
+
+    /// Move the cursor to the peak or to the next / previous possibly clipped run of the last scan.
+    fn stats_nav(&mut self, nav: Nav) -> Result<(), String> {
+        let current = self.editor.as_ref().map(|e| e.history.current().clone());
+        let Some(m) = self.stats.measured.as_ref() else { return Err("scan first (Window › Sample Statistics)".to_string()) };
+        if current.is_none_or(|c| !Arc::ptr_eq(&c, &m.state)) {
+            return Err("the file changed since the last scan: scan again".to_string());
+        }
+        let cursor = self.selection.start() as u64;
+        let found = match nav {
+            Nav::Peak => m.stats.peak_location().map(|(_, f)| f),
+            Nav::NextClip => m.stats.next_clip_after(cursor),
+            Nav::PrevClip => m.stats.prev_clip_before(cursor),
+        };
+        let Some(frame) = found else {
+            return Err(match nav {
+                Nav::Peak => "nothing was measured".to_string(),
+                Nav::NextClip => "no further possibly clipped run".to_string(),
+                Nav::PrevClip => "no earlier possibly clipped run".to_string(),
+            });
+        };
+        self.selection = Selection::at(frame as usize);
+        self.player.stop();
+        let frames = self.doc.as_ref().map_or(0, Document::frames);
+        self.view.reveal(frame as f64, self.editor_width, frames);
+        Ok(())
+    }
+
     /// The actions the window carries out itself: zoom, In/Out points at the playhead, and the
     /// Insert Silence dialog.
     fn run_window_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
@@ -766,6 +811,10 @@ impl WaveApp {
                     return self.run_action(ActionId::RepeatLast, ctx);
                 }
             }
+            ActionId::StatsShow => self.stats.show = true,
+            ActionId::StatsGotoPeak => self.stats_nav(Nav::Peak)?,
+            ActionId::StatsNextClip => self.stats_nav(Nav::NextClip)?,
+            ActionId::StatsPrevClip => self.stats_nav(Nav::PrevClip)?,
             _ => return Err(format!("{} is not available now", actions::action(id).menu)),
         }
         Ok(false)
@@ -1625,6 +1674,27 @@ impl WaveApp {
                 },
                 _ => "ERR INSERT_SILENCE <seconds>, above 0".to_string(),
             },
+            // Amplitude statistics of a range (frames), or of the selection / whole file; the
+            // numbers come back on one line and the panel and its navigation use them.
+            "STATS" => {
+                let Some(state) = self.editor.as_ref().map(|e| e.history.current().clone()) else { return "ERR no file is open".to_string() };
+                let mut it = rest.split_whitespace().map(str::parse::<u64>);
+                let (range, whole) = match (it.next(), it.next()) {
+                    (Some(Ok(a)), Some(Ok(b))) => (a..b, false),
+                    (None, _) => self.stats_scope(),
+                    _ => return "ERR STATS [<start> <end>], in frames".to_string(),
+                };
+                self.stats.cancel();
+                match wavcraft_core::stats::scan(&state, range, wavcraft_core::stats::DEFAULT_RMS_WINDOW_MS, &mut |_| {}, &AtomicBool::new(false)) {
+                    Ok(Some(stats)) => {
+                        let line = format!("OK {}", stats.summary());
+                        self.stats.measured = Some(crate::statspanel::Measured { state, stats, whole });
+                        line
+                    }
+                    Ok(None) => "ERR cancelled".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
             // The History panel's click: go to step <index> (0 is Open).
             "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
                 (Ok(i), true) if self.saving.is_none() => {
@@ -1909,6 +1979,7 @@ impl WaveApp {
                 ui.checkbox(&mut self.show_mixer, "Mixer panel");
                 ui.checkbox(&mut self.meters.show_levels, "Levels");
                 ui.checkbox(&mut self.meters.show_stats, "Amplitude/Loudness Statistics");
+                ui.add_enabled_ui(self.editor.is_some(), |ui| ui.checkbox(&mut self.stats.show, "Sample Statistics (RMS, clipping)"));
             });
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
             ui.menu_button("Generate", |ui| self.generate_menu(ui));
@@ -2249,6 +2320,7 @@ impl eframe::App for WaveApp {
         if self.meters.animating() || self.player.is_playing() {
             ctx.request_repaint();
         }
+        self.stats.poll();
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             // `VIDEO frame` is answered when the worker has the picture, not before.
             if let Some(arg) = req.line.strip_prefix("VIDEO frame") {
@@ -2368,6 +2440,20 @@ impl eframe::App for WaveApp {
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
         }
         self.draw_hud(&ctx);
+        {
+            let current = self.editor.as_ref().map(|e| e.history.current().clone());
+            let scope = (!self.selection.is_empty()).then(|| self.selection_range());
+            let (scan, nav) = self.stats.ui(&ctx, current.as_ref(), scope);
+            if scan {
+                self.start_stats(&ctx);
+            }
+            if let Some(nav) = nav {
+                match self.stats_nav(nav) {
+                    Ok(()) => self.error = None,
+                    Err(e) => self.error = Some(format!("Sample Statistics: {e}")),
+                }
+            }
+        }
     }
 }
 

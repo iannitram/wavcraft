@@ -21,6 +21,7 @@ mod reveal;
 mod selflog;
 mod spectrum;
 mod video;
+mod statspanel;
 #[cfg(windows)]
 mod win_acl;
 
