@@ -46,11 +46,8 @@ fn j5_input_device_writes_exact_text_and_round_trips() {
 
 #[test]
 fn j5_input_device_appends_after_hidden_panels() {
-    let settings = Settings {
-        session_folder: Some(PathBuf::from("scratch")),
-        hidden_panels: vec!["history".into()],
-        input_device: Some("USB Mic".into()),
-    };
+    let settings =
+        Settings { session_folder: Some(PathBuf::from("scratch")), hidden_panels: vec!["history".into()], input_device: Some("USB Mic".into()) };
     assert_eq!(
         settings.to_text(),
         "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = scratch\n# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\nhidden_panels = history\ninput_device = USB Mic\n"
