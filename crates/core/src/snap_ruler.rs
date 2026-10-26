@@ -1,8 +1,5 @@
 //! Time-ruler tick step and nearest-tick frame arithmetic for snapping (v1 C3).
 
-// Stub for wav-c-22-a: remove the allow and the todo!s when implementing.
-#![allow(clippy::todo)]
-
 /// Spacing between major ruler ticks on screen, in pixels.
 pub const MAJOR_TICK_PX: f64 = 110.0;
 
@@ -12,12 +9,13 @@ pub const STEPS: [f64; 19] = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0
 /// The smallest round number of seconds in [`STEPS`] that is at least `min_seconds`, or `3600.0`
 /// when none is.
 pub fn ruler_step(min_seconds: f64) -> f64 {
-    let _ = min_seconds;
-    todo!("wav-c-22-a: ruler_step")
+    STEPS.iter().copied().find(|s| *s >= min_seconds).unwrap_or(3600.0)
 }
 
 /// The frame of the major ruler tick nearest `frame` at `frames_per_px` and `sample_rate` Hz.
 pub fn ruler_tick_near(frame: u64, frames_per_px: f64, sample_rate: u32) -> u64 {
-    let _ = (frame, frames_per_px, sample_rate);
-    todo!("wav-c-22-a: ruler_tick_near")
+    let rate = f64::from(sample_rate.max(1));
+    let step = ruler_step(frames_per_px / rate * MAJOR_TICK_PX);
+    let t = (frame as f64 / rate / step).round() * step;
+    (t * rate).round().max(0.0) as u64
 }
