@@ -16,7 +16,7 @@ use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
-use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, Viewport, format_time};
+use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport};
 
 use crate::control;
 use crate::effect_dialog::{Answer, EffectDialog};
@@ -229,6 +229,17 @@ pub struct WaveApp {
     shift_frames: u32,
     /// Window › Sample Statistics.
     stats: StatsPanel,
+    /// View › Time Display (kept in the settings file).
+    time_format: TimeFormat,
+    /// View › Snap to Frames: with a SMPTE time display, the cursor and selection edges set from
+    /// the ruler land on frame boundaries. (PR #95 adds the general snapping switch; once both
+    /// are merged this is "snapping is on" there, and `TimeFormat::snap_to_frame` is the call.)
+    snap_frames: bool,
+    /// View › Time panel / Selection/View panel.
+    show_time_panel: bool,
+    show_sel_view_panel: bool,
+    /// The Selection/View box being typed in: its name and its text.
+    panel_edit: Option<(&'static str, String)>,
 }
 
 impl WaveApp {
@@ -274,6 +285,7 @@ impl WaveApp {
             opening: None,
             error: sessions.warning.clone(),
             notice: reset_note,
+            time_format: settings.time_display,
             sessions,
             settings,
             settings_path,
@@ -291,6 +303,10 @@ impl WaveApp {
             hud: HudState::default(),
             show_mixer: false,
             mixer: MixerModel::demo(4),
+            snap_frames: true,
+            show_time_panel: true,
+            show_sel_view_panel: true,
+            panel_edit: None,
             insert_silence: None,
             stats: StatsPanel::default(),
             confirm_clear_history: false,
@@ -654,6 +670,32 @@ impl WaveApp {
         }
     }
 
+    /// View › Time Display: use `fmt` for the ruler, the status bar and the panels, and keep it.
+    fn set_time_format(&mut self, fmt: TimeFormat) {
+        self.time_format = fmt;
+        self.panel_edit = None;
+        self.settings.time_display = fmt;
+        if let Some(file) = &self.settings_path
+            && let Err(e) = self.settings.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not save the time display to {}: {e}", file.display());
+        }
+    }
+
+    /// A frame set from the ruler, snapped to a timecode frame boundary when the display is SMPTE
+    /// and snapping to frames is on.
+    fn snap_gesture(&self, frame: usize) -> usize {
+        match &self.doc {
+            Some(d) if self.snap_frames => self.time_format.snap_to_frame(frame, d.sample_rate(), d.frames()),
+            _ => frame,
+        }
+    }
+
+    /// `frame` in the chosen time format at the open file's rate.
+    fn fmt_time(&self, frame: usize) -> String {
+        self.time_format.format(frame, self.doc.as_ref().map_or(0, |d| d.sample_rate()))
+    }
+
     fn toggle_play(&mut self) {
         let Some(doc) = &self.doc else { return };
         if self.player.is_playing() {
@@ -766,6 +808,26 @@ impl WaveApp {
     /// Insert Silence dialog.
     fn run_window_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
         let frames = self.doc.as_ref().map_or(0, Document::frames);
+        let fmt = match id {
+            ActionId::TimeDecimal => Some(TimeFormat::Decimal),
+            ActionId::TimeCompact => Some(TimeFormat::Compact),
+            ActionId::TimeSamples => Some(TimeFormat::Samples),
+            ActionId::TimeSmpte24 => Some(TimeFormat::Smpte24),
+            ActionId::TimeSmpte25 => Some(TimeFormat::Smpte25),
+            ActionId::TimeSmpte2997Df => Some(TimeFormat::Smpte2997Df),
+            ActionId::TimeSmpte2997Ndf => Some(TimeFormat::Smpte2997Ndf),
+            ActionId::TimeSmpte30 => Some(TimeFormat::Smpte30),
+            ActionId::TimeSmpte5994 => Some(TimeFormat::Smpte5994),
+            _ => None,
+        };
+        if id == ActionId::SnapFrames {
+            self.snap_frames = !self.snap_frames;
+            return Ok(false);
+        }
+        if let Some(fmt) = fmt {
+            self.set_time_format(fmt);
+            return Ok(false);
+        }
         if frames == 0 && id != ActionId::InsertSilence {
             return Err("no file is open".to_string());
         }
@@ -881,6 +943,95 @@ impl WaveApp {
                 let why = format!("Insert Silence: {e}");
                 self.error = Some(why.clone());
                 Some(why)
+            }
+        }
+    }
+
+    /// The selection as `<start>-<end>` in the chosen format (STATE reports it).
+    fn selection_text(&self) -> String {
+        format!("{}-{}", self.fmt_time(self.selection.start()), self.fmt_time(self.selection.end()))
+    }
+
+    /// Window › Time panel: the playhead (or, stopped, the cursor) as a large readout.
+    fn time_panel(&mut self, ui: &mut egui::Ui) {
+        let frame = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
+        let text = if self.doc.is_some() { self.fmt_time(frame) } else { self.time_format.format(0, 0) };
+        ui.horizontal(|ui| {
+            ui.label("Time");
+            ui.label(egui::RichText::new(text).monospace().size(34.0));
+            ui.label(self.time_format.menu());
+        });
+    }
+
+    /// Window › Selection/View panel: begin, end and duration of the selection and of the visible
+    /// view, in the chosen format. Type a value and press Enter (or leave the box) to apply it.
+    fn selection_view_panel(&mut self, ui: &mut egui::Ui) {
+        let (frames, rate) = self.doc.as_ref().map_or((0, 0), |d| (d.frames(), d.sample_rate()));
+        let width = self.editor_width.max(1.0);
+        let (vs, ve) = (self.view.start.round() as usize, (self.view.end(width).round() as usize).min(frames));
+        let (ss, se) = (self.selection.start(), self.selection.end());
+        let values =
+            [("sel_start", ss), ("sel_end", se), ("sel_len", se - ss), ("view_start", vs), ("view_end", ve), ("view_len", ve.saturating_sub(vs))];
+        let mut committed = None;
+        egui::Grid::new("selection_view").num_columns(4).show(ui, |ui| {
+            ui.label("");
+            ui.strong("Begin");
+            ui.strong("End");
+            ui.strong("Duration");
+            ui.end_row();
+            for (row, label) in [(0, "Selection"), (3, "View")] {
+                ui.label(label);
+                for (name, value) in &values[row..row + 3] {
+                    if let Some(frame) = self.time_box(ui, name, *value, rate) {
+                        committed = Some((*name, frame));
+                    }
+                }
+                ui.end_row();
+            }
+        });
+        let Some((name, frame)) = committed else { return };
+        if self.doc.is_none() {
+            return;
+        }
+        match name {
+            "sel_start" => self.selection = self.selection.with_start(frame, frames),
+            "sel_end" => self.selection = self.selection.with_end(frame, frames),
+            "sel_len" => self.selection = self.selection.with_len(frame, frames),
+            "view_start" => self.view.set_start(frame, width, frames),
+            "view_end" => self.view.set_end(frame, width, frames),
+            _ => self.view.set_duration(frame, width, frames),
+        }
+        if name.starts_with("sel") {
+            self.player.stop();
+        }
+    }
+
+    /// One text box of the Selection/View panel. Shows `value` formatted until it is clicked into;
+    /// returns the frame typed when Enter is pressed or the box is left (Escape drops the text).
+    fn time_box(&mut self, ui: &mut egui::Ui, name: &'static str, value: usize, rate: u32) -> Option<usize> {
+        let editing = matches!(&self.panel_edit, Some((n, _)) if *n == name);
+        let mut text = match (&self.panel_edit, editing) {
+            (Some((_, t)), true) => t.clone(),
+            _ => self.time_format.format(value, rate),
+        };
+        let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(120.0).font(egui::TextStyle::Monospace));
+        if r.changed() || (r.has_focus() && !editing) {
+            self.panel_edit = Some((name, text.clone()));
+        }
+        if !r.lost_focus() {
+            return None;
+        }
+        let escaped = ui.input(|i| i.key_pressed(Key::Escape));
+        self.panel_edit = None;
+        if escaped || rate == 0 {
+            return None;
+        }
+        match self.time_format.parse(&text, rate) {
+            Some(frame) if self.time_format.format(frame, rate) != self.time_format.format(value, rate) => Some(frame),
+            Some(_) => None,
+            None => {
+                self.error = Some(format!("\"{text}\" is not a time in the {} format", self.time_format.menu()));
+                None
             }
         }
     }
@@ -1475,7 +1626,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {view} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -1483,13 +1634,19 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            self.time_format.name(),
+                            self.selection_text(),
+                            u8::from(self.snap_frames),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-")
                         )
                     }
-                    None => {
-                        format!("OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {view} undo=- redo=-", u8::from(busy))
-                    }
+                    None => format!(
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {view} time_display={} selection_text=- snap_frames={} undo=- redo=-",
+                        u8::from(busy),
+                        self.time_format.name(),
+                        u8::from(self.snap_frames)
+                    ),
                 }
             }
             "OPEN" if !rest.is_empty() => {
@@ -1526,6 +1683,24 @@ impl WaveApp {
             // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
             "PANELS" => format!("OK {}", self.panels.report()),
             "GESTURE" => self.control_gesture(rest),
+            // The step a ruler gesture calls, for scripted checks: `SNAP_FRAME <frame>`.
+            "SNAP_FRAME" => match rest.trim().parse::<usize>() {
+                Ok(f) => format!("OK frame={}", self.snap_gesture(f)),
+                Err(_) => "ERR SNAP_FRAME <frame>".to_string(),
+            },
+            "SELECT_TIME" => {
+                let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
+                let fmt = self.time_format;
+                let mut it = rest.split_whitespace().map(|t| fmt.parse(t, rate));
+                match (it.next(), it.next(), it.next()) {
+                    (Some(Some(a)), Some(Some(b)), None) => {
+                        let len = self.editor.as_ref().map_or(0, |e| e.history.current().len_frames() as usize);
+                        self.selection = Selection { anchor: a.min(len), head: b.min(len) };
+                        format!("OK selection={}", sel(self))
+                    }
+                    _ => format!("ERR SELECT_TIME <start> <end>, each written as {} (no spaces inside a time)", self.time_format.menu()),
+                }
+            }
             "ACTION" => match actions::by_name(rest) {
                 Some(a) => match self.run_action(a.id, ctx) {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
@@ -1993,7 +2168,7 @@ impl WaveApp {
                 ui.separator();
                 let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
                 let mut chosen = None;
-                for a in TABLE.iter().filter(|a| a.name.starts_with("view.") || a.name.starts_with("tool.")) {
+                for a in TABLE.iter().filter(|a| (a.name.starts_with("view.") && !a.name.starts_with("view.time_display.")) || a.name.starts_with("tool.")) {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
                     let keys = self.keymap.menu_text(Command::Action(a.id), mac);
                     if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
@@ -2004,6 +2179,20 @@ impl WaveApp {
                     let _ = self.run_action(id, ui.ctx());
                 }
                 ui.separator();
+                let mut picked = None;
+                ui.menu_button("Time Display", |ui| {
+                    for f in TimeFormat::ALL {
+                        if ui.radio(self.time_format == f, f.menu()).clicked() {
+                            picked = Some(f);
+                            ui.close();
+                        }
+                    }
+                });
+                if let Some(f) = picked {
+                    self.set_time_format(f);
+                }
+                ui.checkbox(&mut self.show_time_panel, "Time panel");
+                ui.checkbox(&mut self.show_sel_view_panel, "Selection/View panel");
                 ui.checkbox(&mut self.show_metadata, "Metadata panel");
             });
             ui.menu_button("Video", |ui| {
@@ -2048,7 +2237,7 @@ impl WaveApp {
                     doc.info.sample_format,
                     rate,
                     doc.channels(),
-                    format_time(doc.frames(), rate)
+                    self.fmt_time(doc.frames())
                 ));
                 // What was wrong with the file that still opened: the first in the bar, all of
                 // them on hover.
@@ -2058,10 +2247,10 @@ impl WaveApp {
                 }
                 ui.separator();
                 if self.selection.is_empty() {
-                    ui.label(format!("Cursor {}", format_time(self.selection.start(), rate)));
+                    ui.label(format!("Cursor {}", self.fmt_time(self.selection.start())));
                 } else {
                     let (a, b) = (self.selection.start(), self.selection.end());
-                    ui.label(format!("Selection {} – {}  ({})", format_time(a, rate), format_time(b, rate), format_time(b - a, rate)));
+                    ui.label(format!("Selection {} – {}  ({})", self.fmt_time(a), self.fmt_time(b), self.fmt_time(b - a)));
                 }
                 ui.separator();
                 match &self.player.error {
@@ -2146,7 +2335,11 @@ impl WaveApp {
 
         // Select tool: click places the cursor, drag selects; near a selection edge a drag adjusts
         // it, Shift-click extends, double-click selects what is on screen, triple-click everything.
-        let frame_at = |view: &Viewport, pos: Pos2| view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
+        let (snap_fmt, snap_on) = (self.time_format, self.snap_frames);
+        let frame_at = |view: &Viewport, pos: Pos2| {
+            let frame = view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
+            if snap_on { snap_fmt.snap_to_frame(frame, rate, frames) } else { frame }
+        };
         let edge_at = |sel: &Selection, view: &Viewport, pos: Pos2| sel.edge_near(view, pos.x - rect.left(), GRAB_PX);
         if let Some(pos) = response.hover_pos().or(response.interact_pointer_pos())
             && edge_at(&self.selection, &self.view, pos).is_some()
@@ -2221,7 +2414,7 @@ impl WaveApp {
         let (start, end) = (self.view.start, self.view.end(width));
         let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
-        draw_ruler(&painter, ruler, &self.view, rate);
+        draw_ruler(&painter, ruler, &self.view, rate, self.time_format);
 
         let (wave_area, spectrum_area) = match (self.panels.is_shown("waveform"), self.panels.is_shown("spectral")) {
             (true, true) => {
@@ -2418,6 +2611,12 @@ impl eframe::App for WaveApp {
                 egui::Panel::right("video").default_size(360.0).show(ui, |ui| v.ui(ui));
             }
         }
+        if self.show_sel_view_panel {
+            egui::Panel::bottom("selection_view").show(ui, |ui| self.selection_view_panel(ui));
+        }
+        if self.show_time_panel {
+            egui::Panel::bottom("time_panel").show(ui, |ui| self.time_panel(ui));
+        }
         if self.panels.is_shown("history") {
             egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
@@ -2517,10 +2716,10 @@ fn lane(area: Rect, ch: usize, channels: usize) -> Rect {
 }
 
 /// Tick marks and times along the top, at a round step that leaves room for the labels.
-fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32) {
+fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, fmt: TimeFormat) {
     painter.rect_filled(rect, 0.0, Color32::from_gray(32));
     let seconds_per_px = view.frames_per_px / f64::from(rate.max(1));
-    let step = ruler_step(seconds_per_px * 110.0);
+    let step = ruler_step_for(fmt, seconds_per_px * 110.0, rate);
     let first = (view.start / f64::from(rate.max(1)) / step).floor() as i64;
     for k in first..first + 200 {
         let t = k as f64 * step;
@@ -2532,14 +2731,38 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32) {
             continue;
         }
         painter.line_segment([pos2(x, rect.bottom() - 6.0), pos2(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(140)));
-        painter.text(pos2(x + 3.0, rect.top() + 3.0), egui::Align2::LEFT_TOP, tick_label(t), egui::FontId::monospace(11.0), Color32::from_gray(190));
+        painter.text(
+            pos2(x + 3.0, rect.top() + 3.0),
+            egui::Align2::LEFT_TOP,
+            fmt.format_tick(t, rate),
+            egui::FontId::monospace(11.0),
+            Color32::from_gray(190),
+        );
     }
 }
 
-/// The label of the tick at `seconds`, to the millisecond. (Going through a rounded frame number
-/// loses a millisecond at rates that 1000 does not divide: 3 ms at 44.1 kHz read "0.002".)
-fn tick_label(seconds: f64) -> String {
-    format_time((seconds.max(0.0) * 1000.0).round() as usize, 1000)
+/// The ruler's tick spacing in seconds for `fmt`: round numbers of the format's own unit (samples
+/// in powers 1-2-5, SMPTE frames below a second), else of seconds.
+fn ruler_step_for(fmt: TimeFormat, min_seconds: f64, rate: u32) -> f64 {
+    match fmt {
+        TimeFormat::Samples => {
+            let min_frames = (min_seconds * f64::from(rate.max(1))).max(1.0);
+            let mut decade = 1.0f64;
+            loop {
+                if let Some(m) = [1.0, 2.0, 5.0].iter().map(|m| m * decade).find(|f| *f >= min_frames) {
+                    return m / f64::from(rate.max(1));
+                }
+                decade *= 10.0;
+            }
+        }
+        TimeFormat::Decimal | TimeFormat::Compact => ruler_step(min_seconds),
+        _ => {
+            // SMPTE: whole frames below a second.
+            const FRAMES: [f64; 5] = [1.0, 2.0, 5.0, 10.0, 15.0];
+            let frame = fmt.smpte().map_or(1.0 / 30.0, |r| r.frame_seconds());
+            FRAMES.iter().map(|f| f * frame).find(|s| *s >= min_seconds).unwrap_or_else(|| ruler_step(min_seconds.max(1.0)))
+        }
+    }
 }
 
 /// The smallest "round" number of seconds that is at least `min_seconds`.
@@ -2656,12 +2879,24 @@ mod tests {
     }
 
     #[test]
+    fn ruler_steps_follow_the_time_format() {
+        assert_eq!(ruler_step_for(TimeFormat::Decimal, 0.7, 48_000), 1.0);
+        assert!((ruler_step_for(TimeFormat::Samples, 0.0011, 48_000) - 100.0 / 48_000.0).abs() < 1e-12, "100 samples");
+        assert!((ruler_step_for(TimeFormat::Smpte30, 0.02, 48_000) - 1.0 / 30.0).abs() < 1e-12, "one frame");
+        assert!((ruler_step_for(TimeFormat::Smpte30, 0.2, 48_000) - 10.0 / 30.0).abs() < 1e-12);
+        assert_eq!(ruler_step_for(TimeFormat::Smpte30, 3.0, 48_000), 5.0);
+        assert!((ruler_step_for(TimeFormat::Smpte24, 0.02, 48_000) - 1.0 / 24.0).abs() < 1e-12);
+        assert!((ruler_step_for(TimeFormat::Smpte5994, 0.01, 48_000) - 1001.0 / 60_000.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn tick_labels_are_exact_at_any_sample_rate() {
+        let tick_label = |s: f64| TimeFormat::Decimal.format_tick(s, 44_100);
         let labels: Vec<String> = (0..8).map(|k| tick_label(f64::from(k) * 0.001)).collect();
         assert_eq!(labels, ["0:00.000", "0:00.001", "0:00.002", "0:00.003", "0:00.004", "0:00.005", "0:00.006", "0:00.007"]);
         assert_eq!(tick_label(3723.5), "1:02:03.500");
         // The old route, through a frame at 44.1 kHz, dropped a millisecond.
-        assert_eq!(format_time((0.003f64 * 44_100.0).round() as usize, 44_100), "0:00.002");
+        assert_eq!(wavcraft_core::format_time((0.003f64 * 44_100.0).round() as usize, 44_100), "0:00.002");
     }
 
     #[test]

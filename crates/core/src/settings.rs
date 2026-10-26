@@ -49,6 +49,7 @@ pub const DEFAULT_EDGE_MS: u32 = 5;
 pub const MAX_CROSSFADE_MS: u32 = 1000;
 
 pub mod video;
+const KEY_TIME_DISPLAY: &str = "time_display";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +66,8 @@ pub struct Settings {
     pub output_device: Option<String>,
     /// Preferred recording input by device name (`None`: the system default).
     pub input_device: Option<String>,
+    /// View › Time Display.
+    pub time_display: crate::view::TimeFormat,
 }
 
 impl Default for Settings {
@@ -76,6 +79,7 @@ impl Default for Settings {
             edge_ms: DEFAULT_EDGE_MS,
             output_device: None,
             input_device: None,
+            time_display: crate::view::TimeFormat::default(),
         }
     }
 }
@@ -135,6 +139,7 @@ impl Settings {
             KEY_EDGE => self.edge_ms.to_string(),
             KEY_OUTPUT => self.output_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
             KEY_INPUT => self.input_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
+            KEY_TIME_DISPLAY => self.time_display.name().to_string(),
             _ => return Err(unknown_key(key)),
         })
     }
@@ -153,6 +158,7 @@ impl Settings {
             KEY_EDGE => self.edge_ms = ms(value)?,
             KEY_OUTPUT => self.output_device = device(value),
             KEY_INPUT => self.input_device = device(value),
+            KEY_TIME_DISPLAY => self.time_display = crate::view::TimeFormat::from_name(value).ok_or_else(|| format!("{key} is one of decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994"))?,
             _ => return Err(unknown_key(key)),
         }
         Ok(())
@@ -185,6 +191,12 @@ impl Settings {
         if let Some(input_device) = &self.input_device {
             out.push_str(&format!("{KEY_INPUT} = {input_device}
 "));
+        }
+        if self.time_display != crate::view::TimeFormat::default() {
+            out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30 or smpte_5994 (View > Time Display).
+");
+            out.push_str(&format!("{KEY_TIME_DISPLAY} = {}
+", self.time_display.name()));
         }
         out
     }

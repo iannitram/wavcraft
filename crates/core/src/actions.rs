@@ -58,6 +58,16 @@ pub enum ActionId {
     StatsGotoPeak,
     StatsNextClip,
     StatsPrevClip,
+    TimeDecimal,
+    TimeCompact,
+    TimeSamples,
+    TimeSmpte24,
+    TimeSmpte25,
+    TimeSmpte2997Df,
+    TimeSmpte2997Ndf,
+    TimeSmpte30,
+    TimeSmpte5994,
+    SnapFrames,
 }
 
 /// Which part of the program carries an action out.
@@ -133,6 +143,16 @@ pub const TABLE: &[Action] = &[
     window(ActionId::StatsGotoPeak, "stats.goto_peak", "Go to Peak"),
     window(ActionId::StatsNextClip, "stats.next_clip", "Next Possibly Clipped Run"),
     window(ActionId::StatsPrevClip, "stats.prev_clip", "Previous Possibly Clipped Run"),
+    window(ActionId::TimeDecimal, "view.time_display.decimal", "Decimal (mm:ss.ddd)"),
+    window(ActionId::TimeCompact, "view.time_display.compact", "Compact"),
+    window(ActionId::TimeSamples, "view.time_display.samples", "Samples"),
+    window(ActionId::TimeSmpte24, "view.time_display.smpte_24", "SMPTE 24 fps"),
+    window(ActionId::TimeSmpte25, "view.time_display.smpte_25", "SMPTE 25 fps"),
+    window(ActionId::TimeSmpte2997Df, "view.time_display.smpte_2997df", "SMPTE 29.97 fps drop"),
+    window(ActionId::TimeSmpte2997Ndf, "view.time_display.smpte_2997ndf", "SMPTE 29.97 fps non-drop"),
+    window(ActionId::TimeSmpte30, "view.time_display.smpte_30", "SMPTE 30 fps"),
+    window(ActionId::TimeSmpte5994, "view.time_display.smpte_5994", "SMPTE 59.94 fps"),
+    window(ActionId::SnapFrames, "view.snap_frames.toggle", "Snap to Frames"),
 ];
 
 /// One row per registered effect (`effect.<id>`, menu text its name), built once. The names are
@@ -298,6 +318,16 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::TimeDecimal
+            | ActionId::TimeCompact
+            | ActionId::TimeSamples
+            | ActionId::TimeSmpte24
+            | ActionId::TimeSmpte25
+            | ActionId::TimeSmpte2997Df
+            | ActionId::TimeSmpte2997Ndf
+            | ActionId::TimeSmpte30
+            | ActionId::TimeSmpte5994
+            | ActionId::SnapFrames => true,
             ActionId::StatsShow | ActionId::StatsGotoPeak | ActionId::StatsNextClip | ActionId::StatsPrevClip => self.len() > 0,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
@@ -532,6 +562,16 @@ impl Editor {
             | ActionId::ToolSelect
             | ActionId::ToolHand
             | ActionId::ToolZoom
+            | ActionId::TimeDecimal
+            | ActionId::TimeCompact
+            | ActionId::TimeSamples
+            | ActionId::TimeSmpte24
+            | ActionId::TimeSmpte25
+            | ActionId::TimeSmpte2997Df
+            | ActionId::TimeSmpte2997Ndf
+            | ActionId::TimeSmpte30
+            | ActionId::TimeSmpte5994
+            | ActionId::SnapFrames
             // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast

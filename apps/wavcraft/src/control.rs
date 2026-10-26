@@ -13,6 +13,8 @@
 //! - `KEY <chord>` (`Ctrl+Z`, `Cmd+Shift+Z`, `Space`, `F3`; Ctrl and Cmd mean the same) → `OK command=<name> selection=<a>-<b> changed=<0|1>` (runs what the shortcut table binds the chord to, as the key would; `ERR` when none)
 //! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
 //! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1>` (which panels are shown)
+//! - `SELECT_TIME <start> <end>` (each in the chosen time format, no spaces inside) → `OK selection=<a>-<b>`; `STATE` also reports `time_display`, `selection_text` and `snap_frames`
+//! - `SNAP_FRAME <frame>` → `OK frame=<snapped>` (what a ruler click or drag calls: SMPTE display and Snap to Frames on)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
 //! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
