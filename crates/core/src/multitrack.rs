@@ -15,13 +15,14 @@ use std::sync::Arc;
 use serde_json::json;
 use soundcraft_model::time::SampleRate;
 use soundcraft_model::{BitDepthSetting, ChannelFormat, Clip, Source, SourceAudio, SourceId, TrackId, TrackKind, truncate_chars};
-use soundcraft_model::{MAX_NAME_CHARS, Session};
+use soundcraft_model::{MAX_NAME_CHARS, MarkerKind, Session};
 use soundcraft_model_audio::AudioBuffer as ModelBuffer;
 
 use crate::Document;
 
 pub use soundcraft_model;
 pub mod track_height;
+pub mod marker_export;
 
 /// The most samples (frames times channels) one imported clip may hold in RAM: 128 MiB of `f32`.
 pub const MAX_IMPORT_SAMPLES: u64 = 32 * 1024 * 1024;
@@ -300,8 +301,148 @@ impl Multitrack {
                 json!({"name": t.name, "channels": t.channels(), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "clips": clips})
             })
             .collect();
-        json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "tracks": tracks})
+        json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "playhead": self.playhead_seconds(), "selection": self.selection_seconds(), "markers": self.markers_json(), "tracks": tracks})
             .to_string()
+    }
+
+    // ---- session markers and ranges (f110, roadmap C084) ----------------------------------
+    // They are the model's memory locations (`Session::markers`, kept sorted by start): a marker
+    // is a point (kind `Marker`), a range has an end after its start (kind `Selection`). The
+    // control channel and the tests address one by its 1-based position in time order.
+
+    /// The playhead in seconds (the model's `edit.playhead`).
+    pub fn playhead_seconds(&self) -> f64 {
+        self.session.sample_rate.seconds(self.session.edit.playhead)
+    }
+
+    /// Put the playhead at `seconds` (not below 0).
+    pub fn set_playhead(&mut self, seconds: f64) -> Result<(), MtError> {
+        if !seconds.is_finite() {
+            return err("a time is a finite number of seconds");
+        }
+        self.session.edit.playhead = self.session.sample_rate.samples(seconds.max(0.0));
+        Ok(())
+    }
+
+    /// The time selection in seconds, or `None` when it is only a point.
+    pub fn selection_seconds(&self) -> Option<(f64, f64)> {
+        let r = self.session.edit.selection;
+        let rate = self.session.sample_rate;
+        (r.end > r.start).then(|| (rate.seconds(r.start), rate.seconds(r.end)))
+    }
+
+    /// Set the time selection (the two times in either order; equal times make it a point).
+    pub fn set_selection(&mut self, a: f64, b: f64) -> Result<(), MtError> {
+        if !a.is_finite() || !b.is_finite() {
+            return err("a time is a finite number of seconds");
+        }
+        let rate = self.session.sample_rate;
+        self.session.edit.selection = soundcraft_model::time::Range::new(rate.samples(a.max(0.0)), rate.samples(b.max(0.0)));
+        Ok(())
+    }
+
+    /// Add a marker at `start` seconds, or a range when `end` is given and later than `start`.
+    /// `None` names it "Marker N" / "Range N" from its number. Returns its 1-based position.
+    pub fn add_marker(&mut self, name: Option<&str>, start: f64, end: Option<f64>) -> Result<usize, MtError> {
+        if !start.is_finite() || start < 0.0 || end.is_some_and(|e| !e.is_finite() || e < 0.0) {
+            return err("marker times are seconds, 0 or more");
+        }
+        let rate = self.session.sample_rate;
+        let (s0, s1) = (rate.samples(start), rate.samples(end.unwrap_or(start)));
+        if s1 < s0 {
+            return err("a range ends after it starts");
+        }
+        let kind = if s1 > s0 { MarkerKind::Selection } else { MarkerKind::Marker };
+        let name = match name {
+            Some(n) => clean_name(n)?,
+            None => {
+                let n = self.session.markers.iter().map(|m| m.number).max().unwrap_or(0) + 1;
+                format!("{} {n}", if kind == MarkerKind::Selection { "Range" } else { "Marker" })
+            }
+        };
+        let id = self.session.add_marker(&name, kind, s0, s1);
+        Ok(self.session.markers.iter().position(|m| m.id == id).map_or(0, |i| i + 1))
+    }
+
+    /// A marker at the playhead.
+    pub fn add_marker_at_playhead(&mut self) -> Result<usize, MtError> {
+        self.add_marker(None, self.playhead_seconds(), None)
+    }
+
+    /// A range from the time selection (a marker at the playhead when the selection is a point).
+    pub fn add_marker_from_selection(&mut self) -> Result<usize, MtError> {
+        match self.selection_seconds() {
+            Some((a, b)) => self.add_marker(None, a, Some(b)),
+            None => self.add_marker_at_playhead(),
+        }
+    }
+
+    pub fn marker_count(&self) -> usize {
+        self.session.markers.len()
+    }
+
+    fn marker_index(&self, pos: usize) -> Result<usize, MtError> {
+        if pos >= 1 && pos <= self.session.markers.len() {
+            Ok(pos - 1)
+        } else {
+            err(format!("no marker {pos}; there are {}", self.session.markers.len()))
+        }
+    }
+
+    pub fn rename_marker(&mut self, pos: usize, name: &str) -> Result<(), MtError> {
+        let name = clean_name(name)?;
+        let i = self.marker_index(pos)?;
+        self.session.markers[i].name = name;
+        Ok(())
+    }
+
+    pub fn delete_marker(&mut self, pos: usize) -> Result<(), MtError> {
+        let i = self.marker_index(pos)?;
+        self.session.markers.remove(i);
+        Ok(())
+    }
+
+    /// Move the playhead to the next marker's start (after the playhead). Returns the marker's
+    /// 1-based position, or an error when there is none (the playhead stays).
+    pub fn next_marker(&mut self) -> Result<usize, MtError> {
+        let ph = self.session.edit.playhead;
+        match self.session.markers.iter().position(|m| m.start > ph) {
+            Some(i) => {
+                self.session.edit.playhead = self.session.markers[i].start;
+                Ok(i + 1)
+            }
+            None => err("no marker after the playhead"),
+        }
+    }
+
+    /// Move the playhead to the previous marker's start (before the playhead).
+    pub fn prev_marker(&mut self) -> Result<usize, MtError> {
+        let ph = self.session.edit.playhead;
+        match self.session.markers.iter().rposition(|m| m.start < ph) {
+            Some(i) => {
+                self.session.edit.playhead = self.session.markers[i].start;
+                Ok(i + 1)
+            }
+            None => err("no marker before the playhead"),
+        }
+    }
+
+    /// Playhead, selection and markers as one line of JSON (for `SMARKER state`).
+    pub fn markers_state_json(&self) -> String {
+        json!({"playhead": self.playhead_seconds(), "selection": self.selection_seconds(), "markers": self.markers_json()}).to_string()
+    }
+
+    /// The markers as JSON values (position, name, kind, start and end in seconds).
+    pub fn markers_json(&self) -> Vec<serde_json::Value> {
+        let rate = self.session.sample_rate;
+        self.session
+            .markers
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                json!({"index": i + 1, "name": m.name, "range": m.kind == MarkerKind::Selection, "start": rate.seconds(m.start), "end": rate.seconds(m.end)})
+            })
+            .collect()
     }
 
     /// The session as the model's own JSON (audio is not in it; the sources' file names are).
@@ -461,5 +602,71 @@ mod tests {
         fn unwrap_or_default_err(self) -> String {
             self.err().map(|e| e.0).unwrap_or_default()
         }
+    }
+
+    #[test]
+    fn markers_and_ranges_are_added_renamed_deleted_in_time_order() {
+        let mut mt = Multitrack::new("s", 48_000, BitDepthSetting::Int24).unwrap();
+        assert_eq!(mt.add_marker(None, 5.0, None).unwrap(), 1);
+        assert_eq!(mt.add_marker(Some("Intro"), 1.0, Some(3.0)).unwrap(), 1, "sorted by start");
+        let j = mt.markers_json();
+        assert_eq!(j[0]["name"], "Intro");
+        assert_eq!(j[0]["range"], true);
+        assert_eq!(j[1]["name"], "Marker 1");
+        assert_eq!(j[1]["range"], false);
+        mt.rename_marker(2, "Chorus").unwrap();
+        assert_eq!(mt.markers_json()[1]["name"], "Chorus");
+        assert!(mt.rename_marker(3, "x").is_err());
+        assert!(mt.rename_marker(1, "  ").is_err());
+        mt.delete_marker(1).unwrap();
+        assert_eq!(mt.marker_count(), 1);
+        assert!(mt.delete_marker(2).is_err());
+        assert!(mt.add_marker(None, -1.0, None).is_err());
+        assert!(mt.add_marker(None, 4.0, Some(2.0)).is_err());
+        assert!(mt.add_marker(None, f64::NAN, None).is_err());
+    }
+
+    #[test]
+    fn markers_come_from_the_playhead_and_the_selection() {
+        let mut mt = Multitrack::new("s", 48_000, BitDepthSetting::Int24).unwrap();
+        mt.set_playhead(2.5).unwrap();
+        mt.add_marker_at_playhead().unwrap();
+        assert_eq!(mt.markers_json()[0]["start"], 2.5);
+        mt.set_selection(9.0, 6.0).unwrap();
+        let i = mt.add_marker_from_selection().unwrap();
+        let m = &mt.markers_json()[i - 1];
+        assert_eq!((m["start"].as_f64(), m["end"].as_f64(), m["range"].as_bool()), (Some(6.0), Some(9.0), Some(true)));
+        mt.set_selection(1.0, 1.0).unwrap();
+        assert_eq!(mt.selection_seconds(), None);
+        mt.add_marker_from_selection().unwrap();
+        assert_eq!(mt.marker_count(), 3, "a point selection makes a marker at the playhead");
+    }
+
+    #[test]
+    fn next_and_previous_move_the_playhead_between_marker_starts() {
+        let mut mt = Multitrack::new("s", 48_000, BitDepthSetting::Int24).unwrap();
+        for t in [1.0, 4.0, 8.0] {
+            mt.add_marker(None, t, None).unwrap();
+        }
+        assert!(mt.prev_marker().is_err());
+        assert_eq!(mt.next_marker().unwrap(), 1);
+        assert_eq!(mt.playhead_seconds(), 1.0);
+        assert_eq!(mt.next_marker().unwrap(), 2);
+        assert_eq!(mt.next_marker().unwrap(), 3);
+        assert!(mt.next_marker().is_err());
+        assert_eq!(mt.playhead_seconds(), 8.0);
+        assert_eq!(mt.prev_marker().unwrap(), 2);
+        mt.set_playhead(4.5).unwrap();
+        assert_eq!(mt.prev_marker().unwrap(), 2);
+        assert_eq!(mt.playhead_seconds(), 4.0);
+    }
+
+    #[test]
+    fn markers_survive_the_model_json_round_trip() {
+        let mut mt = Multitrack::new("s", 48_000, BitDepthSetting::Int24).unwrap();
+        mt.add_marker(Some("A"), 1.0, Some(2.0)).unwrap();
+        let back = Session::from_json(&mt.to_json().unwrap()).unwrap();
+        assert_eq!(back.markers.len(), 1);
+        assert_eq!(back.markers[0].name, "A");
     }
 }
