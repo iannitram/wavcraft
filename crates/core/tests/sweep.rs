@@ -4,7 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use wavcraft_core::store::{HELD_FILE, LOCK_FILE, Store, StoreOptions, machine_id, stale_sessions, sweep_stale_sessions, this_host};
+use wavcraft_core::autosave::{JOURNAL_FILE, JOURNAL_TMP};
+use wavcraft_core::store::{HELD_FILE, LOCK_FILE, Store, StoreOptions, has_journal, machine_id, stale_sessions, sweep_stale_sessions, this_host};
 
 /// A folder in the system's temp directory, removed when dropped.
 struct TempDir(PathBuf);
@@ -152,4 +153,54 @@ fn cx_w3_another_machine_with_the_same_hostname_is_never_swept() {
     assert!(stale_sessions(&t.0).is_empty());
     assert_eq!(sweep_stale_sessions(Some(&t.0)), 0);
     assert!(dir.exists());
+}
+
+/// The lock file of a session left by a dead run on this machine.
+fn dead_lock() -> String {
+    format!("pid={DEAD_PID}\nhost={}\nmachine={}\napp=wavcraft 0.1.0\n", this_host(), machine_id())
+}
+
+/// Card wav-c-86-b (#86, v1 item I4): `has_journal` sees either journal file name.
+#[test]
+fn c86b_has_journal_sees_the_journal_or_the_half_written_one() {
+    let t = TempDir::new("has-journal");
+    let dir = session(&t.0, "3333333333333333", Some(&dead_lock()));
+    assert!(!has_journal(&dir), "a pack and a lock are not a journal");
+    std::fs::write(dir.join(JOURNAL_TMP), b"half").unwrap();
+    assert!(has_journal(&dir));
+    std::fs::remove_file(dir.join(JOURNAL_TMP)).unwrap();
+    std::fs::write(dir.join(JOURNAL_FILE), b"whole").unwrap();
+    assert!(has_journal(&dir));
+    assert!(!has_journal(&t.0.join("not-there")), "a missing folder has none");
+}
+
+/// Card wav-c-86-b: a dead run's session with a journal may hold work to recover: it is not
+/// stale, and the sweep keeps it, whether the journal is whole or half-written.
+#[test]
+fn c86b_a_dead_session_with_a_journal_is_never_swept() {
+    let t = TempDir::new("journaled");
+    let whole = session(&t.0, "4444444444444444", Some(&dead_lock()));
+    std::fs::write(whole.join(JOURNAL_FILE), b"whole").unwrap();
+    let half = session(&t.0, "5555555555555555", Some(&dead_lock()));
+    std::fs::write(half.join(JOURNAL_TMP), b"half").unwrap();
+    assert_eq!(stale_sessions(&t.0), Vec::new());
+    assert_eq!(sweep_stale_sessions(Some(&t.0)), 0);
+    assert!(whole.join(JOURNAL_FILE).exists());
+    assert!(half.join(JOURNAL_TMP).exists());
+    assert!(whole.join("pack-0001.f32").exists() && half.join("pack-0001.f32").exists());
+}
+
+/// Card wav-c-86-b: beside a journaled session, a dead session without one is still swept.
+#[test]
+fn c86b_only_the_session_without_a_journal_is_swept() {
+    let t = TempDir::new("mixed");
+    let kept = session(&t.0, "6666666666666666", Some(&dead_lock()));
+    std::fs::write(kept.join(JOURNAL_FILE), b"whole").unwrap();
+    let gone = session(&t.0, "7777777777777777", Some(&dead_lock()));
+    let found = stale_sessions(&t.0);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((found[0].dir.clone(), found[0].pid), (gone.clone(), DEAD_PID));
+    assert!(sweep_stale_sessions(Some(&t.0)) >= 4096);
+    assert!(!gone.exists());
+    assert!(kept.join(JOURNAL_FILE).exists());
 }

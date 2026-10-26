@@ -17,6 +17,7 @@
 
 pub mod actions;
 pub mod atomic;
+pub mod autosave;
 pub mod cd;
 pub mod doc;
 pub mod document;
