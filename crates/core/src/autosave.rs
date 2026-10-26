@@ -13,22 +13,28 @@ pub const JOURNAL_TMP: &str = "journal.wcj.tmp";
 
 /// The 64-bit FNV-1a hash of `bytes`.
 pub fn fnv1a(bytes: &[u8]) -> u64 {
-    // Stub: card wav-c-86-c replaces this body.
-    let _ = bytes;
-    0
+    let mut h = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    h
 }
 
 /// `body` with its checksum line appended: `body`, then `sum `, then [`fnv1a`] of `body`'s bytes
 /// as 16 lowercase hex digits, then `\n`.
 pub fn seal(body: &str) -> String {
-    // Stub: card wav-c-86-c replaces this body.
-    let _ = body;
-    String::new()
+    format!("{}sum {:016x}\n", body, fnv1a(body.as_bytes()))
 }
 
 /// The body of a sealed journal text, if its checksum line is there and matches.
 pub fn unseal(text: &str) -> Result<&str, String> {
-    // Stub: card wav-c-86-c replaces this body.
-    let _ = text;
-    Err(String::new())
+    let pos = text.rfind("sum ").ok_or("no checksum line (the journal is cut short)".to_string())?;
+
+    let body = &text[..pos];
+    let tail = &text[pos..];
+
+    let expected_checksum = format!("{:016x}", fnv1a(body.as_bytes()));
+    let actual_checksum = tail.trim_end().strip_prefix("sum ").unwrap_or("").trim();
+
+    if actual_checksum == expected_checksum { Ok(body) } else { Err("the checksum does not match (the journal is damaged)".to_string()) }
 }
