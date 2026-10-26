@@ -119,12 +119,21 @@ struct TempFile {
 }
 
 impl TempFile {
-    fn create(target: &Path) -> io::Result<TempFile> {
+    fn create(target: &Path, owner_only: bool) -> io::Result<TempFile> {
         let prefix = temp_prefix(target);
         for _ in 0..16 {
             let path = target.with_file_name(format!("{prefix}{}", crate::random::hex(8)?));
             // create_new: O_CREAT|O_EXCL, which also refuses a link at that name.
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            let mut opts = OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            if owner_only {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            #[cfg(not(unix))]
+            let _ = owner_only; // Windows: the file inherits its folder's access list
+            match opts.open(&path) {
                 Ok(file) => {
                     file.try_lock().map_err(|e| io::Error::other(format!("could not lock the temporary file: {e}")))?;
                     return Ok(TempFile { path, file });
@@ -181,7 +190,7 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
         return Err(SaveError::Empty);
     }
     remove_leftover_temps(target);
-    let tmp = TempFile::create(target).map_err(SaveError::Io)?;
+    let tmp = TempFile::create(target, false).map_err(SaveError::Io)?;
     let TempFile { path: tmp, file } = tmp;
     // Written through the handle made by the exclusive create, never reopened by name.
     let (file, written) = match write_wav(doc, file, ty, progress, fail_after) {
@@ -472,6 +481,34 @@ fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: Sampl
     }
     let pos = if rf64 { 12 + 36 } else { 12 } + 8 + u64::from(fmt_len) + fact;
     Ok((data_len, pos))
+}
+
+/// Write `bytes` to `target` with the same care as a WAV save (f117, the session file): a fresh
+/// exclusive temporary file beside it (owner-only on Unix when `owner_only`), written, synced to
+/// disk, then renamed over the target; the folder is synced after. Any failure removes the
+/// temporary file and leaves the target as it was.
+pub fn write_file_atomic(target: &Path, bytes: &[u8], owner_only: bool) -> io::Result<()> {
+    remove_leftover_temps(target);
+    let TempFile { path: tmp, mut file } = TempFile::create(target, owner_only)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    if let Err(e) = written {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, target) {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(io::Error::new(e.kind(), format!("could not replace {} ({e}); it is unchanged", target.display())));
+    }
+    drop(file);
+    #[cfg(unix)]
+    if let Some(dir) = target.parent().filter(|d| !d.as_os_str().is_empty())
+        && let Ok(d) = File::open(dir)
+    {
+        let _ = d.sync_all(); // best effort: the rename itself is done
+    }
+    Ok(())
 }
 
 /// `x` (full scale ±1) as a `bits`-bit integer, rounded and clamped; NaN is 0.

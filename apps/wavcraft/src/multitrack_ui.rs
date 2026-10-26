@@ -12,6 +12,7 @@ use wavcraft_core::mtplay::{PlaybackSession, SilentPlayer};
 use wavcraft_core::mtrecord::{FAKE_CHANNELS, Recorder};
 use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, TrackId};
 use wavcraft_core::multitrack::{MtError, Multitrack, bit_depth_from_bits, bits_of};
+use wavcraft_core::session_file;
 
 const HEADER_W: f32 = 230.0;
 const ROW_H: f32 = 64.0;
@@ -148,6 +149,58 @@ impl MtView {
     pub fn open_dialog(&mut self) {
         self.sessions_made += 1;
         self.dialog = Some(NewDialog { name: format!("Session {}", self.sessions_made), rate: 48_000, bits: 24 });
+    }
+
+    /// File › Save Session (`as_new` false: to the file it came from, asking only when it has none)
+    /// or Save Session As…; the answer, or the reason it failed, goes in `message`.
+    pub fn save_session_dialog(&mut self, as_new: bool) {
+        let Some(mt) = &mut self.mt else { return };
+        let target = match (&mt.file, as_new) {
+            (Some(f), false) => f.clone(),
+            _ => {
+                let mut dlg = rfd::FileDialog::new().add_filter("WavCraft session", &[session_file::EXTENSION]).set_file_name(format!(
+                    "{}.{}",
+                    mt.name(),
+                    session_file::EXTENSION
+                ));
+                if let Some(dir) = mt.file.as_ref().and_then(|f| f.parent()) {
+                    dlg = dlg.set_directory(dir);
+                }
+                match dlg.save_file() {
+                    Some(p) => p,
+                    None => return,
+                }
+            }
+        };
+        self.message = match mt.save_to(&target) {
+            Ok(_) => None,
+            Err(e) => Some(format!("Could not save the session: {e}")),
+        };
+    }
+
+    /// File › Open Session…
+    pub fn open_session_dialog(&mut self) {
+        if let Some(p) = rfd::FileDialog::new().add_filter("WavCraft session", &[session_file::EXTENSION]).pick_file() {
+            self.open_session(&p).ok();
+        }
+    }
+
+    /// Open a session file; media that cannot be found opens offline, and `message` says which.
+    pub fn open_session(&mut self, path: &std::path::Path) -> Result<usize, MtError> {
+        match Multitrack::open_from(path) {
+            Ok((mt, offline)) => {
+                self.mt = Some(mt);
+                self.selected = None;
+                self.rename = None;
+                self.show = true;
+                self.message = (!offline.is_empty()).then(|| format!("Opened with {} file(s) offline: {}", offline.len(), offline.join("; ")));
+                Ok(offline.len())
+            }
+            Err(e) => {
+                self.message = Some(format!("Could not open the session: {e}"));
+                Err(e)
+            }
+        }
     }
 
     fn create(&mut self, name: &str, rate: u32, depth: BitDepthSetting) -> Result<(), MtError> {
@@ -657,7 +710,17 @@ impl MtView {
                 }
                 None => Ok(format!("OK view={} none", if self.show { "multitrack" } else { "waveform" })),
             },
-            ("SESSION", _) => usage("SESSION new <name> [rate=] [depth=] | SESSION state"),
+            ("SESSION", "save") if w.len() == 2 => {
+                let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+                let r = mt.save_to(&PathBuf::from(word(1)))?;
+                self.message = None;
+                Ok(format!("OK exported={} offline={} path={}", r.exported, r.offline, r.path.display()))
+            }
+            ("SESSION", "open") if w.len() == 2 => {
+                let offline = self.open_session(&PathBuf::from(word(1)))?;
+                Ok(format!("OK offline={offline}"))
+            }
+            ("SESSION", _) => usage("SESSION new <name> [rate=] [depth=] | SESSION state | SESSION save <path> | SESSION open <path>"),
             ("TRACK", verb) => {
                 let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
                 match verb {
@@ -862,5 +925,23 @@ mod tests {
         assert!(v.control("SMARKER", "delete 5", None).starts_with("ERR"));
         assert!(v.control("SMARKER", "add x", None).starts_with("ERR"));
         assert!(v.control("SMARKER", "bogus", None).starts_with("ERR usage"));
+    }
+
+    #[test]
+    fn save_and_open_by_control_keep_the_state() {
+        let dir = std::env::temp_dir().join(format!("wavcraft-ui-sf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("s.wcsession");
+        let mut v = MtView::default();
+        assert!(v.control("SESSION", &format!("save {}", file.display()), None).starts_with("ERR no session"));
+        v.control("SESSION", "new Demo", None);
+        v.control("TRACK", "add Drums", None);
+        let before = v.control("SESSION", "state", None);
+        assert!(v.control("SESSION", &format!("save {}", file.display()), None).starts_with("OK exported=0"));
+        let mut w = MtView::default();
+        assert_eq!(w.control("SESSION", &format!("open {}", file.display()), None), "OK offline=0");
+        assert_eq!(w.control("SESSION", "state", None), before);
+        assert!(w.control("SESSION", &format!("open {}", dir.join("nope").display()), None).starts_with("ERR"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

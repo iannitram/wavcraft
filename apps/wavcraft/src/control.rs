@@ -42,6 +42,7 @@
 //! - `VIDEO status` → `OK <text>` (what the panel says about the file); `VIDEO detach` → `OK`
 //! - `SESSION new <name> [rate=48000] [depth=24]`, `SESSION state`, `TRACK add|remove|rename|mute|solo|volume …`,
 //!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`
+//!   `SESSION save <path>` / `SESSION open <path>` (the session file, f117; `OK offline=<n>`)
 //!   (multitrack basics, f103; see `multitrack_ui.rs`; `SESSION state` answers `OK view=… <json>`)
 //!   `SMARKER add <t> [end]|rename <i> <name>|delete <i>|next|prev|playhead <t>|select <a> <b>|addhere|addsel|state`
 //!   `SPLAY [seconds]`, `SSTOP` (play the session, f114; `SESSION state` adds `playing`, `position` in seconds and `underruns`)
