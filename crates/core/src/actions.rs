@@ -9,6 +9,7 @@ use std::io;
 use std::ops::Range;
 
 use crate::diagnostics::silence::{self, SilenceError, SilenceParams};
+use crate::diagnostics::{declick, declip};
 use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, PasteAt};
 use crate::doc::history::History;
 use crate::effects::{self, EffectParams, FadeCurve, FadeDir};
@@ -55,6 +56,12 @@ pub enum ActionId {
     RepeatLastDialog,
     /// Capture Noise Print: learn the selection's noise spectrum (kept for the session).
     CaptureNoisePrint,
+    /// Diagnostics › DeClipper (B045): scan and repair clipped peaks.
+    DeClip,
+    /// Diagnostics › DeClicker (B046): scan and repair clicks and pops.
+    DeClick,
+    /// Diagnostics › Automatic Click Remover (B072): detect and repair in one command.
+    AutoClick,
     /// A registered effect: its index in [`effects::all`].
     Effect(u16),
     // The one-shot effects (B002), on the selection or the whole file.
@@ -140,6 +147,11 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::ZeroLeftToRight, "edit.zeroCrossings.leftToRight", "Zero Crossings: Left Side to Right"),
     edit(ActionId::ZeroRightToLeft, "edit.zeroCrossings.rightToLeft", "Zero Crossings: Right Side to Left"),
     edit(ActionId::ZeroRightToRight, "edit.zeroCrossings.rightToRight", "Zero Crossings: Right Side to Right"),
+    // Diagnostics › DeClipper: scan the selection (or the whole file) and redraw clipped peaks.
+    edit(ActionId::DeClip, "diagnostics.declip", "DeClipper"),
+    // Diagnostics › DeClicker / Automatic Click Remover: find clicks and pops and redraw them.
+    edit(ActionId::DeClick, "diagnostics.declick", "DeClicker"),
+    edit(ActionId::AutoClick, "diagnostics.autoClickRemover", "Automatic Click Remover"),
     window(ActionId::SetIn, "edit.setIn", "Set In Point to Playhead"),
     window(ActionId::SetOut, "edit.setOut", "Set Out Point to Playhead"),
     edit(ActionId::LeftChannel, "edit.leftChannel", "Left Channel Only"),
@@ -260,6 +272,12 @@ pub enum Repeat {
     InsertSilence(u64),
     /// A registered effect (its index in [`effects::all`]) with the settings it last ran with.
     Effect(u16, Vec<f64>),
+    /// DeClipper with `[threshold_db, min_run]`.
+    DeClip(Vec<f64>),
+    /// DeClicker with `[sensitivity, max_width_ms]`.
+    DeClick(Vec<f64>),
+    /// Automatic Click Remover with `[threshold, complexity]`.
+    AutoClick(Vec<f64>),
 }
 
 /// What [`ActionId::RepeatLastDialog`] (`F2` / `Ctrl+R`) opens or runs for the remembered command.
@@ -389,7 +407,7 @@ impl Editor {
             | ActionId::ZeroRightToLeft
             | ActionId::ZeroRightToRight => has_sel,
             // An effect takes the selection, or the whole file when there is none.
-            ActionId::Effect(_) | ActionId::DeleteSilence => self.len() > 0,
+            ActionId::Effect(_) | ActionId::DeleteSilence | ActionId::DeClip | ActionId::DeClick | ActionId::AutoClick => self.len() > 0,
             // Like Copy: with no selection the one-shot effects take the whole file.
             ActionId::Reverse
             | ActionId::Amplify
@@ -400,7 +418,7 @@ impl Editor {
             | ActionId::FadeOutCosine => self.len() > 0,
             ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
                 Some(Repeat::Action(last)) => self.enabled(last, selection),
-                Some(Repeat::InsertSilence(_) | Repeat::Effect(..)) => self.len() > 0,
+                Some(Repeat::InsertSilence(_) | Repeat::Effect(..) | Repeat::DeClip(_) | Repeat::DeClick(_) | Repeat::AutoClick(_)) => self.len() > 0,
                 None => false,
             },
         }
@@ -422,6 +440,9 @@ impl Editor {
                     let has_dialog = effects::all().get(usize::from(i)).is_some_and(|e| !e.parameters().is_empty());
                     if id == ActionId::RepeatLastDialog && has_dialog { format!("Repeat {name}…") } else { format!("Repeat {name}") }
                 }
+                Some(Repeat::DeClip(_)) => "Repeat DeClipper".to_string(),
+                Some(Repeat::DeClick(_)) => "Repeat DeClicker".to_string(),
+                Some(Repeat::AutoClick(_)) => "Repeat Automatic Click Remover".to_string(),
                 // "Repeat Insert Silence" runs it at once; the dialog version keeps the "…".
                 Some(Repeat::InsertSilence(_)) if id == ActionId::RepeatLast => "Repeat Insert Silence".to_string(),
                 Some(Repeat::InsertSilence(_)) => format!("Repeat {}", action(ActionId::InsertSilence).menu),
@@ -437,6 +458,9 @@ impl Editor {
         match self.last.clone() {
             Some(Repeat::Action(id)) => self.run(id, selection),
             Some(Repeat::Effect(i, params)) => self.run_effect(i, params, selection),
+            Some(Repeat::DeClip(params)) => self.run_declip(params, selection),
+            Some(Repeat::DeClick(params)) => self.run_declick(params, selection),
+            Some(Repeat::AutoClick(params)) => self.run_auto_click(params, selection),
             Some(Repeat::InsertSilence(frames)) => self.insert_silence(selection.start, frames),
             None => Ok(Outcome { doc_changed: false, selection, message: Some("There is no command to repeat yet".to_string()) }),
         }
@@ -593,6 +617,26 @@ impl Editor {
         self.run_with(ActionId::Effect(i), selection, Some(params))
     }
 
+    /// Run Diagnostics › DeClipper with `[threshold_db, min_run]` (both inside the ranges of
+    /// [`declip::Params`], or the call is refused and nothing changes) on `selection` (the whole
+    /// file when empty); one undo step "DeClipper".
+    pub fn run_declip(&mut self, params: Vec<f64>, selection: Range<u64>) -> Result<Outcome, EditError> {
+        self.run_with(ActionId::DeClip, selection, Some(params))
+    }
+
+    /// Run Diagnostics › DeClicker with `[sensitivity, max_width_ms]` (inside the ranges of
+    /// [`declick::Params`], or the call is refused and nothing changes) on `selection` (the whole
+    /// file when empty); one undo step "DeClicker".
+    pub fn run_declick(&mut self, params: Vec<f64>, selection: Range<u64>) -> Result<Outcome, EditError> {
+        self.run_with(ActionId::DeClick, selection, Some(params))
+    }
+
+    /// Run Diagnostics › Automatic Click Remover with `[threshold, complexity]` on `selection`
+    /// (the whole file when empty); one undo step "Automatic Click Remover".
+    pub fn run_auto_click(&mut self, params: Vec<f64>, selection: Range<u64>) -> Result<Outcome, EditError> {
+        self.run_with(ActionId::AutoClick, selection, Some(params))
+    }
+
     /// Process `selection` (the whole file when empty) through the Effects Rack as one undo step
     /// named "Effects Rack" (f31). An inactive rack changes nothing.
     pub fn run_rack(&mut self, rack: &crate::rack::RackConfig, selection: Range<u64>) -> Result<Outcome, EditError> {
@@ -708,6 +752,37 @@ impl Editor {
                 let e = effects::apply(*effect, &params, &doc, sel.clone(), channels, xf, &cancel)?;
                 self.last = Some(Repeat::Effect(i, params));
                 (e, sel.clone())
+            }
+            ActionId::DeClip => {
+                let defaults = declip::Params::default();
+                let v = params.unwrap_or_else(|| vec![defaults.threshold_db, f64::from(defaults.min_run)]);
+                let min_run = match v.get(1) {
+                    Some(m) if m.fract() == 0.0 && *m >= 0.0 && *m <= f64::from(u32::MAX) => *m as u32,
+                    _ => return Err(EditError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, "min_run must be a whole number"))),
+                };
+                let p = declip::Params { threshold_db: v.first().copied().unwrap_or(f64::NAN), min_run };
+                let cancel = std::sync::atomic::AtomicBool::new(false);
+                let r = declip::declip(&doc, sel.clone(), channels, &p, xf, &cancel)?;
+                self.last = Some(Repeat::DeClip(v));
+                (r.edit, sel.clone())
+            }
+            ActionId::DeClick => {
+                let d = declick::Params::default();
+                let v = params.unwrap_or_else(|| vec![d.sensitivity, d.max_width_ms]);
+                let p = declick::Params::from_list(&v);
+                let cancel = std::sync::atomic::AtomicBool::new(false);
+                let r = declick::declick(&doc, sel.clone(), channels, &p, xf, &cancel)?;
+                self.last = Some(Repeat::DeClick(v));
+                (r.edit, sel.clone())
+            }
+            ActionId::AutoClick => {
+                let d = declick::AutoParams::default();
+                let v = params.unwrap_or_else(|| vec![d.threshold, d.complexity]);
+                let p = declick::AutoParams::from_list(&v);
+                let cancel = std::sync::atomic::AtomicBool::new(false);
+                let r = declick::auto_click_remove(&doc, sel.clone(), channels, &p, xf, &cancel)?;
+                self.last = Some(Repeat::AutoClick(v));
+                (r.edit, sel.clone())
             }
             ActionId::Reverse
             | ActionId::Amplify

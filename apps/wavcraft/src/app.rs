@@ -20,6 +20,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport};
 
 use crate::control;
+use crate::diagnostics_panel::{self, Ask, DiagPanel};
 use crate::effect_dialog::{Answer, EffectDialog};
 use crate::multitrack_ui::MtView;
 use crate::mixer::MixerModel;
@@ -221,6 +222,10 @@ pub struct WaveApp {
     history_refocus: Option<usize>,
     /// The effect parameter dialog (f14), while it is up.
     effect_dialog: Option<EffectDialog>,
+    /// Effects › Diagnostics.
+    diag: DiagPanel,
+    /// A `DIAG scan` is waiting: the control request's reply goes to the scan, not the caller.
+    diag_wait: bool,
     /// A Generate dialog's Preview is playing (f21): the player holds the preview, not the file.
     previewing: bool,
     /// The keyboard shortcuts in use (the defaults; the user's key file will override them).
@@ -332,6 +337,8 @@ impl WaveApp {
             history_focus: false,
             history_refocus: None,
             effect_dialog: None,
+            diag: DiagPanel::new(),
+            diag_wait: false,
             previewing: false,
             keymap,
             mtv: MtView::default(),
@@ -1432,6 +1439,124 @@ impl WaveApp {
         }
     }
 
+    /// Run DeClipper with `[threshold_db, min_run]` on the selection (the whole file when none).
+    fn run_declip(&mut self, params: Vec<f64>, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let sel = self.selection_range();
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        match editor.run_declip(params, sel) {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.error = None;
+                self.notice = out.message;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                let why = format!("DeClipper: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// Run DeClicker (`[sensitivity, max_width_ms]`) or Automatic Click Remover
+    /// (`[threshold, complexity]`) on the selection (the whole file when none).
+    fn run_declick(&mut self, params: Vec<f64>, auto: bool, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let sel = self.selection_range();
+        let name = if auto { "Automatic Click Remover" } else { "DeClicker" };
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let result = if auto { editor.run_auto_click(params, sel) } else { editor.run_declick(params, sel) };
+        match result {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.error = None;
+                self.notice = out.message;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                let why = format!("{name}: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// Scan for the Diagnostics window with `tool` on the selection (the whole file when none).
+    fn diag_scan(&mut self, tool: wavcraft_core::diagnostics::Tool, ctx: &egui::Context) -> Result<(), String> {
+        let sel = self.selection_range();
+        let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
+        let doc = editor.history.current().clone();
+        let channels = editor.channels.within(doc.channel_count());
+        self.diag.set_tool(tool);
+        self.diag.start_scan(tool, doc, sel, channels, ctx);
+        Ok(())
+    }
+
+    /// Repair `rows` of the Diagnostics list as one undo step; returns (repaired, skipped).
+    fn diag_repair(&mut self, rows: &[usize], ctx: &egui::Context) -> Result<(usize, usize), String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let (tool, doc, regions) = self.diag.plan(rows, editor.history.current())?;
+        let cancel = AtomicBool::new(false);
+        match tool.repair(&doc, &regions, editor.crossfades, &cancel) {
+            Ok(r) => {
+                let changed = !r.edit.is_noop();
+                editor.history.push_edit(r.edit);
+                self.error = None;
+                self.notice = changed.then(|| tool.label().to_string());
+                self.diag.say(format!("{}: {} repaired, {} skipped. The list is stale; scan again.", tool.label(), r.repaired, r.skipped));
+                if changed {
+                    self.rebuild(ctx);
+                }
+                Ok((r.repaired, r.skipped))
+            }
+            Err(e) => {
+                let why = format!("{}: {e}", tool.label());
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    fn diagnostics_ui(&mut self, ctx: &egui::Context) {
+        self.diag.poll();
+        let busy = self.saving.is_some() || self.rebuilding.is_some();
+        let current = self.editor.as_ref().map(|e| e.history.current().clone());
+        match self.diag.ui(ctx, current.as_ref(), busy) {
+            Some(Ask::Scan) => {
+                let tool = self.diag.tool();
+                let _ = self.diag_scan(tool, ctx);
+            }
+            Some(Ask::Cancel) => self.diag.cancel(),
+            Some(Ask::Goto(r)) => {
+                self.selection = Selection { anchor: r.start as usize, head: r.end() as usize };
+                self.player.stop();
+                let frames = self.doc.as_ref().map_or(0, Document::frames);
+                self.view.reveal(r.start as f64, self.editor_width, frames);
+            }
+            Some(Ask::Repair(rows)) => {
+                let _ = self.diag_repair(&rows, ctx);
+            }
+            None => {}
+        }
+    }
+
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
         if !self.confirm_clear_history {
             return;
@@ -1941,6 +2066,58 @@ impl WaveApp {
                     },
                 }
             }
+            // `DECLIP [threshold_db=.. min_run=..]` scans the selection (the whole file when none)
+            // and repairs clipped peaks as one undo step "DeClipper".
+            "DECLIP" => match wavcraft_core::diagnostics::declip::Params::parse(rest) {
+                Err(e) => format!("ERR {e}"),
+                Ok(params) => match self.run_declip(params, ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+            },
+            // `DECLICK [sensitivity=.. max_width_ms=..]` and `AUTOCLICK [threshold=.. complexity=..]`
+            // scan the selection (the whole file when none) and repair clicks as one undo step.
+            "DECLICK" => match wavcraft_core::diagnostics::declick::Params::parse(rest) {
+                Err(e) => format!("ERR {e}"),
+                Ok(params) => match self.run_declick(params, false, ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+            },
+            // `DIAG scan <declip|declick> [k=v ..]` fills the Diagnostics list (the answer comes
+            // when the scan ends); `DIAG repair <all|i,j,k>` repairs rows as one undo step.
+            "DIAG" => {
+                let (sub, args) = rest.split_once(' ').unwrap_or((rest, ""));
+                match sub {
+                    "scan" => match diagnostics_panel::parse_tool(args) {
+                        Err(e) => format!("ERR {e}"),
+                        Ok(tool) => match self.diag_scan(tool, ctx) {
+                            Ok(()) if self.diag.scanning() => {
+                                // `logic` hands the requester's reply to the window; the scan answers it.
+                                self.diag_wait = true;
+                                String::new()
+                            }
+                            Ok(()) => "ERR the scan did not start".to_string(),
+                            Err(e) => format!("ERR {e}"),
+                        },
+                    },
+                    "repair" => match diagnostics_panel::parse_rows(args, self.diag.region_count()) {
+                        Err(e) => format!("ERR {e}"),
+                        Ok(rows) => match self.diag_repair(&rows, ctx) {
+                            Ok((n, m)) => format!("OK repaired={n} skipped={m}"),
+                            Err(e) => format!("ERR {e}"),
+                        },
+                    },
+                    _ => "ERR DIAG scan <declip|declick> [k=v ..] or DIAG repair <all|i,j,k>".to_string(),
+                }
+            }
+            "AUTOCLICK" => match wavcraft_core::diagnostics::declick::AutoParams::parse(rest) {
+                Err(e) => format!("ERR {e}"),
+                Ok(params) => match self.run_declick(params, true, ctx) {
+                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                    Err(e) => format!("ERR {e}"),
+                },
+            },
             // The effect dialog: `EFFECT_DIALOG <name> [key=value ...]` opens it on those values,
             // `EFFECT_DIALOG` says what is open, `EFFECT_DIALOG OK|CANCEL` presses the button.
             "EFFECT_DIALOG" => match rest.trim() {
@@ -2412,6 +2589,22 @@ impl WaveApp {
             self.rack.open = !self.rack.open;
             ui.close();
         }
+        if ui.button("Diagnostics…").clicked() {
+            self.diag.open = true;
+            ui.close();
+        }
+        // Diagnostics: DeClipper runs at once with its defaults (no dialog yet).
+        ui.separator();
+        let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(ActionId::DeClip, &sel)) && self.saving.is_none() && self.running.is_none();
+        if ui.add_enabled(enabled, egui::Button::new("DeClipper (defaults)")).clicked() {
+            chosen = Some((ActionId::DeClip, false));
+        }
+        for (id, text) in [(ActionId::DeClick, "DeClicker (defaults)"), (ActionId::AutoClick, "Automatic Click Remover (defaults)")] {
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(id, &sel)) && self.saving.is_none() && self.running.is_none();
+            if ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
+                chosen = Some((id, false));
+            }
+        }
         match chosen {
             Some((ActionId::Effect(i), true)) => {
                 // Start from the settings this effect last ran with, if it was the last command.
@@ -2858,6 +3051,7 @@ impl eframe::App for WaveApp {
         self.finish_rebuild();
         self.finish_job(ctx);
         self.finish_saving(ctx);
+        self.diag.poll();
         self.meters.update(self.player.take_levels());
         if self.meters.animating() || self.player.is_playing() {
             ctx.request_repaint();
@@ -2881,6 +3075,11 @@ impl eframe::App for WaveApp {
                 continue;
             }
             let answer = self.control_request(&req.line, ctx);
+            if std::mem::take(&mut self.diag_wait) {
+                // A scan under way answers this request when it ends (before the next frame draws it).
+                self.diag.reply = Some(req.reply);
+                continue;
+            }
             let _ = req.reply.send(answer);
         }
         if let Some(v) = self.video.as_mut() {
@@ -2979,6 +3178,7 @@ impl eframe::App for WaveApp {
         self.effect_dialog_ui(&ctx);
         self.preferences_dialog(&ctx);
         self.rack_ui(&ctx);
+        self.diagnostics_ui(&ctx);
         self.clear_history_prompt(&ctx);
         self.mtv.dialog_ui(&ctx);
         if self.mtv.show {
