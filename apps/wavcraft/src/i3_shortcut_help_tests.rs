@@ -15,7 +15,7 @@ fn key_action(key: Key, cmd: bool, shift: bool) -> Vec<ActionId> {
     }
     let events = vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }];
     let mut found = Vec::new();
-    let _ = ctx.run_ui(egui::RawInput { events, modifiers, ..Default::default() }, |ui| {
+    let _ = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
         found = pressed_actions(ui.ctx());
     });
     found
