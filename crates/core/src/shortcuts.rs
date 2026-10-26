@@ -228,7 +228,7 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::ZoomOut, key("Minus")),
     act(ActionId::ZoomToSelection, shift("S")),
     act(ActionId::ZoomOutFull, cmd("Backslash")),
-    act(ActionId::ToolSelect, key("V")),
+    act(ActionId::ToolSelect, key("T")),
     act(ActionId::ToolHand, key("H")),
     act(ActionId::ToolZoom, key("Z")),
 ];
