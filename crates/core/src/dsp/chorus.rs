@@ -300,4 +300,44 @@ mod tests {
         assert_eq!(MIN_DELAY_MS, 10.0);
         assert_eq!(MAX_DELAY_MS, 30.0);
     }
+
+    #[test]
+    fn invalid_sample_rates_return_input() {
+        let input = [0.3_f32, -0.2, 0.9];
+        assert_eq!(chorus(&input, -1.0, 2, 1.0, 1.0, 1.0), input);
+        assert_eq!(chorus(&input, f32::NAN, 2, 1.0, 1.0, 1.0), input);
+        assert_eq!(chorus(&input, f32::INFINITY, 2, 1.0, 1.0, 1.0), input);
+    }
+
+    #[test]
+    fn nan_mix_returns_input_exactly() {
+        let input = [0.3_f32, -0.2, 0.9];
+        assert_eq!(chorus(&input, 1000.0, 2, 1.0, 1.0, f32::NAN), input);
+    }
+
+    #[test]
+    fn mix_above_one_is_clamped() {
+        let mut input = vec![0.0_f32; 26];
+        input[0] = 1.0;
+        let output = chorus(&input, 1000.0, 2, 0.0, 0.0, 2.0);
+        assert_eq!(output[20], 1.0);
+        assert!(output.iter().enumerate().all(|(i, &v)| i == 20 || v == 0.0));
+    }
+
+    #[test]
+    fn invalid_rate_and_nan_depth_use_fixed_delay() {
+        let input: Vec<f32> = (0..30).map(|i| i as f32 * 0.1).collect();
+        let fixed = chorus(&input, 1000.0, 2, 0.0, 0.0, 1.0);
+        assert_eq!(chorus(&input, 1000.0, 2, -2.0, 1.0, 1.0), fixed);
+        assert_eq!(chorus(&input, 1000.0, 2, f32::INFINITY, 1.0, 1.0), fixed);
+        assert_eq!(chorus(&input, 1000.0, 2, 1.0, f32::NAN, 1.0), fixed);
+    }
+
+    #[test]
+    fn voice_count_is_clamped_at_both_boundaries() {
+        let mut input = vec![0.0_f32; 40];
+        input[0] = 1.0;
+        assert!((chorus(&input, 1000.0, 0, 25.0, 0.5, 1.0)[20] - 0.6860474).abs() <= 1e-6);
+        assert!((chorus(&input, 1000.0, 4, 25.0, 0.5, 1.0)[15] - 0.27654305).abs() <= 1e-6);
+    }
 }

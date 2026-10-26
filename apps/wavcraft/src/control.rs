@@ -5,7 +5,8 @@
 //! by `WAVCRAFT_CONTROL_TOKEN_FILE` (made owner-only with a CSPRNG token when missing; an
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
-//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> undo=<label> redo=<label>`
+//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> tool=<name> view=<a>-<b> time_display=<format> selection_text=<range> snap_frames=<0|1> undo=<label> redo=<label> path=<the document's own path>`
+//!   (`path=` is last: it may hold spaces; Save Selection As and Export do not change it)
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)
@@ -43,6 +44,9 @@
 //! - `MIXER show|hide` → `OK` (the panel's window checkbox)
 //! - `MIXER set <track|master> vol=<db> pan=<p> mute=0|1 solo=0|1` → the same line, after the change
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `SAVE_SELECTION <path>` → `OK` (File › Save Selection As: only the selected range of the enabled
+//!   channels, to a new WAV; the open document keeps its own path and unsaved mark)
+//! - `EXPORT <path>` → `OK` (File › Export › File: the whole document to another WAV, same promise)
 //! - `SCSOURCE test` → `OK frames=<n> checksum=<hex>` (the open document read back as a SoundCraft clip source)
 //! - `VIDEO attach <path>` → `OK` (the Video panel opens the file on a worker; `ERR` with no file open)
 //! - `VIDEO frame <seconds>` → `OK index=<i> size=<w>x<h> time=<t>` once the worker has decoded it, or `ERR <why>`

@@ -12,7 +12,7 @@ use wavcraft_core::io::OpenOptions;
 use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
 use wavcraft_core::panels::{self, PanelSet};
-use wavcraft_core::save::{SampleType, save_wav};
+use wavcraft_core::save::{FileKind, Part, SampleType, save_wav, write_file};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
@@ -109,6 +109,8 @@ struct Saving {
     /// Which open document it saves ([`WaveApp::doc_id`] when it started): a save that finishes
     /// after another file was opened must not give that file its path (Codex review CX-W1).
     doc_id: u64,
+    /// A copy (Save Selection As, Export): the document keeps its own path and unsaved mark.
+    copy: Option<&'static str>,
 }
 
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
@@ -1750,7 +1752,59 @@ impl WaveApp {
             ctx.request_repaint();
         });
         self.player.stop();
-        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close, doc_id: self.doc_id });
+        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close, doc_id: self.doc_id, copy: None });
+        Ok(())
+    }
+
+    /// File › Save Selection As (`selection`: only the selected range of the enabled channels) and
+    /// File › Export › File (the whole document): a new WAV beside whatever else, written by the
+    /// save path. The open document keeps its own path, name and unsaved mark. `to` skips the
+    /// dialog (the control channel).
+    fn save_copy(&mut self, ctx: &egui::Context, selection: bool, to: Option<PathBuf>) -> Result<(), String> {
+        if self.saving.is_some() {
+            return Err("a save is already running".to_string());
+        }
+        let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
+        let state = editor.history.current().clone();
+        let part = if selection {
+            let r = self.selection_range();
+            if r.start >= r.end {
+                return Err("select some audio first".to_string());
+            }
+            Part::range(&state, r, editor.channels)
+        } else {
+            Part::whole(&state)
+        };
+        let path = match to {
+            Some(p) => p,
+            None => {
+                let stem = self.doc_path.file_stem().map_or_else(|| "Untitled".to_string(), |s| s.to_string_lossy().into_owned());
+                let suffix = if selection { "selection" } else { "export" };
+                let mut dialog = rfd::FileDialog::new().add_filter("WAV", &["wav"]).set_file_name(format!("{stem}-{suffix}.wav"));
+                if let Some(dir) = self.doc_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                    dialog = dialog.set_directory(dir);
+                }
+                match dialog.save_file() {
+                    Some(p) => p,
+                    None => return Ok(()),
+                }
+            }
+        };
+        let ty = SampleType::for_source(state.source());
+        let (tx, rx) = channel();
+        let progress = Arc::new(AtomicU32::new(0));
+        let (job_state, job_path, job_progress, ctx) = (state.clone(), path.clone(), progress.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let mut report = |p: f64| {
+                job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+                ctx.request_repaint();
+            };
+            let _ = tx.send(write_file(&job_state, &job_path, FileKind::Wav(ty), &part, &mut report).map_err(|e| e.to_string()));
+            ctx.request_repaint();
+        });
+        self.player.stop();
+        let copy = Some(if selection { "selection" } else { "export" });
+        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close: false, doc_id: self.doc_id, copy });
         Ok(())
     }
 
@@ -1761,7 +1815,18 @@ impl WaveApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err("the save stopped unexpectedly".to_string()),
         };
-        let Some(Saving { path, state, ty, then_close, doc_id, .. }) = self.saving.take() else { return };
+        let Some(Saving { path, state, ty, then_close, doc_id, copy, .. }) = self.saving.take() else { return };
+        if let Some(what) = copy {
+            match result {
+                Ok(()) => {
+                    self.error = None;
+                    self.notice =
+                        Some(format!("Wrote the {what} to {} ({}); the open file is unchanged", path.display(), FileKind::Wav(ty).describe()));
+                }
+                Err(e) => self.error = Some(format!("Not written: {e}. {} is unchanged.", path.display())),
+            }
+            return;
+        }
         match result {
             // Another file was opened while this one was being saved: the file on disk is
             // written, but the open document is not the one saved, so its path, saved mark and
@@ -1937,7 +2002,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} progress={progress} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} progress={progress} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} undo={} redo={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -1949,11 +2014,12 @@ impl WaveApp {
                             self.selection_text(),
                             u8::from(self.snap_frames),
                             e.history.undo_label().unwrap_or("-"),
-                            e.history.redo_label().unwrap_or("-")
+                            e.history.redo_label().unwrap_or("-"),
+                            self.doc_path.display()
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} progress={progress} unsaved=0 {view} time_display={} selection_text=- snap_frames={} undo=- redo=-",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} progress={progress} unsaved=0 {view} time_display={} selection_text=- snap_frames={} undo=- redo=- path=",
                         u8::from(busy),
                         self.time_format.name(),
                         u8::from(self.snap_frames)
@@ -2533,6 +2599,11 @@ impl WaveApp {
                     Err(e) => format!("ERR {e}"),
                 }
             }
+            "SAVE_SELECTION" | "EXPORT" if !rest.is_empty() => match self.save_copy(ctx, cmd == "SAVE_SELECTION", Some(PathBuf::from(rest))) {
+                Ok(()) => "OK".to_string(),
+                Err(e) => format!("ERR {e}"),
+            },
+            "SAVE_SELECTION" | "EXPORT" => format!("ERR {cmd} <path>"),
             // A plain QUIT refuses with unsaved changes; `QUIT discard` closes anyway.
             "QUIT" if self.unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
             "QUIT" => {
@@ -2642,6 +2713,19 @@ impl WaveApp {
                 {
                     self.error = Some(e);
                 }
+                let has_sel = has_doc && self.selection.start() < self.selection.end();
+                if ui.add_enabled(has_sel, egui::Button::new("Save Selection As…")).clicked()
+                    && let Err(e) = self.save_copy(ui.ctx(), true, None)
+                {
+                    self.error = Some(e);
+                }
+                ui.menu_button("Export", |ui| {
+                    if ui.add_enabled(has_doc, egui::Button::new("File…")).clicked()
+                        && let Err(e) = self.save_copy(ui.ctx(), false, None)
+                    {
+                        self.error = Some(e);
+                    }
+                });
                 ui.menu_button("New", |ui| {
                     if ui.button("Multitrack Session…").clicked() {
                         self.mtv.open_dialog();
