@@ -21,6 +21,7 @@ use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError,
 use crate::control;
 use crate::effect_dialog::{Answer, EffectDialog};
 use crate::multitrack_ui::MtView;
+use crate::mixer::MixerModel;
 use crate::player::Player;
 use crate::spectrum::{Job, Renderer};
 use crate::video::{VideoPanel, Waiters};
@@ -153,6 +154,9 @@ pub struct WaveApp {
     /// The editor's width last frame, for zoom keys (which have no pointer to zoom around).
     editor_width: f32,
     hud: HudState,
+    /// Window › Mixer: the channel strips (C152). Its own flag, not a panels registry entry.
+    show_mixer: bool,
+    mixer: MixerModel,
     /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
     insert_silence: Option<String>,
     /// Clear History asks first: it can't be undone.
@@ -237,6 +241,8 @@ impl WaveApp {
             allow_close: false,
             editor_width: 800.0,
             hud: HudState::default(),
+            show_mixer: false,
+            mixer: MixerModel::demo(4),
             insert_silence: None,
             confirm_clear_history: false,
             show_metadata: false,
@@ -1488,6 +1494,11 @@ impl WaveApp {
                 }
             }
             "SESSION" | "TRACK" | "CLIP" | "VIEW" => self.mtv.control(cmd, rest, self.doc.as_ref()),
+            "MIXER" if matches!(rest.trim(), "show" | "hide") => {
+                self.show_mixer = rest.trim() == "show";
+                "OK".to_string()
+            }
+            "MIXER" => self.mixer.control(rest),
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -1606,6 +1617,7 @@ impl WaveApp {
                         self.set_panel(p.id, shown);
                     }
                 }
+                ui.checkbox(&mut self.show_mixer, "Mixer panel");
             });
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
             ui.menu_button("Generate", |ui| self.generate_menu(ui));
@@ -2018,6 +2030,9 @@ impl eframe::App for WaveApp {
         }
         if self.show_metadata {
             egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));
+        }
+        if self.show_mixer {
+            egui::Panel::bottom("mixer").resizable(true).default_size(260.0).show(ui, |ui| self.mixer.show(ui));
         }
         self.insert_silence_dialog(&ctx);
         self.effect_dialog_ui(&ctx);

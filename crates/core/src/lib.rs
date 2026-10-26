@@ -32,6 +32,7 @@ pub mod mix;
 pub mod name_template;
 pub mod panels;
 pub mod multitrack;
+pub mod mixer_sections;
 pub mod random;
 pub mod save;
 pub mod sc_source;

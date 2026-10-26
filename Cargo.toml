@@ -22,7 +22,7 @@ craft-log = { path = "crates/craft-log" }
 soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
 # f27: the biquad filter designs (RBJ cookbook shelves, peaks, notch, high/low-pass), MIT OR Apache-2.0,
 # from the same pinned commit as soundcraft-audio-io.
-soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "dc253f2a3144455db2c6c00fa4971eb9fc0ecd3a" }
+soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
 
 # f122 (the Video panel): SoundCraft's `soundcraft-video` (MIT OR Apache-2.0: pure Rust H.264, ProRes
 # and Motion JPEG decode, ISO base media demux), from the head of our fork's `ours` branch. It brings
@@ -43,6 +43,13 @@ serde_json = "1" # MIT OR Apache-2.0; already in Cargo.lock through the SoundCra
 # The model's own audio-io is named `soundcraft-model-audio` here so the two never meet in a type.
 soundcraft-model-audio = { package = "soundcraft-audio-io", git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
 # Session state for the control channel and tests (already in the tree through the model). MIT OR Apache-2.0.
+# f104 (Mixer panel): the mix engine (its metering) and its own audio-io, at the same pin as
+# soundcraft-model above (e85de96, which has the mix and audio-io crates). MIT OR Apache-2.0. The mix
+# crate pulls in SoundCraft's plugin hosts (CLAP, VST3, AU), which only compile into the build; none is loaded.
+soundcraft-mix = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829" }
+# The mix crates' own audio-io (same rev), kept apart from the older audio-io pin above so the file
+# decoding does not change with this feature; only the panel's synthetic tones use it.
+mix-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "e85de960b5bc410357e89f4a16a2c5190238c829", package = "soundcraft-audio-io" }
 
 rustfft = "6"
 rayon = "1"
