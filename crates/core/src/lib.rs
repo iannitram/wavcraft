@@ -28,6 +28,7 @@ pub mod export_chunks;
 pub mod fade_handles;
 pub mod generate;
 pub mod io;
+pub mod jobs;
 pub mod meta;
 pub mod meters;
 pub mod mix;

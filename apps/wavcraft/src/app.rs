@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
+use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
 use wavcraft_core::panels::{self, PanelSet};
 use wavcraft_core::save::{SampleType, save_wav};
@@ -86,6 +87,12 @@ struct Opening {
     cancel: Arc<AtomicBool>,
     /// How far the streaming has got, in thousandths.
     progress: Arc<AtomicU32>,
+}
+
+/// A background edit (roadmap B003) running on a worker thread: the window's thread pushes the
+/// undo step when it finishes.
+struct Running {
+    job: jobs::Job,
 }
 
 /// A save running on a worker thread.
@@ -181,6 +188,8 @@ pub struct WaveApp {
     /// current step is this one; undoing back to it clears the mark, as in Audition).
     saved: Option<Arc<DocState>>,
     saving: Option<Saving>,
+    /// The background edit in progress, if any (no other edit, undo or save runs meanwhile).
+    running: Option<Running>,
     /// The "save changes before closing?" prompt is up.
     confirm_close: bool,
     /// Closing was confirmed (or nothing was unsaved): let the next close request through.
@@ -300,6 +309,7 @@ impl WaveApp {
             rebuilding: None,
             saved: None,
             saving: None,
+            running: None,
             confirm_close: false,
             allow_close: false,
             editor_width: 800.0,
@@ -535,6 +545,9 @@ impl WaveApp {
         if let Some(old) = self.opening.take() {
             old.cancel.store(true, Ordering::Relaxed);
         }
+        if let Some(r) = self.running.take() {
+            r.job.cancel();
+        }
         let (tx, rx) = channel();
         let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
         let (ctx, job_path, job_cancel, job_progress) = (ctx.clone(), path.clone(), cancel.clone(), progress.clone());
@@ -743,6 +756,9 @@ impl WaveApp {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
         if actions::action(id).kind == Kind::Window {
             return self.run_window_action(id, ctx);
         }
@@ -927,6 +943,9 @@ impl WaveApp {
     }
 
     fn run_insert_silence(&mut self, secs: f64, ctx: &egui::Context) -> Option<String> {
+        if self.running.is_some() || self.saving.is_some() {
+            return Some("wait for the background job or the save to finish".to_string());
+        }
         let at = self.selection.start() as u64;
         let editor = self.editor.as_mut()?;
         let rate = editor.history.current().sample_rate();
@@ -1096,7 +1115,7 @@ impl WaveApp {
                 self.confirm_clear_history = true;
             }
         });
-        if self.saving.is_none() {
+        if self.saving.is_none() && self.running.is_none() {
             if let Some(i) = delete {
                 self.history_delete(i, ui.ctx());
             } else if let Some(i) = go {
@@ -1146,6 +1165,9 @@ impl WaveApp {
     fn apply_metadata(&mut self, changes: &[(String, String)]) -> Result<bool, String> {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
+        }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
         }
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         let current = editor.history.current().clone();
@@ -1256,6 +1278,9 @@ impl WaveApp {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
         let sel = self.selection_range();
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         let name = wavcraft_core::generate::all().get(usize::from(index)).map_or("Generate", |g| g.name());
@@ -1280,7 +1305,7 @@ impl WaveApp {
 
     /// The Generate menu: one entry per generator, each opening its dialog.
     fn generate_menu(&mut self, ui: &mut egui::Ui) {
-        let enabled = self.editor.is_some() && self.saving.is_none();
+        let enabled = self.editor.is_some() && self.saving.is_none() && self.running.is_none();
         for (i, g) in wavcraft_core::generate::all().iter().enumerate() {
             if ui.add_enabled(enabled, egui::Button::new(format!("{}…", g.name().trim_start_matches("Generate ")))).clicked() {
                 self.effect_dialog = EffectDialog::new_generator(i as u16, None);
@@ -1315,6 +1340,9 @@ impl WaveApp {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
         let sel = self.selection_range();
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         let name = wavcraft_core::effects::all().get(usize::from(index)).map_or("Effect", |e| e.name());
@@ -1346,6 +1374,9 @@ impl WaveApp {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
         let sel = self.selection_range();
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         if !self.rack.config.is_active() {
@@ -1373,7 +1404,7 @@ impl WaveApp {
     /// Draw the Effects Rack window, carry out what it asked for, and keep the player's copy of
     /// the rack current.
     fn rack_ui(&mut self, ctx: &egui::Context) {
-        let can_apply = self.editor.is_some() && self.saving.is_none();
+        let can_apply = self.editor.is_some() && self.saving.is_none() && self.running.is_none();
         self.rack.show(ctx, self.player.is_playing(), can_apply);
         for request in std::mem::take(&mut self.rack.requests) {
             match request {
@@ -1419,7 +1450,8 @@ impl WaveApp {
         });
         match choice {
             Some(true) => {
-                if let Some(e) = self.editor.as_mut() {
+                let idle = self.running.is_none();
+                if let Some(e) = self.editor.as_mut().filter(|_| idle) {
                     e.history.clear();
                 }
                 self.confirm_clear_history = false;
@@ -1441,6 +1473,80 @@ impl WaveApp {
         });
         self.player.stop();
         self.rebuilding = Some(rx);
+    }
+
+    /// Start a background edit: `producer` fills the output for `range` on a worker thread
+    /// (see `wavcraft_core::jobs`). The undo step is pushed by `finish_job` on this thread.
+    fn start_job<F>(&mut self, label: &str, range: Range<u64>, ctx: &egui::Context, producer: F) -> Result<(), String>
+    where
+        F: FnMut(u64, &[&[f32]], &mut [&mut [f32]]) -> std::io::Result<()> + Send + 'static,
+    {
+        if self.running.is_some() {
+            return Err("a background job is already running".to_string());
+        }
+        if self.saving.is_some() || self.rebuilding.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
+        let base = editor.history.current().clone();
+        let range = range.start.min(base.len_frames())..range.end.min(base.len_frames());
+        let wake = {
+            let ctx = ctx.clone();
+            let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || ctx.request_repaint());
+            wake
+        };
+        let channels = editor.channels.within(base.channel_count());
+        let job = jobs::Job::spawn_replace(base, range, channels, label, editor.crossfades, Some(wake), producer);
+        self.running = Some(Running { job });
+        self.player.stop();
+        self.error = None;
+        self.notice = None;
+        Ok(())
+    }
+
+    fn start_test_job(&mut self, ms: u64, ctx: &egui::Context) -> Result<(), String> {
+        let len = self.editor.as_ref().map_or(0, |e| e.history.current().len_frames());
+        let range = if self.selection.is_empty() { 0..len } else { self.selection_range() };
+        self.start_job("Test Job", range, ctx, move |_, input, output| {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            for (i, o) in input.iter().zip(output.iter_mut()) {
+                o.copy_from_slice(i);
+            }
+            Ok(())
+        })
+    }
+
+    /// Take a finished job's result: push its undo step, or say why there is none.
+    fn finish_job(&mut self, ctx: &egui::Context) {
+        let Some(running) = &mut self.running else { return };
+        let result = match running.job.poll() {
+            JobPoll::Running => return,
+            JobPoll::Done(r) => r,
+        };
+        let Some(Running { job }) = self.running.take() else { return };
+        match result {
+            Ok(edit) => {
+                let Some(editor) = self.editor.as_mut() else { return };
+                if !Arc::ptr_eq(editor.history.current(), job.base()) {
+                    log::warn!(target: "wavcraft", "{}: the document changed while the job ran; its result was dropped", job.label());
+                    self.notice = Some(format!("{} was dropped: the document changed meanwhile", job.label()));
+                    return;
+                }
+                let label = edit.label.clone();
+                let changed = !edit.is_noop();
+                editor.history.push_edit(edit);
+                self.notice = Some(label);
+                if changed {
+                    self.rebuild(ctx);
+                }
+            }
+            Err(wavcraft_core::EditError::Cancelled) => self.notice = Some(format!("{} cancelled", job.label())),
+            Err(e) => {
+                let why = format!("{}: {e}", job.label());
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why);
+            }
+        }
     }
 
     fn finish_rebuild(&mut self) {
@@ -1484,6 +1590,9 @@ impl WaveApp {
     fn save(&mut self, ctx: &egui::Context, save_as: bool, to: Option<PathBuf>, then_close: bool) -> Result<(), String> {
         if self.saving.is_some() {
             return Err("a save is already running".to_string());
+        }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
         }
         let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
         let state = editor.history.current().clone();
@@ -1694,7 +1803,8 @@ impl WaveApp {
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
             "STATE" => {
-                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some();
+                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() || self.running.is_some();
+                let progress = self.running.as_ref().map_or(0, |r| r.job.permille() / 10);
                 let unsaved = u8::from(self.unsaved());
                 let width = self.editor_width.max(1.0);
                 let view = format!("tool={} view={:.0}-{:.0}", self.tool.name(), self.view.start, self.view.end(width));
@@ -1702,7 +1812,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} undo={} redo={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} progress={progress} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} undo={} redo={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -1718,7 +1828,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} unsaved=0 {view} time_display={} selection_text=- snap_frames={} undo=- redo=-",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} progress={progress} unsaved=0 {view} time_display={} selection_text=- snap_frames={} undo=- redo=-",
                         u8::from(busy),
                         self.time_format.name(),
                         u8::from(self.snap_frames)
@@ -1954,6 +2064,9 @@ impl WaveApp {
                 if self.saving.is_some() {
                     return "ERR wait for the save to finish".to_string();
                 }
+                if self.running.is_some() {
+                    return "ERR wait for the background job to finish, or cancel it".to_string();
+                }
                 let sel_range = self.selection_range();
                 let Some(editor) = self.editor.as_mut() else { return "ERR no file is open".to_string() };
                 match editor.stretch_pitch(ratio, pitch, sel_range) {
@@ -2016,7 +2129,7 @@ impl WaveApp {
             }
             // The History panel's click: go to step <index> (0 is Open).
             "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
-                (Ok(i), true) if self.saving.is_none() => {
+                (Ok(i), true) if self.saving.is_none() && self.running.is_none() => {
                     if self.history_go(i, ctx) {
                         "OK".to_string()
                     } else {
@@ -2045,7 +2158,7 @@ impl WaveApp {
             }
             // The panel's Delete State: step <index> and every later step go (0 can't).
             "HISTORY_DELETE" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
-                (Ok(i), true) if self.saving.is_none() => match self.history_delete(i, ctx) {
+                (Ok(i), true) if self.saving.is_none() && self.running.is_none() => match self.history_delete(i, ctx) {
                     Some(n) => format!("OK removed={n}"),
                     None => format!("ERR no step {i} to delete (Open can't be)"),
                 },
@@ -2053,14 +2166,14 @@ impl WaveApp {
             },
             // Clear History without the panel's confirmation: the current state is all that stays.
             "HISTORY_CLEAR" => match self.editor.as_mut() {
-                Some(e) if self.saving.is_none() => {
+                Some(e) if self.saving.is_none() && self.running.is_none() => {
                     e.history.clear();
                     "OK".to_string()
                 }
                 _ => "ERR HISTORY_CLEAR, with a file open".to_string(),
             },
             // The panel's Up / Down keys.
-            "HISTORY_KEY" if self.editor.is_some() && self.saving.is_none() => match rest.trim() {
+            "HISTORY_KEY" if self.editor.is_some() && self.saving.is_none() && self.running.is_none() => match rest.trim() {
                 k @ ("up" | "down") => match self.history_arrow(k == "down", ctx) {
                     Some(i) => format!("OK cursor={i}"),
                     None => "OK cursor=unchanged".to_string(),
@@ -2173,6 +2286,26 @@ impl WaveApp {
                 let d = crate::player::list_devices();
                 format!("OK output={} input={} playing_on={}", d.output.join("|"), d.input.join("|"), self.player.device)
             }
+            // Test-only slow job (roadmap B003): `JOB testslow <ms per 64K-frame chunk>` copies the
+            // selection (the whole file with none) on the worker, so progress and Cancel can
+            // be driven; `JOB cancel` stops it.
+            "JOB" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
+                ["testslow", ms] => match ms.parse::<u64>() {
+                    Ok(ms) => match self.start_test_job(ms, ctx) {
+                        Ok(()) => "OK".to_string(),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    Err(_) => "ERR JOB testslow <milliseconds per chunk>".to_string(),
+                },
+                ["cancel"] => match &self.running {
+                    Some(r) => {
+                        r.job.cancel();
+                        "OK".to_string()
+                    }
+                    None => "ERR no job is running".to_string(),
+                },
+                _ => "ERR JOB testslow <ms> | JOB cancel".to_string(),
+            },
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -2201,7 +2334,7 @@ impl WaveApp {
                 ui.separator();
             }
             let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
-            let enabled = enabled && self.saving.is_none();
+            let enabled = enabled && self.saving.is_none() && self.running.is_none();
             let keys = self.keymap.menu_text(Command::Action(a.id), mac);
             if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
                 chosen = Some(a.id);
@@ -2222,7 +2355,7 @@ impl WaveApp {
         let sel = self.selection_range();
         let mut chosen = None;
         for a in actions::all_actions().filter(|a| a.name.starts_with("effect.")) {
-            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none() && self.running.is_none();
             // An effect with settings opens its dialog (a "…" entry); one without runs at once.
             let has_dialog =
                 matches!(a.id, ActionId::Effect(i) if wavcraft_core::effects::all().get(usize::from(i)).is_some_and(|e| !e.parameters().is_empty()));
@@ -2373,12 +2506,19 @@ impl WaveApp {
         });
     }
 
-    fn status(&self, ui: &mut egui::Ui) {
+    fn status(&mut self, ui: &mut egui::Ui) {
+        let mut cancel_job = false;
         ui.horizontal(|ui| {
             if let Some(o) = &self.opening {
                 ui.spinner();
                 let permille = o.progress.load(Ordering::Relaxed);
                 ui.label(format!("Opening {}… {}%", o.path.display(), permille / 10));
+            } else if let Some(r) = &self.running {
+                ui.spinner();
+                ui.label(format!("{}… {}%", r.job.label(), r.job.permille() / 10));
+                if ui.button("Cancel").clicked() {
+                    cancel_job = true;
+                }
             } else if let Some(s) = &self.saving {
                 ui.spinner();
                 ui.label(format!("Saving {}… {}%", s.path.display(), s.progress.load(Ordering::Relaxed) / 10));
@@ -2424,6 +2564,9 @@ impl WaveApp {
                 ui.label("File › Open, or drop an audio file here.");
             }
         });
+        if cancel_job && let Some(r) = &self.running {
+            r.job.cancel();
+        }
     }
 
     fn draw_hud(&mut self, ctx: &egui::Context) {
@@ -2670,6 +2813,7 @@ impl eframe::App for WaveApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finish_opening();
         self.finish_rebuild();
+        self.finish_job(ctx);
         self.finish_saving(ctx);
         self.meters.update(self.player.take_levels());
         if self.meters.animating() || self.player.is_playing() {
@@ -2709,7 +2853,7 @@ impl eframe::App for WaveApp {
         self.selection_keys(&ctx);
         // Up and Down belong to the History panel while one of its rows has focus (before the
         // action table gets them: there they pick the left or right channel).
-        if self.history_focus && self.saving.is_none() {
+        if self.history_focus && self.saving.is_none() && self.running.is_none() {
             let (up, down) =
                 ctx.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, Key::ArrowDown)));
             if let Some(to) = (up || down).then(|| self.history_arrow(down, &ctx)).flatten() {

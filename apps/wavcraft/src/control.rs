@@ -5,7 +5,7 @@
 //! by `WAVCRAFT_CONTROL_TOKEN_FILE` (made owner-only with a CSPRNG token when missing; an
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
-//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> undo=<label> redo=<label>`
+//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> undo=<label> redo=<label>`
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)
@@ -26,6 +26,7 @@
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
 //! - `STATS [<start> <end>]` (frames; the selection or the whole file without them) → `OK range=<a>-<b> ...` then, per channel, `ch<i> peak=.. peak_db=.. peak_frame=.. min=.. max=.. dc_pct=.. rms_*_db=.. dyn_db=.. clip_runs=.. clip_samples=.. bits=..`.
 //!   Runs the scan at once and keeps it for `ACTION stats.goto_peak|stats.next_clip|stats.prev_clip` (the cursor moves; `ERR` when there is nowhere to go)
+//! - `JOB testslow <ms>` → `OK` (a test-only background job over the selection, `<ms>` per 64K-frame chunk; `busy=1` and `progress` while it runs; `JOB cancel` stops it)
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `META get [field]` / `META set <field> <value>` → `OK <value>` / `OK changed=<0|1>` (one undo step "Edit Metadata" per set; `\r` and `\n` in a value are line breaks)
 //! - `CHNAME get` / `CHNAME set <ch from 1> <name>` → `OK <names>` / `OK changed=<0|1>` (channel names; one undo step "Edit Metadata"); `META set INFO.INAM <v>` (or any `INFO.XXXX`) sets a RIFF INFO tag
