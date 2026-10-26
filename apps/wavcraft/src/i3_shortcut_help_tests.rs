@@ -42,7 +42,7 @@ shortcut_case!(
 #[rustfmt::skip]
 shortcut_case!(
     i3_help_redo_shift_z, Redo, "edit.redo", "Redo",
-    Z, true, true, "Ctrl+Shift+Z", "⌘⇧Z"
+    Z, true, true, "Ctrl+Shift+Z", "⇧⌘Z"
 );
 
 #[rustfmt::skip]
@@ -120,7 +120,7 @@ shortcut_case!(
 #[rustfmt::skip]
 shortcut_case!(
     i3_help_deselect_shift_a, DeselectAll, "edit.deselectAll", "Deselect All",
-    A, true, true, "Ctrl+Shift+A", "⌘⇧A"
+    A, true, true, "Ctrl+Shift+A", "⇧⌘A"
 );
 
 #[rustfmt::skip]
