@@ -27,6 +27,7 @@ mod gain;
 mod pitch_saturate;
 mod plate;
 mod reverb;
+mod reverse;
 pub mod pitch_presets;
 pub mod oneshot;
 pub use oneshot::{
@@ -43,6 +44,7 @@ pub use gain::Gain;
 pub use pitch_saturate::{PitchShift, Saturator};
 pub use plate::Plate;
 pub use reverb::Reverb;
+pub use reverse::{Reverse, mirror_range, reverse_frames};
 
 /// Block size hint given to wrapped plugins (chunks are 64 K frames; plugins loop internally).
 pub(crate) const CHUNK_HINT: usize = 4096;
