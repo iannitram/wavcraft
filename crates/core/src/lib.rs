@@ -32,6 +32,8 @@ pub mod panels;
 pub mod random;
 pub mod save;
 pub mod settings;
+pub mod snap;
+pub mod snap_ruler;
 pub mod space;
 pub mod spectral_dirty;
 pub mod spectrogram;

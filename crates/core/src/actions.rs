@@ -50,6 +50,10 @@ pub enum ActionId {
     ZeroRightToRight,
     RepeatLast,
     RepeatLastDialog,
+    SnapToggle,
+    SnapMarkersToggle,
+    SnapRulerToggle,
+    SnapZeroToggle,
     /// A registered effect: its index in [`effects::all`].
     Effect(u16),
 }
@@ -164,6 +168,10 @@ pub const TABLE: &[Action] = &[
     window(ActionId::SetOut, "edit.setOut", "Set Out Point to Playhead", &[key("O")]),
     edit(ActionId::LeftChannel, "edit.leftChannel", "Left Channel Only", &[key("ArrowUp")]),
     edit(ActionId::RightChannel, "edit.rightChannel", "Right Channel Only", &[key("ArrowDown")]),
+    edit(ActionId::SnapToggle, "edit.snapping.enabled", "Enable Snapping", &[key("S")]),
+    edit(ActionId::SnapMarkersToggle, "edit.snapping.markers", "Snap to Markers", &[]),
+    edit(ActionId::SnapRulerToggle, "edit.snapping.ruler", "Snap to Ruler", &[]),
+    edit(ActionId::SnapZeroToggle, "edit.snapping.zeroCrossings", "Snap to Zero Crossings", &[]),
     edit(ActionId::CursorToStart, "view.cursorToStart", "Playhead to Start", &[key("Home")]),
     edit(ActionId::CursorToEnd, "view.cursorToEnd", "Playhead to End", &[key("End")]),
     window(ActionId::ZoomIn, "view.zoomIn", "Zoom In", &[key("Equals")]),
@@ -230,6 +238,8 @@ pub struct Editor {
     pub crossfades: Crossfades,
     /// What Repeat Last Command runs again (None until a repeatable command has run).
     pub last: Option<Repeat>,
+    /// The `Edit › Snapping` switches (`S` and the target toggles).
+    pub snap: crate::snap::SnapSettings,
 }
 
 /// A command Repeat Last Command can run again, with its settings.
@@ -302,7 +312,14 @@ pub fn zero_crossing(doc: &crate::doc::DocState, channels: ChannelMask, frame: u
 
 impl Editor {
     pub fn new(history: History) -> Editor {
-        Editor { history, channels: ChannelMask::ALL, clipboard: None, crossfades: Crossfades::default(), last: None }
+        Editor {
+            history,
+            channels: ChannelMask::ALL,
+            clipboard: None,
+            crossfades: Crossfades::default(),
+            last: None,
+            snap: crate::snap::SnapSettings::default(),
+        }
     }
 
     fn len(&self) -> u64 {
@@ -326,6 +343,8 @@ impl Editor {
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
+            // Stub for wav-c-22-c: snapping switches are always enabled once implemented.
+            ActionId::SnapToggle | ActionId::SnapMarkersToggle | ActionId::SnapRulerToggle | ActionId::SnapZeroToggle => false,
             ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
@@ -380,6 +399,15 @@ impl Editor {
             Some(Repeat::InsertSilence(frames)) => self.insert_silence(selection.start, frames),
             None => Ok(Outcome { doc_changed: false, selection, message: Some("There is no command to repeat yet".to_string()) }),
         }
+    }
+
+    /// Flip one of the `Edit › Snapping` switches (`SnapToggle`, `SnapMarkersToggle`,
+    /// `SnapRulerToggle`, `SnapZeroToggle`) and report its new state for the status bar.
+    // Stub for wav-c-22-c: remove the allow and the todo! when implementing.
+    #[allow(clippy::todo)]
+    pub fn toggle_snap(&mut self, id: ActionId, selection: Range<u64>) -> Outcome {
+        let _ = (id, selection);
+        todo!("wav-c-22-c: toggle_snap")
     }
 
     /// The zero-crossing adjusts: each moved edge goes to the nearest sign change within
@@ -482,6 +510,9 @@ impl Editor {
         }
         match id {
             ActionId::RepeatLast => return self.repeat(sel),
+            ActionId::SnapToggle | ActionId::SnapMarkersToggle | ActionId::SnapRulerToggle | ActionId::SnapZeroToggle => {
+                return Ok(self.toggle_snap(id, sel));
+            }
             ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -553,9 +584,13 @@ impl Editor {
             | ActionId::ToolSelect
             | ActionId::ToolHand
             | ActionId::ToolZoom
-            // Repeat and the zero-crossing adjusts returned above.
+            // Repeat, snapping toggles and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast
+            | ActionId::SnapToggle
+            | ActionId::SnapMarkersToggle
+            | ActionId::SnapRulerToggle
+            | ActionId::SnapZeroToggle
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
