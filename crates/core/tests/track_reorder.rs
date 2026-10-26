@@ -185,7 +185,7 @@ fn the_selection_is_kept_by_id() {
 fn tracks_that_are_not_audio_keep_their_slots() {
     let (mut m, ids) = four();
     let aux = m.session.add_track(TrackKind::Aux, ChannelFormat::Stereo, None);
-    let master = m.session.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+    let master = m.session.master().expect("a new session has its master").id;
     m.session.tracks.swap(1, 4);
     let all = |m: &Multitrack| m.session.tracks.iter().map(|t| t.id).collect::<Vec<_>>();
     assert_eq!(all(&m), vec![ids[0], aux, ids[2], ids[3], ids[1], master]);

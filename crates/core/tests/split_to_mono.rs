@@ -32,8 +32,9 @@ fn track(m: &Multitrack, id: TrackId) -> &Track {
     m.session.track(id).unwrap()
 }
 
+/// The audio tracks' names: a new session also carries its Master track (f113), which these lists skip.
 fn names(m: &Multitrack) -> Vec<String> {
-    m.session.tracks.iter().map(|t| t.name.clone()).collect()
+    m.session.tracks.iter().filter(|t| t.kind == TrackKind::Audio).map(|t| t.name.clone()).collect()
 }
 
 fn source_of(c: &Clip) -> SourceId {
@@ -239,7 +240,7 @@ fn an_unknown_track_a_mono_track_and_a_master_are_refused_and_nothing_changes() 
     let mut m = new_session();
     let _ = drums(&mut m);
     let voice = m.add_track_format(Some("Voice"), ChannelFormat::Mono).unwrap();
-    let master = m.session.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+    let master = m.session.master().expect("a new session has its master").id;
     let before = snapshot(&m);
     let tracks_before = m.session.tracks.clone();
 
