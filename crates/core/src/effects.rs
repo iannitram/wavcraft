@@ -19,6 +19,7 @@ pub mod dynamics;
 pub mod dynamics_graph;
 mod amplify;
 mod compare;
+mod dehummer;
 mod delay;
 mod dereverb;
 mod dsp_run;
@@ -42,6 +43,7 @@ pub use compare::{AbCompare, Side};
 // oneshot::MAX_GAIN_DB (+96 dB, f32) already owns that name here.
 pub use amplify::{Amplify, DEFAULT_GAIN_DB, MAX_GAIN_DB as AMPLIFY_MAX_GAIN_DB, MIN_GAIN_DB, amplify_gains, db_to_linear};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
+pub use dehummer::DeHummer;
 pub use delay::Delay;
 pub use dereverb::DeReverb;
 pub use fade::{FadeIn, FadeOut};
@@ -293,7 +295,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb, &PhaseCorrection];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb, &PhaseCorrection, &DeHummer];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
