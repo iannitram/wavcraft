@@ -53,11 +53,74 @@ impl Effect for Normalize {
         P
     }
     fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
-        let _ = (params, ctx);
-        Err(io::Error::new(io::ErrorKind::Unsupported, "Normalize is not built yet"))
+        let p0 = params.first().copied().unwrap_or(100.0);
+        let p1 = params.get(1).copied().unwrap_or(0.0);
+        let p2 = params.get(2).copied().unwrap_or(0.0);
+        let p3 = params.get(3).copied().unwrap_or(1.0);
+        let p4 = params.get(4).copied().unwrap_or(0.0);
+
+        let in_db = p2 == 1.0;
+        let target = target_peak(if in_db { p1 } else { p0 }, in_db);
+        let equally = p3 == 1.0;
+        let dc = p4 == 1.0;
+
+        let mut buf = vec![0.0f32; crate::store::BLOCK_FRAMES];
+        let mut means = Vec::with_capacity(ctx.channels.len());
+        let mut peaks = Vec::with_capacity(ctx.channels.len());
+        let len = ctx.range.end.saturating_sub(ctx.range.start).max(1) as f64;
+
+        for &c in &ctx.channels {
+            let mut sum = 0.0f64;
+            let mut min = f64::INFINITY;
+            let mut max = f64::NEG_INFINITY;
+            let mut at = ctx.range.start;
+            while at < ctx.range.end {
+                let m = (ctx.range.end - at).min(buf.len() as u64) as usize;
+                let got = ctx.doc.read(c, at, &mut buf[..m])?;
+                if got != m {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "document shorter than its length"));
+                }
+                for &sample in &buf[..m] {
+                    if sample.is_finite() {
+                        let v = f64::from(sample);
+                        sum += v;
+                        if v < min {
+                            min = v;
+                        }
+                        if v > max {
+                            max = v;
+                        }
+                    }
+                }
+                at += m as u64;
+            }
+            let mean = if dc { sum / len } else { 0.0 };
+            let peak = if max < min { 0.0 } else { (max - mean).abs().max((min - mean).abs()) };
+            means.push(mean as f32);
+            peaks.push(peak);
+        }
+
+        let gains = normalize_gains(&peaks, target, equally).into_iter().map(|g| g as f32).collect();
+        Ok(Some(Box::new(Scale { means, gains })))
     }
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "Normalize measures the range first: run it through effects::apply"))
+    }
+}
+
+struct Scale {
+    means: Vec<f32>,
+    gains: Vec<f32>,
+}
+
+impl Run for Scale {
+    fn process(&mut self, _first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()> {
+        for (((i, o), &m), &g) in input.iter().zip(output.iter_mut()).zip(&self.means).zip(&self.gains) {
+            for (a, b) in i.iter().zip(o.iter_mut()) {
+                *b = (*a - m) * g;
+            }
+        }
+        Ok(())
     }
 }
 
