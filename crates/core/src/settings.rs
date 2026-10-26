@@ -32,6 +32,9 @@ pub struct Settings {
     pub session_folder: Option<PathBuf>,
     /// Ids of the panels the person hid (`crate::panels`); a panel not listed is shown.
     pub hidden_panels: Vec<String>,
+    /// Dither when a save or Convert Sample Type reduces bit depth (item A4; off by default, as
+    /// in Audition). Kept as `dither = on`; written only when on.
+    pub dither: bool,
 }
 
 impl Settings {
@@ -350,7 +353,7 @@ mod tests {
 
     #[test]
     fn empty_hidden_panels_keep_the_old_file_format() {
-        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: Vec::new() };
+        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: Vec::new(), dither: false };
         assert_eq!(
             settings.to_text(),
             "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n"
@@ -359,7 +362,11 @@ mod tests {
 
     #[test]
     fn hidden_panels_are_written_and_read_back() {
-        let settings = Settings { session_folder: Some(PathBuf::from("/w-new")), hidden_panels: vec!["history".to_string(), "waveform".to_string()] };
+        let settings = Settings {
+            session_folder: Some(PathBuf::from("/w-new")),
+            hidden_panels: vec!["history".to_string(), "waveform".to_string()],
+            dither: false,
+        };
         let text = settings.to_text();
         assert_eq!(
             text,

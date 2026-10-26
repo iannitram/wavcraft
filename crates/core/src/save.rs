@@ -168,6 +168,20 @@ pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dy
     save_wav_inner(doc, target, ty, progress, None)
 }
 
+/// Save `doc` to `target` as a WAV file of `ty` samples, with `dither` applied when the samples
+/// are reduced to 16 or 24 bits (item A4). With `dither.enabled` false this writes exactly what
+/// [`save_wav`] writes.
+pub fn save_wav_dithered(
+    doc: &DocState,
+    target: &Path,
+    ty: SampleType,
+    dither: DitherOptions,
+    progress: &mut dyn FnMut(f64),
+) -> Result<(), SaveError> {
+    let _ = (doc, target, ty, dither, progress);
+    unimplemented!("card wav-c-12-b")
+}
+
 /// [`save_wav`] that fails with an I/O error once `fail_after` frames are out (tests: a save
 /// that dies halfway must leave the target whole).
 #[doc(hidden)]
@@ -472,6 +486,63 @@ fn write_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: Sampl
     }
     let pos = if rf64 { 12 + 36 } else { 12 } + 8 + u64::from(fmt_len) + fact;
     Ok((data_len, pos))
+}
+
+/// The dither types offered when reducing bit depth (Audition's Convert Sample Type lists
+/// Triangular first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DitherType {
+    /// TPDF: the sum of two independent uniform values, each half an LSB either side of zero.
+    #[default]
+    Triangular,
+}
+
+/// Noise shaping applied with dither. Only "None" for now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NoiseShaping {
+    #[default]
+    None,
+}
+
+/// The dither settings of a bit-depth reduction. Off by default, as in Audition, so a save of
+/// untouched audio stays bit for bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DitherOptions {
+    pub enabled: bool,
+    pub kind: DitherType,
+    pub shaping: NoiseShaping,
+}
+
+/// Triangular (TPDF) dither noise in LSBs, from a SplitMix64 generator: deterministic for a seed.
+#[derive(Debug, Clone)]
+pub struct Tpdf {
+    state: u64,
+}
+
+impl Tpdf {
+    /// A generator whose state starts at `seed`.
+    pub fn new(seed: u64) -> Tpdf {
+        let _ = seed;
+        unimplemented!("card wav-c-12-a")
+    }
+
+    /// One SplitMix64 step: the next 64 random bits.
+    pub fn next_u64(&mut self) -> u64 {
+        let _ = self.state;
+        unimplemented!("card wav-c-12-a")
+    }
+
+    /// The next dither value in LSBs, in (-1, 1): two uniform values in [-0.5, 0.5) added.
+    pub fn next_lsb(&mut self) -> f64 {
+        unimplemented!("card wav-c-12-a")
+    }
+}
+
+/// `x` (full scale ±1) as a `bits`-bit integer with TPDF dither from `noise` added before
+/// rounding, then clamped; NaN is 0. Draws exactly one [`Tpdf::next_lsb`] per call.
+pub fn quantize_dithered(x: f32, bits: u32, noise: &mut Tpdf) -> i32 {
+    let _ = (x, bits, noise);
+    unimplemented!("card wav-c-12-a")
 }
 
 /// `x` (full scale ±1) as a `bits`-bit integer, rounded and clamped; NaN is 0.
