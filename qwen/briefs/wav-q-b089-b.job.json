@@ -1,0 +1,141 @@
+{
+  "id": "wav-q-b089-b",
+  "title": "Doppler: fractional delay line render and doppler()",
+  "kind": "small-code-change-exact-brief",
+  "size": "S",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "repo": "iannitram/wavcraft",
+  "base": "qwen/wav-q-b089-a",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "wav-q-b089-b.md",
+  "verify": [
+    {
+      "name": "new-test-zero_delay_and_unit_gain_is_the_id",
+      "cmd": "cargo test -p wavcraft-core zero_delay_and_unit_gain_is_the_identity 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-an_integer_delay_shifts_exactly",
+      "cmd": "cargo test -p wavcraft-core an_integer_delay_shifts_exactly 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-a_fractional_delay_interpolates_li",
+      "cmd": "cargo test -p wavcraft-core a_fractional_delay_interpolates_linearly 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-each_sample_is_scaled_by_its_gain",
+      "cmd": "cargo test -p wavcraft-core each_sample_is_scaled_by_its_gain 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-an_approaching_source_raises_the_p",
+      "cmd": "cargo test -p wavcraft-core an_approaching_source_raises_the_pitch 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-a_receding_source_lowers_the_pitch",
+      "cmd": "cargo test -p wavcraft-core a_receding_source_lowers_the_pitch 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-mismatched_slice_lengths_use_the_s",
+      "cmd": "cargo test -p wavcraft-core mismatched_slice_lengths_use_the_shorter 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-a_non_finite_delay_or_gain_gives_a",
+      "cmd": "cargo test -p wavcraft-core a_non_finite_delay_or_gain_gives_a_silent_sample 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-a_negative_delay_counts_as_zero",
+      "cmd": "cargo test -p wavcraft-core a_negative_delay_counts_as_zero 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-doppler_chains_the_path_model_and_",
+      "cmd": "cargo test -p wavcraft-core doppler_chains_the_path_model_and_the_delay_line 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-zero_delay_and_unit_gain_is_the_id-1",
+      "cmd": "f=crates/core/src/dsp/doppler.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(1\\.0 - frac) \\* at(k)#(1.0 - frac) * at(k + 1)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core zero_delay_and_unit_gain_is_the_identity 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-an_integer_delay_shifts_exactly-2",
+      "cmd": "f=crates/core/src/dsp/doppler.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let k = base as i64;#let k = base as i64 - 1;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core an_integer_delay_shifts_exactly 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_fractional_delay_interpolates_li-3",
+      "cmd": "f=crates/core/src/dsp/doppler.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let frac = position - base;#let frac = (position - base) * 0.5;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_fractional_delay_interpolates_linearly 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-each_sample_is_scaled_by_its_gain-4",
+      "cmd": "f=crates/core/src/dsp/doppler.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(f64::from(gain) \\* ((1\\.0 - frac)#(1.0 * ((1.0 - frac)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core each_sample_is_scaled_by_its_gain 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-an_approaching_source_raises_the_p-5",
+      "cmd": "f=crates/core/src/dsp/doppler.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#index as f64 - f64::from(delay\\.max(0\\.0))#index as f64 + f64::from(delay.max(0.0))#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core an_approaching_source_raises_the_pitch 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_receding_source_lowers_the_pitch-6",
+      "cmd": "f=crates/core/src/dsp/doppler.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#f64::from(delay\\.max(0\\.0))#f64::from(delay.min(1000.0))#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_receding_source_lowers_the_pitch 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-mismatched_slice_lengths_use_the_s-7",
+      "cmd": "f=crates/core/src/dsp/doppler.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let frames = input\\.len()\\.min(delays\\.len())\\.min(gains\\.len());#let frames = input.len();#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core mismatched_slice_lengths_use_the_shorter 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_non_finite_delay_or_gain_gives_a-8",
+      "cmd": "f=crates/core/src/dsp/doppler.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if !delay\\.is_finite() || !gain\\.is_finite() {#if false {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_non_finite_delay_or_gain_gives_a_silent_sample 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-a_negative_delay_counts_as_zero-9",
+      "cmd": "f=crates/core/src/dsp/doppler.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#f64::from(delay\\.max(0\\.0))#f64::from(delay)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core a_negative_delay_counts_as_zero 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-doppler_chains_the_path_model_and_-10",
+      "cmd": "f=crates/core/src/dsp/doppler.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#let g = gains(&d, ref_m);#let g = gains(\\&d, 1.0e9);#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core doppler_chains_the_path_model_and_the_delay_line 2>&1); echo \"$out\" | grep -E \"^test result:\" ; echo \"$out\" | grep -E \"test result: FAILED[.] [0-9]+ passed; [1-9][0-9]* failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core dsp::doppler",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/dsp/doppler.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/dsp/doppler.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "B089-b: Doppler delay line (alpha) (Refs #351)",
+  "est_minutes": 20,
+  "priority": 127,
+  "created_by": "api-qwen-briefs",
+  "depends_on": [
+    "wav-q-b089-a"
+  ]
+}
