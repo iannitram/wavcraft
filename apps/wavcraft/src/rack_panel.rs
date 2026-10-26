@@ -31,6 +31,10 @@ pub struct RackPanel {
     note: String,
     presets: Option<Presets>,
     pub requests: Vec<Request>,
+    /// A VST3 scan running in the background (f128).
+    scan: Option<std::sync::mpsc::Receiver<wavcraft_core::vst3::ScanReport>>,
+    /// The last finished scan's skipped bundles.
+    skipped: Vec<String>,
 }
 
 impl RackPanel {
@@ -43,6 +47,73 @@ impl RackPanel {
             note: String::new(),
             presets: Presets::default_location(),
             requests: Vec::new(),
+            scan: None,
+            skipped: Vec::new(),
+        }
+    }
+
+    /// The folders to scan for VST3 plugins: `WAVCRAFT_VST3_PATH` (a list, for tests) or the
+    /// standard ones.
+    fn vst3_dirs() -> Vec<std::path::PathBuf> {
+        match std::env::var_os("WAVCRAFT_VST3_PATH") {
+            Some(v) => std::env::split_paths(&v).collect(),
+            None => wavcraft_core::vst3::default_dirs(),
+        }
+    }
+
+    /// Start scanning in the background (worker processes, one per bundle, with a timeout).
+    pub fn start_scan(&mut self) -> Result<(), String> {
+        if self.scan.is_some() {
+            return Err("a scan is already running".to_string());
+        }
+        let exe = std::env::current_exe().map_err(|e| format!("cannot find the app's own executable: {e}"))?;
+        let dirs = Self::vst3_dirs();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(wavcraft_core::vst3::scan_with(&exe, &dirs, wavcraft_core::vst3::BUNDLE_TIMEOUT));
+        });
+        self.scan = Some(rx);
+        Ok(())
+    }
+
+    /// Take a finished scan's result, if there is one.
+    pub fn poll_scan(&mut self) {
+        let Some(rx) = &self.scan else { return };
+        match rx.try_recv() {
+            Ok(report) => {
+                log::info!("VST3 scan: {} plugin(s), {} skipped", report.plugins.len(), report.skipped.len());
+                for s in &report.skipped {
+                    log::warn!("VST3 scan skipped {s}");
+                }
+                wavcraft_core::vst3::set_found(report.plugins);
+                self.skipped = report.skipped;
+                self.scan = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.scan = None,
+        }
+    }
+
+    /// `VST3 scan` starts a scan; `VST3 list` says whether one is running, then the plugins found.
+    pub fn vst3_command(&mut self, rest: &str) -> String {
+        self.poll_scan();
+        match rest.trim() {
+            "scan" => match self.start_scan() {
+                Ok(()) => "OK scanning=1".to_string(),
+                Err(e) => format!("ERR {e}"),
+            },
+            "list" | "" => {
+                let found = wavcraft_core::vst3::found();
+                let names: Vec<String> = found.iter().map(|f| format!("{} [{}]", f.name, f.vendor)).collect();
+                format!(
+                    "OK scanning={} count={} skipped={} plugins={}",
+                    u8::from(self.scan.is_some()),
+                    found.len(),
+                    self.skipped.len(),
+                    names.join("; ")
+                )
+            }
+            _ => "ERR VST3 scan|list".to_string(),
         }
     }
 
@@ -52,6 +123,7 @@ impl RackPanel {
 
     /// Draw the window. `playing` labels the Preview button; `can_apply` enables Apply.
     pub fn show(&mut self, ctx: &egui::Context, playing: bool, can_apply: bool) {
+        self.poll_scan();
         if !self.open {
             return;
         }
@@ -90,6 +162,20 @@ impl RackPanel {
             });
             ui.separator();
             ui.horizontal(|ui| {
+                let scanning = self.scan.is_some();
+                if ui
+                    .add_enabled(!scanning, egui::Button::new("Scan VST3"))
+                    .on_hover_text("Look for VST3 effects in the standard folders (in separate processes)")
+                    .clicked()
+                {
+                    self.note = match self.start_scan() {
+                        Ok(()) => "Scanning for VST3 plugins…".to_string(),
+                        Err(e) => e,
+                    };
+                }
+                ui.label(if scanning { "scanning…".to_string() } else { format!("{} VST3 found", wavcraft_core::vst3::found().len()) });
+            });
+            ui.horizontal(|ui| {
                 ui.label("Preset");
                 ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(120.0).hint_text("name"));
                 if ui.button("Save rack").clicked() {
@@ -127,7 +213,9 @@ impl RackPanel {
         ui.label(format!("{}", i + 1));
         ui.checkbox(&mut self.config.slots[i].enabled, "");
         let current = self.config.slots[i].effect.clone();
-        let shown = current.as_deref().and_then(effects::find).map_or("(none)", |e| e.name());
+        let shown =
+            current.as_deref().map_or("(none)", |c| effects::find(c).map_or(c.strip_prefix(wavcraft_core::vst3::PREFIX).unwrap_or(c), |e| e.name()));
+        let plugins = wavcraft_core::vst3::found();
         let mut pick = None;
         egui::ComboBox::from_id_salt(("rack_slot", i)).selected_text(shown).width(130.0).show_ui(ui, |ui| {
             if ui.selectable_label(current.is_none(), "(none)").clicked() {
@@ -135,7 +223,17 @@ impl RackPanel {
             }
             for e in effects::all() {
                 if ui.selectable_label(current.as_deref() == Some(e.id()), e.name()).clicked() {
-                    pick = Some(Some(e.id()));
+                    pick = Some(Some(e.id().to_string()));
+                }
+            }
+            if !plugins.is_empty() {
+                ui.separator();
+                ui.label("VST3 plugins");
+            }
+            for p in &plugins {
+                let spec = format!("{}{}", wavcraft_core::vst3::PREFIX, p.name);
+                if ui.selectable_label(current.as_deref() == Some(spec.as_str()), &p.name).clicked() {
+                    pick = Some(Some(spec));
                 }
             }
         });
@@ -143,8 +241,10 @@ impl RackPanel {
             Some(None) => {
                 let _ = self.config.clear_slot(i);
             }
-            Some(Some(id)) if current.as_deref() != Some(id) => {
-                let _ = self.config.set_slot(i, id, None);
+            Some(Some(id)) if current.as_deref() != Some(id.as_str()) => {
+                if let Err(e) = self.config.set_slot(i, &id, None) {
+                    self.note = format!("ERR {e}");
+                }
             }
             _ => {}
         }
@@ -239,6 +339,10 @@ impl RackPanel {
     fn cmd_set(&mut self, args: &str) -> Result<(), String> {
         let (slot, rest) = args.split_once(char::is_whitespace).ok_or("RACK set <slot> <effect|none> [key=value ...]")?;
         let slot = slot_number(slot)?;
+        if rest.trim().starts_with(wavcraft_core::vst3::PREFIX) {
+            // `vst3:<name>`: a hosted plugin; the name may have spaces.
+            return self.config.set_slot(slot, rest.trim(), None);
+        }
         let (name, params) = rest.trim().split_once(char::is_whitespace).unwrap_or((rest.trim(), ""));
         let name = name.strip_prefix("effect.").unwrap_or(name);
         if name == "none" || name == "-" {

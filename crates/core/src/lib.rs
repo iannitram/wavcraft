@@ -68,6 +68,7 @@ pub mod transcript_cut;
 pub mod video_snap;
 pub mod timepitch;
 pub mod view;
+pub mod vst3;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;

@@ -13,6 +13,7 @@ soundcraft-dsp.workspace = true
 soundcraft-model.workspace = true
 soundcraft-time.workspace = true
 soundcraft-mix.workspace = true
+soundcraft-vst3-host.workspace = true
 serde_json.workspace = true
 rustfft.workspace = true
 rayon.workspace = true
