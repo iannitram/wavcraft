@@ -24,6 +24,8 @@ mod dehummer;
 mod delay;
 mod dereverb;
 mod dsp_run;
+#[cfg(test)]
+mod card129_tests;
 mod eq;
 pub mod fade;
 mod fft_filter;
@@ -40,6 +42,7 @@ mod speech_leveler;
 mod time_shift;
 pub mod pitch_presets;
 pub mod oneshot;
+pub mod preview;
 pub use oneshot::{
     EffectParams, FadeCurve, FadeDir, MAX_GAIN_DB, amplify, amplify_guarded, fade, fade_label, headroom_db, normalize, peak, reverse,
 };
