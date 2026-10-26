@@ -17,6 +17,7 @@ use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use soundcraft_audio_io::SampleFormat;
@@ -168,17 +169,27 @@ pub fn remove_leftover_temps(target: &Path) -> usize {
 /// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically.
 /// `progress` gets 0 to 1 as the samples go out.
 pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
-    save_wav_inner(doc, target, ty, progress, None)
+    save_wav_inner(doc, target, ty, progress, None, &AtomicBool::new(false))
 }
 
 /// [`save_wav`] that fails with an I/O error once `fail_after` frames are out (tests: a save
 /// that dies halfway must leave the target whole).
 #[doc(hidden)]
 pub fn save_wav_failing_after(doc: &DocState, target: &Path, ty: SampleType, fail_after: u64) -> Result<(), SaveError> {
-    save_wav_inner(doc, target, ty, &mut |_| {}, Some(fail_after))
+    save_wav_inner(doc, target, ty, &mut |_| {}, Some(fail_after), &AtomicBool::new(false))
 }
 
-fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> Result<(), SaveError> {
+fn save_wav_inner(
+    doc: &DocState,
+    target: &Path,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+    cancel: &AtomicBool,
+) -> Result<(), SaveError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(SaveError::Cancelled);
+    }
     let frames = doc.len_frames();
     if frames == 0 {
         return Err(SaveError::Empty);
@@ -187,14 +198,27 @@ fn save_wav_inner(doc: &DocState, target: &Path, ty: SampleType, progress: &mut 
     let tmp = TempFile::create(target).map_err(SaveError::Io)?;
     let TempFile { path: tmp, file } = tmp;
     // Written through the handle made by the exclusive create, never reopened by name.
-    let (file, written) = match write_wav(doc, file, ty, progress, fail_after) {
+    let (file, written) = match write_wav(doc, file, ty, progress, fail_after, cancel) {
         Ok(done) => done,
-        Err(e) => {
+        Err(SaveError::Cancelled) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(SaveError::Cancelled);
+        }
+        Err(SaveError::Io(e)) => {
             let _ = std::fs::remove_file(&tmp);
             log::warn!(target: "wavcraft_core::save", "save to {} failed, the file is unchanged: {e}", target.display());
             return Err(SaveError::Io(e));
         }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
     };
+    if cancel.load(Ordering::Relaxed) {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(SaveError::Cancelled);
+    }
     if let Err(e) = std::fs::rename(&tmp, target) {
         drop(file);
         // The Windows dev machine's review (2026-10-19): a failed save leaves nothing behind. The target is
@@ -332,7 +356,8 @@ fn write_wav(
     ty: SampleType,
     progress: &mut dyn FnMut(f64),
     fail_after: Option<u64>,
-) -> io::Result<(File, Vec<ChunkInfo>)> {
+    cancel: &AtomicBool,
+) -> Result<(File, Vec<ChunkInfo>), SaveError> {
     let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
     let (plan, mut source) = plan_chunks(doc, ty);
@@ -348,12 +373,15 @@ fn write_wav(
     let (data_len, mut pos) = write_header(&mut out, ch16, doc.sample_rate(), ty, frames, extra)?;
     let mut table = Vec::new();
     for item in &plan {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(SaveError::Cancelled);
+        }
         match item {
             Item::Data => {
                 table.push(ChunkInfo { id: *b"data", offset: pos, size: data_len });
                 out.write_all(b"data")?;
                 out.write_all(&u32::try_from(data_len).unwrap_or(u32::MAX).to_le_bytes())?;
-                write_samples(&mut out, doc, ty, progress, fail_after)?;
+                write_samples(&mut out, doc, ty, progress, fail_after, cancel)?;
                 if data_len & 1 == 1 {
                     out.write_all(&[0])?;
                 }
@@ -381,7 +409,8 @@ fn write_wav(
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         format!("the {} chunk of the source file changed while saving", c.id_str()),
-                    ));
+                    )
+                    .into());
                 }
                 if c.size & 1 == 1 {
                     out.write_all(&[0])?;
@@ -390,23 +419,36 @@ fn write_wav(
             }
         }
     }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(SaveError::Cancelled);
+    }
     let file = out.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
     Ok((file, table))
 }
 
 /// The samples, 64 K frames at a time.
-fn write_samples(out: &mut impl Write, doc: &DocState, ty: SampleType, progress: &mut dyn FnMut(f64), fail_after: Option<u64>) -> io::Result<()> {
+fn write_samples(
+    out: &mut impl Write,
+    doc: &DocState,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+    cancel: &AtomicBool,
+) -> Result<(), SaveError> {
     let (frames, channels) = (doc.len_frames(), doc.channel_count());
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; channels];
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * channels * ty.bytes());
     let mut at = 0u64;
     while at < frames {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(SaveError::Cancelled);
+        }
         let n = (frames - at).min(BLOCK_FRAMES as u64) as usize;
         for (ch, buf) in bufs.iter_mut().enumerate() {
             let got = doc.read(ch, at, &mut buf[..n])?;
             if got != n {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("channel {ch} gave {got} of {n} frames at {at}")));
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("channel {ch} gave {got} of {n} frames at {at}")).into());
             }
         }
         bytes.clear();
@@ -424,9 +466,12 @@ fn write_samples(out: &mut impl Write, doc: &DocState, ty: SampleType, progress:
         out.write_all(&bytes)?;
         at += n as u64;
         if fail_after.is_some_and(|f| at >= f && at < frames) {
-            return Err(io::Error::other("test: the disk went away"));
+            return Err(io::Error::other("test: the disk went away").into());
         }
         progress(at as f64 / frames as f64);
+        if cancel.load(Ordering::Relaxed) {
+            return Err(SaveError::Cancelled);
+        }
     }
     Ok(())
 }
@@ -488,16 +533,15 @@ fn invalid(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg.to_string())
 }
 
-/// C186-a: cancellable whole-document WAV save; the builder fills this stub.
-#[allow(clippy::todo)] // card wav-c-186-a removes this with the stub
+/// C186-a: cancellable whole-document WAV save.
 pub fn save_wav_controlled(
-    _doc: &DocState,
-    _target: &Path,
-    _ty: SampleType,
-    _progress: &mut dyn FnMut(f64),
-    _cancel: &std::sync::atomic::AtomicBool,
+    doc: &DocState,
+    target: &Path,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<(), SaveError> {
-    todo!("C186-a")
+    save_wav_inner(doc, target, ty, progress, None, cancel)
 }
 
 /// C186-b: marker chunks are owned payloads, without RIFF headers or padding.
@@ -545,10 +589,7 @@ mod c186_locked {
 
         fn doc(&self, frames: usize) -> DocState {
             let store = Store::create_with(&self.0.join("store"), StoreOptions::default()).unwrap();
-            let pieces = vec![0.5; frames]
-                .chunks(BLOCK_FRAMES)
-                .map(|b| Piece::whole(store.append(b).unwrap()).unwrap())
-                .collect::<Vec<_>>();
+            let pieces = vec![0.5; frames].chunks(BLOCK_FRAMES).map(|b| Piece::whole(store.append(b).unwrap()).unwrap()).collect::<Vec<_>>();
             DocState::new(store, vec![Channel::from_pieces(pieces)], 48_000, SourceFormat::synthetic(48_000, 1)).unwrap()
         }
     }
@@ -610,10 +651,16 @@ mod c186_locked {
         std::fs::write(&path, b"original").unwrap();
         let cancel = AtomicBool::new(false);
         let mut progress = Vec::new();
-        let result = save_wav_controlled(&doc, &path, SampleType::Int16, &mut |p| {
-            progress.push(p);
-            cancel.store(true, Ordering::Relaxed);
-        }, &cancel);
+        let result = save_wav_controlled(
+            &doc,
+            &path,
+            SampleType::Int16,
+            &mut |p| {
+                progress.push(p);
+                cancel.store(true, Ordering::Relaxed);
+            },
+            &cancel,
+        );
         assert!(matches!(result, Err(SaveError::Cancelled)));
         assert_eq!(progress, vec![0.5]);
         assert_eq!(std::fs::read(&path).unwrap(), b"original");
@@ -628,10 +675,16 @@ mod c186_locked {
         let path = t.0.join("target.wav");
         let cancel = AtomicBool::new(false);
         let mut progress = Vec::new();
-        let result = save_wav_controlled(&doc, &path, SampleType::Int16, &mut |p| {
-            progress.push(p);
-            cancel.store(true, Ordering::Relaxed);
-        }, &cancel);
+        let result = save_wav_controlled(
+            &doc,
+            &path,
+            SampleType::Int16,
+            &mut |p| {
+                progress.push(p);
+                cancel.store(true, Ordering::Relaxed);
+            },
+            &cancel,
+        );
         assert!(matches!(result, Err(SaveError::Cancelled)));
         assert_eq!(progress, vec![1.0]);
         assert!(!path.exists());
