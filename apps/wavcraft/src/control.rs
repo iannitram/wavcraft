@@ -17,6 +17,7 @@
 //! - `SELECT_TIME <start> <end>` (each in the chosen time format, no spaces inside) → `OK selection=<a>-<b>`; `STATE` also reports `time_display`, `selection_text` and `snap_frames`
 //! - `SNAP_FRAME <frame>` → `OK frame=<snapped>` (what a ruler click or drag calls: SMPTE display and Snap to Frames on)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
+//! - `NOISE_PRINT` → `OK frames=<n> channels=<n> rate=<hz>` (the session's noise print, captured by `ACTION nr.capture_print`), or `OK none`
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
 //! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
 //! - `STRETCH ratio=<0.1-10> pitch=<semitones>` → `OK selection=<a>-<b> changed=<0|1>` (Stretch and Pitch on the selection, the whole file when none; the result is selected); `PITCHDETECT` → `OK hz=<f0>|none` (median pitch of the selection)
