@@ -5,6 +5,7 @@ pub mod bass_enhancer;
 pub mod chorus;
 pub mod convolution;
 pub mod distortion;
+pub mod doppler;
 pub mod echo;
 pub mod eq_graph;
 pub mod envelope;
