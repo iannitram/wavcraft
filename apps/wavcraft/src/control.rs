@@ -25,6 +25,7 @@
 //! - `GENERATE` → the generators and their settings; `GENERATE <tone|noise> key=value ... [seed=N]` → `OK selection=<a>-<b> changed=<0|1>` (insert at the cursor or replace the selection)
 //! - `GENERATE_DIALOG <name> [key=value ...]` opens a Generate dialog; `GENERATE_DIALOG PREVIEW` → `OK preview=<frames>`; `GENERATE_DIALOG OK|CANCEL` presses the button
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
+//! - `DELETE_SILENCE [threshold_db=-48] [min_len_ms=500] [keep_ms=150]` → `OK stretches=<n> removed_s=<seconds> selection=<a>-<b>` (Edit › Delete Silence on the selection, the whole file when none; one undo step; `ERR <why>` when refused, e.g. everything is below the threshold)
 //! - `STATS [<start> <end>]` (frames; the selection or the whole file without them) → `OK range=<a>-<b> ...` then, per channel, `ch<i> peak=.. peak_db=.. peak_frame=.. min=.. max=.. dc_pct=.. rms_*_db=.. dyn_db=.. clip_runs=.. clip_samples=.. bits=..`.
 //!   Runs the scan at once and keeps it for `ACTION stats.goto_peak|stats.next_clip|stats.prev_clip` (the cursor moves; `ERR` when there is nowhere to go)
 //! - `JOB testslow <ms>` → `OK` (a test-only background job over the selection, `<ms>` per 64K-frame chunk; `busy=1` and `progress` while it runs; `JOB cancel` stops it)

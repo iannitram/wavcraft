@@ -8,6 +8,7 @@
 use std::io;
 use std::ops::Range;
 
+use crate::diagnostics::silence::{self, SilenceError, SilenceParams};
 use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, PasteAt};
 use crate::doc::history::History;
 use crate::effects::{self, EffectParams, FadeCurve, FadeDir};
@@ -25,6 +26,8 @@ pub enum ActionId {
     Delete,
     Silence,
     Crop,
+    /// Edit > Delete Silence: shorten every long silent stretch to its default keep length.
+    DeleteSilence,
     SelectAll,
     DeselectAll,
     ClearTimeSelection,
@@ -127,6 +130,7 @@ pub const TABLE: &[Action] = &[
     // Insert › Silence… asks for a length (the window's dialog), then runs `Editor::insert_silence`.
     window(ActionId::InsertSilence, "edit.insertSilence", "Insert Silence…"),
     edit(ActionId::Crop, "edit.crop", "Crop"),
+    edit(ActionId::DeleteSilence, "edit.deleteSilence", "Delete Silence"),
     edit(ActionId::SelectAll, "edit.selectAll", "Select All"),
     edit(ActionId::DeselectAll, "edit.deselectAll", "Deselect All"),
     edit(ActionId::ClearTimeSelection, "edit.clearTimeSelection", "Clear Time Selection"),
@@ -222,6 +226,16 @@ pub struct Outcome {
     pub selection: Range<u64>,
     /// A message for the status bar.
     pub message: Option<String>,
+}
+
+/// What [`Editor::delete_silence`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SilenceDone {
+    pub outcome: Outcome,
+    /// Stretches shortened.
+    pub stretches: usize,
+    /// Frames removed in all.
+    pub removed_frames: u64,
 }
 
 /// One open document's editing state: its history, the active channels and the clipboard.
@@ -375,7 +389,7 @@ impl Editor {
             | ActionId::ZeroRightToLeft
             | ActionId::ZeroRightToRight => has_sel,
             // An effect takes the selection, or the whole file when there is none.
-            ActionId::Effect(_) => self.len() > 0,
+            ActionId::Effect(_) | ActionId::DeleteSilence => self.len() > 0,
             // Like Copy: with no selection the one-shot effects take the whole file.
             ActionId::Reverse
             | ActionId::Amplify
@@ -539,6 +553,34 @@ impl Editor {
         Ok(Outcome { doc_changed: changed, selection: range.start..end, message: changed.then_some(label) })
     }
 
+    /// Edit > Delete Silence with these settings, on `selection` (the whole file when empty),
+    /// scanning the active channels and cutting all of them: one undo step "Delete Silence".
+    /// Nothing is changed when it is refused.
+    pub fn delete_silence(&mut self, selection: Range<u64>, params: &SilenceParams) -> Result<SilenceDone, SilenceError> {
+        let doc = self.history.current().clone();
+        let len = doc.len_frames();
+        let sel = selection.start.min(len)..selection.end.min(len);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let channels = self.channels.within(doc.channel_count());
+        let done = silence::delete_silence(&doc, sel.clone(), channels, params, self.crossfades, &cancel)?;
+        let changed = !done.edit.is_noop();
+        let message = if changed {
+            let secs = done.removed_frames as f64 / f64::from(doc.sample_rate().max(1));
+            format!("Delete Silence: {} stretches shortened, {secs:.3} s removed", done.stretches)
+        } else {
+            "Delete Silence: no silent stretch is long enough".to_string()
+        };
+        self.history.push_edit(done.edit);
+        let new_len = self.len();
+        let end = if sel.start < sel.end { sel.end.saturating_sub(done.removed_frames) } else { sel.end };
+        let selection = sel.start.min(new_len)..end.max(sel.start).min(new_len);
+        Ok(SilenceDone {
+            outcome: Outcome { doc_changed: changed, selection, message: Some(message) },
+            stretches: done.stretches,
+            removed_frames: done.removed_frames,
+        })
+    }
+
     /// Run `id` on `selection`. A disabled action does nothing and says why.
     pub fn run(&mut self, id: ActionId, selection: Range<u64>) -> Result<Outcome, EditError> {
         self.run_with(id, selection, None)
@@ -602,6 +644,14 @@ impl Editor {
         }
         match id {
             ActionId::RepeatLast => return self.repeat(sel),
+            ActionId::DeleteSilence => {
+                return match self.delete_silence(sel.clone(), &SilenceParams::default()) {
+                    Ok(done) => Ok(done.outcome),
+                    Err(SilenceError::Edit(e)) => Err(e),
+                    // A refusal changes nothing and says why.
+                    Err(why) => Ok(Outcome { doc_changed: false, selection: sel, message: Some(format!("Delete Silence: {why}")) }),
+                };
+            }
             ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -713,7 +763,8 @@ impl Editor {
             | ActionId::TimeSmpte30
             | ActionId::TimeSmpte5994
             | ActionId::SnapFrames
-            // Repeat and the zero-crossing adjusts returned above.
+            // Repeat, Delete Silence and the zero-crossing adjusts returned above.
+            | ActionId::DeleteSilence
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast
             | ActionId::StatsShow

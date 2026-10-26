@@ -20,6 +20,7 @@ pub mod actions;
 pub mod atomic;
 pub mod autosave;
 pub mod cd;
+pub mod diagnostics;
 pub mod doc;
 pub mod document;
 pub mod dsp;
