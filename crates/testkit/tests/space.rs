@@ -61,15 +61,19 @@ fn write_file(dir: &Path, name: &str, format: FileFormat, depth: BitDepth, chann
 }
 
 #[test]
-fn the_estimate_is_four_bytes_a_sample_plus_a_margin_whatever_the_source_depth() {
-    // The arithmetic: 3 hours of 48 kHz stereo is 4,147,200,000 bytes of f32 (the 4.1 GB store
-    // of a 2.1 GB 16-bit file), plus 1 % plus the margin.
+fn the_estimate_is_the_stored_bytes_a_sample_plus_a_margin() {
+    // The arithmetic (task 04b): 3 hours of 48 kHz stereo is 2,073,600,000 bytes stored as
+    // 16-bit (the file's own size), 3,110,400,000 as 24-bit and 4,147,200,000 as f32, plus 1 %
+    // plus the margin.
     let frames = 3 * 3600 * 48_000;
-    assert_eq!(raw_store_bytes(frames, 2), 4_147_200_000);
-    assert_eq!(raw_store_bytes(frames, 1), 2_073_600_000);
-    assert_eq!(store_bytes(frames, 2), 4_147_200_000 + 41_472_000 + MARGIN_BYTES);
-    assert_eq!(store_bytes(0, 2), MARGIN_BYTES);
-    assert_eq!(store_bytes(u64::MAX, 8), u64::MAX, "saturates, never wraps");
+    assert_eq!(raw_store_bytes(frames, 2, 2), 2_073_600_000);
+    assert_eq!(raw_store_bytes(frames, 2, 3), 3_110_400_000);
+    assert_eq!(raw_store_bytes(frames, 2, 4), 4_147_200_000);
+    assert_eq!(raw_store_bytes(frames, 1, 4), 2_073_600_000);
+    assert_eq!(store_bytes(frames, 2, 2), 2_073_600_000 + 20_736_000 + MARGIN_BYTES);
+    assert_eq!(store_bytes(frames, 2, 4), 4_147_200_000 + 41_472_000 + MARGIN_BYTES);
+    assert_eq!(store_bytes(0, 2, 4), MARGIN_BYTES);
+    assert_eq!(store_bytes(u64::MAX, 8, 4), u64::MAX, "saturates, never wraps");
     // A compressed file of unknown length: an hour at the assumed 128 kbit/s is 57.6 MB.
     assert_eq!(space::frames_from_file_size(57_600_000, 48_000), 3600 * 48_000);
     assert_eq!(space::frames_from_file_size(0, 48_000), 0);
@@ -83,15 +87,16 @@ fn the_estimate_is_four_bytes_a_sample_plus_a_margin_whatever_the_source_depth()
     let frames = 100_000usize;
     let mut cases = Vec::new();
     for channels in [1usize, 2] {
-        for (depth, tag) in [(BitDepth::Int16, "16"), (BitDepth::Int24, "24"), (BitDepth::Float32, "float")] {
-            cases.push((format!("w{channels}-{tag}.wav"), FileFormat::Wav, depth, channels));
+        for (depth, tag, width) in [(BitDepth::Int16, "16", 2), (BitDepth::Int24, "24", 3), (BitDepth::Float32, "float", 4)] {
+            cases.push((format!("w{channels}-{tag}.wav"), FileFormat::Wav, depth, channels, width));
         }
-        cases.push((format!("a{channels}-16.aiff"), FileFormat::Aiff, BitDepth::Int16, channels));
-        cases.push((format!("f{channels}-16.flac"), FileFormat::Flac, BitDepth::Int16, channels));
+        cases.push((format!("a{channels}-16.aiff"), FileFormat::Aiff, BitDepth::Int16, channels, 2));
+        cases.push((format!("f{channels}-16.flac"), FileFormat::Flac, BitDepth::Int16, channels, 2));
+        cases.push((format!("f{channels}-24.flac"), FileFormat::Flac, BitDepth::Int24, channels, 3));
     }
-    for (name, format, depth, channels) in cases {
+    for (name, format, depth, channels, width) in cases {
         let path = write_file(&dir.0, &name, format, depth, channels, frames);
-        let want = store_bytes(frames as u64, channels as u64);
+        let want = store_bytes(frames as u64, channels as u64, width);
         match open_with_free(&path, &root.0, Some(0)) {
             Err(OpenError::NoSpace { needed, free, folder, estimated }) => {
                 assert_eq!((needed, free, estimated), (want, 0, false), "{name}");
@@ -101,7 +106,7 @@ fn the_estimate_is_four_bytes_a_sample_plus_a_margin_whatever_the_source_depth()
         }
         assert!(root.is_empty(), "{name}: a refused open leaves no session folder");
         let doc = open_with_free(&path, &root.0, Some(want)).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert_eq!(doc.disk_bytes_referenced(), raw_store_bytes(frames as u64, channels as u64), "{name}");
+        assert_eq!(doc.disk_bytes_referenced(), raw_store_bytes(frames as u64, channels as u64, width), "{name}");
     }
 }
 
@@ -110,7 +115,7 @@ fn too_little_room_is_refused_with_a_clear_message_and_unknown_room_is_not() {
     let dir = TempDir::new("refuse");
     let root = TempDir::new("refuse-sessions");
     let path = write_file(&dir.0, "s.wav", FileFormat::Wav, BitDepth::Int16, 2, 50_000);
-    let needed = store_bytes(50_000, 2);
+    let needed = store_bytes(50_000, 2, 2);
 
     let err = open_with_free(&path, &root.0, Some(needed - 1)).unwrap_err();
     assert_eq!(err, OpenError::NoSpace { needed, free: needed - 1, folder: root.0.clone(), estimated: false });
@@ -136,7 +141,7 @@ fn too_little_room_is_refused_with_a_clear_message_and_unknown_room_is_not() {
 fn a_disk_that_fills_up_part_way_gives_an_error_and_leaves_nothing() {
     let dir = TempDir::new("full");
     let root = TempDir::new("full-sessions");
-    // 300,000 stereo frames is 2.4 MB of f32; the store may take 1 MB.
+    // 300,000 stereo frames is 1.2 MB stored as 16-bit; the store may take 1 MB.
     for (name, format) in [("big.wav", FileFormat::Wav), ("big.flac", FileFormat::Flac)] {
         let path = write_file(&dir.0, name, format, BitDepth::Int16, 2, 300_000);
         let opts = OpenOptions {

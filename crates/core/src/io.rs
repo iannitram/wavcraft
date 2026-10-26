@@ -34,7 +34,7 @@ use symphonia::core::probe::Hint;
 use crate::doc::{Channel, ChunkInfo, DocState, Piece, SourceFormat};
 use crate::settings::HOW_TO_CHANGE;
 use crate::space::{FreeSpaceFn, format_bytes, frames_from_file_size, store_bytes};
-use crate::store::{BLOCK_FRAMES, Store, StoreOptions};
+use crate::store::{BLOCK_FRAMES, BlockHandle, Encoding, Store, StoreOptions, f32_to_i16_exact, f32_to_i24_exact};
 
 /// Why a file could not be opened.
 #[derive(Debug, Clone, PartialEq)]
@@ -229,8 +229,8 @@ impl Job<'_> {
 
     /// Refuse to go on if the disk holding `store` has less room than `frames` frames of
     /// `channels` channels need. An unknown free space passes.
-    fn check_space(&self, store: &Store, frames: u64, channels: usize, estimated: bool) -> Result<(), OpenError> {
-        let needed = store_bytes(frames, channels as u64);
+    fn check_space(&self, store: &Store, frames: u64, channels: usize, encoding: Encoding, estimated: bool) -> Result<(), OpenError> {
+        let needed = store_bytes(frames, channels as u64, encoding.width());
         match (self.free_space)(store.dir()) {
             Some(free) if free < needed => Err(OpenError::NoSpace { needed, free, folder: sessions_folder(store), estimated }),
             Some(_) => Ok(()),
@@ -263,15 +263,45 @@ fn write_error(store: &Store, e: io::Error) -> OpenError {
     }
 }
 
+/// What open decodes a source as, which decides how its blocks are stored ([`store_encoding`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceSamples {
+    /// Read by our own WAV/RF64/AIFF reader: integers (`float: false`) or floats in containers of
+    /// `bytes` bytes per sample.
+    Pcm { bytes: usize, float: bool },
+    /// Decoded by symphonia: `flac` when the codec is FLAC, and the sample format open reports.
+    Decoded { flac: bool, sample_format: SampleFormat },
+}
+
+/// How a source's blocks are stored: 16-bit containers as [`Encoding::I16`], 24-bit containers
+/// (any 17 to 24 valid bits) as [`Encoding::I24`], FLAC of 9 to 16 or 17 to 24 bits likewise,
+/// and everything else (8-bit, 32-bit integers, floats, lossy codecs) as [`Encoding::F32`].
+///
+/// Each block is still checked as it is written: if any sample of it would not read back with
+/// the same bits from the integer encoding, that block is written as `F32` instead.
+pub fn store_encoding(source: SourceSamples) -> Encoding {
+    match source {
+        SourceSamples::Pcm { bytes: 2, float: false } => Encoding::I16,
+        SourceSamples::Pcm { bytes: 3, float: false } => Encoding::I24,
+        SourceSamples::Decoded { flac: true, sample_format: SampleFormat::Int16 } => Encoding::I16,
+        SourceSamples::Decoded { flac: true, sample_format: SampleFormat::Int24 } => Encoding::I24,
+        _ => Encoding::F32,
+    }
+}
+
 /// Channels being filled a block at a time.
 struct Builder {
     store: Store,
     channels: Vec<Channel>,
     planes: Vec<Vec<f32>>,
+    /// How blocks are written (a block that doesn't fit it exactly is written as `F32`).
+    encoding: Encoding,
+    i16s: Vec<i16>,
+    i24s: Vec<i32>,
 }
 
 impl Builder {
-    fn new(store: &Store, channels: usize) -> Result<Builder, OpenError> {
+    fn new(store: &Store, channels: usize, encoding: Encoding) -> Result<Builder, OpenError> {
         // Check if the memory usage would be excessive
         let estimated_size = channels
             .checked_mul(CHUNK_FRAMES)
@@ -289,7 +319,7 @@ impl Builder {
             planes.push(v);
         }
 
-        Ok(Builder { store: store.clone(), channels: (0..channels).map(|_| Channel::new()).collect(), planes })
+        Ok(Builder { store: store.clone(), channels: (0..channels).map(|_| Channel::new()).collect(), planes, encoding, i16s: Vec::new(), i24s: Vec::new() })
     }
 
     /// Append what the planes hold as one block per channel, and empty them.
@@ -298,7 +328,7 @@ impl Builder {
             if plane.is_empty() {
                 continue;
             }
-            let block = self.store.append(plane).map_err(|e| write_error(&self.store, e))?;
+            let block = append_as(&self.store, self.encoding, plane, &mut self.i16s, &mut self.i24s).map_err(|e| write_error(&self.store, e))?;
             if let Some(p) = Piece::whole(block) {
                 ch.push(p);
             }
@@ -310,6 +340,29 @@ impl Builder {
     fn full(&self) -> bool {
         self.planes.first().is_some_and(|p| p.len() >= CHUNK_FRAMES)
     }
+}
+
+/// Append `plane` as one block in `encoding`, or as `F32` if a sample of it has no exact integer
+/// in that encoding.
+fn append_as(store: &Store, encoding: Encoding, plane: &[f32], i16s: &mut Vec<i16>, i24s: &mut Vec<i32>) -> io::Result<Arc<BlockHandle>> {
+    match encoding {
+        Encoding::I16 => {
+            i16s.clear();
+            i16s.extend(plane.iter().map_while(|&x| f32_to_i16_exact(x)));
+            if i16s.len() == plane.len() {
+                return store.append_i16(i16s);
+            }
+        }
+        Encoding::I24 => {
+            i24s.clear();
+            i24s.extend(plane.iter().map_while(|&x| f32_to_i24_exact(x)));
+            if i24s.len() == plane.len() {
+                return store.append_i24(i24s);
+            }
+        }
+        Encoding::F32 => {}
+    }
+    store.append(plane)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -413,7 +466,8 @@ fn deinterleave(data: &[u8], kind: PcmKind, planes: &mut [Vec<f32>]) {
 
 /// Read `frames` frames of `kind` PCM from `data_start` into the store, a chunk at a time.
 fn stream_pcm(job: &mut Job<'_>, store: &Store, data_start: u64, frames: u64, kind: PcmKind, channels: usize) -> Result<Builder, OpenError> {
-    job.check_space(store, frames, channels, false)?;
+    let encoding = store_encoding(SourceSamples::Pcm { bytes: kind.bytes(), float: matches!(kind, PcmKind::Float { .. }) });
+    job.check_space(store, frames, channels, encoding, false)?;
 
     // Check buffer size before allocation
     let block = kind.bytes() * channels;
@@ -423,7 +477,7 @@ fn stream_pcm(job: &mut Job<'_>, store: &Store, data_start: u64, frames: u64, ki
     buf.try_reserve_exact(buf_len).map_err(|_| OpenError::Io("not enough memory to open this file".into()))?;
     buf.resize(buf_len, 0u8);
 
-    let mut b = Builder::new(store, channels)?;
+    let mut b = Builder::new(store, channels, encoding)?;
     job.file.seek(SeekFrom::Start(data_start))?;
     let mut done = 0u64;
     while done < frames {
@@ -936,7 +990,8 @@ fn decode_symphonia(
         Some(n) if n > 0 => (n, false),
         _ => (frames_from_file_size(job.file_len, src.sample_rate), true),
     };
-    job.check_space(store, expected_frames, params.channels.map_or(2, |c| c.count()).max(1), estimated)?;
+    let encoding = store_encoding(SourceSamples::Decoded { flac: params.codec == sc::CODEC_TYPE_FLAC, sample_format: src.sample_format });
+    job.check_space(store, expected_frames, params.channels.map_or(2, |c| c.count()).max(1), encoding, estimated)?;
 
     let mut built: Option<Builder> = None;
     let mut frames: u64 = 0;
@@ -1010,7 +1065,7 @@ fn decode_symphonia(
         if built.is_none() {
             // The decoded stream is authoritative for the channel count.
             src.channels = u16::try_from(ch).map_err(|_| unsupported("too many channels"))?;
-            built = Some(Builder::new(store, ch)?);
+            built = Some(Builder::new(store, ch, encoding)?);
         }
         let Some(b) = built.as_mut() else { break };
         if b.planes.len() != ch {
@@ -1044,7 +1099,7 @@ fn decode_symphonia(
     }
     Ok(match built {
         Some(b) => b,
-        None => Builder::new(store, usize::from(src.channels))?,
+        None => Builder::new(store, usize::from(src.channels), encoding)?,
     })
 }
 
@@ -1053,7 +1108,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
 
-    use super::{OpenOptions, open};
+    use super::{Encoding, OpenOptions, SampleFormat, SourceSamples, open, store_encoding};
 
     const FULL: &[u8] = include_bytes!("../tests/fixtures/q367-full.flac");
     const TRUNCATED: &[u8] = include_bytes!("../tests/fixtures/q367-truncated.flac");
@@ -1148,5 +1203,32 @@ mod tests {
         let (frames, warnings) = open_wav("non-flac-count-mismatch", &bytes);
         assert_eq!(frames, actual_frames as u64);
         assert!(!warnings.iter().any(|w| w.contains("truncated")), "warnings: {warnings:?}");
+    }
+
+    /// Test 2's table: which encoding each kind of source is stored in.
+    #[test]
+    fn each_source_gets_its_encoding() {
+        use Encoding::*;
+        use SampleFormat as S;
+        let pcm = |bytes, float| SourceSamples::Pcm { bytes, float };
+        let dec = |flac, sample_format| SourceSamples::Decoded { flac, sample_format };
+        let table = [
+            (pcm(1, false), F32, "8-bit WAV"),
+            (pcm(2, false), I16, "16-bit WAV/AIFF (and 9 to 16 valid bits)"),
+            (pcm(3, false), I24, "24-bit WAV/AIFF/RF64 (and 17 to 24 valid bits, e.g. 20)"),
+            (pcm(4, false), F32, "32-bit integer"),
+            (pcm(4, true), F32, "32-bit float"),
+            (pcm(8, true), F32, "64-bit float"),
+            (dec(true, S::Int8), F32, "8-bit FLAC"),
+            (dec(true, S::Int16), I16, "16-bit FLAC"),
+            (dec(true, S::Int24), I24, "24-bit FLAC"),
+            (dec(true, S::Int32), F32, "32-bit FLAC"),
+            (dec(false, S::Compressed), F32, "MP3, AAC, Vorbis, ADPCM"),
+            (dec(false, S::Int16), F32, "16-bit ALAC or other symphonia PCM"),
+            (dec(false, S::Float32), F32, "float through symphonia"),
+        ];
+        for (source, want, what) in table {
+            assert_eq!(store_encoding(source), want, "{what}");
+        }
     }
 }

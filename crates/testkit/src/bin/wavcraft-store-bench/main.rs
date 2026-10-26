@@ -1,4 +1,5 @@
-//! `wavcraft-store-bench FILE [--cache-mb N] [--sessions DIR] [--huge]`: task 03's measures.
+//! `wavcraft-store-bench FILE [--cache-mb N] [--sessions DIR] [--huge]`: task 03's measures (and
+//! task 04b's: the store's size on disk and its block encodings).
 //!
 //! Streamed open into a session store (time, and the process's peak memory above what it held
 //! before), a sequential read of the whole document 64 K frames at a time (block cache cleared
@@ -29,6 +30,19 @@ fn gb(bytes: Option<u64>) -> String {
 
 fn mb(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1e6)
+}
+
+/// How many blocks of each encoding the document's channels use (task 04b).
+fn encodings(doc: &wavcraft_core::DocState) -> Vec<(wavcraft_core::store::Encoding, usize)> {
+    let mut out: Vec<(wavcraft_core::store::Encoding, usize)> = Vec::new();
+    for p in doc.channels().iter().flat_map(|c| c.pieces()) {
+        let e = p.block().encoding();
+        match out.iter_mut().find(|(k, _)| *k == e) {
+            Some((_, n)) => *n += 1,
+            None => out.push((e, 1)),
+        }
+    }
+    out
 }
 
 fn fail(why: &str) -> ExitCode {
@@ -82,9 +96,11 @@ fn main() -> ExitCode {
     );
     println!("session folder: {}", store.dir().display());
     println!(
-        "streamed open: {open_s:.2} s; store written {} ({:.2} GB/s of f32)",
+        "streamed open: {open_s:.2} s; store written {} ({:.2} GB/s written; {:.3} GB as f32 would be); block encodings {:?}",
         gb(Some(store.bytes_on_disk())),
-        store.bytes_on_disk() as f64 / 1e9 / open_s.max(1e-9)
+        store.bytes_on_disk() as f64 / 1e9 / open_s.max(1e-9),
+        (frames * channels as u64 * 4) as f64 / 1e9,
+        encodings(&doc)
     );
     let above = after.peak.zip(rest.now).map(|(p, r)| p.saturating_sub(r));
     println!(

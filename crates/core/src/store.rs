@@ -1,7 +1,10 @@
 //! The on-disk sample store: where every sample of an open document lives.
 //!
-//! Samples are written once, as little-endian `f32`, into append-only **pack files**
-//! (`pack-0001.f32`, `pack-0002.f32`, …) in a **session folder**. A **block** is a run of up to
+//! Samples are written once into append-only **pack files** (`pack-0001.f32`, `pack-0002.f32`,
+//! …) in a **session folder**. Each block records its [`Encoding`]: little-endian `f32`, or the
+//! 16- or 24-bit integers a 16- or 24-bit source holds (half or three quarters the bytes). A read
+//! converts integers to `f32` exactly as open converts them, so the cache and every reader see
+//! `f32` whatever is on disk. A **block** is a run of up to
 //! [`BLOCK_FRAMES`] samples of one channel, at a fixed place in one pack, and it never changes
 //! after [`Store::append`] returns. RAM holds only a **block cache** with a byte budget: a read
 //! that misses it reads the whole block with one positioned read (no `mmap`; the workspace forbids
@@ -42,7 +45,69 @@ pub const LOCK_FILE: &str = "session.lock";
 /// [`LOCK_FILE`] because on Windows a locked file cannot be read by others.
 pub const HELD_FILE: &str = "session.held";
 
+/// Bytes of one cached (`f32`) sample.
 const BYTES_PER_SAMPLE: u64 = 4;
+
+/// How a block's samples are stored in its pack. The bytes it takes are `frames × width`.
+///
+/// Every value of the two integer encodings is exact in `f32`, and reads convert with the same
+/// arithmetic open uses for a 16- or 24-bit source (`soundcraft-audio-io`'s), so a block reads
+/// back bit-identical whatever its encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Encoding {
+    /// Little-endian `f32` (4 bytes). New audio (effects, crossfades, mixes) is always this.
+    #[default]
+    F32,
+    /// Little-endian `i16` (2 bytes); reads as `v / 32768`.
+    I16,
+    /// 24-bit two's complement, 3 bytes little-endian (sign-extended on read); reads as
+    /// `v / 8388608`.
+    I24,
+}
+
+impl Encoding {
+    /// Bytes per sample on disk.
+    pub const fn width(self) -> u64 {
+        match self {
+            Encoding::F32 => 4,
+            Encoding::I16 => 2,
+            Encoding::I24 => 3,
+        }
+    }
+}
+
+/// The range of a 24-bit sample.
+pub const I24_MIN: i32 = -(1 << 23);
+pub const I24_MAX: i32 = (1 << 23) - 1;
+
+/// An `i16` sample as `f32`: exactly what open does for 16-bit PCM.
+#[inline]
+pub fn i16_to_f32(v: i16) -> f32 {
+    f32::from(v) / 32_768.0
+}
+
+/// A 24-bit sample (in an `i32`) as `f32`: exactly what open does for 24-bit PCM.
+#[inline]
+pub fn i24_to_f32(v: i32) -> f32 {
+    v as f32 / 8_388_608.0
+}
+
+/// The `i16` that reads back as exactly `x` (same bits), if there is one.
+#[inline]
+pub fn f32_to_i16_exact(x: f32) -> Option<i16> {
+    let v = i16::try_from((x * 32_768.0) as i32).ok()?;
+    (i16_to_f32(v).to_bits() == x.to_bits()).then_some(v)
+}
+
+/// The 24-bit integer that reads back as exactly `x` (same bits), if there is one.
+#[inline]
+pub fn f32_to_i24_exact(x: f32) -> Option<i32> {
+    let v = (x * 8_388_608.0) as i32;
+    if !(I24_MIN..=I24_MAX).contains(&v) {
+        return None;
+    }
+    (i24_to_f32(v).to_bits() == x.to_bits()).then_some(v)
+}
 
 #[cfg(test)]
 type CreateHook = Mutex<Option<Box<dyn Fn(&Path) + Send>>>;
@@ -51,18 +116,21 @@ type CreateHook = Mutex<Option<Box<dyn Fn(&Path) + Send>>>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockId(pub u64);
 
-/// Where a block's samples are: which pack, at which byte, how many frames.
+/// Where a block's samples are: which pack, at which byte, how many frames, in which encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockRef {
     pub id: BlockId,
     pub pack: u32,
     pub byte_offset: u64,
     pub frames: u32,
+    /// How the samples are stored. Meaningless for the zero block, which is never on disk (it
+    /// says `F32`).
+    pub encoding: Encoding,
 }
 
 impl BlockRef {
     /// The virtual block of silence: never on disk, as long as any piece of it needs to be.
-    pub const ZERO: BlockRef = BlockRef { id: BlockId(0), pack: 0, byte_offset: 0, frames: u32::MAX };
+    pub const ZERO: BlockRef = BlockRef { id: BlockId(0), pack: 0, byte_offset: 0, frames: u32::MAX, encoding: Encoding::F32 };
 
     pub fn is_zero(&self) -> bool {
         self.id == BlockId(0)
@@ -70,7 +138,7 @@ impl BlockRef {
 
     /// Bytes this block takes on disk (0 for the zero block).
     pub fn disk_bytes(&self) -> u64 {
-        if self.is_zero() { 0 } else { u64::from(self.frames) * BYTES_PER_SAMPLE }
+        if self.is_zero() { 0 } else { u64::from(self.frames) * self.encoding.width() }
     }
 }
 
@@ -92,6 +160,10 @@ impl BlockHandle {
 
     pub fn frames(&self) -> u32 {
         self.block.frames
+    }
+
+    pub fn encoding(&self) -> Encoding {
+        self.block.encoding
     }
 
     pub fn is_zero(&self) -> bool {
@@ -432,14 +504,37 @@ impl Store {
         ZERO_HANDLE.clone()
     }
 
-    /// Write `samples` (1 to [`BLOCK_FRAMES`] of one channel) as a new block. It can be read as
-    /// soon as this returns.
+    /// Write `samples` (1 to [`BLOCK_FRAMES`] of one channel) as a new [`Encoding::F32`] block.
+    /// It can be read as soon as this returns.
     pub fn append(&self, samples: &[f32]) -> io::Result<Arc<BlockHandle>> {
-        if samples.is_empty() || samples.len() > BLOCK_FRAMES {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("a block holds 1 to {BLOCK_FRAMES} frames, not {}", samples.len())));
+        self.append_encoded(samples.len(), Encoding::F32, &mut |out| write_f32(out, samples))
+    }
+
+    /// Write `samples` as a new [`Encoding::I16`] block (half the bytes of `f32`). It reads back
+    /// as `v / 32768`.
+    pub fn append_i16(&self, samples: &[i16]) -> io::Result<Arc<BlockHandle>> {
+        self.append_encoded(samples.len(), Encoding::I16, &mut |out| write_i16(out, samples))
+    }
+
+    /// Write `samples`, each of which must fit 24 bits ([`I24_MIN`] to [`I24_MAX`]), as a new
+    /// [`Encoding::I24`] block (three quarters the bytes of `f32`). It reads back as
+    /// `v / 8388608`.
+    pub fn append_i24(&self, samples: &[i32]) -> io::Result<Arc<BlockHandle>> {
+        debug_assert!(samples.iter().all(|v| (I24_MIN..=I24_MAX).contains(v)), "a 24-bit sample is out of range");
+        self.append_encoded(samples.len(), Encoding::I24, &mut |out| write_i24(out, samples))
+    }
+
+    fn append_encoded(
+        &self,
+        len: usize,
+        encoding: Encoding,
+        write: &mut dyn FnMut(&mut BufWriter<File>) -> io::Result<()>,
+    ) -> io::Result<Arc<BlockHandle>> {
+        if len == 0 || len > BLOCK_FRAMES {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("a block holds 1 to {BLOCK_FRAMES} frames, not {len}")));
         }
-        let frames = samples.len() as u32;
-        let bytes = u64::from(frames) * BYTES_PER_SAMPLE;
+        let frames = len as u32;
+        let bytes = u64::from(frames) * encoding.width();
         let inner = &self.inner;
         let mut w = lock(&inner.writer);
         if inner.max_bytes.is_some_and(|max| inner.written.load(Ordering::Relaxed) + bytes > max) {
@@ -451,7 +546,7 @@ impl Store {
         let pack = w.pack;
         let byte_offset = w.len;
         let result = match w.out.as_mut() {
-            Some(out) => write_samples(out, samples),
+            Some(out) => write(out),
             None => Err(io::Error::other("no pack open for writing")),
         };
         if let Err(e) = result {
@@ -471,7 +566,7 @@ impl Store {
         }
         drop(w);
         inner.live_bytes.fetch_add(bytes, Ordering::Relaxed);
-        Ok(Arc::new(BlockHandle { block: BlockRef { id, pack, byte_offset, frames }, store: Some(self.clone()) }))
+        Ok(Arc::new(BlockHandle { block: BlockRef { id, pack, byte_offset, frames, encoding }, store: Some(self.clone()) }))
     }
 
     /// Seal the pack being written and start the next one.
@@ -585,10 +680,30 @@ impl Store {
         // A buffer an evicted block left behind, when there is one: no allocation, no zeroing.
         let mut samples = lock(&inner.cache).spare.pop().unwrap_or_default();
         samples.resize(block.frames as usize, 0.0);
-        read_exact_at(&file, bytemuck::cast_slice_mut(&mut samples), block.byte_offset)?;
-        #[cfg(target_endian = "big")]
-        for x in samples.iter_mut() {
-            *x = f32::from_bits(u32::from_le(x.to_bits()));
+        match block.encoding {
+            Encoding::F32 => {
+                read_exact_at(&file, bytemuck::cast_slice_mut(&mut samples), block.byte_offset)?;
+                #[cfg(target_endian = "big")]
+                for x in samples.iter_mut() {
+                    *x = f32::from_bits(u32::from_le(x.to_bits()));
+                }
+            }
+            encoding => {
+                // Integers: read the bytes into a reused byte buffer, then convert into the f32 one.
+                let mut raw = lock(&inner.cache).spare_bytes.pop().unwrap_or_default();
+                raw.resize(block.disk_bytes() as usize, 0);
+                let read = read_exact_at(&file, &mut raw, block.byte_offset);
+                if read.is_ok() {
+                    decode_ints(encoding, &raw, &mut samples);
+                }
+                {
+                    let mut cache = lock(&inner.cache);
+                    if cache.spare_bytes.len() < SPARE_BUFFERS {
+                        cache.spare_bytes.push(raw);
+                    }
+                }
+                read?;
+            }
         }
         let samples = Arc::new(samples);
         lock(&inner.cache).insert(block.id, samples.clone());
@@ -669,7 +784,54 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn write_samples(out: &mut BufWriter<File>, samples: &[f32]) -> io::Result<()> {
+/// Convert the little-endian samples of `encoding` in `raw` to `f32` in `out`.
+fn decode_ints(encoding: Encoding, raw: &[u8], out: &mut [f32]) {
+    match encoding {
+        Encoding::I16 => {
+            for (o, s) in out.iter_mut().zip(raw.chunks_exact(2)) {
+                *o = i16_to_f32(i16::from_le_bytes([s[0], s[1]]));
+            }
+        }
+        Encoding::I24 => {
+            for (o, s) in out.iter_mut().zip(raw.chunks_exact(3)) {
+                *o = i24_to_f32(i32::from_le_bytes([0, s[0], s[1], s[2]]) >> 8);
+            }
+        }
+        Encoding::F32 => {
+            for (o, s) in out.iter_mut().zip(raw.chunks_exact(4)) {
+                *o = f32::from_le_bytes([s[0], s[1], s[2], s[3]]);
+            }
+        }
+    }
+}
+
+/// Integer samples are packed into a small stack buffer this many at a time before writing.
+const PACK_SAMPLES: usize = 4_096;
+
+fn write_i16(out: &mut BufWriter<File>, samples: &[i16]) -> io::Result<()> {
+    let mut buf = [0u8; PACK_SAMPLES * 2];
+    for chunk in samples.chunks(PACK_SAMPLES) {
+        for (b, v) in buf.chunks_exact_mut(2).zip(chunk) {
+            b.copy_from_slice(&v.to_le_bytes());
+        }
+        out.write_all(&buf[..chunk.len() * 2])?;
+    }
+    Ok(())
+}
+
+fn write_i24(out: &mut BufWriter<File>, samples: &[i32]) -> io::Result<()> {
+    let mut buf = [0u8; PACK_SAMPLES * 3];
+    for chunk in samples.chunks(PACK_SAMPLES) {
+        for (b, v) in buf.chunks_exact_mut(3).zip(chunk) {
+            let le = v.to_le_bytes();
+            b.copy_from_slice(&le[..3]);
+        }
+        out.write_all(&buf[..chunk.len() * 3])?;
+    }
+    Ok(())
+}
+
+fn write_f32(out: &mut BufWriter<File>, samples: &[f32]) -> io::Result<()> {
     #[cfg(target_endian = "little")]
     {
         out.write_all(bytemuck::cast_slice(samples))
@@ -725,6 +887,8 @@ struct Cache {
     misses: u64,
     /// Buffers of evicted blocks nobody else held, for the next miss to reuse.
     spare: Vec<Vec<f32>>,
+    /// Byte buffers integer blocks were read into, for the next integer miss to reuse.
+    spare_bytes: Vec<Vec<u8>>,
 }
 
 /// How many evicted buffers are kept for reuse (1 MiB of them).
@@ -743,6 +907,7 @@ impl Cache {
             hits: 0,
             misses: 0,
             spare: Vec::new(),
+            spare_bytes: Vec::new(),
         }
     }
 
