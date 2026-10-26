@@ -29,6 +29,8 @@ pub const MAX_IMPORT_SAMPLES: u64 = 32 * 1024 * 1024;
 /// The largest file read for an import (it is decoded whole): 64 MiB.
 pub const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
+pub mod properties;
+
 /// Why a multitrack edit was refused. The text is shown to the user.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MtError(pub String);
