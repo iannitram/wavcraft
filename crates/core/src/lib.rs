@@ -32,6 +32,7 @@ pub mod name_template;
 pub mod panels;
 pub mod random;
 pub mod save;
+pub mod sc_source;
 pub mod settings;
 pub mod shortcuts;
 pub mod space;
