@@ -202,6 +202,7 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::Cut, cmd("X")),
     act(ActionId::Copy, cmd("C")),
     act(ActionId::Paste, cmd("V")),
+    act(ActionId::CaptureNoisePrint, shift("P")),
     act(ActionId::Delete, key("Delete")),
     act(ActionId::Delete, key("Backspace")),
     act(ActionId::Crop, cmd("T")),

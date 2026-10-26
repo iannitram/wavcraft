@@ -10,6 +10,7 @@ use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::effects;
 use wavcraft_core::noise;
+use wavcraft_core::shortcuts::{Command, Keymap};
 use wavcraft_core::stft::{Placement, Stft};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
@@ -185,8 +186,7 @@ fn noise_reduction_lowers_the_noise_floor_by_the_set_amount_and_keeps_the_tone()
     let mut e = editor(&tmp.0, std::slice::from_ref(&x));
     // The print comes from the first 2 s (noise only), through the action.
     let a = by_name("nr.capture_print").unwrap();
-    assert_eq!(a.keys[0].key, "P");
-    assert!(a.keys[0].shift);
+    assert_eq!(Keymap::new().resolve_text("Shift+P"), Ok(Command::Action(ActionId::CaptureNoisePrint)));
     let out = e.run(a.id, 0..2 * RATE as u64).unwrap();
     assert!(!out.doc_changed);
     assert!(out.message.unwrap().contains("Noise print captured"));

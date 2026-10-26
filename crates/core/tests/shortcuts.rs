@@ -39,6 +39,7 @@ shortcuts! {
     cut_ctrl_x: "Ctrl+X" => A(ActionId::Cut);
     copy_ctrl_c: "Ctrl+C" => A(ActionId::Copy);
     paste_ctrl_v: "Ctrl+V" => A(ActionId::Paste);
+    capture_noise_print_shift_p: "Shift+P" => A(ActionId::CaptureNoisePrint);
     delete_delete: "Delete" => A(ActionId::Delete);
     delete_backspace: "Backspace" => A(ActionId::Delete);
     crop_ctrl_t: "Ctrl+T" => A(ActionId::Crop);

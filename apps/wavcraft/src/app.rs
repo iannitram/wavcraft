@@ -1916,12 +1916,12 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
-            // `EFFECT` lists the effects and their settings; `EFFECT <name> key=value ...` runs one
-            // on the selection (the whole file when none), the unset keys at their defaults.
             "NOISE_PRINT" => match wavcraft_core::noise::current() {
                 Some(p) => format!("OK frames={} channels={} rate={}", p.frames, p.density.len(), p.sample_rate),
                 None => "OK none".to_string(),
             },
+            // `EFFECT` lists the effects and their settings; `EFFECT <name> key=value ...` runs one
+            // on the selection (the whole file when none), the unset keys at their defaults.
             "EFFECT" if rest.is_empty() => {
                 let all: Vec<String> =
                     wavcraft_core::effects::all().iter().map(|e| format!("{} [{}]", e.id(), wavcraft_core::effects::describe(*e))).collect();
