@@ -14,8 +14,7 @@ use super::{Effect, ParamDesc, Run, RunContext};
 /// The linear peak a target means: `value` percent of full scale (`in_db` false; 100 is 1.0),
 /// or `value` dBFS (`in_db` true; 0 is 1.0, -6 is about 0.501).
 pub fn target_peak(value: f64, in_db: bool) -> f64 {
-    let _ = (value, in_db);
-    0.0
+    if !in_db { value / 100.0 } else { 10f64.powf(value / 20.0) }
 }
 
 /// One linear gain per channel that brings the measured `peaks` (linear, one per processed
@@ -23,8 +22,12 @@ pub fn target_peak(value: f64, in_db: bool) -> f64 {
 /// otherwise channel `c` gets `target / peaks[c]`. A peak of 0 (a silent channel) gets gain 1.0,
 /// and so does every channel when `equally` and all peaks are 0. Same length as `peaks`.
 pub fn normalize_gains(peaks: &[f64], target: f64, equally: bool) -> Vec<f64> {
-    let _ = (peaks, target, equally);
-    Vec::new()
+    if equally {
+        let loudest = peaks.iter().fold(0.0_f64, |acc, &peak| acc.max(peak));
+        peaks.iter().map(|&_peak| if loudest > 0.0 { target / loudest } else { 1.0 }).collect()
+    } else {
+        peaks.iter().map(|&peak| if peak > 0.0 { target / peak } else { 1.0 }).collect()
+    }
 }
 
 /// The Normalize effect. Settings, in this order: `percent` (target in %, used when `unit` is
