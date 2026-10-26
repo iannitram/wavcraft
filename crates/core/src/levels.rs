@@ -20,6 +20,9 @@ pub const FLOOR_DB: f32 = -60.0;
 /// A channel's meter can have this many frames of rate to turn a frame's duration into samples.
 const METER_RATE: f32 = 48_000.0;
 
+/// RMS reading beside the peak meter (A217); a separate file so the peak code stays untouched.
+pub mod rms;
+
 /// The audio thread's side: the peak since the window last looked, per channel.
 #[derive(Debug, Default)]
 pub struct LevelTap {
