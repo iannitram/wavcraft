@@ -204,7 +204,9 @@ pub fn machine_id() -> String {
 ///   a folder on a shared disk may be another computer's, even one with the same hostname;
 /// - its [`HELD_FILE`] exists and this sweep can take its operating-system lock: no running
 ///   program holds it, whatever its pid or its program's name. A session from before
-///   `session.held` (no machine id either) is never swept.
+///   `session.held` (no machine id either) is never swept;
+/// - it holds no autosave journal ([`has_journal`]): a journaled session may hold work to
+///   recover.
 pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
     let machine = machine_id();
     if machine.is_empty() {
@@ -230,6 +232,9 @@ pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
         }
         drop(held);
         let bytes = std::fs::read_dir(&dir).map_or(0, |d| d.flatten().filter_map(|f| f.metadata().ok()).map(|m| m.len()).sum());
+        if has_journal(&dir) {
+            continue;
+        }
         out.push(StaleSession { dir, pid, bytes });
     }
     out
@@ -239,9 +244,7 @@ pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
 /// or the half-written one a crash may leave ([`crate::autosave::JOURNAL_TMP`]): then it may hold
 /// work that can be recovered, and no sweep removes it.
 pub fn has_journal(dir: &Path) -> bool {
-    // Stub: card wav-c-86-b replaces this body.
-    let _ = dir;
-    false
+    dir.join(crate::autosave::JOURNAL_FILE).exists() || dir.join(crate::autosave::JOURNAL_TMP).exists()
 }
 
 /// Remove the [`stale_sessions`] under `root` (the default session root when `None`), logging
@@ -250,6 +253,10 @@ pub fn sweep_stale_sessions(root: Option<&Path>) -> u64 {
     let root = root.map_or_else(default_sessions_root, Path::to_path_buf);
     let mut freed = 0;
     for s in stale_sessions(&root) {
+        // A journal may have appeared since the list was made: then it is not ours to remove.
+        if has_journal(&s.dir) {
+            continue;
+        }
         match std::fs::remove_dir_all(&s.dir) {
             Ok(()) => {
                 freed += s.bytes;
