@@ -43,6 +43,7 @@ pub mod presets;
 pub mod rack;
 pub mod random;
 pub mod recent_sessions;
+pub mod ruler;
 pub mod save;
 pub mod sc_source;
 pub mod session_file;
