@@ -1,30 +1,125 @@
 //! Bounded, read-only selection preview for an effect dialog (E6).
+//!
+//! A [`Preview`] renders a selected range through an effect, looping it, for a dialog's live
+//! preview: it never writes to the [`Store`], makes no edit and touches no history, so the caller
+//! can hear parameter changes on a worker without touching the device callback.
 
 use std::io;
 use std::ops::Range;
 
-use super::Effect;
+use super::{Effect, Run, RunContext, validate};
 use crate::doc::DocState;
 use crate::doc::edit::ChannelMask;
+use crate::store::BLOCK_FRAMES;
 
 pub struct Preview<'a> {
-    _marker: std::marker::PhantomData<&'a ()>,
+    effect: &'a dyn Effect,
+    doc: &'a DocState,
+    params: Vec<f64>,
+    /// The selection to loop, normalized in [`Preview::new`] (never empty).
+    range: Range<u64>,
+    /// The document channels the effect sees, in the order of the [`RunContext`].
+    active: Vec<usize>,
+    /// The stateful run of the current loop pass, when the effect began one.
+    run: Option<Box<dyn Run>>,
+    /// The next frame to read, always inside `range`.
+    cursor: u64,
 }
 
-#[allow(unused_variables, clippy::todo)]
 impl<'a> Preview<'a> {
     pub fn new(effect: &'a dyn Effect, params: Vec<f64>, doc: &'a DocState, range: Range<u64>, channels: ChannelMask) -> io::Result<Self> {
-        todo!()
+        validate(effect, &params).map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
+        let len = doc.len_frames();
+        if len == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "no source frames to preview"));
+        }
+        let range = if range.start == range.end { 0..len } else { range };
+        if range.start > range.end || range.end > len {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "selection outside the document"));
+        }
+        let active = channels.active(doc.channel_count());
+        let cursor = range.start;
+        let mut preview = Preview { effect, doc, params, range, active, run: None, cursor };
+        preview.begin_run()?;
+        Ok(preview)
     }
 
     /// Fill at most BLOCK_FRAMES frames per channel, wrapping at the selection end.
     pub fn render(&mut self, output: &mut [&mut [f32]]) -> io::Result<()> {
-        todo!()
+        let channels = self.doc.channel_count();
+        if output.len() != channels {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} buffers for {} channels", output.len(), channels)));
+        }
+        let frames = output.first().map_or(0, |s| s.len());
+        if output.iter().any(|s| s.len() != frames) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "output buffers differ in length"));
+        }
+        if frames > BLOCK_FRAMES {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{frames} frames: at most {BLOCK_FRAMES} per call")));
+        }
+        if frames == 0 {
+            return Ok(());
+        }
+        let mut done = 0;
+        while done < frames {
+            let mut at = self.cursor;
+            if at == self.range.end {
+                at = self.range.start;
+                self.cursor = at;
+                self.begin_run()?;
+            }
+            let seg = (self.range.end - at).min((frames - done) as u64) as usize;
+            let mut input = Vec::with_capacity(self.active.len());
+            for &ch in &self.active {
+                let mut buf = vec![0.0; seg];
+                if self.doc.read(ch, at, &mut buf)? != seg {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "document shorter than its length"));
+                }
+                input.push(buf);
+            }
+            let input_refs: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
+            let mut out_refs: Vec<&mut [f32]> = Vec::with_capacity(self.active.len());
+            let mut rest: &mut [&mut [f32]] = output;
+            for ch in 0..channels {
+                let (head, tail) = rest.split_at_mut(1);
+                rest = tail;
+                if self.active.contains(&ch) {
+                    out_refs.push(&mut head[0][done..done + seg]);
+                } else {
+                    let dst = &mut head[0][done..done + seg];
+                    if self.doc.read(ch, at, dst)? != seg {
+                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "document shorter than its length"));
+                    }
+                }
+            }
+            match self.run.as_mut() {
+                Some(run) => run.process(at, &input_refs, &mut out_refs)?,
+                None => self.effect.process(&self.params, at, &input_refs, &mut out_refs)?,
+            }
+            self.cursor += seg as u64;
+            done += seg;
+        }
+        Ok(())
     }
 
     /// Validate before replacing settings; the next render uses them at the current position.
     pub fn set_params(&mut self, params: Vec<f64>) -> io::Result<()> {
-        todo!()
+        validate(self.effect, &params).map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
+        let run = self.effect.begin(&params, &self.context())?;
+        self.params = params;
+        self.run = run;
+        Ok(())
+    }
+
+    /// The run context for a fresh loop pass.
+    fn context(&self) -> RunContext<'_> {
+        RunContext { doc: self.doc, range: self.range.clone(), channels: self.active.clone(), sample_rate: self.doc.sample_rate() }
+    }
+
+    /// Start the effect's run afresh for the next pass over the selection.
+    fn begin_run(&mut self) -> io::Result<()> {
+        self.run = self.effect.begin(&self.params, &self.context())?;
+        Ok(())
     }
 }
 
