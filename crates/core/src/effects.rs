@@ -18,15 +18,25 @@ use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 pub mod dynamics;
 pub mod dynamics_graph;
 mod compare;
+mod delay;
+mod dsp_run;
 mod eq;
 mod gain;
+mod plate;
+mod reverb;
 pub mod oneshot;
 pub use oneshot::{
     EffectParams, FadeCurve, FadeDir, MAX_GAIN_DB, amplify, amplify_guarded, fade, fade_label, headroom_db, normalize, peak, reverse,
 };
 pub use compare::{AbCompare, Side};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
+pub use delay::Delay;
 pub use gain::Gain;
+pub use plate::Plate;
+pub use reverb::Reverb;
+
+/// Block size hint given to wrapped plugins (chunks are 64 K frames; plugins loop internally).
+pub(crate) const CHUNK_HINT: usize = 4096;
 
 /// What a setting means, so a dialog can pick the right control and units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,7 +274,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
