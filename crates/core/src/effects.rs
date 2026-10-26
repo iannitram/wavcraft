@@ -36,6 +36,7 @@ mod plate;
 mod reverb;
 mod reverse;
 mod speech_leveler;
+mod time_shift;
 pub mod pitch_presets;
 pub mod oneshot;
 pub use oneshot::{
@@ -61,6 +62,7 @@ pub use plate::Plate;
 pub use reverb::Reverb;
 pub use reverse::{mirror_range, reverse_frames};
 pub use speech_leveler::SpeechLeveler;
+pub use time_shift::TimeShift;
 
 /// Block size hint given to wrapped plugins (chunks are 64 K frames; plugins loop internally).
 pub(crate) const CHUNK_HINT: usize = 4096;
@@ -301,7 +303,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb, &PhaseCorrection, &DeHummer, &ChannelMixer, &GraphicEq, &SpeechLeveler];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb, &PhaseCorrection, &DeHummer, &ChannelMixer, &GraphicEq, &SpeechLeveler, &TimeShift];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
