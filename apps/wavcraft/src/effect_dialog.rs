@@ -22,6 +22,9 @@ pub struct EffectDialog {
     pub values: Vec<f64>,
     /// A Generate dialog (f21): same controls, plus a Preview button.
     pub generator: bool,
+    /// Opened from the Effects Rack for this slot: OK stores the settings there instead of
+    /// running the effect (f31).
+    pub rack_slot: Option<usize>,
 }
 
 impl EffectDialog {
@@ -30,14 +33,14 @@ impl EffectDialog {
     pub fn new(index: u16, values: Option<Vec<f64>>) -> Option<EffectDialog> {
         let effect = effects::all().get(usize::from(index))?;
         let values = values.filter(|v| effects::validate(*effect, v).is_ok()).unwrap_or_else(|| effects::Params::defaults(*effect));
-        Some(EffectDialog { index, values, generator: false })
+        Some(EffectDialog { index, values, generator: false, rack_slot: None })
     }
 
     /// Open for the generator at `index` of [`generate::all`] (f21).
     pub fn new_generator(index: u16, values: Option<Vec<f64>>) -> Option<EffectDialog> {
         let g = generate::all().get(usize::from(index))?;
         let values = values.filter(|v| generate::validate(*g, v).is_ok()).unwrap_or_else(|| generate::defaults(*g));
-        Some(EffectDialog { index, values, generator: true })
+        Some(EffectDialog { index, values, generator: true, rack_slot: None })
     }
 
     /// The effect being edited. Panics for a generator dialog; see [`EffectDialog::id`].

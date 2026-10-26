@@ -36,6 +36,8 @@ pub mod multitrack;
 pub mod mixer_sections;
 pub mod levels;
 pub mod loudness;
+pub mod presets;
+pub mod rack;
 pub mod random;
 pub mod save;
 pub mod sc_source;

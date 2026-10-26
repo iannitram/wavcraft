@@ -18,6 +18,7 @@ mod player;
 // Not called yet: the Reveal in file manager menu item will use it.
 #[allow(dead_code)]
 mod reveal;
+mod rack_panel;
 mod selflog;
 mod spectrum;
 mod video;
