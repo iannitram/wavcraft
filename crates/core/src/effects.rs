@@ -17,8 +17,10 @@ use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
 mod eq;
 mod gain;
+mod reverse;
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
+pub use reverse::{Reverse, mirror_range, reverse_frames};
 
 /// What a setting means, so a dialog can pick the right control and units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
