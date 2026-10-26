@@ -169,11 +169,11 @@ pub const TABLE: &[Action] = &[
 /// The one-shot effects (B002). Kept apart from [`TABLE`] (which holds no `effect.` rows; the
 /// registry's effects come through [`all_actions`]) and listed by [`all_actions`] before the registry's.
 pub const ONE_SHOT: &[Action] = &[
-    // One-shot effects on the selection (the whole file with none). Amplify and Normalize use the
-    // editor's `params` (control verb `PARAM`).
+    // One-shot effects on the selection (the whole file with none). Amplify uses the editor's
+    // `params` (control verb `PARAM`). Normalize has no row: the registry's Normalize (E3, #29)
+    // owns `effect.normalize`, and `ActionId::Normalize` still runs through `Editor::run`.
     edit(ActionId::Reverse, "effect.reverse", "Reverse"),
     edit(ActionId::Amplify, "effect.amplify", "Amplify"),
-    edit(ActionId::Normalize, "effect.normalize", "Normalize"),
     edit(ActionId::FadeInLinear, "effect.fadeIn.linear", "Fade In (Linear)"),
     edit(ActionId::FadeInCosine, "effect.fadeIn.cosine", "Fade In (Raised Cosine)"),
     edit(ActionId::FadeOutLinear, "effect.fadeOut.linear", "Fade Out (Linear)"),

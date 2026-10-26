@@ -135,7 +135,8 @@ fn normalize_brings_the_peak_to_the_target() {
     let data = ramps();
     let mut e = editor(&t.0, &data);
     e.set_param("normalize.db", -6.0).unwrap();
-    run(&mut e, "effect.normalize", 0..0); // no selection: the whole file
+    let out = e.run(ActionId::Normalize, 0..0).unwrap(); // no selection: the whole file
+    assert!(out.doc_changed, "normalize changed nothing");
     let c = now(&e);
     let peak = c.iter().flatten().fold(0.0f32, |p, v| p.max(v.abs()));
     let want = 10f32.powf(-6.0 / 20.0);

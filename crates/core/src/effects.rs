@@ -28,6 +28,7 @@ mod eq;
 pub mod fade;
 mod fft_filter;
 mod gain;
+mod normalize;
 mod graphic_eq;
 mod noise_reduction;
 mod phase_correction;
@@ -56,6 +57,7 @@ pub use fft_filter::FftFilter;
 pub use gain::Gain;
 pub use graphic_eq::GraphicEq;
 pub use noise_reduction::NoiseReduction;
+pub use normalize::{Normalize, normalize_gains, target_peak};
 pub use phase_correction::{PhaseCorrection, measure_lag};
 pub use pitch_saturate::{PitchShift, Saturator};
 pub use plate::Plate;
@@ -303,7 +305,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb, &PhaseCorrection, &DeHummer, &ChannelMixer, &GraphicEq, &SpeechLeveler, &TimeShift];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb, &PhaseCorrection, &DeHummer, &ChannelMixer, &GraphicEq, &SpeechLeveler, &TimeShift, &Normalize];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {

@@ -1,0 +1,175 @@
+//! Normalize (E3, #29): scale a range so its sample peak lands on a target, given in % of full
+//! scale or in dB (default 100 %). "Normalize All Channels Equally" (on by default) uses one gain
+//! for every processed channel, set by the loudest; off, each channel gets its own. "DC Bias
+//! Adjust" (off by default) removes each channel's mean over the range before the peak is
+//! measured and the gain applied. As in Audition 26.5.0.82 (checked 2026-10-15).
+//!
+//! [`target_peak`] and [`normalize_gains`] are the pure arithmetic; [`Normalize`] measures the
+//! range in one streamed pass in [`Effect::begin`] and applies the gains chunk by chunk.
+
+use std::io;
+
+use super::{Effect, ParamDesc, Run, RunContext};
+
+/// The linear peak a target means: `value` percent of full scale (`in_db` false; 100 is 1.0),
+/// or `value` dBFS (`in_db` true; 0 is 1.0, -6 is about 0.501).
+pub fn target_peak(value: f64, in_db: bool) -> f64 {
+    if !in_db { value / 100.0 } else { 10f64.powf(value / 20.0) }
+}
+
+/// One linear gain per channel that brings the measured `peaks` (linear, one per processed
+/// channel, each >= 0) to `target`. `equally`: every channel gets `target / (largest peak)`;
+/// otherwise channel `c` gets `target / peaks[c]`. A peak of 0 (a silent channel) gets gain 1.0,
+/// and so does every channel when `equally` and all peaks are 0. Same length as `peaks`.
+pub fn normalize_gains(peaks: &[f64], target: f64, equally: bool) -> Vec<f64> {
+    if equally {
+        let loudest = peaks.iter().fold(0.0_f64, |acc, &peak| acc.max(peak));
+        peaks.iter().map(|&_peak| if loudest > 0.0 { target / loudest } else { 1.0 }).collect()
+    } else {
+        peaks.iter().map(|&peak| if peak > 0.0 { target / peak } else { 1.0 }).collect()
+    }
+}
+
+/// The Normalize effect. Settings, in this order: `percent` (target in %, used when `unit` is
+/// `percent`), `db` (target in dBFS, used when `unit` is `dB`), `unit`, `equally` (Normalize
+/// All Channels Equally), `dc_bias` (DC Bias Adjust).
+pub struct Normalize;
+
+impl Effect for Normalize {
+    fn id(&self) -> &'static str {
+        "normalize"
+    }
+    fn name(&self) -> &'static str {
+        "Normalize"
+    }
+    fn parameters(&self) -> &'static [ParamDesc] {
+        const P: &[ParamDesc] = &[
+            ParamDesc::percent("percent", "Normalize to (%)", 0.1, 100.0, 100.0),
+            ParamDesc::db("db", "Normalize to (dB)", -60.0, 0.0, 0.0),
+            ParamDesc::choice("unit", "Units", &["percent", "dB"], 0),
+            ParamDesc::choice("equally", "Normalize All Channels Equally", &["off", "on"], 1),
+            ParamDesc::choice("dc_bias", "DC Bias Adjust", &["off", "on"], 0),
+        ];
+        P
+    }
+    fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
+        let p0 = params.first().copied().unwrap_or(100.0);
+        let p1 = params.get(1).copied().unwrap_or(0.0);
+        let p2 = params.get(2).copied().unwrap_or(0.0);
+        let p3 = params.get(3).copied().unwrap_or(1.0);
+        let p4 = params.get(4).copied().unwrap_or(0.0);
+
+        let in_db = p2 == 1.0;
+        let target = target_peak(if in_db { p1 } else { p0 }, in_db);
+        let equally = p3 == 1.0;
+        let dc = p4 == 1.0;
+
+        let mut buf = vec![0.0f32; crate::store::BLOCK_FRAMES];
+        let mut means = Vec::with_capacity(ctx.channels.len());
+        let mut peaks = Vec::with_capacity(ctx.channels.len());
+        let len = ctx.range.end.saturating_sub(ctx.range.start).max(1) as f64;
+
+        for &c in &ctx.channels {
+            let mut sum = 0.0f64;
+            let mut min = f64::INFINITY;
+            let mut max = f64::NEG_INFINITY;
+            let mut at = ctx.range.start;
+            while at < ctx.range.end {
+                let m = (ctx.range.end - at).min(buf.len() as u64) as usize;
+                let got = ctx.doc.read(c, at, &mut buf[..m])?;
+                if got != m {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "document shorter than its length"));
+                }
+                for &sample in &buf[..m] {
+                    if sample.is_finite() {
+                        let v = f64::from(sample);
+                        sum += v;
+                        if v < min {
+                            min = v;
+                        }
+                        if v > max {
+                            max = v;
+                        }
+                    }
+                }
+                at += m as u64;
+            }
+            let mean = if dc { sum / len } else { 0.0 };
+            let peak = if max < min { 0.0 } else { (max - mean).abs().max((min - mean).abs()) };
+            means.push(mean as f32);
+            peaks.push(peak);
+        }
+
+        let gains = normalize_gains(&peaks, target, equally).into_iter().map(|g| g as f32).collect();
+        Ok(Some(Box::new(Scale { means, gains })))
+    }
+    fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "Normalize measures the range first: run it through effects::apply"))
+    }
+}
+
+struct Scale {
+    means: Vec<f32>,
+    gains: Vec<f32>,
+}
+
+impl Run for Scale {
+    fn process(&mut self, _first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()> {
+        for (((i, o), &m), &g) in input.iter().zip(output.iter_mut()).zip(&self.means).zip(&self.gains) {
+            for (a, b) in i.iter().zip(o.iter_mut()) {
+                *b = (*a - m) * g;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_gains, target_peak};
+
+    fn close(got: f64, want: f64) -> bool {
+        (got - want).abs() <= 1e-12
+    }
+
+    fn all_close(got: &[f64], want: &[f64]) {
+        assert_eq!(got.len(), want.len(), "got {got:?}, want {want:?}");
+        assert!(got.iter().zip(want).all(|(g, w)| close(*g, *w)), "got {got:?}, want {want:?}");
+    }
+
+    #[test]
+    fn target_peak_percent() {
+        assert!(close(target_peak(100.0, false), 1.0));
+        assert!(close(target_peak(50.0, false), 0.5));
+        assert!(close(target_peak(0.1, false), 0.001));
+    }
+
+    #[test]
+    fn target_peak_db() {
+        assert!(close(target_peak(0.0, true), 1.0));
+        assert!(close(target_peak(-6.0, true), 0.501_187_233_627_272_2));
+        assert!(close(target_peak(-20.0, true), 0.1));
+        assert!(close(target_peak(-60.0, true), 0.001));
+    }
+
+    #[test]
+    fn gains_equally_use_the_loudest_channel() {
+        all_close(&normalize_gains(&[0.5, 0.25], 1.0, true), &[2.0, 2.0]);
+        all_close(&normalize_gains(&[0.25, 0.5, 0.125], 0.5, true), &[1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn gains_separately_per_channel() {
+        all_close(&normalize_gains(&[0.5, 0.25], 1.0, false), &[2.0, 4.0]);
+        all_close(&normalize_gains(&[0.8], 0.4, false), &[0.5]);
+        all_close(&normalize_gains(&[2.0], 1.0, false), &[0.5]);
+    }
+
+    #[test]
+    fn silent_channels_keep_gain_one() {
+        all_close(&normalize_gains(&[0.0, 0.5], 1.0, false), &[1.0, 2.0]);
+        all_close(&normalize_gains(&[0.0, 0.0], 1.0, true), &[1.0, 1.0]);
+        all_close(&normalize_gains(&[0.0, 0.25], 1.0, true), &[4.0, 4.0]);
+        all_close(&normalize_gains(&[], 1.0, true), &[]);
+    }
+}
