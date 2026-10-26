@@ -39,6 +39,11 @@
 //!   (multitrack basics, f103; see `multitrack_ui.rs`; `SESSION state` answers `OK view=… <json>`)
 //!   `SMARKER add <t> [end]|rename <i> <name>|delete <i>|next|prev|playhead <t>|select <a> <b>|addhere|addsel|state`
 //!   (session markers and ranges, f110)
+//! - `METERS [PUSH <l> <r> | RESET]` → `OK l=<dBFS> l_hold=<dBFS> l_clip=<0|1> r=… r_hold=… r_clip=…` (the Levels
+//!   panel's bars; `PUSH` gives the tap linear peaks as the audio callback would, `RESET` clears the clip lights)
+//! - `LOUDNESS [<start> <end>]` → `OK scope=<file|selection|range> frames=<n> integrated=<LUFS> range=<LU>
+//!   true_peak=<dBTP> sample_peak=<dBFS> max_momentary=<LUFS>` (`-inf` for nothing to measure; runs on the
+//!   window's thread, so a long file waits)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

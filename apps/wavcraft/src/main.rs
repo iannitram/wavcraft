@@ -13,6 +13,7 @@ mod control;
 mod effect_dialog;
 mod multitrack_ui;
 mod mixer;
+mod meters_ui;
 mod player;
 // Not called yet: the Reveal in file manager menu item will use it.
 #[allow(dead_code)]

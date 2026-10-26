@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::AudioBuffer;
+use wavcraft_core::levels::LevelTap;
 
 #[derive(Copy, Clone, Default)]
 struct Playback {
@@ -26,6 +27,8 @@ struct Shared {
     state: Mutex<Playback>,
     /// Set by the stream's error callback (the device went away, for example).
     failed: AtomicBool,
+    /// The peaks of what is sent, for the Levels panel (lock-free; see `wavcraft_core::levels`).
+    levels: LevelTap,
 }
 
 impl Shared {
@@ -63,7 +66,7 @@ pub struct Player {
 impl Player {
     /// Open the default output device. Without one the player still works, silently.
     pub fn new() -> Player {
-        let shared = Arc::new(Shared { audio: Mutex::new(None), state: Mutex::new(Playback::default()), failed: AtomicBool::new(false) });
+        let shared = Arc::new(Shared { audio: Mutex::new(None), state: Mutex::new(Playback::default()), failed: AtomicBool::new(false), levels: LevelTap::default() });
         let mut player = Player { shared, stream: None, error: None, device: String::new() };
         player.reopen();
         player
@@ -115,6 +118,17 @@ impl Player {
 
     pub fn is_playing(&self) -> bool {
         self.shared.state.lock().unwrap_or_else(|e| e.into_inner()).playing
+    }
+
+    /// The largest sample magnitude sent on the first two channels since the last call, and start over.
+    pub fn take_levels(&self) -> [f32; 2] {
+        self.shared.levels.take()
+    }
+
+    /// Record a block's peaks as if the callback had sent them (the control channel's `METERS PUSH`).
+    pub fn push_levels(&self, peaks: [f32; 2]) {
+        self.shared.levels.record(0, peaks[0]);
+        self.shared.levels.record(1, peaks[1]);
     }
 
     /// The frame being played right now.
@@ -195,6 +209,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
     let end = playback.end.min(audio.frames() as f64);
     let mut pos = playback.pos.max(0.0);
     let mut finished = false;
+    let mut peak = [0.0f32; 2];
     for frame in out.chunks_mut(channels) {
         if pos >= end {
             finished = true;
@@ -207,6 +222,12 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
             let b = source.get(i + 1).copied().unwrap_or(a);
             a + (b - a) * frac
         };
+        // Level tap: the first two file channels (a mono file shows on both), before the mix-down.
+        if let Some(first) = audio.channels.first() {
+            let l = sample(first);
+            let r = audio.channels.get(1).map_or(l, sample);
+            peak = [peak[0].max(l.abs()), peak[1].max(r.abs())];
+        }
         if channels == 1 && file_channels > 1 {
             // A one-channel device gets the average of the file's channels, not just the left
             // one (a host-left, guest-right recording would lose the guest).
@@ -224,6 +245,8 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
         }
         pos += step;
     }
+    shared.levels.record(0, peak[0]);
+    shared.levels.record(1, peak[1]);
     before_commit();
     let Ok(mut state) = shared.state.try_lock() else { return };
     if state.generation == playback.generation {
@@ -241,7 +264,7 @@ mod tests {
     use super::*;
 
     fn shared_with(audio: AudioBuffer) -> Shared {
-        Shared { audio: Mutex::new(Some(Arc::new(audio))), state: Mutex::new(Playback::default()), failed: AtomicBool::new(false) }
+        Shared { audio: Mutex::new(Some(Arc::new(audio))), state: Mutex::new(Playback::default()), failed: AtomicBool::new(false), levels: LevelTap::default() }
     }
 
     fn playback(shared: &Shared) -> Playback {
@@ -397,6 +420,24 @@ mod tests {
         let mut out = vec![9.0f32; 16];
         render(&shared, &mut out, 1, 48_000.0);
         assert!(out.iter().all(|v| *v == 0.25), "left silent, right at 0.5: {out:?}");
+    }
+
+    /// f26: what the callback sends is what the Levels panel gets, per channel, without a lock.
+    #[test]
+    fn the_callback_records_the_peaks_it_sends() {
+        let shared = shared_with(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0, 0.25, -0.5, 0.0], vec![0.0, 0.125, 0.0, -1.0]] });
+        play(&shared, 0.0, 4.0);
+        let mut out = vec![0.0f32; 8];
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(shared.levels.take(), [0.5, 1.0]);
+        assert_eq!(shared.levels.take(), [0.0, 0.0], "taking starts over");
+        // A mono file shows on both bars; a stopped player records nothing.
+        *shared.audio.lock().unwrap() = Some(Arc::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0, 0.75]] }));
+        play(&shared, 0.0, 2.0);
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(shared.levels.take(), [0.75, 0.75]);
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(shared.levels.take(), [0.0, 0.0]);
     }
 
     #[test]
