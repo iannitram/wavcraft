@@ -25,6 +25,7 @@ pub mod document;
 pub mod dsp;
 pub mod effects;
 pub mod export_chunks;
+pub mod fade_handles;
 pub mod generate;
 pub mod io;
 pub mod meta;

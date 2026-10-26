@@ -21,6 +21,7 @@ mod compare;
 mod delay;
 mod dsp_run;
 mod eq;
+pub mod fade;
 mod gain;
 mod pitch_saturate;
 mod plate;
@@ -33,6 +34,7 @@ pub use oneshot::{
 pub use compare::{AbCompare, Side};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use delay::Delay;
+pub use fade::{FadeIn, FadeOut};
 pub use gain::Gain;
 pub use pitch_saturate::{PitchShift, Saturator};
 pub use plate::Plate;
@@ -277,7 +279,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {

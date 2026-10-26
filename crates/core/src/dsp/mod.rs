@@ -9,6 +9,7 @@ pub mod distortion;
 pub mod echo;
 pub mod eq_graph;
 pub mod envelope;
+pub mod fade;
 pub mod fade_curve;
 pub mod flanger;
 pub mod midside;
