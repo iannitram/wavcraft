@@ -22,8 +22,10 @@ mod delay;
 mod dsp_run;
 mod eq;
 mod gain;
+mod pitch_saturate;
 mod plate;
 mod reverb;
+pub mod pitch_presets;
 pub mod oneshot;
 pub use oneshot::{
     EffectParams, FadeCurve, FadeDir, MAX_GAIN_DB, amplify, amplify_guarded, fade, fade_label, headroom_db, normalize, peak, reverse,
@@ -32,6 +34,7 @@ pub use compare::{AbCompare, Side};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use delay::Delay;
 pub use gain::Gain;
+pub use pitch_saturate::{PitchShift, Saturator};
 pub use plate::Plate;
 pub use reverb::Reverb;
 
@@ -274,7 +277,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
