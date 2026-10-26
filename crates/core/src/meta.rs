@@ -9,6 +9,8 @@
 
 use std::fmt::Write as _;
 
+pub mod source_link;
+
 /// Size of the fixed part of `bext` (EBU Tech 3285): description 256, originator 32, reference
 /// 32, date 10, time 8, time reference 8, then version, UMID, loudness and reserved bytes.
 pub const BEXT_FIXED: usize = 602;
