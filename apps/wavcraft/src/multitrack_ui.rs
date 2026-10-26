@@ -10,8 +10,8 @@ use soundcraft_playback::Player as DevicePlayer;
 use wavcraft_core::Document;
 use wavcraft_core::mtplay::{PlaybackSession, SilentPlayer};
 use wavcraft_core::mtrecord::{FAKE_CHANNELS, Recorder};
-use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, TrackId};
-use wavcraft_core::multitrack::{MtError, Multitrack, bit_depth_from_bits, bits_of};
+use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, ChannelFormat, TrackId};
+use wavcraft_core::multitrack::{MtError, Multitrack, bit_depth_from_bits, bits_of, parse_track_format};
 use wavcraft_core::session_file;
 
 const HEADER_W: f32 = 230.0;
@@ -328,6 +328,9 @@ impl MtView {
             if ui.button("Add Mono Track").clicked() {
                 note(&mut failure, mt.add_track(None, 1).map(|_| ()));
             }
+            if ui.button("Add 5.1 Track").clicked() {
+                note(&mut failure, mt.add_track_format(None, ChannelFormat::Surround51).map(|_| ()));
+            }
             ui.separator();
             ui.label("Clip at");
             ui.add(egui::DragValue::new(&mut self.import_at).speed(0.1).range(0.0..=36_000.0).suffix(" s"));
@@ -487,6 +490,7 @@ impl MtView {
             for id in ids {
                 let Some(t) = mt.session.track(id) else { continue };
                 let (name, chans, clips, [r, g, b]) = (t.name.clone(), t.channels(), t.clips().to_vec(), t.color);
+                let fmt_label = t.format.label();
                 let (mut mute, mut solo, mut vol) = (t.mixer.mute, t.mixer.solo, t.mixer.volume_db);
                 let mut arm = t.mixer.record_arm;
                 let (row, _) = ui.allocate_exact_size(vec2(HEADER_W + width, ROW_H), Sense::hover());
@@ -521,7 +525,7 @@ impl MtView {
                         if l.double_clicked() {
                             self.rename = Some((id, name.clone()));
                         }
-                        ui.weak(if chans == 1 { "mono" } else { "stereo" });
+                        ui.weak(fmt_label).on_hover_text(format!("{chans} channel(s); a clip of another channel count is refused, mono into stereo is duplicated, stereo into mono averaged"));
                     }
                 });
                 h.horizontal(|ui| {
@@ -565,7 +569,7 @@ impl MtView {
                 }
             }
             if mt.track_count() == 0 {
-                ui.label("No tracks yet: Add Stereo Track or Add Mono Track.");
+                ui.label("No tracks yet: Add Stereo, Mono or 5.1 Track.");
             }
         });
         if let Some(id) = remove {
@@ -728,14 +732,27 @@ impl MtView {
                 let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
                 match verb {
                     "add" => {
-                        let channels = match word(2) {
-                            "" | "stereo" | "2" => 2,
-                            "mono" | "1" => 1,
-                            _ => return usage("TRACK add [name] [mono|stereo]"),
-                        };
-                        let name = Some(word(1)).filter(|n| !n.is_empty());
-                        mt.add_track(name, channels)?;
+                        // `TRACK add [name] [mono|stereo|5.1]` or `TRACK add [name] fmt=mono|stereo|5.1`.
+                        let mut format = ChannelFormat::Stereo;
+                        let mut name: Option<&str> = None;
+                        for (i, a) in w.iter().enumerate().skip(1) {
+                            if let Some(f) = a.strip_prefix("fmt=") {
+                                format = parse_track_format(f)?;
+                            } else if i == 1 {
+                                name = Some(a.as_str()).filter(|n| !n.is_empty());
+                            } else if i == 2 {
+                                format = parse_track_format(a)?;
+                            } else {
+                                return usage("TRACK add [name] [fmt=mono|stereo|5.1]");
+                            }
+                        }
+                        mt.add_track_format(name, format)?;
                         Ok(format!("OK tracks={}", mt.track_count()))
+                    }
+                    "format" if w.len() == 3 => {
+                        let id = mt.find_track(word(1))?;
+                        mt.set_track_format(id, parse_track_format(word(2))?)?;
+                        Ok("OK".into())
                     }
                     "remove" if w.len() == 2 => {
                         let id = mt.find_track(word(1))?;
@@ -781,7 +798,7 @@ impl MtView {
                         Ok("OK".into())
                     }
                     _ => usage(
-                        "TRACK add [name] [mono|stereo] | remove <track> | rename <track> <new> | mute|solo <track> 0|1 | volume <track> <dB> | arm <track> [input=<ch>] | disarm <track>",
+                        "TRACK add [name] [fmt=mono|stereo|5.1] | format <track> mono|stereo|5.1 | remove <track> | rename <track> <new> | mute|solo <track> 0|1 | volume <track> <dB> | arm <track> [input=<ch>] | disarm <track>",
                     ),
                 }
             }
@@ -910,6 +927,10 @@ mod tests {
         assert!(v.show, "making a session shows it");
         assert_eq!(v.control("TRACK", "add Drums", None), "OK tracks=1");
         assert_eq!(v.control("TRACK", "add", None), "OK tracks=2");
+        assert_eq!(v.control("TRACK", "add Sur fmt=5.1", None), "OK tracks=3");
+        assert!(v.control("TRACK", "add Bad fmt=7.1", None).starts_with("ERR"));
+        assert_eq!(v.control("TRACK", "format Sur mono", None), "OK");
+        assert_eq!(v.control("TRACK", "remove Sur", None), "OK tracks=2");
         assert_eq!(v.control("TRACK", r#"rename 2 "Lead Vox""#, None), "OK");
         assert!(v.control("TRACK", "rename 2 drums", None).starts_with("ERR"));
         assert_eq!(v.control("TRACK", "remove drums", None), "OK tracks=1");

@@ -51,7 +51,7 @@
 //! - `VIDEO attach <path>` → `OK` (the Video panel opens the file on a worker; `ERR` with no file open)
 //! - `VIDEO frame <seconds>` → `OK index=<i> size=<w>x<h> time=<t>` once the worker has decoded it, or `ERR <why>`
 //! - `VIDEO status` → `OK <text>` (what the panel says about the file); `VIDEO detach` → `OK`
-//! - `SESSION new <name> [rate=48000] [depth=24]`, `SESSION state`, `TRACK add|remove|rename|mute|solo|volume …`,
+//! - `SESSION new <name> [rate=48000] [depth=24]`, `SESSION state`, `TRACK add [name] [fmt=mono|stereo|5.1]|format|remove|rename|mute|solo|volume …`,
 //!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`
 //!   `SESSION save <path>` / `SESSION open <path>` (the session file, f117; `OK offline=<n>`)
 //!   (multitrack basics, f103; see `multitrack_ui.rs`; `SESSION state` answers `OK view=… <json>`)
