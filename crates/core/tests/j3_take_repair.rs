@@ -22,8 +22,12 @@ fn header(format: u16, channels: u16, rate: u32, bits: u16, riff: u32, data: u32
 }
 
 #[test]
-fn j3_repair_header_bytes_is_44() {
-    assert_eq!(HEADER_BYTES, 44);
+fn j3_repair_uses_only_the_first_44_header_bytes() {
+    // 44.1 kHz 16-bit stereo (4 bytes a frame), one second of samples; sample bytes after HEADER_BYTES in the slice are ignored.
+    let mut with_samples = header(1, 2, 44_100, 16, 36, 0).to_vec();
+    with_samples.extend_from_slice(&[9u8; 20]);
+    let want = HeaderRepair::Fixed(header(1, 2, 44_100, 16, 176_436, 176_400));
+    assert_eq!(repair_header(&with_samples, HEADER_BYTES as u64 + 176_400), want);
 }
 
 #[test]
