@@ -63,20 +63,56 @@ pub struct LoudnessReport {
 /// The target the settings aim at: -23 for EBU R128 whatever `params[1]` says, otherwise
 /// `params[1]` (LUFS, or dBTP for True Peak Amplitude).
 pub fn effective_target(_params: &[f64]) -> f64 {
-    // STUB: card wav-c-38-a fills this.
-    0.0
+    let params = _params;
+    let match_to = params.first().copied().unwrap_or(0.0);
+    if match_to == MATCH_EBU_R128 { EBU_R128_TARGET } else { params.get(1).copied().unwrap_or(-16.0) }
 }
 
 /// The gain in dB that moves the measured value to the target. See card wav-c-38-a.
-pub fn match_gain_db(_params: &[f64], _integrated_lufs: f64, _true_peak_db: f64) -> f64 {
-    // STUB: card wav-c-38-a fills this.
-    0.0
+pub fn match_gain_db(_params: &[f64], integrated_lufs: f64, true_peak_db: f64) -> f64 {
+    let params = _params;
+    let match_to = params.first().copied().unwrap_or(0.0);
+
+    // 1. `measured` = `true_peak_db` when `match_to == MATCH_TRUE_PEAK`, else `integrated_lufs`.
+    let measured = if match_to == MATCH_TRUE_PEAK { true_peak_db } else { integrated_lufs };
+
+    // 2. If `measured` is not finite, or `measured < -70.0`, return `0.0` (silence or nothing to measure).
+    // `-70.0` itself is measurable.
+    if !measured.is_finite() || measured < -70.0 {
+        return 0.0;
+    }
+
+    // 3. `gain = effective_target(params) - measured`.
+    let gain = effective_target(params) - measured;
+
+    // 4. If `limiting < 0.5` (off) and `true_peak_db` is finite:
+    // `gain = gain.min(max_true_peak - true_peak_db)` (without the limiter the gain may not push the peak over Max True Peak Level).
+    let limiting = params.get(4).copied().unwrap_or(1.0);
+    if limiting < 0.5 && true_peak_db.is_finite() {
+        let max_true_peak = params.get(3).copied().unwrap_or(-1.0);
+        return gain.min(max_true_peak - true_peak_db);
+    }
+
+    // 5. Return `gain`.
+    gain
 }
 
 /// Whether a result is within the Tolerance of the target. See card wav-c-38-a.
-pub fn within_tolerance(_params: &[f64], _integrated_lufs: f64, _true_peak_db: f64) -> bool {
-    // STUB: card wav-c-38-a fills this.
-    false
+pub fn within_tolerance(_params: &[f64], integrated_lufs: f64, true_peak_db: f64) -> bool {
+    let params = _params;
+    let match_to = params.first().copied().unwrap_or(0.0);
+
+    // 1. `measured` = `true_peak_db` when `match_to == MATCH_TRUE_PEAK`, else `integrated_lufs`.
+    let measured = if match_to == MATCH_TRUE_PEAK { true_peak_db } else { integrated_lufs };
+
+    // 2. Return `false` if it is not finite.
+    if !measured.is_finite() {
+        return false;
+    }
+
+    // 3. `(measured - effective_target(params)).abs() <= tolerance`.
+    let tolerance = params.get(2).copied().unwrap_or(0.5);
+    (measured - effective_target(params)).abs() <= tolerance
 }
 
 /// Integrated loudness and true peak of `range` of `doc` over `channels` (document channel
