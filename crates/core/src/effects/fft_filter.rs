@@ -28,7 +28,7 @@ const fn params() -> [ParamDesc; 2 + 2 * POINTS] {
     const FL: [&str; POINTS] =
         ["Frequency 1", "Frequency 2", "Frequency 3", "Frequency 4", "Frequency 5", "Frequency 6", "Frequency 7", "Frequency 8"];
     const GL: [&str; POINTS] = ["Gain 1", "Gain 2", "Gain 3", "Gain 4", "Gain 5", "Gain 6", "Gain 7", "Gain 8"];
-    let blank = ParamDesc::number("", "", 0.0, 0.0, 0.0);
+    let blank = ParamDesc::number("", "", 0.0, 0.0, 0.0, "");
     let mut out = [blank; 2 + 2 * POINTS];
     out[0] = ParamDesc::choice("fft_size", "FFT size", &["1024", "2048", "4096", "8192", "16384"], 2);
     out[1] = ParamDesc::choice("scale", "Scale", &["log", "linear"], 0);
