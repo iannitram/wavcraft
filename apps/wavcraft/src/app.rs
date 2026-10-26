@@ -2113,7 +2113,7 @@ struct SaveControls {
     progress: Arc<AtomicU32>,
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::todo)] // card wav-c-186-c removes clippy::todo with the stubs
 impl SaveControls {
     fn new(_include_markers: bool) -> Self {
         todo!("C186-c")
@@ -2141,7 +2141,7 @@ enum SaveDisposition {
     Failed(String),
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::todo)] // card wav-c-186-c removes clippy::todo with the stub
 fn save_disposition(_result: Result<(), wavcraft_core::save::SaveError>, _same_document: bool, _then_close: bool) -> SaveDisposition {
     todo!("C186-c")
 }

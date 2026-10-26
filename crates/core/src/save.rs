@@ -489,6 +489,7 @@ fn invalid(msg: &str) -> io::Error {
 }
 
 /// C186-a: cancellable whole-document WAV save; the builder fills this stub.
+#[allow(clippy::todo)] // card wav-c-186-a removes this with the stub
 pub fn save_wav_controlled(
     _doc: &DocState,
     _target: &Path,
@@ -506,6 +507,7 @@ pub struct SaveOptions {
     pub marker_chunks: Vec<([u8; 4], Vec<u8>)>,
 }
 
+#[allow(clippy::todo)] // card wav-c-186-b removes this with the stub
 impl Default for SaveOptions {
     fn default() -> Self {
         todo!("C186-b")
@@ -513,6 +515,7 @@ impl Default for SaveOptions {
 }
 
 /// C186-b: the same save, with an explicit marker-inclusion option.
+#[allow(clippy::todo)] // card wav-c-186-b removes this with the stub
 pub fn save_wav_with_options(
     _doc: &DocState,
     _target: &Path,
