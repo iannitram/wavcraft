@@ -85,7 +85,7 @@ fn e1_effect_fade_in_and_out_match_formula_to_hundredth_db_at_100_points() {
         assert_eq!(got_in[0], 0.0);
         assert_eq!(got_out[100], 0.0);
         for k in 1..=100 {
-            let t = f64::from(k) / 100.0;
+            let t = k as f64 / 100.0;
             let want = match param as i64 {
                 1 => (1.0 + 9.0 * t).log10(),
                 2 => 0.5 * (1.0 - (PI * t).cos()),
