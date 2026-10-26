@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use soundcraft_audio_io::AudioBuffer as ModelBuffer;
 use soundcraft_model::time::{Range, Samples};
-use soundcraft_model::{Clip, ClipId, Playlist, Route, Source, SourceAudio, SourceId, TrackId, TrackKind};
+use soundcraft_model::{Clip, ClipContent, ClipId, Playlist, Route, Source, SourceAudio, SourceId, TrackId, TrackKind};
 
 use crate::multitrack::{MAX_IMPORT_SAMPLES, MtError, Multitrack};
 
@@ -154,6 +154,15 @@ pub struct TakePlan {
     pub path: PathBuf,
 }
 
+/// What a stopped recording left: the takes whose files hold audio (placeable) and one message
+/// per track that had a problem. A track can be in both: a disk-full mid-take still leaves
+/// the audio written before it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StopReport {
+    pub written: Vec<Written>,
+    pub failures: Vec<String>,
+}
+
 /// A take file that was written: where, and how many frames.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Written {
@@ -164,6 +173,31 @@ pub struct Written {
 
 fn err<T>(s: impl Into<String>) -> Result<T, MtError> {
     Err(MtError(s.into()))
+}
+
+/// The part of `c` between timeline frames `from..to` (inside the clip), as a new clip: same
+/// source with the offset moved on, fades kept only at the end that is still the clip's own.
+/// `None` for content that has no source offset to move (MIDI), so the caller drops it.
+fn cut_piece(c: &Clip, from: Samples, to: Samples, is_left: bool, mut new_id: impl FnMut() -> ClipId) -> Option<Clip> {
+    let skip = from - c.start;
+    let adv = if (c.stretch - 1.0).abs() < f64::EPSILON { skip } else { (skip as f64 * c.stretch).round() as Samples };
+    let mut n = c.clone();
+    n.content = match &c.content {
+        ClipContent::Audio { source, offset } => ClipContent::Audio { source: *source, offset: offset + adv },
+        ClipContent::Video { source, offset } => ClipContent::Video { source: *source, offset: offset + adv },
+        _ => return None,
+    };
+    n.id = new_id();
+    n.start = from;
+    n.length = (to - from).max(1);
+    n.gain_env = c.gain_env.iter().filter(|(t, _)| *t >= skip && *t < skip + n.length).map(|(t, g)| (t - skip, *g)).collect();
+    n.sync_point = (c.sync_point - skip).clamp(0, n.length);
+    if is_left {
+        n.fade_out = Default::default();
+    } else {
+        n.fade_in = Default::default();
+    }
+    Some(n)
 }
 
 fn file_stem(name: &str) -> String {
@@ -286,38 +320,38 @@ impl Multitrack {
         self.session.pool.insert(source, Arc::new(SourceAudio::new(audio)));
         let clip_id = self.session.new_clip_id();
         let clip = Clip::audio(clip_id, label, source, offset, start, length);
-        // With a punch, the old clips the range cuts through keep their parts outside it.
-        let mut kept_outside: Vec<Clip> = Vec::new();
-        if punch.is_some() {
-            let olds: Vec<Clip> = self
-                .session
-                .track(track)
-                .and_then(|t| t.playlist())
-                .map(|p| p.clips.iter().filter(|c| c.range().overlaps(&range)).cloned().collect())
-                .unwrap_or_default();
-            for c in olds {
-                if c.start < range.start {
-                    let mut head = c.clone();
-                    head.id = self.session.new_clip_id();
-                    head.trim_end_to(range.start);
-                    kept_outside.push(head);
+        let active_clips: Vec<Clip> = match self.session.track(track).and_then(|t| t.playlist()) {
+            Some(p) => p.clips.clone(),
+            None => Vec::new(),
+        };
+        let overlaps = active_clips.iter().any(|c| c.range().overlaps(&range));
+        // The new playlist keeps what the take does not cover: a clip the take covers only in
+        // part is trimmed (or split in two when the take sits inside it), never dropped whole.
+        // Works on the punch-clipped start/length, so a punched take keeps the same parts.
+        let mut kept: Vec<Clip> = Vec::new();
+        if overlaps {
+            for c in &active_clips {
+                if !c.range().overlaps(&range) {
+                    kept.push(c.clone());
+                    continue;
                 }
-                if c.end() > range.end {
-                    let mut tail = c.clone();
-                    tail.id = self.session.new_clip_id();
-                    tail.trim_start_to(range.end);
-                    kept_outside.push(tail);
+                let (cs, ce) = (c.start, c.start + c.length);
+                if cs < start
+                    && let Some(left) = cut_piece(c, cs, start, true, || self.session.new_clip_id())
+                {
+                    kept.push(left);
+                }
+                if ce > start + length
+                    && let Some(right) = cut_piece(c, start + length, ce, false, || self.session.new_clip_id())
+                {
+                    kept.push(right);
                 }
             }
         }
         let Some(t) = self.session.track_mut(track) else { return err("no such track") };
-        let overlaps = t.playlist().is_some_and(|p| p.clips.iter().any(|c| c.range().overlaps(&range)));
         let playlist = if overlaps || t.playlists.is_empty() {
             let mut pl = Playlist::new(format!("{name}.take{number:02}"));
-            if let Some(active) = t.playlist() {
-                pl.clips = active.clips.iter().filter(|c| !c.range().overlaps(&range)).cloned().collect();
-            }
-            pl.clips.extend(kept_outside);
+            pl.clips = kept;
             pl.clips.push(clip);
             pl.sort();
             t.playlists.push(pl);
@@ -417,7 +451,7 @@ impl TakeWriter {
 /// clock like a device would be.
 pub struct Recorder {
     stop: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<Result<Vec<Written>, String>>>,
+    thread: Option<std::thread::JoinHandle<StopReport>>,
     /// The session frame the takes start at.
     pub start: Samples,
     pub plans: Vec<TakePlan>,
@@ -435,6 +469,12 @@ impl Recorder {
         if !fake_input() {
             return err("recording from a real input device is not built yet; set WAVCRAFT_FAKE_INPUT=1 for the synthetic input");
         }
+        Self::start_fake(plans, rate, start)
+    }
+
+    /// Start recording the synthetic input without looking at the environment (tests; `start`
+    /// calls it once it has checked `WAVCRAFT_FAKE_INPUT`). Never opens a device.
+    pub fn start_fake(plans: Vec<TakePlan>, rate: u32, start: Samples) -> Result<Recorder, MtError> {
         let mut writers = Vec::new();
         for p in &plans {
             let w = TakeWriter::create(&p.path, p.inputs.len(), rate)
@@ -451,10 +491,10 @@ impl Recorder {
     }
 
     /// Stop, finish the files, and say what was written.
-    pub fn stop(mut self) -> Result<Vec<Written>, MtError> {
+    pub fn stop(mut self) -> Result<StopReport, MtError> {
         self.stop.store(true, Ordering::SeqCst);
         match self.thread.take().map(std::thread::JoinHandle::join) {
-            Some(Ok(r)) => r.map_err(MtError),
+            Some(Ok(r)) => Ok(r),
             _ => err("the input thread failed"),
         }
     }
@@ -469,11 +509,12 @@ impl Drop for Recorder {
     }
 }
 
-fn run_fake(mut writers: Vec<(TakePlan, TakeWriter)>, rate: u32, stop: &AtomicBool) -> Result<Vec<Written>, String> {
+fn run_fake(writers: Vec<(TakePlan, TakeWriter)>, rate: u32, stop: &AtomicBool) -> StopReport {
+    let mut writers: Vec<(TakePlan, TakeWriter, bool)> = writers.into_iter().map(|(p, w)| (p, w, true)).collect();
+    let mut report = StopReport::default();
     let t0 = Instant::now();
     let mut at = 0u64;
-    let mut failed: Option<String> = None;
-    while !stop.load(Ordering::SeqCst) {
+    while !stop.load(Ordering::SeqCst) && writers.iter().any(|w| w.2) {
         let due = t0 + Duration::from_secs_f64((at + FAKE_BLOCK as u64) as f64 / f64::from(rate));
         let now = Instant::now();
         if due > now {
@@ -482,23 +523,24 @@ fn run_fake(mut writers: Vec<(TakePlan, TakeWriter)>, rate: u32, stop: &AtomicBo
                 continue;
             }
         }
-        for (plan, w) in &mut writers {
+        // One track failing (disk full, file gone) stops that track only: the others go on.
+        for (plan, w, live) in writers.iter_mut().filter(|w| w.2) {
             let planar: Vec<Vec<f32>> = plan.inputs.iter().map(|c| fake_samples(*c, at, FAKE_BLOCK, rate)).collect();
             if let Err(e) = w.write(&planar) {
-                failed = Some(format!("writing {}: {e}", plan.path.display()));
+                report.failures.push(format!("writing {}: {e}", plan.path.display()));
+                *live = false;
             }
-        }
-        if failed.is_some() {
-            break;
         }
         at += FAKE_BLOCK as u64;
     }
-    let mut out = Vec::new();
-    for (plan, w) in writers {
-        let frames = w.finish().map_err(|e| format!("finishing {}: {e}", plan.path.display()))?;
-        out.push(Written { track: plan.track, path: plan.path, frames });
+    // Finish every writer, whatever the others did: each result is kept on its own.
+    for (plan, w, _) in writers {
+        match w.finish() {
+            Ok(f) => report.written.push(Written { track: plan.track, path: plan.path, frames: f }),
+            Err(e) => report.failures.push(format!("finishing {}: {e}", plan.path.display())),
+        }
     }
-    failed.map_or(Ok(out), Err)
+    report
 }
 
 /// Read a take file's header the way a crashed one is read: the frames its data size claims,
@@ -622,7 +664,8 @@ mod tests {
         m.place_take(a, 500, &p3).unwrap_or_else(|e| panic!("{e}"));
         let t = m.session.track(a).unwrap_or_else(|| panic!("t"));
         assert_eq!(t.active_playlist, 1);
-        assert_eq!(t.clips().iter().map(|c| c.start).collect::<Vec<_>>(), vec![500, 10_000]);
+        // The first clip (0..1000) is covered from 500 on: its first half stays.
+        assert_eq!(t.clips().iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 500), (500, 1_000), (10_000, 1_000)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -708,9 +751,66 @@ mod tests {
             let h = s.spawn(|| run_fake(vec![(plan.clone(), w)], 48_000, &stop));
             std::thread::sleep(Duration::from_millis(300));
             stop.store(true, Ordering::SeqCst);
-            let out = h.join().unwrap_or_else(|_| panic!("thread")).unwrap_or_else(|e| panic!("{e}"));
-            assert!(out[0].frames >= 9_600 && out[0].frames <= 24_000, "about 0.3 s: {}", out[0].frames);
+            let out = h.join().unwrap_or_else(|_| panic!("thread"));
+            assert!(out.failures.is_empty());
+            assert!(out.written[0].frames >= 9_600 && out.written[0].frames <= 24_000, "about 0.3 s: {}", out.written[0].frames);
         });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_take_over_part_of_a_clip_keeps_the_rest_of_that_clip() {
+        let (mut m, a, _) = session();
+        let dir = scratch("partial");
+        let (back, t1, t2) = (dir.join("back.wav"), dir.join("t1.wav"), dir.join("t2.wav"));
+        write_take(&back, 10_000, 1);
+        write_take(&t1, 1_000, 1);
+        write_take(&t2, 1_000, 1);
+        m.place_take(a, 0, &back).unwrap_or_else(|e| panic!("{e}"));
+        // Over the start of the backing: the rest of it stays, from where the take ends.
+        m.place_take(a, 0, &t1).unwrap_or_else(|e| panic!("{e}"));
+        let clips = m.session.track(a).unwrap_or_else(|| panic!("t")).clips().to_vec();
+        assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 1_000), (1_000, 9_000)]);
+        match &clips[1].content {
+            ClipContent::Audio { offset, .. } => assert_eq!(*offset, 1_000, "the remainder plays the same audio it did"),
+            other => panic!("{other:?}"),
+        }
+        // Inside the remainder: it is split in two around the take.
+        m.place_take(a, 4_000, &t2).unwrap_or_else(|e| panic!("{e}"));
+        let clips = m.session.track(a).unwrap_or_else(|| panic!("t")).clips().to_vec();
+        assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 1_000), (1_000, 3_000), (4_000, 1_000), (5_000, 5_000)]);
+        match &clips[3].content {
+            ClipContent::Audio { offset, .. } => assert_eq!(*offset, 5_000),
+            other => panic!("{other:?}"),
+        }
+        let ids: std::collections::HashSet<_> = clips.iter().map(|c| c.id).collect();
+        assert_eq!(ids.len(), clips.len(), "every clip has its own id");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_failing_track_does_not_cost_the_other_tracks_their_take() {
+        let dir = scratch("fail");
+        let (pa, pb) = (dir.join("a.wav"), dir.join("b.wav"));
+        let plan_a = TakePlan { track: TrackId(1), inputs: vec![0], path: pa.clone() };
+        let plan_b = TakePlan { track: TrackId(2), inputs: vec![1], path: pb.clone() };
+        let wa = TakeWriter::create(&pa, 1, 48_000).unwrap_or_else(|e| panic!("{e}"));
+        let mut wb = TakeWriter::create(&pb, 1, 48_000).unwrap_or_else(|e| panic!("{e}"));
+        // A write that fails, like a full disk: the handle can only read.
+        wb.file = File::open(&pb).unwrap_or_else(|e| panic!("{e}"));
+        let stop = AtomicBool::new(false);
+        let report = std::thread::scope(|s| {
+            let h = s.spawn(|| run_fake(vec![(plan_b.clone(), wb), (plan_a.clone(), wa)], 48_000, &stop));
+            std::thread::sleep(Duration::from_millis(300));
+            stop.store(true, Ordering::SeqCst);
+            h.join().unwrap_or_else(|_| panic!("thread"))
+        });
+        assert_eq!(report.failures.len(), 2, "the failed write, and the failed finish of that file: {:?}", report.failures);
+        assert!(report.failures[0].contains("b.wav"));
+        assert_eq!(report.written.len(), 1, "the good track's take is reported even though the other failed");
+        assert_eq!(report.written[0].track, TrackId(1));
+        assert!(report.written[0].frames >= 9_600);
+        assert!(readable_frames(&pa).is_some_and(|(_, _, f)| f == report.written[0].frames), "its header was patched");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

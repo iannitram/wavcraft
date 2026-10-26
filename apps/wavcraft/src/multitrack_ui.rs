@@ -204,8 +204,10 @@ impl MtView {
     }
 
     fn create(&mut self, name: &str, rate: u32, depth: BitDepthSetting) -> Result<(), MtError> {
+        if self.recorder.is_some() {
+            return Err(MtError("recording: stop it first (SREC stop) so the takes are placed, then start a new session".into()));
+        }
         self.mt = Some(Multitrack::new(name, rate, depth)?);
-        self.recorder = None; // dropping it finishes any take file
         self.transport.stop();
         self.selected = None;
         self.rename = None;
@@ -294,7 +296,7 @@ impl MtView {
             }
             if self.recorder.is_some() {
                 if ui.button("■ Stop Recording").clicked() {
-                    note(&mut failure, stop_recording(&mut self.recorder, mt, &mut self.transport).map(|_| ()));
+                    note(&mut failure, stop_recording(&mut self.recorder, mt, &mut self.transport).and_then(|(n, f)| stop_result(n, &f)).map(|_| ()));
                 }
                 ui.ctx().request_repaint();
             } else if ui.button("● Record").on_hover_text("record the armed tracks from the start while the others play").clicked() {
@@ -691,7 +693,8 @@ impl MtView {
             }
             ("SREC", "stop") => {
                 let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
-                let n = stop_recording(&mut self.recorder, mt, &mut self.transport)?;
+                let (n, f) = stop_recording(&mut self.recorder, mt, &mut self.transport)?;
+                let n = stop_result(n, &f)?;
                 Ok(format!("OK takes={n}"))
             }
             ("SREC", _) => usage("SREC start [seconds] | SREC stop"),
@@ -823,19 +826,27 @@ fn start_recording(rec: &mut Option<Recorder>, mt: &Multitrack, transport: &mut 
     Ok(())
 }
 
-/// Stop recording and place every take; returns how many were placed.
-fn stop_recording(rec: &mut Option<Recorder>, mt: &mut Multitrack, transport: &mut Transport) -> Result<usize, MtError> {
+/// Stop recording and place every take whose file holds audio. A track that failed does not
+/// stop the others: returns how many were placed and one message per problem.
+fn stop_recording(rec: &mut Option<Recorder>, mt: &mut Multitrack, transport: &mut Transport) -> Result<(usize, Vec<String>), MtError> {
     let r = rec.take().ok_or_else(|| MtError("not recording".into()))?;
     let (start, punch) = (r.start, r.punch);
     transport.stop();
-    let written = r.stop()?;
+    let report = r.stop()?;
+    let mut failures = report.failures;
     let mut placed = 0;
-    for w in written.into_iter().filter(|w| w.frames > 0) {
-        if mt.place_take_in(w.track, start, &w.path, punch).is_ok() || punch.is_none() {
-            placed += 1;
+    for w in report.written.into_iter().filter(|w| w.frames > 0) {
+        match mt.place_take_in(w.track, start, &w.path, punch) {
+            Ok(_) => placed += 1,
+            Err(e) => failures.push(format!("{e} (the file is kept)")),
         }
     }
-    Ok(placed)
+    Ok((placed, failures))
+}
+
+/// The message for a stop: `Ok` when nothing went wrong, else every problem and the count placed.
+fn stop_result(placed: usize, failures: &[String]) -> Result<usize, MtError> {
+    if failures.is_empty() { Ok(placed) } else { Err(MtError(format!("placed {placed} take(s); problems: {}", failures.join("; ")))) }
 }
 
 fn note(failure: &mut Option<String>, r: Result<(), MtError>) {
@@ -943,5 +954,25 @@ mod tests {
         assert_eq!(w.control("SESSION", "state", None), before);
         assert!(w.control("SESSION", &format!("open {}", dir.join("nope").display()), None).starts_with("ERR"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_session_is_refused_while_recording() {
+        let tmp = std::env::temp_dir().join(format!("wavcraft-mtui-{}", std::process::id()));
+        let mut v = MtView::default();
+        assert_eq!(v.control("SESSION", "new A", None), "OK");
+        assert_eq!(v.control("TRACK", "add Vox", None), "OK tracks=1");
+        let plans = {
+            let mt = v.mt.as_mut().unwrap();
+            let id = mt.session.tracks[0].id;
+            mt.arm_track(id, Some(1)).unwrap();
+            mt.plan_takes(&tmp, 8)
+        };
+        v.recorder = Some(Recorder::start_fake(plans, 48_000, 0).unwrap());
+        let answer = v.control("SESSION", "new B", None);
+        assert!(answer.starts_with("ERR") && answer.contains("stop it first"), "{answer}");
+        assert!(v.control("SESSION", "state", None).contains(r#""name":"A""#), "the session is still the first one");
+        assert!(v.recorder.is_some(), "and the recording goes on");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
