@@ -1,0 +1,114 @@
+{
+  "id": "wav-q-c164-a",
+  "title": "C164-a: Strip EQ knobs mapped to the Parametric EQ",
+  "kind": "small-code-change-exact-brief",
+  "size": "S",
+  "lane": "qwen",
+  "model": null,
+  "effort": null,
+  "repo": "iannitram/wavcraft",
+  "base": "main",
+  "clone": "B:/dev/craft/wavcraft",
+  "prompt_file": "wav-q-c164-a.md",
+  "verify": [
+    {
+      "name": "mod-line",
+      "cmd": "grep -n \"^pub mod strip_eq;$\" crates/core/src/lib.rs",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-default_is_flat_and_its_params_equal_the_effect_defaults",
+      "cmd": "cargo test -p wavcraft-core default_is_flat_and_its_params_equal_the_effect_defaults 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-to_params_passes_the_effect_validation",
+      "cmd": "cargo test -p wavcraft-core to_params_passes_the_effect_validation 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-params_round_trip_through_from_params",
+      "cmd": "cargo test -p wavcraft-core params_round_trip_through_from_params 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-values_are_clamped_to_the_effect_ranges",
+      "cmd": "cargo test -p wavcraft-core values_are_clamped_to_the_effect_ranges 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-from_params_of_the_wrong_length_is_none",
+      "cmd": "cargo test -p wavcraft-core from_params_of_the_wrong_length_is_none 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-from_params_refuses_settings_the_strip_cannot_write",
+      "cmd": "cargo test -p wavcraft-core from_params_refuses_settings_the_strip_cannot_write 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "new-test-is_flat_looks_at_the_three_gains_only",
+      "cmd": "cargo test -p wavcraft-core is_flat_looks_at_the_three_gains_only 2>&1 | grep -E \"test result: ok[.] 1 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-default_is_flat_and_its_params_equal_the_effect_defaults",
+      "cmd": "f=crates/core/src/strip_eq.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#mid_hz: 500\\.0,#mid_hz: 600.0,#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core default_is_flat_and_its_params_equal_the_effect_defaults 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-to_params_passes_the_effect_validation",
+      "cmd": "f=crates/core/src/strip_eq.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#const HIGH_HZ: f64 = 8000\\.0;#const HIGH_HZ: f64 = 800.0;#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core to_params_passes_the_effect_validation 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-params_round_trip_through_from_params",
+      "cmd": "f=crates/core/src/strip_eq.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#s\\.mid_hz, s\\.mid_db, s\\.mid_q#s.mid_db, s.mid_hz, s.mid_q#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core params_round_trip_through_from_params 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-values_are_clamped_to_the_effect_ranges",
+      "cmd": "f=crates/core/src/strip_eq.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#Some(d) => v\\.clamp(d\\.min, d\\.max),#Some(_) => v,#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core values_are_clamped_to_the_effect_ranges 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-from_params_of_the_wrong_length_is_none",
+      "cmd": "f=crates/core/src/strip_eq.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#if params\\.len() != PARAM_COUNT {#if params.len() > PARAM_COUNT {#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core from_params_of_the_wrong_length_is_none 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-from_params_refuses_settings_the_strip_cannot_write",
+      "cmd": "f=crates/core/src/strip_eq.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#(strip\\.to_params() == params)\\.then_some(strip)#Some(strip)#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core from_params_refuses_settings_the_strip_cannot_write 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "mutation-is_flat_looks_at_the_three_gains_only",
+      "cmd": "f=crates/core/src/strip_eq.rs; b=$(mktemp); cp \"$f\" \"$b\"; trap 'cp \"$b\" \"$f\"; rm -f \"$b\"' EXIT; sed -i 's#s\\.low_db == 0\\.0 && s\\.mid_db == 0\\.0 && s\\.high_db == 0\\.0#s.low_db == 0.0 \\&\\& s.mid_db == 0.0#' \"$f\"; if cmp -s \"$f\" \"$b\"; then echo \"MUTATION NOT APPLIED\"; exit 1; fi; out=$(cargo test -p wavcraft-core is_flat_looks_at_the_three_gains_only 2>&1); echo \"$out\" | grep -E \"^test result:\"; echo \"$out\" | grep -E \"test result: FAILED[.] 0 passed; 1 failed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "module-tests",
+      "cmd": "cargo test -p wavcraft-core strip_eq 2>&1 | grep -E \"test result: ok[.] 7 passed\"",
+      "expect": "pass"
+    },
+    {
+      "name": "clippy",
+      "cmd": "cargo clippy -p wavcraft-core --all-targets -- -D warnings",
+      "expect": "pass"
+    },
+    {
+      "name": "fmt",
+      "cmd": "rustfmt --check --edition 2024 crates/core/src/strip_eq.rs",
+      "expect": "pass"
+    }
+  ],
+  "files_allowed": [
+    "crates/core/src/strip_eq.rs",
+    "crates/core/src/lib.rs"
+  ],
+  "open_pr": true,
+  "pr_title": "C164-a: Strip EQ knobs mapped to the Parametric EQ (alpha) (Refs #76)",
+  "est_minutes": 20,
+  "priority": 112,
+  "created_by": "api-qwen-briefs"
+}
