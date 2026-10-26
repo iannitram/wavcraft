@@ -3378,6 +3378,7 @@ dependencies = [
  "rustfft",
  "rustix 1.1.5",
  "serde_json",
+ "soundcraft-audio-io 0.10.0",
  "soundcraft-audio-io 0.6.1",
  "soundcraft-dsp",
  "soundcraft-model",
