@@ -44,6 +44,11 @@
 //!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`
 //!   (multitrack basics, f103; see `multitrack_ui.rs`; `SESSION state` answers `OK view=… <json>`)
 //!   `SMARKER add <t> [end]|rename <i> <name>|delete <i>|next|prev|playhead <t>|select <a> <b>|addhere|addsel|state`
+//!   `SPLAY [seconds]`, `SSTOP` (play the session, f114; `SESSION state` adds `playing`, `position` in seconds and `underruns`)
+//!   `TRACK arm <track> [input=<ch>]`, `TRACK disarm <track>`, `SREC start [seconds]`, `SREC stop` (record the armed tracks while the
+//!   rest plays, f120; takes are listed in `SESSION state` under `takes`; `WAVCRAFT_FAKE_INPUT=1` is the only input built so far)
+//!   `PUNCH set <in_s> <out_s>`, `PUNCH on|off`, `PUNCH preroll <s>` (punch in/out, f126: with punch on, `SREC start` without a time starts
+//!   at the pre-roll before the range and the take is cut to the range; `SESSION state` adds `punch`)
 //!   (session markers and ranges, f110)
 //! - `METERS [PUSH <l> <r> | RESET]` → `OK l=<dBFS> l_hold=<dBFS> l_clip=<0|1> r=… r_hold=… r_clip=…` (the Levels
 //!   panel's bars; `PUSH` gives the tap linear peaks as the audio callback would, `RESET` clears the clip lights)

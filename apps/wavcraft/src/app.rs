@@ -336,6 +336,7 @@ impl WaveApp {
                 control::start_from_env(move || ctx.request_repaint())
             },
         };
+        app.mtv.take_dir = app.sessions.path.join("takes");
         if let Some(path) = file {
             app.open(path, &cc.egui_ctx);
         }
@@ -386,6 +387,7 @@ impl WaveApp {
         self.settings = Settings::default();
         if self.sessions.source == FolderSource::SettingsFile {
             self.sessions = SessionFolder { path: default_sessions_root(), source: FolderSource::Default, warning: None };
+            self.mtv.take_dir = self.sessions.path.join("takes");
         }
         self.apply_crossfades();
         self.player.set_output(None);
@@ -651,6 +653,7 @@ impl WaveApp {
             None => Err("this system has no settings folder, so it lasts until WavCraft closes".to_string()),
         };
         self.sessions = SessionFolder { path, source, warning: None };
+        self.mtv.take_dir = self.sessions.path.join("takes");
         let mut msg = format!("Session folder: {} (from the next file opened)", self.sessions.path.display());
         match saved {
             Ok(()) if overridden => msg.push_str(". Saved, but --session-dir or WAVCRAFT_SESSION_DIR will win again at the next start"),
@@ -2115,7 +2118,7 @@ impl WaveApp {
                     _ => "ERR CHNAME get | CHNAME set <channel from 1> <name>".to_string(),
                 }
             }
-            "SESSION" | "TRACK" | "CLIP" | "VIEW" | "SMARKER" => self.mtv.control(cmd, rest, self.doc.as_ref()),
+            "SESSION" | "TRACK" | "CLIP" | "VIEW" | "SMARKER" | "SPLAY" | "SSTOP" | "SREC" | "PUNCH" => self.mtv.control(cmd, rest, self.doc.as_ref()),
             "MIXER" if matches!(rest.trim(), "show" | "hide") => {
                 self.show_mixer = rest.trim() == "show";
                 "OK".to_string()

@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 wavcraft-core.workspace = true
+soundcraft-playback.workspace = true
+serde_json.workspace = true
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11"] }
 egui.workspace = true
 cpal.workspace = true
