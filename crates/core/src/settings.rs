@@ -3,7 +3,7 @@
 //! Settings live in a small text file, `settings.txt` in the system's config folder under
 //! `wavcraft` (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on a
 //! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. Today it
-//! holds `session_folder` and `hidden_panels`.
+//! holds `session_folder`, `hidden_panels` and `dither`.
 //!
 //! The **session folder** is where opening a file writes its session store (one subfolder per
 //! open file). The first of these that is set wins: the `--session-dir` command-line flag, the
@@ -23,6 +23,7 @@ pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the 
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
+const KEY_DITHER: &str = "dither";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 /// What the settings file holds.
@@ -70,6 +71,7 @@ impl Settings {
             match key.trim() {
                 KEY_SESSION_FOLDER => s.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
+                KEY_DITHER => s.dither = value == "on",
                 _ => {}
             }
         }
@@ -85,6 +87,10 @@ impl Settings {
         if !self.hidden_panels.is_empty() {
             out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\n");
             out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}\n", self.hidden_panels.join(",")));
+        }
+        if self.dither {
+            out.push_str("# dither: dither when reducing bit depth, on or off (off by default, as in Audition).\n");
+            out.push_str("dither = on\n");
         }
         out
     }
