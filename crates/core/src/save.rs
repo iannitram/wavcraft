@@ -171,6 +171,7 @@ pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dy
 /// Save `doc` to `target` as a WAV file of `ty` samples, with `dither` applied when the samples
 /// are reduced to 16 or 24 bits (item A4). With `dither.enabled` false this writes exactly what
 /// [`save_wav`] writes.
+#[allow(clippy::unimplemented)] // card wav-c-12-b removes this with the stub
 pub fn save_wav_dithered(
     doc: &DocState,
     target: &Path,
