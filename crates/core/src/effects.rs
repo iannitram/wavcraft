@@ -20,6 +20,7 @@ pub mod dynamics_graph;
 mod amplify;
 mod compare;
 mod delay;
+mod dereverb;
 mod dsp_run;
 mod eq;
 pub mod fade;
@@ -41,6 +42,7 @@ pub use compare::{AbCompare, Side};
 pub use amplify::{Amplify, DEFAULT_GAIN_DB, MAX_GAIN_DB as AMPLIFY_MAX_GAIN_DB, MIN_GAIN_DB, amplify_gains, db_to_linear};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use delay::Delay;
+pub use dereverb::DeReverb;
 pub use fade::{FadeIn, FadeOut};
 pub use fft_filter::FftFilter;
 pub use gain::Gain;
@@ -289,7 +291,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
