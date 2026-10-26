@@ -27,6 +27,7 @@ pub mod fade;
 mod fft_filter;
 mod gain;
 mod noise_reduction;
+mod phase_correction;
 mod pitch_saturate;
 mod plate;
 mod reverb;
@@ -47,6 +48,7 @@ pub use fade::{FadeIn, FadeOut};
 pub use fft_filter::FftFilter;
 pub use gain::Gain;
 pub use noise_reduction::NoiseReduction;
+pub use phase_correction::{PhaseCorrection, measure_lag};
 pub use pitch_saturate::{PitchShift, Saturator};
 pub use plate::Plate;
 pub use reverb::Reverb;
@@ -291,7 +293,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb, &PhaseCorrection];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
