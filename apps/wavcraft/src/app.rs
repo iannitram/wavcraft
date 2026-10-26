@@ -322,7 +322,7 @@ impl WaveApp {
             editor_width: 800.0,
             hud: HudState::default(),
             show_mixer: false,
-            mixer: MixerModel::demo(4),
+            mixer: MixerModel::new(),
             snap_frames: true,
             show_time_panel: true,
             show_sel_view_panel: true,
@@ -2523,7 +2523,7 @@ impl WaveApp {
                 self.show_mixer = rest.trim() == "show";
                 "OK".to_string()
             }
-            "MIXER" => self.mixer.control(rest),
+            "MIXER" => self.mixer.control(rest, self.mtv.mt.as_mut().map(|m| &mut m.session)),
             // f26: the bars as numbers; `METERS PUSH <l> <r>` feeds the tap as the audio callback
             // would (linear peaks), for a run without an output device; `METERS RESET` clears the lights.
             "METERS" => {
@@ -3256,7 +3256,10 @@ impl eframe::App for WaveApp {
             egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));
         }
         if self.show_mixer {
-            egui::Panel::bottom("mixer").resizable(true).default_size(260.0).show(ui, |ui| self.mixer.show(ui));
+            egui::Panel::bottom("mixer")
+                .resizable(true)
+                .default_size(260.0)
+                .show(ui, |ui| self.mixer.show(ui, self.mtv.mt.as_mut().map(|m| &mut m.session)));
         }
         self.insert_silence_dialog(&ctx);
         self.effect_dialog_ui(&ctx);

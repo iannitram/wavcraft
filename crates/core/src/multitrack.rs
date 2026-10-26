@@ -135,6 +135,8 @@ impl Multitrack {
         let mut session = Session::new(name, rate);
         session.bit_depth = depth;
         let punch = crate::mtrecord::Punch::new(rate.samples(crate::mtrecord::DEFAULT_PREROLL_S));
+        // The Mixer panel's master strip; the audio-track views skip it.
+        session.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
         Ok(Multitrack { session, takes: Vec::new(), punch, file: None })
     }
 
@@ -401,7 +403,7 @@ impl Multitrack {
                     .iter()
                     .map(|c| json!({"name": c.name, "start": rate.seconds(c.start), "length": rate.seconds(c.length), "channels": c.source().and_then(|s| self.session.source(s)).map_or(0, |s| s.channels), "gain_db": c.gain_db, "offline": self.clip_offline(c)}))
                     .collect();
-                json!({"name": t.name, "format": t.format.label(), "channels": t.channels(), "armed": t.mixer.record_arm, "input": crate::mtrecord::input_label(&t.mixer.input), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "clips": clips})
+                json!({"name": t.name, "format": t.format.label(), "channels": t.channels(), "armed": t.mixer.record_arm, "input": crate::mtrecord::input_label(&t.mixer.input), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "pan": t.mixer.pan.first().copied().unwrap_or(0.0), "clips": clips})
             })
             .collect();
         let takes: Vec<_> = self

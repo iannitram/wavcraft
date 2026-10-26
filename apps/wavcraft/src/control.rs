@@ -40,7 +40,7 @@
 //! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
 //! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)
 //! - `HISTORY_KEY up|down` → `OK cursor=<i>` (the panel's arrow keys)
-//! - `MIXER state` → `OK tracks=<n> any_solo=<0|1> | master vol=<db> pan= mute= solo= audible= peak=<db> | t1 ...` (the Mixer panel)
+//! - `MIXER state` → `OK tracks=<n> any_solo=<0|1> | master vol=<db> pan= mute= solo= audible= peak=<db> | t1 ...` (the Mixer panel, over the multitrack session; `ERR` before `SESSION new`)
 //! - `MIXER show|hide` → `OK` (the panel's window checkbox)
 //! - `MIXER set <track|master> vol=<db> pan=<p> mute=0|1 solo=0|1` → the same line, after the change
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
