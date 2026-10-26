@@ -13,3 +13,4 @@ pub mod sci_filter;
 pub mod varispeed;
 pub mod speech_ranges;
 pub mod phaser;
+pub mod true_peak_limiter;

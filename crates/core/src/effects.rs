@@ -17,6 +17,7 @@ use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
 mod eq;
 mod gain;
+pub mod match_loudness;
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
 
