@@ -56,6 +56,7 @@ pub mod take_repair;
 pub mod tempo;
 pub mod transcript_cut;
 pub mod video_snap;
+pub mod timepitch;
 pub mod view;
 
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};

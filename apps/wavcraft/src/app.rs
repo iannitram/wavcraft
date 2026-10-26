@@ -1935,6 +1935,53 @@ impl WaveApp {
                     _ => "ERR PARAM <amplify.db|normalize.db> <number>, with a file open".to_string(),
                 }
             }
+            // f127: `STRETCH ratio=<0.1-10> pitch=<semitones>` (Process › Stretch and Pitch on the
+            // selection, the whole file when none; the result is selected) and `PITCHDETECT`
+            // (median fundamental of the selection, in Hz).
+            "STRETCH" => {
+                let (mut ratio, mut pitch) = (1.0f64, 0.0f64);
+                for kv in rest.split_whitespace() {
+                    match kv.split_once('=') {
+                        Some(("ratio", v)) => ratio = v.parse().unwrap_or(f64::NAN),
+                        Some(("pitch", v)) => pitch = v.parse().unwrap_or(f64::NAN),
+                        _ => return "ERR STRETCH ratio=<0.1-10> pitch=<semitones>".to_string(),
+                    }
+                }
+                if self.saving.is_some() {
+                    return "ERR wait for the save to finish".to_string();
+                }
+                let sel_range = self.selection_range();
+                let Some(editor) = self.editor.as_mut() else { return "ERR no file is open".to_string() };
+                match editor.stretch_pitch(ratio, pitch, sel_range) {
+                    Ok(out) => {
+                        self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                        self.error = None;
+                        self.notice = out.message;
+                        if out.doc_changed {
+                            self.rebuild(ctx);
+                        }
+                        format!("OK selection={} changed={}", sel(self), u8::from(out.doc_changed))
+                    }
+                    Err(e) => {
+                        let why = format!("Stretch and Pitch: {e}");
+                        log::warn!(target: "wavcraft", "{why}");
+                        self.error = Some(why.clone());
+                        format!("ERR {why}")
+                    }
+                }
+            }
+            "PITCHDETECT" => {
+                let sel_range = self.selection_range();
+                let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
+                match wavcraft_core::timepitch::detect_pitch(editor.history.current(), sel_range) {
+                    Ok(Some(hz)) => {
+                        self.notice = Some(format!("Pitch {hz:.1} Hz"));
+                        format!("OK hz={hz:.2}")
+                    }
+                    Ok(None) => "OK hz=none".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),

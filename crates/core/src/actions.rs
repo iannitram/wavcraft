@@ -520,6 +520,25 @@ impl Editor {
         Ok(())
     }
 
+    /// Process › Stretch and Pitch (f127) on `selection` (the whole file when empty): the range
+    /// becomes `ratio` times as long (pitch kept) and is then shifted by `semitones`. The
+    /// result ends up selected. Not remembered by Repeat Last Command.
+    pub fn stretch_pitch(&mut self, ratio: f64, semitones: f64, selection: Range<u64>) -> Result<Outcome, EditError> {
+        let doc = self.history.current().clone();
+        let len = doc.len_frames();
+        let sel = selection.start.min(len)..selection.end.min(len);
+        let range = if sel.start < sel.end { sel } else { 0..len };
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let edit = crate::timepitch::stretch_pitch(&doc, range.clone(), ratio, semitones, self.crossfades, &cancel)?;
+        let changed = !edit.is_noop();
+        let label = edit.label.clone();
+        let new_len = range.end - range.start;
+        let new_len = (new_len as f64 * ratio.clamp(0.1, 10.0)).round() as u64;
+        self.history.push_edit(edit);
+        let end = (range.start + new_len).min(self.len());
+        Ok(Outcome { doc_changed: changed, selection: range.start..end, message: changed.then_some(label) })
+    }
+
     /// Run `id` on `selection`. A disabled action does nothing and says why.
     pub fn run(&mut self, id: ActionId, selection: Range<u64>) -> Result<Outcome, EditError> {
         self.run_with(id, selection, None)
