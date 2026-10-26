@@ -15,8 +15,10 @@ use std::sync::atomic::AtomicBool;
 use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
+mod amplify;
 mod eq;
 mod gain;
+pub use amplify::{Amplify, DEFAULT_GAIN_DB, MAX_GAIN_DB, MIN_GAIN_DB, amplify_gains, db_to_linear};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use gain::Gain;
 
