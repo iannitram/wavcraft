@@ -2518,7 +2518,9 @@ impl WaveApp {
                     _ => "ERR CHNAME get | CHNAME set <channel from 1> <name>".to_string(),
                 }
             }
-            "SESSION" | "TRACK" | "CLIP" | "VIEW" | "SMARKER" | "SPLAY" | "SSTOP" | "SREC" | "PUNCH" => self.mtv.control(cmd, rest, self.doc.as_ref()),
+            "SESSION" | "TRACK" | "CLIP" | "VIEW" | "SMARKER" | "SPLAY" | "SSTOP" | "SREC" | "PUNCH" | "MASTER" => {
+                self.mtv.control(cmd, rest, self.doc.as_ref())
+            }
             "MIXER" if matches!(rest.trim(), "show" | "hide") => {
                 self.show_mixer = rest.trim() == "show";
                 "OK".to_string()
