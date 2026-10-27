@@ -84,7 +84,7 @@ fn t2_cut_and_copy_with_no_selection_take_the_whole_file() {
     let mut e = editor(&t.0, &data);
     let out = e.run(ActionId::Copy, 10..10).unwrap();
     assert!(!out.doc_changed);
-    assert_eq!(e.clipboard.as_ref().map(|c| c.len_frames()), Some(1000));
+    assert_eq!(e.clipboard().map(|c| c.len_frames()), Some(1000));
     // Paste at frame 500 inserts the whole file there.
     let out = e.run(ActionId::Paste, 500..500).unwrap();
     assert!(out.doc_changed);
@@ -97,7 +97,7 @@ fn t2_cut_and_copy_with_no_selection_take_the_whole_file() {
     let out = e.run(ActionId::Cut, 0..0).unwrap();
     assert!(out.doc_changed);
     assert_eq!(e.history.current().len_frames(), 0);
-    assert_eq!(e.clipboard.as_ref().map(|c| c.len_frames()), Some(1000));
+    assert_eq!(e.clipboard().map(|c| c.len_frames()), Some(1000));
 }
 
 #[test]

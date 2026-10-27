@@ -77,6 +77,11 @@ rustix = { version = "1.1", features = ["fs"] }
 # Already in Cargo.lock (0.4.3, through other crates), so no new crate. Licence MIT OR Apache-2.0.
 getrandom = "0.4"
 
+# Roadmap A152/A153 (feature f12, 2026-10-20): Copy puts the audio on the OS clipboard as a WAV
+# file entry, Paste takes one. arboard 3.6.1, MIT OR Apache-2.0, already in Cargo.lock through
+# egui-winit; default features off (no image support is needed), the file-list calls need none.
+arboard = { version = "3.6", default-features = false }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

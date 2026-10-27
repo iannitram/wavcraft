@@ -24,6 +24,12 @@ pub enum ActionId {
     Cut,
     Copy,
     Paste,
+    /// Set Current Clipboard 1 to 5: Cut, Copy and Paste use the current one.
+    Clipboard1,
+    Clipboard2,
+    Clipboard3,
+    Clipboard4,
+    Clipboard5,
     Delete,
     Silence,
     Crop,
@@ -131,6 +137,11 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::Cut, "edit.cut", "Cut"),
     edit(ActionId::Copy, "edit.copy", "Copy"),
     edit(ActionId::Paste, "edit.paste", "Paste"),
+    edit(ActionId::Clipboard1, "edit.clipboard.1", "Set Current Clipboard: 1"),
+    edit(ActionId::Clipboard2, "edit.clipboard.2", "Set Current Clipboard: 2"),
+    edit(ActionId::Clipboard3, "edit.clipboard.3", "Set Current Clipboard: 3"),
+    edit(ActionId::Clipboard4, "edit.clipboard.4", "Set Current Clipboard: 4"),
+    edit(ActionId::Clipboard5, "edit.clipboard.5", "Set Current Clipboard: 5"),
     edit(ActionId::CaptureNoisePrint, "nr.capture_print", "Capture Noise Print"),
     edit(ActionId::Delete, "edit.delete", "Delete"),
     edit(ActionId::Silence, "edit.silence", "Silence"),
@@ -255,13 +266,19 @@ pub struct Editor {
     pub history: History,
     /// The channels edits act on (Up / Down pick one, as in Audition).
     pub channels: ChannelMask,
-    pub clipboard: Option<Clip>,
+    /// The five internal clipboards (Set Current Clipboard); each holds a clip until replaced.
+    pub clipboards: [Option<Clip>; CLIPBOARDS],
+    /// Which clipboard Cut, Copy and Paste use (0 to 4; the menu says 1 to 5).
+    pub current_clipboard: usize,
     pub crossfades: Crossfades,
     /// What Repeat Last Command runs again (None until a repeatable command has run).
     pub last: Option<Repeat>,
     /// The numbers Amplify and Normalize use.
     pub params: EffectParams,
 }
+
+/// How many internal clipboards there are.
+pub const CLIPBOARDS: usize = 5;
 
 /// A command Repeat Last Command can run again, with its settings.
 #[derive(Debug, Clone, PartialEq)]
@@ -291,6 +308,18 @@ pub enum RepeatDialog {
     InsertSilence(u64),
     /// The last command has no dialog (a parameterless effect or a repeatable edit action): run [`ActionId::RepeatLast`] directly.
     RunNow,
+}
+
+/// The clipboard (0 to 4) a Set Current Clipboard action picks.
+pub fn clipboard_index(id: ActionId) -> Option<usize> {
+    match id {
+        ActionId::Clipboard1 => Some(0),
+        ActionId::Clipboard2 => Some(1),
+        ActionId::Clipboard3 => Some(2),
+        ActionId::Clipboard4 => Some(3),
+        ActionId::Clipboard5 => Some(4),
+        _ => None,
+    }
 }
 
 /// Whether Repeat Last Command may run `id` again. Delete is not repeatable (Audition), nor are
@@ -361,7 +390,19 @@ pub fn zero_crossing(doc: &crate::doc::DocState, channels: ChannelMask, frame: u
 
 impl Editor {
     pub fn new(history: History) -> Editor {
-        Editor { history, channels: ChannelMask::ALL, clipboard: None, crossfades: Crossfades::default(), last: None, params: EffectParams::default() }
+        Editor { history, channels: ChannelMask::ALL, clipboards: Default::default(), current_clipboard: 0, crossfades: Crossfades::default(), last: None, params: EffectParams::default() }
+    }
+
+    /// The current clipboard's clip, if it holds one.
+    pub fn clipboard(&self) -> Option<&Clip> {
+        self.clipboards.get(self.current_clipboard).and_then(Option::as_ref)
+    }
+
+    /// Put `clip` in the current clipboard.
+    pub fn set_clipboard(&mut self, clip: Clip) {
+        if let Some(slot) = self.clipboards.get_mut(self.current_clipboard) {
+            *slot = Some(clip);
+        }
     }
 
     fn len(&self) -> u64 {
@@ -380,7 +421,8 @@ impl Editor {
             ActionId::Redo => self.history.can_redo(),
             // With no selection, Cut and Copy take the whole file (Audition).
             ActionId::Cut | ActionId::Copy => self.len() > 0,
-            ActionId::Paste => self.clipboard.is_some(),
+            ActionId::Paste => self.clipboard().is_some(),
+            ActionId::Clipboard1 | ActionId::Clipboard2 | ActionId::Clipboard3 | ActionId::Clipboard4 | ActionId::Clipboard5 => true,
             ActionId::Delete | ActionId::Silence | ActionId::Crop | ActionId::CaptureNoisePrint => has_sel,
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
@@ -448,6 +490,13 @@ impl Editor {
                 Some(Repeat::InsertSilence(_)) => format!("Repeat {}", action(ActionId::InsertSilence).menu),
                 None => a.menu.to_string(),
             },
+            ActionId::Clipboard1 | ActionId::Clipboard2 | ActionId::Clipboard3 | ActionId::Clipboard4 | ActionId::Clipboard5 => {
+                // The current one is marked, and one holding a clip says so.
+                let n = clipboard_index(id).unwrap_or(0);
+                let mark = if n == self.current_clipboard { "\u{2713} " } else { "" };
+                let full = if self.clipboards.get(n).is_some_and(Option::is_some) { " (has audio)" } else { "" };
+                format!("{mark}{}{full}", a.menu)
+            }
             _ => a.menu.to_string(),
         }
     }
@@ -715,23 +764,29 @@ impl Editor {
                 return Ok(Outcome { doc_changed: moved.is_some(), selection, message: None });
             }
             ActionId::Copy => {
-                self.clipboard = Some(edit::copy(&doc, whole_if_empty(&sel), channels)?);
+                let clip = edit::copy(&doc, whole_if_empty(&sel), channels)?;
+                self.set_clipboard(clip);
                 return unchanged(sel);
             }
             ActionId::Cut => {
                 let range = whole_if_empty(&sel);
                 let (e, clip) = edit::cut(&doc, range.clone(), channels, xf)?;
-                self.clipboard = Some(clip);
+                self.set_clipboard(clip);
                 let at = if e.state.len_frames() < len { range.start..range.start } else { range };
                 (e, at)
             }
             ActionId::Paste => {
-                let Some(clip) = self.clipboard.clone() else { return unchanged(sel) };
+                let Some(clip) = self.clipboard().cloned() else { return unchanged(sel) };
                 let at = if sel.start < sel.end { PasteAt::Replace(sel.clone()) } else { PasteAt::Insert(sel.start) };
                 let e = edit::paste(&doc, at, &clip, channels, xf)?;
                 // The pasted audio ends up selected.
                 let pasted = clip.len_frames();
                 (e, sel.start..sel.start + pasted)
+            }
+            ActionId::Clipboard1 | ActionId::Clipboard2 | ActionId::Clipboard3 | ActionId::Clipboard4 | ActionId::Clipboard5 => {
+                self.current_clipboard = clipboard_index(id).unwrap_or(0);
+                let msg = format!("Clipboard {} is current", self.current_clipboard + 1);
+                return Ok(Outcome { doc_changed: false, selection: sel, message: Some(msg) });
             }
             ActionId::Delete => {
                 let e = edit::delete(&doc, sel.clone(), channels, xf)?;

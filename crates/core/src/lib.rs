@@ -29,6 +29,7 @@ pub mod batch;
 pub mod batch_cli;
 pub mod cd;
 pub mod diagnostics;
+pub mod clipboard;
 pub mod doc;
 pub mod document;
 pub mod dsp;

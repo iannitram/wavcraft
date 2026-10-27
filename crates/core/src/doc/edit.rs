@@ -274,6 +274,12 @@ impl Clip {
         Ok(Clip { store: store.clone(), channels, sample_rate })
     }
 
+    /// The clip as a document state sharing its blocks (no sample copy), for writing it out.
+    pub fn to_doc(&self) -> Result<DocState, crate::doc::DocError> {
+        let source = std::sync::Arc::new(crate::doc::SourceFormat::synthetic(self.sample_rate, self.channels.len() as u16));
+        DocState::from_shared(self.store.clone(), self.channels.clone(), self.sample_rate, source)
+    }
+
     /// Copy frames of channel `ch` from `start` into `out`, as [`DocState::read`].
     pub fn read(&self, ch: usize, start: u64, out: &mut [f32]) -> io::Result<usize> {
         let channel = self.channels.get(ch).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("no channel {ch}")))?;

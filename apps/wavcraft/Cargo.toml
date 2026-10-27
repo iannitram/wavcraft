@@ -23,6 +23,7 @@ soundcraft-audio-io.workspace = true
 soundcraft-dsp.workspace = true
 dirs.workspace = true
 soundcraft-video.workspace = true
+arboard.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # The token file's owner-only DACL (win_acl.rs). Already in Cargo.lock (0.61.2: wavcraft-testkit,
