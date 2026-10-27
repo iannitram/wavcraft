@@ -45,7 +45,7 @@ class Control:
 def panels(c):
     ans = c.ask("PANELS")
     assert ans.startswith("OK "), ans
-    return {k: v for k, v in (kv.split("=") for kv in ans.split()[1:]) if k in ("waveform", "spectral", "history", "properties", "transport")}
+    return {k: v for k, v in (kv.split("=") for kv in ans.split()[1:]) if k in ("waveform", "spectral", "history", "properties", "transport", "tools")}
 
 
 def main():
@@ -85,13 +85,13 @@ def main():
 
     def run1(c):
         p = panels(c)
-        check("PANELS lists waveform, spectral, history, all shown", p == {"waveform": "1", "spectral": "1", "history": "1", "properties": "1", "transport": "1"}, p)
+        check("PANELS lists waveform, spectral, history, all shown", p == {"waveform": "1", "spectral": "1", "history": "1", "properties": "1", "transport": "1", "tools": "1"}, p)
         a = c.ask("ACTION window.toggle.history")
         check("window.toggle.history hides History", "history=0" in a.split(), a)
         a = c.ask("ACTION window.hide.spectral")
         check("window.hide.spectral hides the spectral display", "spectral=0 history=0" in a, a)
         a = c.ask("ACTION window.show.waveform")
-        check("window.show.waveform on a shown panel changes nothing", panels(c) == {"waveform": "1", "spectral": "0", "history": "0", "properties": "1", "transport": "1"}, a)
+        check("window.show.waveform on a shown panel changes nothing", panels(c) == {"waveform": "1", "spectral": "0", "history": "0", "properties": "1", "transport": "1", "tools": "1"}, a)
         a = c.ask("ACTION window.toggle.nothere")
         check("an unknown panel id answers ERR", a.startswith("ERR"), a)
         found = [os.path.join(d, f) for d, _, fs in os.walk(home) for f in fs if f == "settings.txt"]
@@ -100,7 +100,7 @@ def main():
 
     def run2(c):
         p = panels(c)
-        check("hidden panels are still hidden after a restart", p == {"waveform": "1", "spectral": "0", "history": "0", "properties": "1", "transport": "1"}, p)
+        check("hidden panels are still hidden after a restart", p == {"waveform": "1", "spectral": "0", "history": "0", "properties": "1", "transport": "1", "tools": "1"}, p)
         a = c.ask("ACTION window.toggle.history")
         check("window.toggle.history shows History again", "history=1" in a.split(), a)
 

@@ -69,6 +69,7 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "playlist", title: "Playlist", default_dock: DockSide::Right },
     PanelInfo { id: "properties", title: "Properties", default_dock: DockSide::Bottom },
     PanelInfo { id: "transport", title: "Transport", default_dock: DockSide::Bottom },
+    PanelInfo { id: "tools", title: "Tools", default_dock: DockSide::Left },
 ];
 
 /// The registered panel with this id.

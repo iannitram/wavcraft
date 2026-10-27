@@ -24,6 +24,7 @@ mod freq_panel;
 mod oscb;
 mod markers_panel;
 mod mixpaste;
+mod menus;
 mod player;
 mod playlist_panel;
 // Not called yet: the Reveal in file manager menu item will use it.
