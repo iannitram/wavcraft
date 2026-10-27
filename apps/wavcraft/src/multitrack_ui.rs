@@ -123,7 +123,7 @@ pub struct MtView {
     /// The clip the Clip Properties panel is about (f119): its track and id.
     sel_clip: Option<(TrackId, ClipId)>,
     /// The clips picked for an audio type (f123): a click picks one; Shift or Ctrl adds or removes it.
-    sel_clips: Vec<ClipId>,
+    pub(crate) sel_clips: Vec<ClipId>,
     props: Option<PropsForm>,
     rename: Option<(TrackId, String)>,
     pub message: Option<String>,
@@ -142,6 +142,8 @@ pub struct MtView {
     marker_rename: Option<(usize, String)>,
     /// The ruler drag in progress: the time it started at.
     ruler_drag: Option<f64>,
+    /// Normalize a mixdown to this peak (menu check box).
+    pub mix_normalize: bool,
 }
 
 impl Default for MtView {
@@ -166,11 +168,26 @@ impl Default for MtView {
             sessions_made: 0,
             marker_rename: None,
             ruler_drag: None,
+            mix_normalize: false,
         }
     }
 }
 
 impl MtView {
+    /// What Mixdown needs: the session and the options (`selected_only`: just the picked clips).
+    pub fn mixdown_input(
+        &self,
+        selected_only: bool,
+        normalize_db: Option<f32>,
+    ) -> Result<(wavcraft_core::multitrack::soundcraft_model::Session, wavcraft_core::mixdown::MixdownOptions), MtError> {
+        let mt = self.mt.as_ref().ok_or_else(|| MtError("no session: File > New > Multitrack Session first".into()))?;
+        let only_clips = selected_only.then(|| self.sel_clips.clone());
+        if selected_only && self.sel_clips.is_empty() {
+            return Err(MtError("no clips are selected: click clips in the Multitrack editor first".into()));
+        }
+        Ok((mt.session.clone(), wavcraft_core::mixdown::MixdownOptions { only_clips, normalize_db }))
+    }
+
     pub fn open_dialog(&mut self) {
         self.sessions_made += 1;
         self.dialog = Some(NewDialog { name: format!("Session {}", self.sessions_made), rate: 48_000, bits: 24, five_one: false });
@@ -1115,7 +1132,24 @@ impl MtView {
                 Ok("OK".into())
             }
             ("CLIPPROP", _) => usage(CLIPPROP_USAGE),
-            _ => usage("CLIP add <track> <path> <at_seconds> | CLIP adddoc <track> <at_seconds>"),
+            ("CLIP", "select") if w.len() == 2 && word(1) == "none" => {
+                self.sel_clips.clear();
+                Ok("OK selected=0".into())
+            }
+            ("CLIP", "select") if w.len() == 3 => {
+                let mt = self.mt.as_ref().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+                let id = mt.find_track(word(1))?;
+                let n: usize = word(2).parse().map_err(|_| MtError("<n> is the clip's 1-based position on the track".into()))?;
+                let clip = mt
+                    .session
+                    .track(id)
+                    .and_then(|t| t.clips().get(n.wrapping_sub(1)))
+                    .map(|c| c.id)
+                    .ok_or_else(|| MtError(format!("no clip {n} on that track")))?;
+                toggle(&mut self.sel_clips, clip);
+                Ok(format!("OK selected={}", self.sel_clips.len()))
+            }
+            _ => usage("CLIP add <track> <path> <at_seconds> | CLIP adddoc <track> <at_seconds> | CLIP select <track> <n> | CLIP select none"),
         }
     }
 }
@@ -1165,6 +1199,14 @@ fn stop_result(placed: usize, failures: &[String]) -> Result<usize, MtError> {
 }
 
 const CLIPPROP_USAGE: &str = "CLIPPROP <track> <i> [tempo=<bpm>|none] [beats=<n>|none] [key=<text>] [name=<s>] [gain=<db>]";
+
+fn toggle(v: &mut Vec<wavcraft_core::multitrack::soundcraft_model::ClipId>, id: wavcraft_core::multitrack::soundcraft_model::ClipId) {
+    if let Some(i) = v.iter().position(|x| *x == id) {
+        v.remove(i);
+    } else {
+        v.push(id);
+    }
+}
 
 fn note(failure: &mut Option<String>, r: Result<(), MtError>) {
     if let Err(e) = r {

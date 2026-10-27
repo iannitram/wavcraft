@@ -52,7 +52,7 @@
 //! - `VIDEO frame <seconds>` → `OK index=<i> size=<w>x<h> time=<t>` once the worker has decoded it, or `ERR <why>`
 //! - `VIDEO status` → `OK <text>` (what the panel says about the file); `VIDEO detach` → `OK`
 //! - `SESSION new <name> [rate=48000] [depth=24]`, `SESSION state`, `TRACK add [name] [fmt=mono|stereo|5.1]|format|remove|rename|mute|solo|volume …`,
-//!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`
+//!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`, `CLIP select <track> <n>|none`, `MIXDOWN [selected] [normalize=<dB>]` (f111)
 //!   `SESSION save <path>` / `SESSION open <path>` (the session file, f117; `OK offline=<n>`)
 //!   `CLIPPROP <track> <i> tempo=<bpm> beats=<n> key=<text> name=<s> gain=<db>` (clip properties, f119)
 //!   `CLIPTYPE <track> <i[,j..]|all> dialogue|music|sfx|ambience|none`, `CLIPTYPE filter <type>|all` (audio types, f123; clip numbers are 1-based)

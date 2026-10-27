@@ -33,6 +33,7 @@ pub mod jobs;
 pub mod meta;
 pub mod meters;
 pub mod mix;
+pub mod mixdown;
 pub mod name_template;
 pub mod noise;
 pub mod panels;

@@ -89,6 +89,8 @@ struct Opening {
     cancel: Arc<AtomicBool>,
     /// How far the streaming has got, in thousandths.
     progress: Arc<AtomicU32>,
+    /// Made here (a mixdown), not read from a file: it opens unsaved.
+    fresh: bool,
 }
 
 /// A background edit (roadmap B003) running on a worker thread: the window's thread pushes the
@@ -590,13 +592,39 @@ impl WaveApp {
             let _ = tx.send(result);
             ctx.request_repaint();
         });
-        self.opening = Some(Opening { path, result: rx, cancel, progress });
+        self.opening = Some(Opening { path, result: rx, cancel, progress, fresh: false });
         self.error = None;
         self.notice = None;
     }
 
+    /// Multitrack > Mixdown (f111): render the session, or the picked clips, offline through the
+    /// mix engine on a worker thread; the result opens like a file does (as a new, unsaved waveform).
+    fn start_mixdown(&mut self, selected_only: bool, normalize_db: Option<f32>, ctx: &egui::Context) -> Result<(), String> {
+        let (session, opts) = self.mtv.mixdown_input(selected_only, normalize_db).map_err(|e| e.to_string())?;
+        if let Some(old) = self.opening.take() {
+            old.cancel.store(true, Ordering::Relaxed);
+        }
+        let (tx, rx) = channel();
+        let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
+        let (ctx, job_cancel, job_progress) = (ctx.clone(), cancel.clone(), progress.clone());
+        let root = self.sessions.path.clone();
+        std::thread::spawn(move || {
+            let mut report = |p: f64| job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+            let result = wavcraft_core::mixdown::mixdown(&session, &opts, Some(root.as_path()), &mut report, &job_cancel)
+                .map_err(|e| e.to_string())
+                .and_then(|state| Document::from_state(PathBuf::new(), state).map_err(|e| e.to_string()));
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        self.opening = Some(Opening { path: PathBuf::from("Mixdown"), result: rx, cancel, progress, fresh: true });
+        self.error = None;
+        self.notice = None;
+        Ok(())
+    }
+
     fn finish_opening(&mut self) {
-        let Some(Opening { path, result: rx, .. }) = &self.opening else { return };
+        let Some(Opening { path, result: rx, fresh, .. }) = &self.opening else { return };
+        let fresh = *fresh;
         let result = match rx.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
@@ -610,7 +638,7 @@ impl WaveApp {
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
                 self.apply_crossfades();
-                self.saved = self.editor.as_ref().map(|e| e.history.current().clone());
+                self.saved = if fresh { None } else { self.editor.as_ref().map(|e| e.history.current().clone()) };
                 self.doc_path = doc.path.clone();
                 self.doc_id += 1;
                 self.stats.forget();
@@ -2717,6 +2745,23 @@ impl WaveApp {
                 },
                 _ => "ERR JOB testslow <ms> | JOB cancel".to_string(),
             },
+            "MIXDOWN" => {
+                let (mut selected, mut norm) = (false, None);
+                for w in rest.split_whitespace() {
+                    match w.split_once('=') {
+                        None if w == "selected" => selected = true,
+                        Some(("normalize", v)) => match v.parse::<f32>() {
+                            Ok(db) => norm = Some(db),
+                            Err(_) => return "ERR usage: MIXDOWN [selected] [normalize=<dB, 0 or lower>]".to_string(),
+                        },
+                        _ => return "ERR usage: MIXDOWN [selected] [normalize=<dB, 0 or lower>]".to_string(),
+                    }
+                }
+                match self.start_mixdown(selected, norm, ctx) {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
             "SAVE" => {
                 let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
                 match self.save(ctx, to.is_some(), to, false) {
@@ -2884,6 +2929,28 @@ impl WaveApp {
                 }
             });
             ui.menu_button("Edit", |ui| self.edit_menu(ui));
+            ui.menu_button("Multitrack", |ui| {
+                let has = self.mtv.mt.as_ref().is_some_and(|m| m.clip_count() > 0);
+                let norm = self.mtv.mix_normalize.then_some(-1.0);
+                ui.checkbox(&mut self.mtv.mix_normalize, "Normalize the mixdown to -1 dB");
+                if ui.add_enabled(has, egui::Button::new("Mixdown Session to New File")).clicked() {
+                    if let Err(e) = self.start_mixdown(false, norm, ui.ctx()) {
+                        self.error = Some(e);
+                    }
+                    ui.close();
+                }
+                let picked = has && !self.mtv.sel_clips.is_empty();
+                if ui
+                    .add_enabled(picked, egui::Button::new("Mixdown Selected Clips to New File"))
+                    .on_hover_text("Click clips in the Multitrack editor to pick them")
+                    .clicked()
+                {
+                    if let Err(e) = self.start_mixdown(true, norm, ui.ctx()) {
+                        self.error = Some(e);
+                    }
+                    ui.close();
+                }
+            });
             ui.menu_button("Window", |ui| {
                 for p in panels::REGISTRY {
                     let mut shown = self.panels.is_shown(p.id);
