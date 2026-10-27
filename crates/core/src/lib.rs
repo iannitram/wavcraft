@@ -72,6 +72,7 @@ pub mod rack;
 pub mod markers;
 pub mod peakcache;
 pub mod playlist;
+pub mod metronome;
 pub mod random;
 pub mod resample;
 pub mod recent_sessions;

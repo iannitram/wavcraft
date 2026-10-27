@@ -40,6 +40,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::DocState;
 use wavcraft_core::doc::span::EditSpan;
 use wavcraft_core::levels::LevelTap;
+use wavcraft_core::metronome::click_sound;
+use wavcraft_core::tempo::Tempo;
 use wavcraft_core::rack::{MAX_BLOCK, RackConfig, RackProcessor};
 use wavcraft_core::chanmap::{ChannelMap, choose_buffer};
 use wavcraft_core::resample::{Quality, Resampler};
@@ -58,6 +60,43 @@ const PRIME_FRAMES: u64 = 16_384;
 /// callback is still reading (the sinc kernel looks that far back; a resampler wider than this
 /// is not used, see [`rebuild_resampler`]).
 const RING_MARGIN: u64 = 1024;
+
+/// The metronome's settings as the app keeps them (roadmap C201).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Metronome {
+    pub on: bool,
+    /// 0 to 1.
+    pub volume: f32,
+    /// Bars of clicks before playback starts.
+    pub count_in_bars: u32,
+}
+
+impl Default for Metronome {
+    fn default() -> Metronome {
+        Metronome { on: false, volume: 0.5, count_in_bars: 0 }
+    }
+}
+
+/// The click sounds at the output's rate, made when the stream opens so the callback allocates nothing.
+struct ClickSounds {
+    accent: Vec<f32>,
+    normal: Vec<f32>,
+}
+
+/// Add a click (see `click_at` in `render_with`) to the first two channels of one device frame, the
+/// same on both. Never allocates.
+fn add_click<T: cpal::Sample + cpal::FromSample<f32>>(frame: &mut [T], click: f32)
+where
+    f32: cpal::FromSample<T>,
+{
+    if click == 0.0 {
+        return;
+    }
+    for slot in frame.iter_mut().take(2) {
+        let mixed = cpal::Sample::to_sample::<f32>(*slot) + click;
+        *slot = T::from_sample(mixed.clamp(-1.0, 1.0));
+    }
+}
 
 /// The stereo fold-down of the playing file (A134), a fixed table so the callback never
 /// allocates. `gains[c]` is file channel `c`'s `[left, right]` gain; see `core::channels`.
@@ -96,11 +135,16 @@ struct Playback {
     speed: f64,
     /// A scrub grain: its ends are faded.
     grain: bool,
+    /// Count-in frames (file frames) still to play before the audio starts (C201); the playhead
+    /// waits at `from` meanwhile.
+    lead: f64,
+    /// The click grid's beat 0, in play-order frames: `from - lead` with a count-in, else 0.
+    origin: f64,
 }
 
 impl Default for Playback {
     fn default() -> Playback {
-        Playback { generation: 0, pos: 0.0, end: 0.0, playing: false, plan: Plan::new(0.0, 0.0), from: 0.0, rev: false, speed: 1.0, grain: false }
+        Playback { generation: 0, pos: 0.0, end: 0.0, playing: false, plan: Plan::new(0.0, 0.0), from: 0.0, rev: false, speed: 1.0, grain: false, lead: 0.0, origin: 0.0 }
     }
 }
 
@@ -174,6 +218,14 @@ struct Shared {
     /// The input heard through the output while recording (C025). The callback only `try_lock`s
     /// it; the UI thread swaps it in and out.
     monitor: Mutex<Option<Arc<MonitorRing>>>,
+    /// The metronome (C201), read by the callback: on, volume (`f32` bits), the beat's length in
+    /// seconds (`f64` bits) and the beats per bar.
+    metro_on: AtomicBool,
+    metro_volume: AtomicU32,
+    metro_beat_secs: AtomicU64,
+    metro_numerator: AtomicU32,
+    /// The click sounds for the output's rate (none without an output).
+    clicks: Mutex<Option<ClickSounds>>,
 }
 
 impl Shared {
@@ -200,6 +252,11 @@ impl Shared {
             follow_default: AtomicBool::new(false),
             muted: AtomicBool::new(false),
             monitor: Mutex::new(None),
+            metro_on: AtomicBool::new(false),
+            metro_volume: AtomicU32::new(0.5f32.to_bits()),
+            metro_beat_secs: AtomicU64::new(0.5f64.to_bits()),
+            metro_numerator: AtomicU32::new(4),
+            clicks: Mutex::new(None),
         }
     }
 
@@ -247,8 +304,20 @@ impl Shared {
         state.grain = grain;
         state.pos = from;
         state.end = from + frames;
+        state.lead = 0.0;
+        state.origin = 0.0;
         state.playing = frames > 0.0;
         state.generation
+    }
+
+    /// Give the play `generation` a count-in of `lead` file frames (C201): the click grid starts that
+    /// far before its first frame and the audio waits for it. Ignored if a newer play has begun.
+    fn set_count_in(&self, generation: u64, lead: f64) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.generation == generation {
+            state.lead = lead;
+            state.origin = state.from - lead;
+        }
     }
 
     /// Change the speed (and the direction it is shown with) without starting a new play.
@@ -333,6 +402,8 @@ pub struct Player {
     /// Output reopens that followed a change of the default device (`maintain`), for the control
     /// channel's `STATE`.
     reopens: AtomicU32,
+    /// The metronome's settings (C201); the callback reads the copies in [`Shared`].
+    metronome: Mutex<Metronome>,
 }
 
 /// A paused play: what Resume starts again.
@@ -390,6 +461,7 @@ impl Player {
             held: Mutex::new(None),
             wraps_base: AtomicU32::new(0),
             reopens: AtomicU32::new(0),
+            metronome: Mutex::new(Metronome::default()),
         };
         player.reopen();
         if !no_audio() {
@@ -456,6 +528,9 @@ impl Player {
         }
         if self.has_output() {
             self.shared.device_rate.store(self.out_rate, Ordering::Release);
+            let sounds = ClickSounds { accent: click_sound(self.out_rate, true), normal: click_sound(self.out_rate, false) };
+            let old = std::mem::replace(&mut *self.shared.clicks.lock().unwrap_or_else(|e| e.into_inner()), Some(sounds));
+            drop(old);
             let _ = self.commands.send(Command::Rebuild);
         }
     }
@@ -539,6 +614,54 @@ impl Player {
     /// Whether the output stream has reported an error since it was opened.
     pub fn failed(&self) -> bool {
         self.shared.failed.load(Ordering::Relaxed)
+    }
+
+    /// Set the metronome and the document's tempo it follows. Takes effect at once, also while playing.
+    pub fn set_metronome(&self, metronome: Metronome, tempo: Tempo) {
+        *self.metronome.lock().unwrap_or_else(|e| e.into_inner()) = metronome;
+        let s = &self.shared;
+        s.metro_on.store(metronome.on, Ordering::Relaxed);
+        s.metro_volume.store(metronome.volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        s.metro_numerator.store(tempo.numerator, Ordering::Relaxed);
+        s.metro_beat_secs.store(tempo.beat_seconds().to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn metronome(&self) -> Metronome {
+        *self.metronome.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Count-in frames (file frames) before a Play: 0 unless the metronome is on with bars of count-in.
+    fn count_in_frames(&self) -> f64 {
+        let m = self.metronome();
+        let rate = self.shared.rate.load(Ordering::Acquire);
+        if !m.on || m.count_in_bars == 0 || rate == 0 {
+            return 0.0;
+        }
+        let beat = f64::from_bits(self.shared.metro_beat_secs.load(Ordering::Relaxed)) * f64::from(rate);
+        let numerator = f64::from(self.shared.metro_numerator.load(Ordering::Relaxed).max(1));
+        f64::from(m.count_in_bars) * numerator * beat
+    }
+
+    /// The frames (file frames, from `from`) where the metronome's clicks start, on the grid the mixer
+    /// uses (at most two minutes). The control channel's check, which needs no sound device.
+    pub fn render_clicks(&self, from: usize, to: usize) -> Vec<usize> {
+        let rate = self.shared.rate.load(Ordering::Acquire);
+        let beat = f64::from_bits(self.shared.metro_beat_secs.load(Ordering::Relaxed)) * f64::from(rate);
+        let to = to.min(from + 120 * rate as usize);
+        if !self.shared.metro_on.load(Ordering::Relaxed) || rate == 0 || beat <= 0.0 || to <= from {
+            return Vec::new();
+        }
+        let mut n = (from as f64 / beat).ceil() as u64;
+        let mut onsets = Vec::new();
+        loop {
+            let at = (n as f64 * beat).round();
+            if at >= to as f64 {
+                break;
+            }
+            onsets.push(at as usize);
+            n += 1;
+        }
+        onsets
     }
 
     /// Hand over the document to play (stops playback). Nothing is copied: the read-ahead thread
@@ -630,17 +753,18 @@ impl Player {
     /// not when there is no output, nothing in the plan, or `from` is past its end).
     pub fn start(&mut self, plan: &Plan, from: f64) -> bool {
         self.wraps_base.store(0, Ordering::Relaxed);
-        self.begin_play(*plan, from, false, 1.0, false)
+        let lead = self.count_in_frames();
+        self.begin_play(*plan, from, false, 1.0, false, lead)
     }
 
     /// Play a short scrub grain: `plan` from `from` at `speed` (negative runs backward), with
     /// faded ends. Replaces whatever was playing.
     pub fn grain(&mut self, plan: &Plan, from: f64, speed: f64) -> bool {
         self.wraps_base.store(0, Ordering::Relaxed);
-        self.begin_play(*plan, from, speed < 0.0, speed.abs().max(MIN_SPEED), true)
+        self.begin_play(*plan, from, speed < 0.0, speed.abs().max(MIN_SPEED), true, 0.0)
     }
 
-    fn begin_play(&mut self, plan: Plan, from: f64, rev: bool, speed: f64, grain: bool) -> bool {
+    fn begin_play(&mut self, plan: Plan, from: f64, rev: bool, speed: f64, grain: bool, lead: f64) -> bool {
         if self.is_muted() {
             return false;
         }
@@ -652,6 +776,10 @@ impl Player {
             return false;
         }
         let generation = self.shared.start_plan(plan, from, rev, speed, grain);
+        if lead > 0.0 {
+            // Before the command: the ring is primed (and the audio sounds) only after it.
+            self.shared.set_count_in(generation, lead);
+        }
         let started = self.shared.snapshot().playing;
         if started {
             let _ = self.commands.send(Command::Play { generation });
@@ -664,7 +792,7 @@ impl Player {
     fn restart(&mut self, plan: Plan, from: f64, rev: bool, speed: f64, grain: bool) -> bool {
         let now = self.shared.snapshot();
         self.wraps_base.fetch_add(now.wraps(), Ordering::Relaxed);
-        self.begin_play(plan, from, rev, speed, grain)
+        self.begin_play(plan, from, rev, speed, grain, 0.0)
     }
 
     /// Change the speed (negative: backward), taking effect at once while playing. Turning round
@@ -740,7 +868,7 @@ impl Player {
         let Some(h) = held else { return false };
         // The paused play's loop passes are kept; the new play counts from zero.
         let base = self.wraps_base.load(Ordering::Relaxed);
-        let ok = self.begin_play(h.plan, h.pos, h.rev, h.speed, h.grain);
+        let ok = self.begin_play(h.plan, h.pos, h.rev, h.speed, h.grain, 0.0);
         self.wraps_base.store(base, Ordering::Relaxed);
         ok
     }
@@ -1177,7 +1305,10 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
     device_rate: f64,
     before_commit: F,
     after_check: G,
-) {
+)
+where
+    f32: cpal::FromSample<T>,
+{
     let silence = T::from_sample(0.0f32);
     let Ok(state) = shared.state.try_lock() else {
         out.iter_mut().for_each(|s| *s = silence);
@@ -1198,9 +1329,33 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
     let Ok(map) = shared.map.try_lock() else { return };
     let Ok(downmix) = shared.downmix.try_lock().map(|d| *d) else { return };
     let step = f64::from(rate) / device_rate * playback.speed;
+    // The metronome (C201): a click on each beat of the document's tempo, mixed into the output here
+    // and nowhere else. Stateless: the click sounding at a grid position follows from the position
+    // itself, so a seek, a loop or a new play needs no reset. The grid is play-order frames from
+    // `playback.origin`; during a count-in `pos - lead` runs over the lead-in's beats.
+    let clicks_guard = shared.clicks.try_lock().ok();
+    let beat = f64::from_bits(shared.metro_beat_secs.load(Ordering::Relaxed)) * f64::from(rate);
+    let numerator = u64::from(shared.metro_numerator.load(Ordering::Relaxed).max(1));
+    let volume = f32::from_bits(shared.metro_volume.load(Ordering::Relaxed));
+    let metro = match clicks_guard.as_deref().and_then(|c| c.as_ref()) {
+        Some(c) if shared.metro_on.load(Ordering::Relaxed) && beat > 0.0 => Some(c),
+        _ => None,
+    };
+    let click_at = |v: f64| -> f32 {
+        let Some(c) = metro else { return 0.0 };
+        let since = v - playback.origin;
+        if since < 0.0 {
+            return 0.0;
+        }
+        let n = (since / beat).floor();
+        let into = (since - n * beat).max(0.0) * device_rate / f64::from(rate);
+        let sound = if (n as u64) % numerator == 0 { &c.accent } else { &c.normal };
+        sound.get(into as usize).map_or(0.0, |s| s * volume)
+    };
     let end = playback.end;
     let last = end.ceil().max(0.0) as u64;
     let mut pos = playback.pos.max(0.0);
+    let mut lead = playback.lead;
     let mut filled = shared.filled_to.load(Ordering::Acquire);
     let origin = shared.origin.load(Ordering::Acquire);
     let sample = |frame: u64, c: usize| shared.ring.get(Shared::slot(frame, c)).map_or(0.0, |v| f32::from_bits(v.load(Ordering::Relaxed)));
@@ -1219,6 +1374,12 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
     let mut finished = false;
     let mut peak = [0.0f32; 2];
     for frame in out.chunks_mut(channels) {
+        if lead > 0.0 {
+            // The count-in (C201): clicks only, while the playhead waits at the start.
+            add_click(frame, click_at(pos - lead));
+            lead -= step;
+            continue;
+        }
         if pos >= end {
             finished = true;
             break;
@@ -1299,6 +1460,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
                 *slot = T::from_sample(interp(source));
             }
         }
+        add_click(frame, click_at(pos));
         pos += step;
     }
     shared.levels.record(0, peak[0]);
@@ -1312,6 +1474,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
             state.playing = false;
         }
         state.pos = pos;
+        state.lead = lead;
     }
 }
 
