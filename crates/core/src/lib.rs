@@ -60,6 +60,7 @@ pub mod loudness;
 pub mod presets;
 pub mod rack;
 pub mod markers;
+pub mod playlist;
 pub mod random;
 pub mod recent_sessions;
 pub mod ruler;
@@ -91,7 +92,8 @@ pub mod vst3;
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;
 pub use doc::{Channel, DocState, Piece, SourceFormat};
-pub use markers::{Marker, Markers};
+pub use markers::{Marker, MarkerPick, Markers};
+pub use playlist::Playlist;
 
 pub use document::{Document, OpenError};
 pub use smpte::SmpteRate;

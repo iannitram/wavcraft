@@ -66,7 +66,8 @@ fn the_panel_layout_is_kept_in_the_settings_file() {
     Settings { panel_layout, zone_sizes, ..Settings::default() }.save(&file).unwrap();
     let back = Settings::load(&file);
     assert_eq!(Layout::decode(&back.panel_layout, &back.zone_sizes), layout);
-    assert!(std::fs::read_to_string(&file).unwrap().contains("panel_layout = left:;right:selection;bottom:history*"));
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("panel_layout = left:;right:selection,markers,playlist;bottom:freq,history*"), "{text}");
 }
 
 #[test]
@@ -330,4 +331,22 @@ fn a262_include_metadata_defaults_on_and_round_trips() {
     let off = Settings { save_include_metadata: false, ..Settings::default() };
     assert!(!Settings::parse(&off.to_text()).save_include_metadata);
     assert!(Settings::parse(&Settings::default().to_text()).save_include_metadata);
+}
+
+#[test]
+fn marker_columns_are_saved_and_unknown_names_ignored() {
+    use wavcraft_core::settings::MarkerColumns;
+    let dir = TempDir::new("marker-columns");
+    let file = dir.0.join("settings.txt");
+    assert!(Settings::load(&file).marker_columns.duration, "shown by default");
+    let mut s = Settings::default();
+    s.marker_columns.duration = false;
+    s.marker_columns.description = true;
+    s.save(&file).unwrap();
+    let back = Settings::load(&file);
+    assert_eq!(back.marker_columns, s.marker_columns);
+    assert_eq!(back.marker_columns.to_list(), "start,end,type,description");
+    assert_eq!(MarkerColumns::from_list("end, bogus ,type").to_list(), "end,type");
+    assert_eq!(Settings::parse("marker_columns =
+").marker_columns.to_list(), "", "an empty list hides them all");
 }

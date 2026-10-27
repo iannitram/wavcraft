@@ -335,6 +335,59 @@ const KEY_PANEL_LAYOUT: &str = "panel_layout";
 const KEY_ZONE_SIZES: &str = "zone_sizes";
 const KEY_WORKSPACE: &str = "workspace";
 const KEY_METADATA_FIELDS: &str = "metadata_fields";
+const KEY_MARKER_COLUMNS: &str = "marker_columns";
+
+/// Which columns the Markers panel shows besides the name (A181).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkerColumns {
+    pub start: bool,
+    pub end: bool,
+    pub duration: bool,
+    pub kind: bool,
+    pub description: bool,
+}
+
+impl MarkerColumns {
+    /// The columns' settings names, in display order.
+    pub const NAMES: [&'static str; 5] = ["start", "end", "duration", "type", "description"];
+
+    pub fn get(&self, i: usize) -> bool {
+        [self.start, self.end, self.duration, self.kind, self.description].get(i).copied().unwrap_or(false)
+    }
+
+    pub fn set(&mut self, i: usize, on: bool) {
+        match i {
+            0 => self.start = on,
+            1 => self.end = on,
+            2 => self.duration = on,
+            3 => self.kind = on,
+            4 => self.description = on,
+            _ => {}
+        }
+    }
+
+    /// `start,end,duration,type` style list of the columns that are on.
+    pub fn to_list(&self) -> String {
+        (0..Self::NAMES.len()).filter(|&i| self.get(i)).map(|i| Self::NAMES[i]).collect::<Vec<_>>().join(",")
+    }
+
+    /// The columns named in `list` (unknown names are ignored).
+    pub fn from_list(list: &str) -> MarkerColumns {
+        let mut c = MarkerColumns { start: false, end: false, duration: false, kind: false, description: false };
+        for name in list.split(',').map(str::trim) {
+            if let Some(i) = Self::NAMES.iter().position(|n| *n == name) {
+                c.set(i, true);
+            }
+        }
+        c
+    }
+}
+
+impl Default for MarkerColumns {
+    fn default() -> Self {
+        MarkerColumns { start: true, end: true, duration: true, kind: true, description: false }
+    }
+}
 
 /// What the settings file holds.
 #[derive(Debug, Clone, PartialEq)]
@@ -413,6 +466,8 @@ pub struct Settings {
     pub autosave_keep_days: u32,
     /// The block cache's RAM budget in megabytes (`None`: the default).
     pub cache_mb: Option<u64>,
+    /// The Markers panel's columns.
+    pub marker_columns: MarkerColumns,
 }
 
 impl Default for Settings {
@@ -459,6 +514,7 @@ impl Default for Settings {
             autosave_interval_secs: DEFAULT_INTERVAL_SECS,
             autosave_keep_days: DEFAULT_KEEP_DAYS,
             cache_mb: None,
+            marker_columns: MarkerColumns::default(),
         }
     }
 }
@@ -506,6 +562,7 @@ impl Settings {
                 KEY_PANEL_LAYOUT => s.panel_layout = value.to_string(),
                 KEY_ZONE_SIZES => s.zone_sizes = value.to_string(),
                 KEY_WORKSPACE => s.workspace = value.to_string(),
+                KEY_MARKER_COLUMNS => s.marker_columns = MarkerColumns::from_list(value),
                 KEY_METADATA_FIELDS => {
                     s.metadata_fields = Some(value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect())
                 }
@@ -790,6 +847,12 @@ impl Settings {
         }
         if !self.workspace.is_empty() {
             out.push_str(&format!("# workspace: the workspace in use (Window › Workspace; empty: Default).\n{KEY_WORKSPACE} = {}\n", self.workspace));
+        }
+        if self.marker_columns != MarkerColumns::default() {
+            out.push_str("# marker_columns: the Markers panel's columns (start, end, duration, type, description).
+");
+            out.push_str(&format!("{KEY_MARKER_COLUMNS} = {}
+", self.marker_columns.to_list()));
         }
         if let Some(fields) = &self.metadata_fields {
             out.push_str("# metadata_fields: what file lists show (Metadata Display), comma separated.\n");

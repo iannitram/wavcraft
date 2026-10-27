@@ -65,6 +65,8 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "history", title: "History", default_dock: DockSide::Right },
     PanelInfo { id: "selection", title: "Selection/View", default_dock: DockSide::Right },
     PanelInfo { id: "freq", title: "Frequency Analysis", default_dock: DockSide::Bottom },
+    PanelInfo { id: "markers", title: "Markers", default_dock: DockSide::Right },
+    PanelInfo { id: "playlist", title: "Playlist", default_dock: DockSide::Right },
 ];
 
 /// The registered panel with this id.
@@ -789,9 +791,9 @@ mod tests {
     #[test]
     fn actions_toggle_show_hide_and_report() {
         let mut s = PanelSet::default();
-        assert_eq!(s.report(), "waveform=1 spectral=1 history=1 selection=1 freq=1");
+        assert_eq!(s.report(), "waveform=1 spectral=1 history=1 selection=1 freq=1 markers=1 playlist=1");
         assert_eq!(s.apply_action("window.toggle.history"), Some(Ok(false)));
-        assert_eq!(s.report(), "waveform=1 spectral=1 history=0 selection=1 freq=1");
+        assert_eq!(s.report(), "waveform=1 spectral=1 history=0 selection=1 freq=1 markers=1 playlist=1");
         assert_eq!(s.apply_action("window.show.history"), Some(Ok(true)));
         assert_eq!(s.apply_action("window.hide.spectral"), Some(Ok(false)));
         assert!(matches!(s.apply_action("window.toggle.nope"), Some(Err(_))));
@@ -806,7 +808,7 @@ mod tests {
     #[test]
     fn the_default_layout_follows_the_registry() {
         let (l, set) = (Layout::default(), all());
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "selection"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "selection", "markers", "playlist"]);
         assert!(l.visible(DockSide::Left, &set).is_empty());
         assert_eq!(l.visible(DockSide::Center, &set), vec!["waveform", "spectral"]);
         assert_eq!(l.zone_of("history"), Some(DockSide::Right));
@@ -820,7 +822,7 @@ mod tests {
         let (mut l, set) = (Layout::default(), all());
         l.move_to("history", DockSide::Left, None).unwrap();
         assert_eq!(l.visible(DockSide::Left, &set), vec!["history"]);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["selection"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["selection", "markers", "playlist"]);
         l.move_to("selection", DockSide::Left, Some(0)).unwrap();
         assert_eq!(l.visible(DockSide::Left, &set), vec!["selection", "history"]);
         assert_eq!(l.active_in(DockSide::Left, &set), Some("selection"));
@@ -836,11 +838,11 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         l.activate("selection");
         set.set("selection", false);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["history"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "markers", "playlist"]);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("history"), "a hidden front tab gives way");
         set.set("selection", true);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "selection"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "selection", "markers", "playlist"]);
     }
 
     #[test]
@@ -849,9 +851,13 @@ mod tests {
         l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
         l.cycle(DockSide::Right, &set, 1);
+        assert_eq!(l.active_in(DockSide::Right, &set), Some("markers"));
+        l.cycle(DockSide::Right, &set, 1);
+        assert_eq!(l.active_in(DockSide::Right, &set), Some("playlist"));
+        l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("history"));
         l.cycle(DockSide::Right, &set, -1);
-        assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
+        assert_eq!(l.active_in(DockSide::Right, &set), Some("playlist"));
         l.cycle(DockSide::Left, &set, 1);
     }
 
@@ -877,7 +883,7 @@ mod tests {
         assert!(!l.set_size(DockSide::Bottom, 300.4));
         l.toggle_maximize("history");
         let (tabs, sizes) = l.encode();
-        assert_eq!(tabs, "left:selection*;right:;bottom:freq,history*");
+        assert_eq!(tabs, "left:selection*;right:markers,playlist;bottom:freq,history*");
         assert_eq!(sizes, "left:220,right:240,bottom:300");
         let back = Layout::decode(&tabs, &sizes);
         l.restore();
@@ -889,7 +895,7 @@ mod tests {
         let l = Layout::decode("left:waveform,history,history,gone;moon:selection;right:", "left:5,bottom:abc,right:nan,x:1");
         let set = all();
         assert_eq!(l.visible(DockSide::Left, &set), vec!["history"]);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["selection"], "the missing panel returns to its default zone");
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["selection", "markers", "playlist"], "the missing panel returns to its default zone");
         assert_eq!(l.size(DockSide::Left), Some(220.0), "out of range: default");
         assert_eq!(Layout::decode("", ""), Layout::default());
         assert_eq!(Layout::decode("garbage", ",,"), Layout::default());
@@ -919,11 +925,11 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         assert_eq!(
             l.report(&set),
-            "zone.left=- zone.right=history,selection zone.bottom=freq zone.center=waveform,spectral front.left=- front.right=history front.bottom=freq maximized=- floating=-"
+            "zone.left=- zone.right=history,selection,markers,playlist zone.bottom=freq zone.center=waveform,spectral front.left=- front.right=history front.bottom=freq maximized=- floating=-"
         );
         l.apply_command(&mut set, "move selection left").unwrap();
         l.apply_command(&mut set, "maximize selection").unwrap();
-        assert!(l.report(&set).starts_with("zone.left=selection zone.right=history "));
+        assert!(l.report(&set).starts_with("zone.left=selection zone.right=history,markers,playlist "));
         assert!(l.report(&set).contains("maximized=selection"));
     }
 

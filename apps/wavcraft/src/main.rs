@@ -19,8 +19,10 @@ mod mixer;
 mod meters_ui;
 mod freq_panel;
 mod oscb;
+mod markers_panel;
 mod mixpaste;
 mod player;
+mod playlist_panel;
 // Not called yet: the Reveal in file manager menu item will use it.
 #[allow(dead_code)]
 mod reveal;
