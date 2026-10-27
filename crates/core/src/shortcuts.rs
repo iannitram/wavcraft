@@ -233,6 +233,7 @@ pub const BINDINGS: &[Binding] = &[
     // View and the mouse tools.
     act(ActionId::CursorToStart, key("Home")),
     act(ActionId::CursorToEnd, key("End")),
+    act(ActionId::GotoTime, cmd("J")),
     act(ActionId::MarkerAdd, key("M")),
     act(ActionId::MarkerPrev, cmd_alt("ArrowLeft")),
     act(ActionId::MarkerNext, cmd_alt("ArrowRight")),

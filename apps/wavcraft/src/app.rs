@@ -334,7 +334,7 @@ pub struct WaveApp {
     /// Window › Mixer: the channel strips (C152). Its own flag, not a panels registry entry.
     show_mixer: bool,
     mixer: MixerModel,
-    /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
+    /// Insert › Silence…: the length being typed, in the time format, while the dialog is up.
     insert_silence: Option<String>,
     /// File › Import › Raw Data…: the settings being typed while the dialog is up.
     raw_import: Option<RawDialog>,
@@ -427,6 +427,9 @@ pub struct WaveApp {
     batch: BatchPanel,
     /// Copy and Paste's side of the system clipboard.
     os_clipboard: crate::oscb::OsClipboard,
+    /// The Time panel's readout being typed in (Go to Time), and a digit-drag in progress.
+    goto: Option<String>,
+    scrub: Option<Scrub>,
 }
 
 /// A clip's source open in the Waveform editor (f116).
@@ -439,6 +442,16 @@ struct ClipEdit {
     /// The file that was open before, opened again on return.
     back_to: Option<PathBuf>,
 }
+
+/// A drag across the digits of a time box: the frames one step is worth and the drag not yet used.
+struct Scrub {
+    name: &'static str,
+    unit: usize,
+    pending: f32,
+}
+
+/// Pixels of vertical drag for one step of the digit group.
+const SCRUB_PX_PER_STEP: f32 = 6.0;
 
 impl WaveApp {
     /// `session_dir`: the `--session-dir` flag, which wins over the environment variable and the
@@ -540,6 +553,8 @@ impl WaveApp {
             show_time_panel: true,
             panel_edit: None,
             batch: BatchPanel::default(),
+            goto: None,
+            scrub: None,
             insert_silence: None,
             stats: StatsPanel::default(),
             raw_import: None,
@@ -2164,6 +2179,14 @@ impl WaveApp {
             self.set_time_format(fmt);
             return Ok(false);
         }
+        if id == ActionId::GotoTime {
+            if frames == 0 {
+                return Err("no file is open".to_string());
+            }
+            self.show_time_panel = true;
+            self.goto = Some(self.fmt_time(self.selection.start()));
+            return Ok(false);
+        }
         if frames == 0 && !matches!(id, ActionId::InsertSilence | ActionId::InsertFile) {
             return Err("no file is open".to_string());
         }
@@ -2191,7 +2214,10 @@ impl WaveApp {
                 let start = self.selection.start().min(playhead);
                 self.selection = Selection { anchor: start, head: playhead };
             }
-            ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
+            ActionId::InsertSilence if self.editor.is_some() => {
+                let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
+                self.insert_silence = Some(self.time_format.format(rate as usize, rate));
+            }
             ActionId::InsertFile => self.pick_insert_file(ctx)?,
             // f79: next to the file, as <name>_L.wav, <name>_R.wav (the menu and the control channel).
             ActionId::ExtractChannels => return self.start_extract(ctx).map(|()| false),
@@ -2204,8 +2230,8 @@ impl WaveApp {
                     return Err(format!("{} is not available now", actions::action(id).menu));
                 }
                 if let Some(Repeat::InsertSilence(frames)) = editor.last {
-                    let secs = frames as f64 / f64::from(editor.history.current().sample_rate().max(1));
-                    self.insert_silence = Some(format!("{secs:.3}"));
+                    let rate = editor.history.current().sample_rate();
+                    self.insert_silence = Some(self.time_format.format(frames as usize, rate));
                 } else if let Some(Repeat::Effect(i, params)) = editor.last.clone().filter(|r| matches!(r, Repeat::Effect(_, p) if !p.is_empty())) {
                     // An effect with settings reopens its dialog on the last values.
                     self.effect_dialog = EffectDialog::new(i, Some(params));
@@ -2318,13 +2344,14 @@ impl WaveApp {
         }
     }
 
-    /// Insert › Silence…: a length in seconds, inserted at the cursor on every channel.
+    /// Insert › Silence…: a length in the chosen time format, inserted at the cursor on every channel.
     fn insert_silence_dialog(&mut self, ctx: &egui::Context) {
+        let time_format = self.time_format;
         let Some(text) = self.insert_silence.as_mut() else { return };
         let mut choice = None;
         egui::Window::new("Insert Silence").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Duration (seconds):");
+                ui.label(format!("Duration ({}):", time_format.menu()));
                 let r = ui.text_edit_singleline(text);
                 if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     choice = Some(true);
@@ -2342,32 +2369,31 @@ impl WaveApp {
         });
         match choice {
             Some(true) => {
-                let secs = self.insert_silence.take().and_then(|t| t.trim().parse::<f64>().ok()).filter(|s| s.is_finite() && *s > 0.0);
-                let Some(secs) = secs else {
-                    self.error = Some("Insert Silence: type a length in seconds, above 0".to_string());
+                let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
+                let frames = self.insert_silence.take().and_then(|t| self.time_format.parse(&t, rate)).filter(|f| *f > 0);
+                let Some(frames) = frames else {
+                    self.error = Some(format!("Insert Silence: type a length above 0 in the {} format", self.time_format.menu()));
                     return;
                 };
-                self.run_insert_silence(secs, ctx);
+                self.run_insert_silence(frames as u64, ctx);
             }
             Some(false) => self.insert_silence = None,
             None => {}
         }
     }
 
-    fn run_insert_silence(&mut self, secs: f64, ctx: &egui::Context) -> Option<String> {
+    fn run_insert_silence(&mut self, frames: u64, ctx: &egui::Context) -> Option<String> {
         if self.running.is_some() || self.saving.is_some() {
             return Some("wait for the background job or the save to finish".to_string());
         }
         let at = self.selection.start() as u64;
         let editor = self.editor.as_mut()?;
         let rate = editor.history.current().sample_rate();
-        let frames = match silence_frames(secs, rate) {
-            Ok(f) => f,
-            Err(why) => {
-                self.error = Some(why.clone());
-                return Some(why);
-            }
-        };
+        // The 24-hour cap, whichever way the length was typed.
+        if let Err(why) = silence_frames(frames as f64 / f64::from(rate.max(1)), rate) {
+            self.error = Some(why.clone());
+            return Some(why);
+        }
         match editor.insert_silence(at, frames) {
             Ok(out) => {
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
@@ -2391,15 +2417,86 @@ impl WaveApp {
         format!("{}-{}", self.fmt_time(self.selection.start()), self.fmt_time(self.selection.end()))
     }
 
+    /// Move the cursor to `frame` (kept inside the file), stop playing and bring it into view.
+    fn goto_frame(&mut self, frame: usize) {
+        let total = self.doc.as_ref().map_or(0, Document::frames);
+        let frame = frame.min(total);
+        self.player.stop();
+        self.selection = Selection::at(frame);
+        let width = self.editor_width.max(1.0);
+        if (frame as f64) < self.view.start || (frame as f64) > self.view.end(width) {
+            let half = (self.view.end(width) - self.view.start) / 2.0;
+            self.view.set_start((frame as f64 - half).max(0.0) as usize, width, total);
+        }
+    }
+
     /// Window › Time panel: the playhead (or, stopped, the cursor) as a large readout.
     fn time_panel(&mut self, ui: &mut egui::Ui) {
         let frame = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
-        let text = if self.doc.is_some() { self.fmt_time(frame) } else { self.time_format.format(0, 0) };
+        let rate = self.doc.as_ref().map_or(0, Document::sample_rate);
+        let text = self.time_format.format(frame, rate);
+        let mut jump = None;
         ui.horizontal(|ui| {
             ui.label("Time");
-            ui.label(egui::RichText::new(text).monospace().size(34.0));
+            if let Some(typed) = self.goto.as_mut() {
+                // Go to Time: type a time in the chosen format, Enter moves the cursor, Escape drops it.
+                let r = ui.add(egui::TextEdit::singleline(typed).font(egui::FontId::monospace(34.0)).desired_width(260.0));
+                if !r.has_focus() && !r.lost_focus() {
+                    r.request_focus();
+                }
+                if r.lost_focus() {
+                    if !ui.input(|i| i.key_pressed(Key::Escape)) {
+                        match self.time_format.parse(typed, rate) {
+                            Some(f) => jump = Some(f),
+                            None => self.error = Some(format!("\"{typed}\" is not a time in the {} format", self.time_format.menu())),
+                        }
+                    }
+                    self.goto = None;
+                }
+            } else {
+                let r = ui.add(egui::Label::new(egui::RichText::new(&text).monospace().size(34.0)).sense(egui::Sense::click_and_drag()));
+                let r = r.on_hover_text("Click to type a time; drag up or down across a digit group to scrub");
+                if self.doc.is_some() {
+                    if r.clicked() {
+                        self.goto = Some(text.clone());
+                    }
+                    if let Some(f) = self.scrub_drag(&r, "time", &text, frame, rate) {
+                        jump = Some(f);
+                    }
+                }
+            }
             ui.label(self.time_format.menu());
         });
+        if let Some(f) = jump {
+            self.goto_frame(f);
+        }
+    }
+
+    /// Dragging up or down across the digits of the time `text` shown in `r` steps the digit
+    /// group under the pointer (A105). Returns the new frame when a step happened.
+    fn scrub_drag(&mut self, r: &egui::Response, name: &'static str, text: &str, value: usize, rate: u32) -> Option<usize> {
+        let total = self.doc.as_ref().map_or(0, Document::frames);
+        if r.drag_started() {
+            let char_w = (r.rect.width() / text.chars().count().max(1) as f32).max(1.0);
+            let x = r.interact_pointer_pos().map_or(0.0, |p| p.x - r.rect.left());
+            let unit = self.time_format.unit_at(text, (x / char_w).floor().max(0.0) as usize, rate);
+            self.scrub = unit.map(|unit| Scrub { name, unit, pending: 0.0 });
+        }
+        if !r.dragged() {
+            if r.drag_stopped() {
+                self.scrub = None;
+            }
+            return None;
+        }
+        let scrub = self.scrub.as_mut().filter(|s| s.name == name)?;
+        scrub.pending -= r.drag_delta().y;
+        let steps = (scrub.pending / SCRUB_PX_PER_STEP).trunc();
+        if steps == 0.0 {
+            return None;
+        }
+        scrub.pending -= steps * SCRUB_PX_PER_STEP;
+        let new = TimeFormat::scrub(value, steps as i64, scrub.unit, total);
+        (new != value).then_some(new)
     }
 
     /// Window › Selection/View panel: begin, end and duration of the selection and of the visible
@@ -2449,13 +2546,23 @@ impl WaveApp {
     /// returns the frame typed when Enter is pressed or the box is left (Escape drops the text).
     fn time_box(&mut self, ui: &mut egui::Ui, name: &'static str, value: usize, rate: u32) -> Option<usize> {
         let editing = matches!(&self.panel_edit, Some((n, _)) if *n == name);
-        let mut text = match (&self.panel_edit, editing) {
-            (Some((_, t)), true) => t.clone(),
-            _ => self.time_format.format(value, rate),
-        };
+        if !editing {
+            // Shown as text: a click starts typing, a drag across the digits scrubs (A105).
+            let shown = self.time_format.format(value, rate);
+            let r = ui.add(egui::Label::new(egui::RichText::new(&shown).monospace()).sense(egui::Sense::click_and_drag()));
+            let r = r.on_hover_text("Click to type; drag up or down across a digit group to scrub");
+            if r.clicked() && rate != 0 {
+                self.panel_edit = Some((name, shown.clone()));
+            }
+            return if rate == 0 { None } else { self.scrub_drag(&r, name, &shown, value, rate) };
+        }
+        let mut text = self.panel_edit.as_ref().map(|(_, t)| t.clone()).unwrap_or_default();
         let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(120.0).font(egui::TextStyle::Monospace));
-        if r.changed() || (r.has_focus() && !editing) {
+        if r.changed() {
             self.panel_edit = Some((name, text.clone()));
+        }
+        if !r.has_focus() && !r.lost_focus() {
+            r.request_focus();
         }
         if !r.lost_focus() {
             return None;
@@ -3869,7 +3976,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} clipboard={} clip_frames={} msel={} undo={} redo={} path={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} undo={} redo={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -3881,6 +3988,8 @@ impl WaveApp {
                             self.time_format.name(),
                             self.selection_text(),
                             u8::from(self.snap_frames),
+                            self.selection.start(),
+                            self.fmt_time(self.selection.start()),
                             e.current_clipboard + 1,
                             e.clipboard().map_or(0, |c| c.len_frames()),
                             {
@@ -3893,7 +4002,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {view} time_display={} selection_text=- snap_frames={} clipboard=1 clip_frames=0 msel=- undo=- redo=- path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {view} time_display={} selection_text=- snap_frames={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- undo=- redo=- path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         self.time_format.name(),
@@ -4358,12 +4467,41 @@ impl WaveApp {
                 Err(e) => format!("ERR {e}"),
             },
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
-                Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
-                    None => format!("OK selection={}", sel(self)),
-                    Some(e) => format!("ERR {e}"),
-                },
+                Ok(secs) if secs.is_finite() && secs > 0.0 => {
+                    let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
+                    match silence_frames(secs, rate) {
+                        Err(why) => format!("ERR {why}"),
+                        Ok(frames) => match self.run_insert_silence(frames, ctx) {
+                            None => format!("OK selection={}", sel(self)),
+                            Some(e) => format!("ERR {e}"),
+                        },
+                    }
+                }
                 _ => "ERR INSERT_SILENCE <seconds>, above 0".to_string(),
             },
+            // The same, with the length written in the chosen time format (A146).
+            "INSERT_SILENCE_FMT" => {
+                let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
+                match self.time_format.parse(rest, rate).filter(|f| *f > 0) {
+                    Some(frames) => match self.run_insert_silence(frames as u64, ctx) {
+                        None => format!("OK selection={}", sel(self)),
+                        Some(e) => format!("ERR {e}"),
+                    },
+                    None => format!("ERR INSERT_SILENCE_FMT <length>, above 0, written as {}", self.time_format.menu()),
+                }
+            }
+            // Jump to time: the cursor goes to the typed time (clamped to the file) (A104).
+            "GOTO" => {
+                let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
+                match (self.time_format.parse(rest, rate), self.editor.is_some()) {
+                    (Some(frame), true) => {
+                        self.goto_frame(frame);
+                        format!("OK cursor={}", self.selection.start())
+                    }
+                    (_, false) => "ERR no file is open".to_string(),
+                    (None, _) => format!("ERR GOTO <time>, written as {}", self.time_format.menu()),
+                }
+            }
             // Delete Silence with settings: one undo step; answers the count and seconds removed.
             "DELETE_SILENCE" => {
                 use wavcraft_core::diagnostics::silence::SilenceParams;
@@ -6031,8 +6169,24 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, f
     let (ground, tick, text) = if dark { (32, 140, 190) } else { (225, 110, 60) };
     painter.rect_filled(rect, 0.0, Color32::from_gray(ground));
     let seconds_per_px = view.frames_per_px / f64::from(rate.max(1));
-    let step = ruler_step_for(fmt, seconds_per_px * 110.0, rate);
+    let step = fmt.tick_step(seconds_per_px * 110.0, rate);
     let first = (view.start / f64::from(rate.max(1)) / step).floor() as i64;
+    // Fine ticks between the labelled ones, when they are at least 4 px apart (A107).
+    let parts = fmt.subdivisions(step, rate);
+    let minor_px = step / seconds_per_px.max(1e-12) / f64::from(parts);
+    if parts > 1 && minor_px >= 4.0 {
+        for k in first * i64::from(parts)..(first + 200) * i64::from(parts) {
+            let t = k as f64 * step / f64::from(parts);
+            let x = rect.left() + view.x_of(t * f64::from(rate));
+            if x > rect.right() {
+                break;
+            }
+            if x < rect.left() || t < 0.0 || k % i64::from(parts) == 0 {
+                continue;
+            }
+            painter.line_segment([pos2(x, rect.bottom() - 3.0), pos2(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(90)));
+        }
+    }
     for k in first..first + 200 {
         let t = k as f64 * step;
         let x = rect.left() + view.x_of(t * f64::from(rate));
@@ -6050,30 +6204,6 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, f
             egui::FontId::monospace(11.0),
             Color32::from_gray(text),
         );
-    }
-}
-
-/// The ruler's tick spacing in seconds for `fmt`: round numbers of the format's own unit (samples
-/// in powers 1-2-5, SMPTE frames below a second), else of seconds.
-fn ruler_step_for(fmt: TimeFormat, min_seconds: f64, rate: u32) -> f64 {
-    match fmt {
-        TimeFormat::Samples => {
-            let min_frames = (min_seconds * f64::from(rate.max(1))).max(1.0);
-            let mut decade = 1.0f64;
-            loop {
-                if let Some(m) = [1.0, 2.0, 5.0].iter().map(|m| m * decade).find(|f| *f >= min_frames) {
-                    return m / f64::from(rate.max(1));
-                }
-                decade *= 10.0;
-            }
-        }
-        TimeFormat::Decimal | TimeFormat::Compact => ruler_step(min_seconds),
-        _ => {
-            // SMPTE: whole frames below a second.
-            const FRAMES: [f64; 5] = [1.0, 2.0, 5.0, 10.0, 15.0];
-            let frame = fmt.smpte().map_or(1.0 / 30.0, |r| r.frame_seconds());
-            FRAMES.iter().map(|f| f * frame).find(|s| *s >= min_seconds).unwrap_or_else(|| ruler_step(min_seconds.max(1.0)))
-        }
     }
 }
 
@@ -6103,12 +6233,6 @@ fn draw_markers(painter: &egui::Painter, rect: Rect, view: &Viewport, markers: &
         ));
         painter.text(pos2(x0 + 10.0, rect.bottom() - 3.0), egui::Align2::LEFT_BOTTOM, &m.name, egui::FontId::proportional(10.0), color);
     }
-}
-
-/// The smallest "round" number of seconds that is at least `min_seconds`.
-fn ruler_step(min_seconds: f64) -> f64 {
-    const STEPS: [f64; 19] = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0];
-    STEPS.iter().copied().find(|s| *s >= min_seconds).unwrap_or(3600.0)
 }
 
 /// The keys of the colour items, in the order of [`appearance::ITEMS`].
@@ -6349,25 +6473,6 @@ mod tests {
         assert_eq!(dropped_path(&[]), None);
         assert_eq!(dropped_path(&[file("")]), None);
         assert_eq!(dropped_path(&[file(""), file("/a/b.wav"), file("/c.wav")]), Some(PathBuf::from("/a/b.wav")));
-    }
-
-    #[test]
-    fn ruler_steps_are_round_and_wide_enough() {
-        assert_eq!(ruler_step(0.0004), 0.001);
-        assert_eq!(ruler_step(0.7), 1.0);
-        assert_eq!(ruler_step(45.0), 60.0);
-        assert_eq!(ruler_step(5000.0), 3600.0);
-    }
-
-    #[test]
-    fn ruler_steps_follow_the_time_format() {
-        assert_eq!(ruler_step_for(TimeFormat::Decimal, 0.7, 48_000), 1.0);
-        assert!((ruler_step_for(TimeFormat::Samples, 0.0011, 48_000) - 100.0 / 48_000.0).abs() < 1e-12, "100 samples");
-        assert!((ruler_step_for(TimeFormat::Smpte30, 0.02, 48_000) - 1.0 / 30.0).abs() < 1e-12, "one frame");
-        assert!((ruler_step_for(TimeFormat::Smpte30, 0.2, 48_000) - 10.0 / 30.0).abs() < 1e-12);
-        assert_eq!(ruler_step_for(TimeFormat::Smpte30, 3.0, 48_000), 5.0);
-        assert!((ruler_step_for(TimeFormat::Smpte24, 0.02, 48_000) - 1.0 / 24.0).abs() < 1e-12);
-        assert!((ruler_step_for(TimeFormat::Smpte5994, 0.01, 48_000) - 1001.0 / 60_000.0).abs() < 1e-12);
     }
 
     #[test]

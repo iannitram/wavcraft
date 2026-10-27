@@ -105,6 +105,7 @@ pub enum ActionId {
     MarkerToPoint,
     ExtractChannels,
     ExportRanges,
+    GotoTime,
 }
 
 /// Which part of the program carries an action out.
@@ -208,6 +209,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeDecimal, "view.time_display.decimal", "Decimal (mm:ss.ddd)"),
     window(ActionId::TimeCompact, "view.time_display.compact", "Compact"),
     window(ActionId::TimeSamples, "view.time_display.samples", "Samples"),
+    window(ActionId::GotoTime, "view.gotoTime", "Go to Time…"),
     window(ActionId::TimeSmpte24, "view.time_display.smpte_24", "SMPTE 24 fps"),
     window(ActionId::TimeSmpte25, "view.time_display.smpte_25", "SMPTE 25 fps"),
     window(ActionId::TimeSmpte2997Df, "view.time_display.smpte_2997df", "SMPTE 29.97 fps drop"),
@@ -471,7 +473,7 @@ impl Editor {
             ActionId::MarkerToPoint => !self.history.current().markers().touched_kind(selection, false).is_empty(),
             ActionId::ExtractChannels => self.channel_count() >= 2 && self.len() > 0,
             ActionId::ExportRanges => !crate::export::exportable_ranges(self.history.current(), None).is_empty(),
-            ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
+            ActionId::GotoTime | ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
             ActionId::ZoomToSelection => has_sel,
             ActionId::ZeroInward
@@ -1022,6 +1024,7 @@ impl Editor {
             | ActionId::TimeSmpte30
             | ActionId::TimeSmpte5994
             | ActionId::SnapFrames
+            | ActionId::GotoTime
             // Repeat, Delete Silence and the zero-crossing adjusts returned above.
             | ActionId::DeleteSilence
             | ActionId::RepeatLastDialog

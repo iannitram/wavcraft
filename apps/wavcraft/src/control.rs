@@ -5,7 +5,7 @@
 //! by `WAVCRAFT_CONTROL_TOKEN_FILE` (made owner-only with a CSPRNG token when missing; an
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
-//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> tool=<name> view=<a>-<b> time_display=<format> selection_text=<range> snap_frames=<0|1> clipboard=<1-5> clip_frames=<n> undo=<label> redo=<label> path=<the document's own path>`
+//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> tool=<name> view=<a>-<b> time_display=<format> selection_text=<range> snap_frames=<0|1> cursor_frame=<frame> cursor_text=<time in the format> clipboard=<1-5> clip_frames=<n> undo=<label> redo=<label> path=<the document's own path>`
 //!   (`path=` is last: it may hold spaces; Save Selection As and Export do not change it)
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
@@ -38,6 +38,8 @@
 //! - `AUTOCLICK [threshold=50 complexity=20]` → same reply (Automatic Click Remover, scan and repair in one command; one undo step "Automatic Click Remover"; `ACTION diagnostics.autoClickRemover`)
 //! - `DIAG scan <declip|declick> [key=value ...]` → `OK regions=<n> skipped=<m>` (scan the selection, the whole file when none, into the Diagnostics window's list; answered when the scan ends); `DIAG repair <all|i,j,k>` → `OK repaired=<n> skipped=<m>` (one undo step named for the tool; `ERR` when the list is stale)
 //! - `INSERT_SILENCE <seconds>` → `OK selection=<a>-<b>` (Insert › Silence at the cursor)
+//! - `INSERT_SILENCE_FMT <length>` → `OK selection=<a>-<b>` (the same, with the length written in the chosen time format)
+//! - `GOTO <time>` → `OK cursor=<frame>` (Go to Time: the cursor moves to the time, written in the chosen time format, clamped to the file; `ERR` when no file is open or the time does not read)
 //! - `DELETE_SILENCE [threshold_db=-48] [min_len_ms=500] [keep_ms=150]` → `OK stretches=<n> removed_s=<seconds> selection=<a>-<b>` (Edit › Delete Silence on the selection, the whole file when none; one undo step; `ERR <why>` when refused, e.g. everything is below the threshold)
 //! - `STATS [<start> <end>]` (frames; the selection or the whole file without them) → `OK range=<a>-<b> ...` then, per channel, `ch<i> peak=.. peak_db=.. peak_frame=.. min=.. max=.. dc_pct=.. rms_*_db=.. dyn_db=.. clip_runs=.. clip_samples=.. bits=..`.
 //!   Runs the scan at once and keeps it for `ACTION stats.goto_peak|stats.next_clip|stats.prev_clip` (the cursor moves; `ERR` when there is nowhere to go)

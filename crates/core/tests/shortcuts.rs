@@ -64,6 +64,7 @@ shortcuts! {
     right_channel_down: "ArrowDown" => A(ActionId::RightChannel);
     cursor_to_start_home: "Home" => A(ActionId::CursorToStart);
     cursor_to_end_end: "End" => A(ActionId::CursorToEnd);
+    goto_time_ctrl_j: "Ctrl+J" => A(ActionId::GotoTime);
     marker_add_m: "M" => A(ActionId::MarkerAdd);
     marker_prev_ctrl_alt_left: "Ctrl+Alt+ArrowLeft" => A(ActionId::MarkerPrev);
     marker_next_ctrl_alt_right: "Ctrl+Alt+ArrowRight" => A(ActionId::MarkerNext);
