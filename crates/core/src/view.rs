@@ -1,6 +1,7 @@
 //! Zoom and scroll arithmetic, selections and time formatting. All positions are in frames.
 
 use crate::smpte::{CUSTOM_DEFAULT_FPS, SmpteRate};
+use crate::tempo::Tempo;
 
 /// The closest zoom: one frame spread over this many pixels.
 const MAX_PX_PER_FRAME: f64 = 16.0;
@@ -286,11 +287,13 @@ pub enum TimeFormat {
     Custom(u16),
     /// Compact Disc `mm:ss:ff` at 75 frames a second (A103).
     Cd75,
+    /// `bar:beat.tick` at the document's tempo and time signature ([`Tempo`]). Roadmap A101.
+    BarsBeats,
 }
 
 impl TimeFormat {
     /// Every format once; `Custom` carries the default rate (the settings file keeps the user's).
-    pub const ALL: [TimeFormat; 11] = [
+    pub const ALL: [TimeFormat; 12] = [
         TimeFormat::Decimal,
         TimeFormat::Compact,
         TimeFormat::Samples,
@@ -302,6 +305,7 @@ impl TimeFormat {
         TimeFormat::Smpte5994,
         TimeFormat::Custom(CUSTOM_DEFAULT_FPS),
         TimeFormat::Cd75,
+        TimeFormat::BarsBeats,
     ];
 
     /// The SMPTE rate, for the SMPTE formats.
@@ -340,6 +344,7 @@ impl TimeFormat {
             TimeFormat::Smpte5994 => "smpte_5994",
             TimeFormat::Custom(_) => "custom",
             TimeFormat::Cd75 => "cd75",
+            TimeFormat::BarsBeats => "bars_beats",
         }
     }
 
@@ -357,6 +362,7 @@ impl TimeFormat {
             TimeFormat::Smpte5994 => "SMPTE 59.94 fps",
             TimeFormat::Custom(_) => "Custom frame rate…",
             TimeFormat::Cd75 => "Compact Disc (mm:ss:ff, 75 fps)",
+            TimeFormat::BarsBeats => "Bars and Beats",
         }
     }
 
@@ -377,7 +383,13 @@ impl TimeFormat {
 
     /// `frame` at `sample_rate` in this format.
     pub fn format(self, frame: usize, sample_rate: u32) -> String {
+        self.format_with(frame, sample_rate, &Tempo::default())
+    }
+
+    /// [`format`](Self::format) with the document's tempo for Bars and Beats.
+    pub fn format_with(self, frame: usize, sample_rate: u32, tempo: &Tempo) -> String {
         match self {
+            TimeFormat::BarsBeats => tempo.format(frame, sample_rate),
             TimeFormat::Decimal => format_time(frame, sample_rate),
             TimeFormat::Compact => compact(frame, sample_rate),
             TimeFormat::Samples => frame.to_string(),
@@ -387,8 +399,14 @@ impl TimeFormat {
 
     /// A ruler tick at `seconds`, exact for that format (a tick is not rounded through a frame).
     pub fn format_tick(self, seconds: f64, sample_rate: u32) -> String {
+        self.format_tick_with(seconds, sample_rate, &Tempo::default())
+    }
+
+    /// [`format_tick`](Self::format_tick) with the document's tempo for Bars and Beats.
+    pub fn format_tick_with(self, seconds: f64, sample_rate: u32, tempo: &Tempo) -> String {
         let seconds = seconds.max(0.0);
         match self {
+            TimeFormat::BarsBeats => tempo.format_tick(seconds, sample_rate),
             TimeFormat::Decimal => format_time((seconds * 1000.0).round() as usize, 1000),
             TimeFormat::Compact => compact((seconds * 1000.0).round() as usize, 1000),
             TimeFormat::Samples => ((seconds * f64::from(sample_rate)).round() as usize).to_string(),
@@ -401,12 +419,18 @@ impl TimeFormat {
     /// same as `f`. Decimal and Compact take `[h:]m:ss[.fff]` or plain seconds (`12.5`); SMPTE
     /// takes `[[hh:]mm:]ss:ff` (`;` also separates the frames).
     pub fn parse(self, text: &str, sample_rate: u32) -> Option<usize> {
+        self.parse_with(text, sample_rate, &Tempo::default())
+    }
+
+    /// [`parse`](Self::parse) with the document's tempo for Bars and Beats (`bar:beat.tick`).
+    pub fn parse_with(self, text: &str, sample_rate: u32, tempo: &Tempo) -> Option<usize> {
         let text = text.trim();
         let rate = u64::from(sample_rate);
         if text.is_empty() || rate == 0 {
             return None;
         }
         let frames = match self {
+            TimeFormat::BarsBeats => return tempo.parse(text, sample_rate),
             TimeFormat::Samples => text.replace([',', '_'], "").parse::<u64>().ok()?,
             TimeFormat::Decimal | TimeFormat::Compact => {
                 let (whole, frac) = match text.split_once('.') {
@@ -507,8 +531,20 @@ impl TimeFormat {
     /// format's own units: samples in 1-2-5 steps, SMPTE frames below a second, else seconds
     /// (A107).
     pub fn tick_step(self, min_seconds: f64, sample_rate: u32) -> f64 {
+        self.tick_step_with(min_seconds, sample_rate, &Tempo::default())
+    }
+
+    /// [`tick_step`](Self::tick_step) with the document's tempo for Bars and Beats: sixty-fourths
+    /// of a beat up to a beat, then 1, 2, 4 ... bars.
+    pub fn tick_step_with(self, min_seconds: f64, sample_rate: u32, tempo: &Tempo) -> f64 {
         let rate = f64::from(sample_rate.max(1));
         match self {
+            TimeFormat::BarsBeats => {
+                let (beat, bar) = (tempo.beat_seconds(), tempo.bar_seconds());
+                let mut candidates: Vec<f64> = [64.0, 32.0, 16.0, 8.0, 4.0, 2.0, 1.0].iter().map(|d| beat / d).collect();
+                candidates.extend((0..20).map(|k| bar * f64::from(1u32 << k)));
+                candidates.into_iter().find(|s| *s >= min_seconds).unwrap_or(bar * 1_048_576.0)
+            }
             TimeFormat::Samples => {
                 let min_frames = (min_seconds * rate).max(1.0);
                 let mut decade = 1.0f64;
@@ -532,6 +568,27 @@ impl TimeFormat {
     /// How many equal parts the fine (minor) ticks cut a labelled step of `step_seconds` into:
     /// 1 when it cannot be cut into whole units of the format (one sample, one SMPTE frame).
     pub fn subdivisions(self, step_seconds: f64, sample_rate: u32) -> u32 {
+        self.subdivisions_with(step_seconds, sample_rate, &Tempo::default())
+    }
+
+    /// [`subdivisions`](Self::subdivisions) with the document's tempo for Bars and Beats: a bar
+    /// cuts into its beats, a beat into quarters, a double bar in halves.
+    pub fn subdivisions_with(self, step_seconds: f64, sample_rate: u32, tempo: &Tempo) -> u32 {
+        if self == TimeFormat::BarsBeats {
+            let near = |a: f64, b: f64| (a - b).abs() <= b.abs() * 1e-6 + 1e-12;
+            let (beat, bar) = (tempo.beat_seconds(), tempo.bar_seconds());
+            return if near(step_seconds, bar) {
+                tempo.numerator.max(1)
+            } else if step_seconds > bar {
+                2
+            } else if near(step_seconds, beat) {
+                4
+            } else if near(step_seconds, 2.0 * beat) {
+                2
+            } else {
+                1
+            };
+        }
         let rate = f64::from(sample_rate.max(1));
         let near = |a: f64, b: f64| (a - b).abs() <= b.abs() * 1e-6 + 1e-12;
         // The 1-2-5 ladder below a decade: 1 -> 5 parts, 2 -> 2, 5 -> 5.
@@ -761,6 +818,11 @@ mod tests {
         assert!((TimeFormat::Smpte30.tick_step(0.02, 48_000) - 1.0 / 30.0).abs() < 1e-12);
         assert!((TimeFormat::Smpte30.tick_step(0.2, 48_000) - 10.0 / 30.0).abs() < 1e-12);
         assert_eq!(TimeFormat::Smpte30.tick_step(3.0, 48_000), 5.0);
+        // Bars and Beats at 120 bpm 4/4 (a beat 0.5 s, a bar 2 s): sixty-fourths of a beat, then bars.
+        let t = Tempo::default();
+        assert!((TimeFormat::BarsBeats.tick_step_with(0.0001, 48_000, &t) - 0.5 / 64.0).abs() < 1e-12);
+        assert_eq!(TimeFormat::BarsBeats.tick_step_with(3.0, 48_000, &t), 4.0);
+        assert_eq!(TimeFormat::BarsBeats.subdivisions_with(2.0, 48_000, &t), 4, "one bar cuts into its four beats");
         assert_eq!(TimeFormat::Compact.tick_step(5000.0, 48_000), 3600.0);
         assert!((TimeFormat::Smpte24.tick_step(0.02, 48_000) - 1.0 / 24.0).abs() < 1e-12);
         assert!((TimeFormat::Smpte5994.tick_step(0.01, 48_000) - 1001.0 / 60_000.0).abs() < 1e-12);

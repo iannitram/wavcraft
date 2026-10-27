@@ -98,6 +98,8 @@ pub enum ActionId {
     TimeSmpte5994,
     TimeCustom,
     TimeCd75,
+    TimeBarsBeats,
+    EditTempo,
     SnapFrames,
     MarkerAdd,
     MarkerNext,
@@ -220,6 +222,8 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeSmpte5994, "view.time_display.smpte_5994", "SMPTE 59.94 fps"),
     window(ActionId::TimeCustom, "view.time_display.custom", "Custom frame rate…"),
     window(ActionId::TimeCd75, "view.time_display.cd75", "Compact Disc (mm:ss:ff, 75 fps)"),
+    window(ActionId::TimeBarsBeats, "view.time_display.bars_beats", "Bars and Beats"),
+    window(ActionId::EditTempo, "view.editTempo", "Edit Tempo…"),
     window(ActionId::SnapFrames, "view.snap_frames.toggle", "Snap to Frames"),
 ];
 
@@ -469,6 +473,8 @@ impl Editor {
             | ActionId::TimeSmpte5994
             | ActionId::TimeCustom
             | ActionId::TimeCd75
+            | ActionId::TimeBarsBeats
+            | ActionId::EditTempo
             | ActionId::SnapFrames => true,
             ActionId::StatsShow | ActionId::StatsGotoPeak | ActionId::StatsNextClip | ActionId::StatsPrevClip => self.len() > 0,
             ActionId::MarkerAdd => self.len() > 0,
@@ -1031,6 +1037,8 @@ impl Editor {
             | ActionId::TimeSmpte5994
             | ActionId::TimeCustom
             | ActionId::TimeCd75
+            | ActionId::TimeBarsBeats
+            | ActionId::EditTempo
             | ActionId::SnapFrames
             | ActionId::GotoTime
             // Repeat, Delete Silence and the zero-crossing adjusts returned above.

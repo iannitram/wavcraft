@@ -331,6 +331,7 @@ pub const MAX_CROSSFADE_MS: u32 = 1000;
 
 pub mod video;
 const KEY_TIME_DISPLAY: &str = "time_display";
+const KEY_TEMPO: &str = "tempo";
 const KEY_CUSTOM_FPS: &str = "custom_fps";
 const KEY_PANEL_LAYOUT: &str = "panel_layout";
 const KEY_ZONE_SIZES: &str = "zone_sizes";
@@ -407,6 +408,8 @@ pub struct Settings {
     pub input_device: Option<String>,
     /// View › Time Display.
     pub time_display: crate::view::TimeFormat,
+    /// Tempo and time signature per document, keyed by the document's path (Bars and Beats, A101).
+    pub tempos: std::collections::BTreeMap<String, crate::tempo::Tempo>,
     /// Where the panels are docked, as `crate::panels::Layout::encode` writes it (empty: default).
     pub panel_layout: String,
     /// The dock zones' sizes, as `Layout::encode` writes them (empty: default).
@@ -483,6 +486,7 @@ impl Default for Settings {
             output_device: None,
             input_device: None,
             time_display: crate::view::TimeFormat::default(),
+            tempos: std::collections::BTreeMap::new(),
             panel_layout: String::new(),
             zone_sizes: String::new(),
             workspace: String::new(),
@@ -570,6 +574,18 @@ impl Settings {
                 KEY_METADATA_FIELDS => {
                     s.metadata_fields = Some(value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect())
                 }
+                KEY_TEMPO => {
+                    // `tempo = <bpm> <n>/<d> <document path>`: the path may hold spaces.
+                    let mut it = value.splitn(3, char::is_whitespace);
+                    let (bpm, meter, path) = (it.next(), it.next(), it.next().map(str::trim));
+                    if let (Some(bpm), Some(meter), Some(path)) = (bpm, meter, path)
+                        && let (Ok(bpm), Some((n, d))) = (bpm.parse::<f64>(), crate::tempo::Tempo::parse_meter(meter))
+                        && let Some(t) = crate::tempo::Tempo::new(bpm, n, d)
+                        && !path.is_empty()
+                    {
+                        s.tempos.insert(path.to_string(), t);
+                    }
+                }
                 // A value that doesn't fit its key leaves the default, as an unknown key is ignored.
                 other => {
                     let _ = s.set(other, value);
@@ -591,6 +607,16 @@ impl Settings {
     /// The crossfade lengths as durations: `(cut_join, edge)`.
     pub fn crossfades(&self) -> (Duration, Duration) {
         (Duration::from_millis(u64::from(self.cut_join_ms)), Duration::from_millis(u64::from(self.edge_ms)))
+    }
+
+    /// The tempo kept for the document at `path` (the default, 120 bpm in 4/4, when none).
+    pub fn tempo_for(&self, path: &Path) -> crate::tempo::Tempo {
+        self.tempos.get(path.to_string_lossy().as_ref()).copied().unwrap_or_default()
+    }
+
+    /// Keep `tempo` for the document at `path`.
+    pub fn set_tempo_for(&mut self, path: &Path, tempo: crate::tempo::Tempo) {
+        self.tempos.insert(path.to_string_lossy().into_owned(), tempo);
     }
 
     /// The JKL playback speeds, ascending (1 to 8 of them).
@@ -699,7 +725,7 @@ impl Settings {
             KEY_OUTPUT => self.output_device = device(value),
             KEY_INPUT => self.input_device = device(value),
             KEY_TIME_DISPLAY => {
-                let f = crate::view::TimeFormat::from_name(value).ok_or_else(|| format!("{key} is one of decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994, custom, cd75"))?;
+                let f = crate::view::TimeFormat::from_name(value).ok_or_else(|| format!("{key} is one of decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994, custom, cd75, bars_beats"))?;
                 self.time_display = if let crate::view::TimeFormat::Custom(_) = f { crate::view::TimeFormat::Custom(self.custom_fps) } else { f };
             }
             KEY_CUSTOM_FPS => {
@@ -855,10 +881,17 @@ impl Settings {
 "));
         }
         if self.time_display != crate::view::TimeFormat::default() {
-            out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994, custom or cd75 (View > Time Display).
+            out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994, custom, cd75 or bars_beats (View > Time Display).
 ");
             out.push_str(&format!("{KEY_TIME_DISPLAY} = {}
 ", self.time_display.name()));
+        }
+        // Tempo lines are written only for documents that have one (Bars and Beats), so a file without them keeps its old format.
+        if !self.tempos.is_empty() {
+            out.push_str("# tempo: beats a minute, time signature and document, one line per document (Bars and Beats).\n");
+            for (path, t) in &self.tempos {
+                out.push_str(&format!("{KEY_TEMPO} = {} {} {path}\n", t.bpm_text(), t.meter_text()));
+            }
         }
         // The rate is written only when it isn't the default or a custom format needs it, so a default file stays as it was.
         if self.custom_fps != crate::smpte::CUSTOM_DEFAULT_FPS || matches!(self.time_display, crate::view::TimeFormat::Custom(_)) {
@@ -1267,5 +1300,31 @@ mod tests {
             "# WavCraft settings. One `key = value` per line.\n# session_folder: where opened files are kept while you work on them (empty: the default).\nsession_folder = /w-new\n# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).\nhidden_panels = history,waveform\n"
         );
         assert_eq!(Settings::parse(&text), settings);
+    }
+}
+
+#[cfg(test)]
+mod tempo_tests {
+    use super::*;
+    use crate::tempo::Tempo;
+
+    #[test]
+    fn a_documents_tempo_is_saved_and_read_back() {
+        let mut s = Settings::default();
+        let doc = Path::new("/tmp/some folder/a song.wav");
+        assert_eq!(s.tempo_for(doc), Tempo::default());
+        s.set_tempo_for(doc, Tempo::new(93.5, 3, 4).unwrap());
+        s.time_display = crate::view::TimeFormat::BarsBeats;
+        let back = Settings::parse(&s.to_text());
+        assert_eq!(back, s);
+        assert_eq!(back.tempo_for(doc), Tempo::new(93.5, 3, 4).unwrap());
+        assert_eq!(back.tempo_for(Path::new("/tmp/other.wav")), Tempo::default());
+    }
+
+    #[test]
+    fn a_bad_tempo_line_is_ignored() {
+        let s = Settings::parse("tempo = 5 4/4 /a.wav\ntempo = 120 4/3 /b.wav\ntempo = abc 4/4 /c.wav\ntempo = 120 4/4\ntempo = 100 6/8 /d.wav\n");
+        assert_eq!(s.tempos.len(), 1);
+        assert_eq!(s.tempo_for(Path::new("/d.wav")), Tempo::new(100.0, 6, 8).unwrap());
     }
 }
