@@ -11,6 +11,7 @@
 //! - [`io`]: streamed open into the store.
 //! - [`peakcache`]: saved waveform overviews, so a long file reopens fast.
 //! - [`space`]: the store's size for a file and the free space on its disk.
+//! - [`resample`]: windowed-sinc sample-rate conversion for playback.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app sees it: the document in the store, read in
 //!   chunks (no whole-file copy since task 05), and its waveform peaks.
@@ -64,6 +65,7 @@ pub mod markers;
 pub mod peakcache;
 pub mod playlist;
 pub mod random;
+pub mod resample;
 pub mod recent_sessions;
 pub mod ruler;
 pub mod save;

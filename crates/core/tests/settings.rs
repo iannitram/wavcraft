@@ -370,3 +370,17 @@ fn the_custom_frame_rate_is_saved_and_read_back() {
     assert_eq!(Settings::parse("time_display = custom\ncustom_fps = 120\n").time_display, TimeFormat::Custom(120));
     assert_eq!(Settings::parse("time_display = cd75\n").time_display, TimeFormat::Cd75);
 }
+
+#[test]
+fn the_playback_quality_is_stored_and_a_bad_word_is_the_default() {
+    use wavcraft_core::resample::Quality;
+    let dir = TempDir::new("quality");
+    let file = dir.0.join("settings.txt");
+    assert_eq!(Settings::default().playback_quality, Quality::High);
+    let s = Settings { playback_quality: Quality::Fast, ..Default::default() };
+    s.save(&file).unwrap();
+    assert!(std::fs::read_to_string(&file).unwrap().contains("playback_quality = fast"));
+    assert_eq!(Settings::load(&file).playback_quality, Quality::Fast);
+    assert_eq!(Settings::parse("playback_quality = best\n").playback_quality, Quality::High);
+    assert!(Settings::default().set("playback_quality", "best").is_err());
+}

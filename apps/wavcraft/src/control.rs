@@ -7,7 +7,7 @@
 //!
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> tool=<name> view=<a>-<b> time_display=<format> selection_text=<range> snap_frames=<0|1> cursor_frame=<frame> cursor_text=<time in the format> clipboard=<1-5> clip_frames=<n> undo=<label> redo=<label> path=<the document's own path>`
 //!   (`path=` is last: it may hold spaces; Save Selection As and Export do not change it)
-//! - `PLAY <from> <to>` (frames) → `OK`; `PLAYBACK` → `OK playing=<0|1> pos=<frame> underruns=<n> output=<ok|none>`
+//! - `PLAY <from> <to>` (frames) → `OK`; `PLAYBACK` → see below
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)
@@ -63,6 +63,9 @@
 //! - `MIXER set <track|master> vol=<db> pan=<p> mute=0|1 solo=0|1` → the same line, after the change
 //! - `AUTOSAVE` → `OK offered=<n> written=<n> failed=<n> pending=<0|1> scanned=<0|1> recoverable=<n>` (Auto Save's journal writer for the open file, and the sessions a crashed run left; poll until `scanned=1`)
 //! - `RECOVER [index]` → `OK` (recover that crashed session, 0 by default; poll `STATE` until `busy=0`); `DISCARD_RECOVERY [index]` → `OK`
+//! - `PLAYBACK [PLAY|STOP|QUALITY fast|high]` → `OK playing=<0|1> pos=<frame> underruns=<n> output=<ok|none> device_rate=<hz> doc_rate=<hz> resampling=<0|1> quality=<q> position=<frame> sink=<0|1>`
+//!   (`PLAY` plays the selection like the Play button; `QUALITY` is stored in the settings;
+//!   `WAVCRAFT_NO_AUDIO=1` swaps the sound card for a silent test sink, 48 kHz unless `WAVCRAFT_NO_AUDIO_RATE`)
 //! - `SAVE [path] [bits=16|24|32] [float=0|1] [aiff=aiff|aifc|sowt] [quality=-1..10] [meta=0|1]` → `OK` (Save, or Save As to `path`, the format from
 //!   its extension: .wav, .w64, .caf, .au, .aiff/.aif, .flac, .ogg; `bits`/`float=1` choose the sample type; `aiff=` the AIFF kind
 //!   for this save (`sowt`: AIFF-C little-endian); `quality` is the Ogg Vorbis VBR quality (5 until given; it stays for later saves);

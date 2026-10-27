@@ -43,6 +43,7 @@ const KEY_OUTPUT: &str = "output_device";
 const KEY_INPUT: &str = "input_device";
 
 const KEY_SRC_QUALITY: &str = "src_quality";
+const KEY_PLAYBACK_QUALITY: &str = "playback_quality";
 const KEY_SAVE_MARKERS: &str = "save_markers";
 const KEY_SAVE_METADATA: &str = "save_metadata";
 const KEY_SAVE_META: &str = "save_include_metadata";
@@ -87,7 +88,7 @@ pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
 /// menu and is not one of them).
-pub const KEYS: [&str; 39] = [
+pub const KEYS: [&str; 40] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
@@ -127,6 +128,7 @@ pub const KEYS: [&str; 39] = [
     KEY_INTERVAL,
     KEY_KEEP_DAYS,
     KEY_CACHE_MB,
+    KEY_PLAYBACK_QUALITY,
 ];
 
 /// Spectral display resolutions (FFT lengths in frames) the page offers, and the default.
@@ -421,6 +423,8 @@ pub struct Settings {
     pub metadata_fields: Option<Vec<String>>,
     /// Default sample rate conversion quality.
     pub src_quality: SrcQuality,
+    /// Sample-rate conversion quality for playback when the file's rate differs from the device's (`playback_quality = fast|high`).
+    pub playback_quality: crate::resample::Quality,
     /// Write the markers into a saved file by default.
     pub save_markers: bool,
     /// Write the metadata into a saved file by default.
@@ -492,6 +496,7 @@ impl Default for Settings {
             workspace: String::new(),
             metadata_fields: None,
             src_quality: SrcQuality::High,
+            playback_quality: crate::resample::Quality::default(),
             save_markers: true,
             save_metadata: true,
             save_include_metadata: true,
@@ -675,6 +680,7 @@ impl Settings {
             KEY_TIME_DISPLAY => self.time_display.name().to_string(),
             KEY_CUSTOM_FPS => self.custom_fps.to_string(),
             KEY_SRC_QUALITY => self.src_quality.name().to_string(),
+            KEY_PLAYBACK_QUALITY => self.playback_quality.as_str().to_string(),
             KEY_SAVE_MARKERS => self.save_markers.to_string(),
             KEY_SAVE_METADATA => self.save_metadata.to_string(),
             KEY_SAVE_META => self.save_include_metadata.to_string(),
@@ -737,6 +743,9 @@ impl Settings {
             }
             KEY_SRC_QUALITY => {
                 self.src_quality = SrcQuality::from_name(value).ok_or_else(|| format!("{key} is one of low, medium, high, best"))?;
+            }
+            KEY_PLAYBACK_QUALITY => {
+                self.playback_quality = crate::resample::Quality::parse(value).ok_or_else(|| format!("{key} is fast or high"))?;
             }
             KEY_SAVE_MARKERS => self.save_markers = parse_bool(key, value)?,
             KEY_SAVE_METADATA => self.save_metadata = parse_bool(key, value)?,

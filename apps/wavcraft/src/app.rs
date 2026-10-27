@@ -16,6 +16,7 @@ use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
+use wavcraft_core::resample::Quality;
 use wavcraft_core::save::{
     AiffKind, Container, ExtraChunk, FileKind, Part, SampleType, SaveError, SaveFormat, SaveOptions, SizeEstimate, VORBIS_DEFAULT_QUALITY,
     estimate_size, save_aiff_kind, save_as as save_container, save_vorbis, save_wav_with, write_file,
@@ -496,7 +497,7 @@ impl WaveApp {
             tool: Tool::default(),
             drag_origin: None,
             selection: Selection::default(),
-            player: Player::new(settings.output_device.clone()),
+            player: Player::new(settings.output_device.clone(), settings.playback_quality),
             params: {
                 let mut p = SpectrogramParams::default();
                 settings.apply_to_spectrogram(&mut p);
@@ -694,6 +695,7 @@ impl WaveApp {
         match key {
             "crossfade_cut_join_ms" | "crossfade_edge_ms" => self.apply_crossfades(),
             "output_device" => self.player.set_output(self.settings.output_device.clone()),
+            "playback_quality" => self.player.set_quality(self.settings.playback_quality),
             "spec_resolution" | "spec_db_range" => {
                 self.settings.apply_to_spectrogram(&mut self.params);
                 self.spectrum = None;
@@ -733,6 +735,7 @@ impl WaveApp {
         }
         self.apply_crossfades();
         self.player.set_output(None);
+        self.player.set_quality(self.settings.playback_quality);
         self.settings.apply_to_spectrogram(&mut self.params);
         self.spectrum = None;
         self.error = None;
@@ -4136,6 +4139,50 @@ impl WaveApp {
         format!("OK selection={}-{}", self.selection.start(), self.selection.end())
     }
 
+    /// `PLAYBACK [PLAY|STOP|QUALITY fast|high]`: act, then report the playback state (f05) and the device and conversion (f74).
+    fn playback_request(&mut self, rest: &str) -> String {
+        let mut words = rest.split_whitespace();
+        match (words.next().map(str::to_ascii_uppercase).as_deref(), words.next()) {
+            (None, _) => {}
+            (Some("PLAY"), _) => {
+                if self.doc.is_none() {
+                    return "ERR no file is open".to_string();
+                }
+                if !self.player.is_playing() {
+                    self.toggle_play();
+                }
+            }
+            (Some("STOP"), _) => self.player.stop(),
+            (Some("QUALITY"), Some(word)) => match Quality::parse(word) {
+                Some(q) => {
+                    // With no settings folder the quality still applies (until WavCraft closes).
+                    if let Err(e) = self.pref_set("playback_quality", q.as_str())
+                        && self.settings_path.is_some()
+                    {
+                        return format!("ERR {e}");
+                    }
+                }
+                None => return "ERR PLAYBACK QUALITY fast|high".to_string(),
+            },
+            _ => return "ERR PLAYBACK [PLAY|STOP|QUALITY fast|high]".to_string(),
+        }
+        let i = self.player.info();
+        // The f05 fields first (`pos` is `position`, kept under both names), then f74's.
+        format!(
+            "OK playing={} pos={} underruns={} output={} device_rate={} doc_rate={} resampling={} quality={} position={} sink={}",
+            u8::from(i.playing),
+            i.position,
+            i.underruns,
+            if self.player.error.is_some() { "none" } else { "ok" },
+            i.device_rate,
+            i.doc_rate,
+            u8::from(i.resampling),
+            i.quality.as_str(),
+            i.position,
+            u8::from(i.test_sink)
+        )
+    }
+
     /// Answer one control-channel line (see `control.rs`).
     fn control_request(&mut self, line: &str, ctx: &egui::Context) -> String {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -4251,13 +4298,6 @@ impl WaveApp {
                     _ => "ERR PLAY <from> <to>, in frames, with a file open".to_string(),
                 }
             }
-            "PLAYBACK" => format!(
-                "OK playing={} pos={} underruns={} output={}",
-                u8::from(self.player.is_playing()),
-                self.player.position(),
-                self.player.underruns(),
-                if self.player.error.is_some() { "none" } else { "ok" }
-            ),
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -4276,6 +4316,7 @@ impl WaveApp {
                 Err(e) => format!("ERR {e}"),
             },
             "INSERT_FILE" => "ERR INSERT_FILE <path>".to_string(),
+            "PLAYBACK" => self.playback_request(rest),
             "SELECT" => {
                 let mut it = rest.split_whitespace().map(str::parse::<usize>);
                 match (it.next(), it.next()) {
@@ -5463,6 +5504,20 @@ impl WaveApp {
                     self.spectrum = None;
                 }
                 ui.separator();
+                ui.menu_button("Playback Resampling", |ui| {
+                    for q in [Quality::High, Quality::Fast] {
+                        let label = if q == Quality::High { "High quality" } else { "Fast" };
+                        if ui
+                            .radio(self.settings.playback_quality == q, label)
+                            .on_hover_text("Used when the file's sample rate differs from the output device's")
+                            .clicked()
+                        {
+                            let r = self.pref_set("playback_quality", q.as_str());
+                            self.report(r);
+                        }
+                    }
+                });
+                ui.separator();
                 let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
                 let mut chosen = None;
                 for a in
@@ -5581,7 +5636,14 @@ impl WaveApp {
                 match &self.player.error {
                     Some(e) => ui.colored_label(CURSOR, format!("No sound: {e}")),
                     None if self.player.failed() => ui.colored_label(CURSOR, "No sound: the output device stopped (Play tries it again)"),
-                    None => ui.label(format!("Out: {}", self.player.device)),
+                    None => {
+                        let i = self.player.info();
+                        if i.resampling {
+                            ui.label(format!("Out: {} ({} → {} Hz, {})", self.player.device, i.doc_rate, i.device_rate, i.quality.as_str()))
+                        } else {
+                            ui.label(format!("Out: {}", self.player.device))
+                        }
+                    }
                 };
             } else {
                 ui.label("File › Open, or drop an audio file here.");

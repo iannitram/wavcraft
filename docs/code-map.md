@@ -70,7 +70,7 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | | `batch_panel.rs` (f73) | File › Batch Process…: the panel, the worker thread and the `BATCH add|op|out|overwrite|clear|run|cancel|status` control verb. Scripted run: `tools/alpha/f73.sh` |
 | | `effect_dialog.rs` (f14) | `EffectDialog`: draws any effect's `ParamDesc` list (slider per dB/percent/time, combo box per choice) with OK / Cancel / Reset; the app applies the values. Control: `EFFECT`, `EFFECT <name> key=value ...`, `EFFECT_DIALOG ...` |
 | | `recovery.rs` (f10) | Drives Auto Save in the window: offers snapshots (at most one per 2 s, none for an unchanged unsaved-free document), scans for recoverable sessions then sweeps (one thread, so lock probes never overlap), the "Recover unsaved work" window; control verbs `AUTOSAVE`, `RECOVER`, `DISCARD_RECOVERY` |
-| | `player.rs` | `Player`: cpal output stream, play/stop, playhead position |
+| | `player.rs` | `Player`: cpal output stream (or the `WAVCRAFT_NO_AUDIO` sink), play/stop, playhead position, windowed-sinc rate conversion (`PlaybackInfo`) |
 | | `spectrum.rs` | `Renderer`: the spectrogram worker thread and its overview cache |
 | | `mixer.rs` (f104, C152) | The Mixer panel (Window › Mixer panel): `MixerModel` holds only a `soundcraft_mix::MixEngine` that meters the multitrack session's `Session` (f113: every call is given `&mut Session` from `MtView`; one strip per audio track plus the master, which `Multitrack::new` adds; no session, no strips); fader in dB through the model's taper (`fader_pos_to_db`/`fader_db_to_pos`), pan through `soundcraft_dsp::pan` (constant power, -3 dB centre), mute and solo by the engine's rule (a solo mutes the others); the strip meter is the engine's, post-fader and before the pan. Control: `MIXER show\|hide`, `MIXER state`, `MIXER set <n\|master> vol= pan= mute= solo=`. Scripted run: `tools/alpha/f113.sh` |
 
@@ -217,8 +217,14 @@ itself when zoomed closer. Nothing is cached per view; columns are recomputed ev
   stream is opened at start-up and reopened on Play after an error or when there was none.
 - Shared state (task 05): the read-ahead ring and its atomics (see above), `pos` and `end` as `f64` bits in `AtomicU64`
   (file frames), `playing` and `failed` as `AtomicBool`.
-- The callback converts the file's rate to the device's by linear interpolation, averages all
-  channels onto a mono device, writes the new `pos` back and clears `playing` at `end`.
+- The callback converts the file's rate to the device's with `core::resample::Resampler` (f74, A205:
+  Kaiser windowed sinc, `fast` 16 taps / `high` 64 taps, stored as `playback_quality`; evaluated
+  per output frame straight out of the read-ahead ring, so the playhead stays in file frames and
+  cannot drift). The read-ahead thread builds the kernel table and parks it under a `try_lock`
+  mutex; until it is there, or for a ratio wider than the ring's 1,024-frame margin, the callback
+  interpolates linearly. It averages all channels onto a mono device, writes the new `pos` back and
+  clears `playing` at `end`. `WAVCRAFT_NO_AUDIO=1` swaps the device for a silent real-time sink
+  thread running the same callback (48 kHz stereo, `WAVCRAFT_NO_AUDIO_RATE`); control verb `PLAYBACK`.
 - **Playhead to the UI:** `Player::position()` reads `pos` atomically; while playing the editor draws
   the playhead there, keeps it on screen (`Viewport::reveal`) and calls `request_repaint()` each frame.
 

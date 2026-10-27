@@ -6,19 +6,26 @@
 //! seconds of the file's frames that a separate thread keeps filled from the document store
 //! ([`DocState::read`], chunk by chunk). If the ring runs dry the callback plays silence for that
 //! buffer and counts an underrun, instead of waiting for the disk. The file's rate is converted to
-//! the device's with linear interpolation, which is fine for auditioning (an edit never goes
-//! through this path). At most [`RING_CHANNELS`] channels of the file are buffered and played.
+//! the device's by windowed-sinc interpolation (f74, `wavcraft_core::resample`, `fast` or `high`
+//! per the `playback_quality` setting) read straight out of the ring; the kernel table is built
+//! off the audio thread and handed over under a `try_lock` (until it is there, and for a ratio
+//! too wide for the ring's margin, the callback interpolates linearly). The playhead stays in
+//! file frames. At most [`RING_CHANNELS`] channels of the file are buffered and played.
+//!
+//! `WAVCRAFT_NO_AUDIO=1` swaps the sound card for a silent real-time sink (stereo, 48 kHz unless
+//! `WAVCRAFT_NO_AUDIO_RATE`), so the whole path can be driven without a device.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::Sample as _;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::DocState;
 use wavcraft_core::levels::LevelTap;
 use wavcraft_core::rack::{MAX_BLOCK, RackConfig, RackProcessor};
+use wavcraft_core::resample::{Quality, Resampler};
 
 /// Frames the read-ahead ring holds (a power of two).
 const RING_FRAMES: usize = 1 << 17;
@@ -28,9 +35,10 @@ const RING_CHANNELS: usize = 8;
 const FILL_CHUNK: usize = 8192;
 /// Frames that must be in the ring before a play starts sounding.
 const PRIME_FRAMES: u64 = 16_384;
-/// Frames of the ring kept clear ahead of the play position, so a write never touches one the
-/// callback is still reading (its interpolation looks one frame ahead).
-const RING_MARGIN: u64 = 8;
+/// Frames of the ring kept clear behind the play position, so a write never touches one the
+/// callback is still reading (the sinc kernel looks that far back; a resampler wider than this
+/// is not used, see [`rebuild_resampler`]).
+const RING_MARGIN: u64 = 1024;
 
 #[derive(Copy, Clone, Default)]
 struct Playback {
@@ -58,6 +66,16 @@ struct Shared {
     ready_generation: AtomicU64,
     /// Callbacks that found the ring dry (for the log and the tests).
     underruns: AtomicU64,
+    /// The first file frame of the current play: the ring holds an older play's audio before it,
+    /// which the resampler's kernel must read as silence.
+    origin: AtomicU64,
+    /// The output stream's sample rate (0: none yet) and the conversion quality (0 fast, 1 high).
+    device_rate: AtomicU32,
+    quality: AtomicU8,
+    /// The sinc resampler for (document rate -> device rate), built by the read-ahead thread; the
+    /// callback `try_lock`s it for the length of a buffer, and the builder swaps it under the lock
+    /// and drops the old one outside it, so the callback never frees it.
+    resampler: Mutex<Option<Arc<Resampler>>>,
     /// The play state (lock held only briefly; the callback uses `try_lock`).
     state: Mutex<Playback>,
     /// Set by the stream's error callback (the device went away, for example).
@@ -81,12 +99,20 @@ impl Shared {
             channels: AtomicU32::new(0),
             ready_generation: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
+            origin: AtomicU64::new(0),
+            device_rate: AtomicU32::new(0),
+            quality: AtomicU8::new(quality_code(Quality::default())),
+            resampler: Mutex::new(None),
             state: Mutex::new(Playback::default()),
             failed: AtomicBool::new(false),
             levels: LevelTap::default(),
             rack_mailbox: Mutex::new(None),
             rack_new: AtomicBool::new(false),
         }
+    }
+
+    fn quality(&self) -> Quality {
+        if self.quality.load(Ordering::Relaxed) == 0 { Quality::Fast } else { Quality::High }
     }
 
     fn slot(frame: u64, ch: usize) -> usize {
@@ -121,8 +147,26 @@ impl Shared {
     }
 }
 
+fn quality_code(q: Quality) -> u8 {
+    u8::from(q == Quality::High)
+}
+
+/// Build the resampler for the current document rate, device rate and quality, and park it for the
+/// callback. None when no conversion is needed or the kernel is wider than the ring's margin.
+fn rebuild_resampler(shared: &Shared) {
+    let (doc, device) = (shared.rate.load(Ordering::Acquire), shared.device_rate.load(Ordering::Acquire));
+    let new = (doc != 0 && device != 0 && doc != device)
+        .then(|| Resampler::new(doc, device, shared.quality()))
+        .filter(|r| r.half_width() + 1.0 < RING_MARGIN as f64)
+        .map(Arc::new);
+    let old = std::mem::replace(&mut *shared.resampler.lock().unwrap_or_else(|e| e.into_inner()), new);
+    drop(old);
+}
+
 /// What the read-ahead thread is sent.
 enum Command {
+    /// The device rate or the conversion quality changed: rebuild the resampler.
+    Rebuild,
     /// The document to play (`None`: nothing).
     Document(Option<DocState>),
     /// Prime the ring for a play of `[from, to)` begun as `generation`.
@@ -134,6 +178,8 @@ pub struct Player {
     shared: Arc<Shared>,
     commands: Sender<Command>,
     stream: Option<cpal::Stream>,
+    /// The silent test sink standing in for a device (`WAVCRAFT_NO_AUDIO=1`).
+    sink: Option<Sink>,
     /// Why there is no sound, if the device could not be opened.
     pub error: Option<String>,
     /// The output device's name, for the status bar.
@@ -148,14 +194,15 @@ pub struct Player {
 impl Player {
     /// Open the output device named `wanted` (the system default for `None`, or when that name is
     /// not there). Without a device the player still works, silently.
-    pub fn new(wanted: Option<String>) -> Player {
+    pub fn new(wanted: Option<String>, quality: Quality) -> Player {
         let shared = Arc::new(Shared::new());
+        shared.quality.store(quality_code(quality), Ordering::Relaxed);
         let (commands, inbox) = channel();
         let fill_shared = Arc::clone(&shared);
         if let Err(e) = std::thread::Builder::new().name("wavcraft-readahead".to_string()).spawn(move || read_ahead(&fill_shared, &inbox)) {
             log::warn!(target: "wavcraft", "could not start the playback read-ahead thread: {e}");
         }
-        let mut player = Player { shared, commands, stream: None, error: None, device: String::new(), wanted, out_channels: 2, out_rate: 48_000 };
+        let mut player = Player { shared, commands, stream: None, sink: None, error: None, device: String::new(), wanted, out_channels: 2, out_rate: 48_000 };
         player.reopen();
         player
     }
@@ -171,16 +218,55 @@ impl Player {
     /// (Re)open the wanted output device, replacing any stream there was.
     fn reopen(&mut self) {
         self.stream = None;
+        self.sink = None;
         self.shared.failed.store(false, Ordering::Relaxed);
-        match open_stream(&self.shared, self.wanted.as_deref()) {
-            Ok((stream, device, channels, rate)) => {
-                self.stream = Some(stream);
-                self.device = device;
-                self.out_channels = channels;
-                self.out_rate = rate;
-                self.error = None;
+        if no_audio() {
+            let sink = Sink::start(&self.shared);
+            self.device = "test sink (no audio)".to_string();
+            self.out_channels = SINK_CHANNELS;
+            self.out_rate = sink.rate;
+            self.sink = Some(sink);
+            self.error = None;
+        } else {
+            match open_stream(&self.shared, self.wanted.as_deref()) {
+                Ok((stream, device, channels, rate)) => {
+                    self.stream = Some(stream);
+                    self.device = device;
+                    self.out_channels = channels;
+                    self.out_rate = rate;
+                    self.error = None;
+                }
+                Err(e) => self.error = Some(e),
             }
-            Err(e) => self.error = Some(e),
+        }
+        if self.has_output() {
+            self.shared.device_rate.store(self.out_rate, Ordering::Release);
+            let _ = self.commands.send(Command::Rebuild);
+        }
+    }
+
+    fn has_output(&self) -> bool {
+        self.stream.is_some() || self.sink.is_some()
+    }
+
+    /// Use conversion quality `quality` from now on (the resampler is rebuilt off the audio thread).
+    pub fn set_quality(&self, quality: Quality) {
+        self.shared.quality.store(quality_code(quality), Ordering::Relaxed);
+        let _ = self.commands.send(Command::Rebuild);
+    }
+
+    /// The conversion state, for the status bar and the control channel's `PLAYBACK`.
+    pub fn info(&self) -> PlaybackInfo {
+        let doc_rate = self.shared.rate.load(Ordering::Acquire);
+        PlaybackInfo {
+            device_rate: self.out_rate,
+            doc_rate,
+            resampling: self.has_output() && doc_rate != 0 && doc_rate != self.out_rate,
+            quality: self.shared.quality(),
+            playing: self.is_playing(),
+            position: self.position(),
+            underruns: self.underruns(),
+            test_sink: self.sink.is_some(),
         }
     }
 
@@ -212,10 +298,10 @@ impl Player {
     /// has since failed) the device is tried again first; if there still is none, nothing starts,
     /// so the playhead does not sit there "playing" with no callback to move it.
     pub fn play(&mut self, from: usize, to: usize) {
-        if self.stream.is_none() || self.failed() {
+        if !self.has_output() || self.failed() {
             self.reopen();
         }
-        if self.stream.is_none() {
+        if !self.has_output() {
             return;
         }
         let generation = self.shared.start(from as f64, to as f64);
@@ -252,6 +338,78 @@ impl Player {
     /// The frame being played right now.
     pub fn position(&self) -> usize {
         self.shared.snapshot().pos.max(0.0) as usize
+    }
+}
+
+/// What [`Player::info`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybackInfo {
+    pub device_rate: u32,
+    pub doc_rate: u32,
+    /// The document's rate is not the device's, so the sinc resampler is converting.
+    pub resampling: bool,
+    pub quality: Quality,
+    pub playing: bool,
+    pub position: usize,
+    pub underruns: u64,
+    pub test_sink: bool,
+}
+
+/// True under `WAVCRAFT_NO_AUDIO=1`: no sound card, a silent real-time sink instead.
+fn no_audio() -> bool {
+    std::env::var("WAVCRAFT_NO_AUDIO").is_ok_and(|v| !matches!(v.trim(), "" | "0" | "false"))
+}
+
+const SINK_CHANNELS: usize = 2;
+/// Frames the sink asks the callback for at a time (10 ms at 48 kHz).
+const SINK_BUFFER: usize = 480;
+
+/// A thread that plays the part of the audio device: it runs the same callback at real-time speed
+/// into nowhere. The rate is 48 kHz unless `WAVCRAFT_NO_AUDIO_RATE` says otherwise.
+struct Sink {
+    rate: u32,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Sink {
+    fn start(shared: &Arc<Shared>) -> Sink {
+        let rate = std::env::var("WAVCRAFT_NO_AUDIO_RATE")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|r| (8_000..=768_000).contains(r))
+            .unwrap_or(48_000);
+        let stop = Arc::new(AtomicBool::new(false));
+        let (flag, shared) = (Arc::clone(&stop), Arc::clone(shared));
+        let thread = std::thread::Builder::new()
+            .name("wavcraft-test-sink".to_string())
+            .spawn(move || {
+                let mut rack: Option<Box<RackProcessor>> = None;
+                let mut out = vec![0.0f32; SINK_BUFFER * SINK_CHANNELS];
+                let period = Duration::from_secs_f64(SINK_BUFFER as f64 / f64::from(rate));
+                let mut next = Instant::now();
+                while !flag.load(Ordering::Relaxed) {
+                    device_callback(&shared, &mut out, SINK_CHANNELS, f64::from(rate), &mut rack);
+                    next += period;
+                    let now = Instant::now();
+                    if next > now {
+                        std::thread::sleep(next - now);
+                    } else {
+                        next = now;
+                    }
+                }
+            })
+            .ok();
+        Sink { rate, stop, thread }
+    }
+}
+
+impl Drop for Sink {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
     }
 }
 
@@ -343,14 +501,7 @@ where
     device
         .build_output_stream(
             config,
-            move |out: &mut [T], _: &cpal::OutputCallbackInfo| {
-                let was_playing = shared.state.try_lock().map(|s| s.playing).unwrap_or(false);
-                render(&shared, out, channels, device_rate);
-                take_rack(&shared, &mut rack);
-                if let (true, Some(r)) = (was_playing, rack.as_mut()) {
-                    run_rack(r, out, channels);
-                }
-            },
+            move |out: &mut [T], _: &cpal::OutputCallbackInfo| device_callback(&shared, out, channels, device_rate, &mut rack),
             move |err| {
                 log::warn!("audio output: {err}");
                 on_error.failed.store(true, Ordering::Relaxed);
@@ -359,6 +510,21 @@ where
             None,
         )
         .map_err(|e| e.to_string())
+}
+
+/// One device buffer: render what plays, then run the Effects Rack over it. Runs on the audio thread
+/// (the cpal callback, or the test sink's stand-in for it).
+fn device_callback<T>(shared: &Shared, out: &mut [T], channels: usize, device_rate: f64, rack: &mut Option<Box<RackProcessor>>)
+where
+    T: cpal::Sample + cpal::FromSample<f32>,
+    f32: cpal::FromSample<T>,
+{
+    let was_playing = shared.state.try_lock().map(|s| s.playing).unwrap_or(false);
+    render(shared, out, channels, device_rate);
+    take_rack(shared, rack);
+    if let (true, Some(r)) = (was_playing, rack.as_mut()) {
+        run_rack(r, out, channels);
+    }
 }
 
 /// Pick up a rack the UI parked in the mailbox (see [`Shared::rack_mailbox`]). Never blocks.
@@ -430,7 +596,13 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
     let last = end.ceil().max(0.0) as u64;
     let mut pos = playback.pos.max(0.0);
     let mut filled = shared.filled_to.load(Ordering::Acquire);
+    let origin = shared.origin.load(Ordering::Acquire);
     let sample = |frame: u64, c: usize| shared.ring.get(Shared::slot(frame, c)).map_or(0.0, |v| f32::from_bits(v.load(Ordering::Relaxed)));
+    // The sinc resampler, when one is parked for exactly this (file rate, device rate) pair. A busy
+    // lock or a stale pair (a rebuild is on its way) falls back to linear interpolation.
+    let parked = shared.resampler.try_lock().ok();
+    let sinc = parked.as_deref().and_then(|p| p.as_deref()).filter(|r| r.in_rate() == rate && f64::from(r.out_rate()) == device_rate && !r.is_identity());
+    let reach = sinc.map_or(0, |r| r.half_width().ceil() as u64);
     let mut finished = false;
     let mut peak = [0.0f32; 2];
     for frame in out.chunks_mut(channels) {
@@ -439,8 +611,8 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
             break;
         }
         let i = pos as u64;
-        // This frame and the next (unless the play ends first) must be in the ring.
-        let need = (i + 2).min(last);
+        // This frame and the next, or what the kernel reaches (unless the play ends first), must be in the ring.
+        let need = (i + 2 + reach).min(last);
         if filled < need {
             filled = shared.filled_to.load(Ordering::Acquire);
             if filled < need {
@@ -450,6 +622,10 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
         }
         let frac = (pos - i as f64) as f32;
         let interp = |c: usize| {
+            if let Some(r) = sinc {
+                // Frames before this play's start and at or past its end are silence.
+                return r.sample_with(pos, |k| if k < origin as i64 || k >= last as i64 { 0.0 } else { sample(k as u64, c) });
+            }
             let a = sample(i, c);
             let b = if i + 1 < last { sample(i + 1, c) } else { a };
             a + (b - a) * frac
@@ -511,6 +687,7 @@ fn begin(shared: &Shared, state: &DocState, from: u64, to: u64, generation: u64)
             play.end = play.end.min(last as f64);
         }
     }
+    shared.origin.store(from, Ordering::Release);
     shared.filled_to.store(from, Ordering::Release);
     let feed = Feed { state: state.clone(), channels: state.channel_count().min(RING_CHANNELS), last };
     let want = (from + PRIME_FRAMES).min(last);
@@ -577,7 +754,9 @@ fn read_ahead(shared: &Shared, inbox: &Receiver<Command>) {
                 shared.rate.store(doc.as_ref().map_or(0, DocState::sample_rate), Ordering::Release);
                 shared.channels.store(doc.as_ref().map_or(0, |d| d.channel_count().min(RING_CHANNELS) as u32), Ordering::Release);
                 state = doc;
+                rebuild_resampler(shared);
             }
+            Ok(Command::Rebuild) => rebuild_resampler(shared),
             Ok(Command::Play { from, to, generation }) => {
                 feed = state.as_ref().map(|s| begin(shared, s, from, to, generation));
             }
@@ -817,6 +996,88 @@ mod tests {
         assert_eq!(shared.levels.take(), [0.75, 0.75]);
         render(&shared, &mut out, 2, 48_000.0);
         assert_eq!(shared.levels.take(), [0.0, 0.0]);
+    }
+
+    /// Render `frames` device frames of mono output into one vector, buffer by buffer.
+    fn render_run(shared: &Shared, frames: usize, device_rate: f64) -> Vec<f32> {
+        let mut all = Vec::new();
+        while all.len() < frames {
+            let mut out = vec![0.0f32; 64];
+            render(shared, &mut out, 1, device_rate);
+            all.extend(out);
+        }
+        all
+    }
+
+    /// f74: with the sinc resampler parked, a 44.1 kHz sine plays on a 48 kHz device at its own
+    /// frequency and level, the playhead stays in file frames, and both qualities do it.
+    #[test]
+    fn the_parked_sinc_resampler_converts_a_sine_out_of_the_ring() {
+        let sine: Vec<f32> = (0..20_000).map(|i| (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / 44_100.0).sin() as f32).collect();
+        let state = doc_of(AudioBuffer { sample_rate: 44_100, channels: vec![sine] });
+        for q in [Quality::High, Quality::Fast] {
+            let shared = shared_with(&state);
+            shared.quality.store(quality_code(q), Ordering::Relaxed);
+            shared.device_rate.store(48_000, Ordering::Relaxed);
+            rebuild_resampler(&shared);
+            assert!(shared.resampler.lock().unwrap().is_some(), "{q:?}: a resampler is parked");
+            play(&shared, &state, 0.0, 20_000.0);
+            let out = render_run(&shared, 9_600, 48_000.0);
+            assert_eq!(shared.underruns.load(Ordering::Relaxed), 0);
+            let tol = if q == Quality::High { 2e-3 } else { 3e-2 };
+            // Past the kernel's start-up (the first taps see silence before frame 0).
+            let worst = out
+                .iter()
+                .enumerate()
+                .skip(100)
+                .map(|(n, v)| (f64::from(*v) - (2.0 * std::f64::consts::PI * 1000.0 * n as f64 / 48_000.0).sin()).abs())
+                .fold(0.0, f64::max);
+            assert!(worst < tol, "{q:?}: worst error {worst}");
+            // 9,600 device frames are 8,820 file frames (the playhead is in file frames).
+            assert!((shared.snapshot().pos - 8_820.0).abs() < 1e-6, "{}", shared.snapshot().pos);
+        }
+    }
+
+    /// A play starting mid-file does not hear the previous play's audio through the kernel's tail:
+    /// frames before the play's start read as silence.
+    #[test]
+    fn the_kernel_does_not_read_an_earlier_plays_ring_contents() {
+        let state = doc_of(AudioBuffer { sample_rate: 24_000, channels: vec![(0..4_000).map(|i| if i < 2_000 { -1.0 } else { 1.0 }).collect()] });
+        let shared = shared_with(&state);
+        shared.device_rate.store(48_000, Ordering::Relaxed);
+        rebuild_resampler(&shared);
+        play(&shared, &state, 0.0, 4_000.0);
+        let _ = render_run(&shared, 64, 48_000.0);
+        play(&shared, &state, 2_000.0, 4_000.0);
+        let out = render_run(&shared, 192, 48_000.0);
+        // The ring still holds -1.0 before frame 2,000 from the first play. Half a frame in, the
+        // kernel's mass left of frame 2,000 (about 0.5) must read as silence: the sample is about
+        // 1.13 (the step's overshoot), where that stale -1.0 would drag it to about 0.1.
+        assert!(out[1] > 0.9, "{:?}", &out[..8]);
+        assert!(out[150] > 0.99, "{}", out[150]);
+    }
+
+    /// Until a resampler for exactly this rate pair is parked, the callback interpolates linearly.
+    #[test]
+    fn a_stale_or_missing_resampler_falls_back_to_linear() {
+        let ramp: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        let state = doc_of(AudioBuffer { sample_rate: 24_000, channels: vec![ramp] });
+        let shared = shared_with(&state);
+        // Built for a 44.1 kHz device, played on a 48 kHz one.
+        shared.device_rate.store(44_100, Ordering::Relaxed);
+        rebuild_resampler(&shared);
+        play(&shared, &state, 0.0, 1000.0);
+        let out = render_run(&shared, 8, 48_000.0);
+        assert_eq!(out[..8], [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]);
+    }
+
+    #[test]
+    fn a_resampler_wider_than_the_ring_margin_is_not_parked() {
+        let state = doc_of(AudioBuffer { sample_rate: 384_000, channels: vec![vec![0.0; 100]] });
+        let shared = shared_with(&state);
+        shared.device_rate.store(8_000, Ordering::Relaxed);
+        rebuild_resampler(&shared);
+        assert!(shared.resampler.lock().unwrap().is_none());
     }
 
     #[test]
