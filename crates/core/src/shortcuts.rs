@@ -37,6 +37,9 @@ const fn cmd(key: &'static str) -> Shortcut {
 const fn cmd_shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: true, shift: true, alt: false, key }
 }
+const fn cmd_alt(key: &'static str) -> Shortcut {
+    Shortcut { cmd: true, shift: false, alt: true, key }
+}
 const fn shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: false, shift: true, alt: false, key }
 }
@@ -230,6 +233,9 @@ pub const BINDINGS: &[Binding] = &[
     // View and the mouse tools.
     act(ActionId::CursorToStart, key("Home")),
     act(ActionId::CursorToEnd, key("End")),
+    act(ActionId::MarkerAdd, key("M")),
+    act(ActionId::MarkerPrev, cmd_alt("ArrowLeft")),
+    act(ActionId::MarkerNext, cmd_alt("ArrowRight")),
     act(ActionId::ZoomIn, key("Equals")),
     act(ActionId::ZoomOut, key("Minus")),
     act(ActionId::ZoomToSelection, shift("S")),

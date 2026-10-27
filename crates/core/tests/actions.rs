@@ -8,6 +8,7 @@ use wavcraft_core::actions::{ActionId, Editor, Repeat, TABLE, Toward, action, by
 use wavcraft_core::doc::edit::Crossfades;
 use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
+use wavcraft_core::shortcuts::{Command, Keymap};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 const RATE: u32 = 48_000;
@@ -384,4 +385,185 @@ fn repeat_last_command_runs_silence_again_on_the_new_selection_but_never_delete(
     // Repeat follows the repeated command's enabled rule: Silence needs a selection.
     assert!(!e.enabled(ActionId::RepeatLast, &(3..3)));
     assert_eq!(by_name("edit.zeroCrossings.outward").map(|a| a.id), Some(ActionId::ZeroOutward));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Markers (A170, A171, A176, A121)
+
+fn markers(e: &Editor) -> Vec<(u64, u64)> {
+    e.history.current().markers().iter().map(|m| (m.start, m.end)).collect()
+}
+
+#[test]
+fn m1_add_marker_is_a_point_at_the_cursor_or_a_range_for_a_selection_and_undo_redo_restore_it() {
+    let t = TempDir::new("markers");
+    let mut e = editor(&t.0, &stereo(1000));
+    assert_eq!(Keymap::new().menu_text(Command::Action(ActionId::MarkerAdd), false), "M");
+    let steps = e.history.steps().len();
+    let out = e.run(ActionId::MarkerAdd, 100..100).unwrap();
+    assert!(!out.doc_changed, "the audio is untouched");
+    assert_eq!(out.selection, 100..100);
+    e.run(ActionId::MarkerAdd, 300..400).unwrap();
+    assert_eq!(markers(&e), [(100, 100), (300, 400)]);
+    assert_eq!(e.history.steps().len(), steps + 2);
+    assert_eq!(e.history.undo_label(), Some("Add Marker"));
+    // The same place twice adds nothing and records nothing.
+    e.run(ActionId::MarkerAdd, 100..100).unwrap();
+    assert_eq!(e.history.steps().len(), steps + 2);
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e), [(100, 100)]);
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert!(markers(&e).is_empty());
+    e.run(ActionId::Redo, 0..0).unwrap();
+    e.run(ActionId::Redo, 0..0).unwrap();
+    assert_eq!(markers(&e), [(100, 100), (300, 400)]);
+}
+
+#[test]
+fn m2_next_and_previous_marker_move_the_cursor_and_are_disabled_at_the_ends() {
+    let t = TempDir::new("marker-nav");
+    let mut e = editor(&t.0, &stereo(1000));
+    for at in [200, 500, 800] {
+        e.run(ActionId::MarkerAdd, at..at).unwrap();
+    }
+    assert!(!e.enabled(ActionId::MarkerPrev, &(200..200)));
+    assert!(e.enabled(ActionId::MarkerNext, &(200..200)));
+    assert_eq!(e.run(ActionId::MarkerNext, 0..0).unwrap().selection, 200..200);
+    assert_eq!(e.run(ActionId::MarkerNext, 200..200).unwrap().selection, 500..500);
+    assert_eq!(e.run(ActionId::MarkerNext, 600..650).unwrap().selection, 800..800, "from the selection's start");
+    assert!(!e.enabled(ActionId::MarkerNext, &(800..800)));
+    assert_eq!(e.run(ActionId::MarkerPrev, 800..800).unwrap().selection, 500..500);
+    assert_eq!(e.run(ActionId::MarkerPrev, 501..501).unwrap().selection, 500..500);
+    assert_eq!(e.run(ActionId::MarkerPrev, 100..100).unwrap().message.as_deref(), Some("Playhead to Previous Marker is not available now"));
+    // Moving the playhead is not an edit.
+    assert_eq!(e.history.steps().len(), 4);
+}
+
+#[test]
+fn m3_a_marker_inside_a_deleted_range_goes_and_undo_brings_it_back() {
+    let t = TempDir::new("marker-edit");
+    let mut e = editor(&t.0, &stereo(1000));
+    e.run(ActionId::MarkerAdd, 100..100).unwrap();
+    e.run(ActionId::MarkerAdd, 900..950).unwrap();
+    e.run(ActionId::Delete, 500..1000).unwrap();
+    assert_eq!(e.history.current().len_frames(), 500);
+    assert_eq!(markers(&e), [(100, 100)]);
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e), [(100, 100), (900, 950)], "undo brings the original positions back");
+}
+
+/// Markers at 100, 300..400, 450, 700..900 and 950 in a 1000-frame file.
+fn marked(dir: &Path) -> Editor {
+    let mut e = editor(dir, &stereo(1000));
+    for r in [100..100, 300..400, 450..450, 700..900, 950..950] {
+        e.run(ActionId::MarkerAdd, r).unwrap();
+    }
+    e
+}
+
+#[test]
+fn m4_delete_and_cut_shift_trim_and_remove_markers() {
+    for id in [ActionId::Delete, ActionId::Cut] {
+        let t = TempDir::new("marker-del");
+        let mut e = marked(&t.0);
+        e.run(id, 350..800).unwrap();
+        // 100 stays; 300..400 loses its tail (ends at 350); 450 is inside: gone; 700..900 keeps 800..900 (350..450);
+        // 950 moves back by 450.
+        assert_eq!(markers(&e), [(100, 100), (300, 350), (350, 450), (500, 500)], "{id:?}");
+        e.run(ActionId::Undo, 0..0).unwrap();
+        assert_eq!(markers(&e).len(), 5);
+    }
+}
+
+#[test]
+fn m5_insert_silence_and_paste_shift_markers_after_the_point_and_grow_a_range_across_it() {
+    let t = TempDir::new("marker-ins");
+    let mut e = marked(&t.0);
+    e.insert_silence(350, 100).unwrap();
+    assert_eq!(markers(&e), [(100, 100), (300, 500), (550, 550), (800, 1000), (1050, 1050)]);
+    // A point exactly at the insertion stays; the one after moves.
+    let t2 = TempDir::new("marker-paste");
+    let mut e = marked(&t2.0);
+    e.run(ActionId::Copy, 0..40).unwrap();
+    e.run(ActionId::Paste, 450..450).unwrap();
+    assert_eq!(markers(&e), [(100, 100), (300, 400), (450, 450), (740, 940), (990, 990)]);
+}
+
+#[test]
+fn m6_paste_over_a_selection_replaces_markers_inside_and_a_same_length_paste_moves_nothing() {
+    let t = TempDir::new("marker-repl");
+    let mut e = marked(&t.0);
+    e.run(ActionId::Copy, 0..40).unwrap();
+    e.run(ActionId::Paste, 420..500).unwrap();
+    // 450 is inside the replaced 420..500 and goes; later markers move by 40 - 80.
+    assert_eq!(markers(&e), [(100, 100), (300, 400), (660, 860), (910, 910)]);
+    let t2 = TempDir::new("marker-same");
+    let mut e = marked(&t2.0);
+    e.run(ActionId::Copy, 0..80).unwrap();
+    e.run(ActionId::Paste, 420..500).unwrap();
+    assert_eq!(markers(&e).len(), 5, "a same-length overwrite keeps every marker");
+    e.run(ActionId::Silence, 0..1000).unwrap();
+    assert_eq!(markers(&e).len(), 5, "silence moves nothing");
+}
+
+#[test]
+fn m7_crop_keeps_what_is_inside_shifted_to_the_start_and_trims_ranges() {
+    let t = TempDir::new("marker-crop");
+    let mut e = marked(&t.0);
+    e.run(ActionId::Crop, 350..800).unwrap();
+    assert_eq!(e.history.current().len_frames(), 450);
+    assert_eq!(markers(&e), [(0, 50), (100, 100), (350, 450)]);
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e).len(), 5);
+}
+
+#[test]
+fn m8_one_channel_edits_leave_markers_alone() {
+    let t = TempDir::new("marker-onech");
+    let mut e = marked(&t.0);
+    e.run(ActionId::LeftChannel, 0..0).unwrap();
+    e.run(ActionId::Delete, 350..800).unwrap();
+    assert_eq!(e.history.current().len_frames(), 1000);
+    assert_eq!(markers(&e).len(), 5);
+}
+
+#[test]
+fn m9_delete_marker_removes_those_the_selection_touches_and_undo_restores() {
+    let t = TempDir::new("marker-delete");
+    let mut e = marked(&t.0);
+    assert!(!e.enabled(ActionId::MarkerDelete, &(200..200)));
+    assert!(e.run(ActionId::MarkerDelete, 200..200).unwrap().message.unwrap().contains("not available"));
+    e.run(ActionId::MarkerDelete, 100..100).unwrap();
+    assert_eq!(markers(&e).len(), 4);
+    // A cursor inside a range touches it; a selection touches every marker it overlaps.
+    e.run(ActionId::MarkerDelete, 350..350).unwrap();
+    assert_eq!(markers(&e), [(450, 450), (700, 900), (950, 950)]);
+    e.run(ActionId::MarkerDelete, 400..800).unwrap();
+    assert_eq!(markers(&e), [(950, 950)]);
+    assert_eq!(e.history.undo_label(), Some("Delete Marker"));
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e).len(), 3);
+    assert_eq!(e.history.current().len_frames(), 1000, "the audio is untouched");
+}
+
+#[test]
+fn m10_convert_point_to_range_uses_the_selection_and_range_to_point_keeps_its_start() {
+    let t = TempDir::new("marker-convert");
+    let mut e = marked(&t.0);
+    // Needs a selection that touches a point marker.
+    assert!(!e.enabled(ActionId::MarkerToRange, &(100..100)));
+    assert!(!e.enabled(ActionId::MarkerToRange, &(500..600)));
+    assert!(e.enabled(ActionId::MarkerToRange, &(80..160)));
+    let name = e.history.current().markers().iter().find(|m| m.start == 100).unwrap().name.clone();
+    e.run(ActionId::MarkerToRange, 80..160).unwrap();
+    assert_eq!(markers(&e), [(80, 160), (300, 400), (450, 450), (700, 900), (950, 950)]);
+    assert_eq!(e.history.current().markers().as_slice()[0].name, name, "the name is kept");
+    // Range to point: a cursor inside the range will do.
+    assert!(!e.enabled(ActionId::MarkerToPoint, &(500..500)));
+    e.run(ActionId::MarkerToPoint, 750..750).unwrap();
+    assert_eq!(markers(&e), [(80, 160), (300, 400), (450, 450), (700, 700), (950, 950)]);
+    assert_eq!(e.history.undo_label(), Some("Convert Marker to Point"));
+    e.run(ActionId::Undo, 0..0).unwrap();
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e)[0], (100, 100));
 }

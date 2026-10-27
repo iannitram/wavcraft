@@ -207,6 +207,12 @@ impl History {
         self.push_with_change(label.into(), state, Change::None, true)
     }
 
+    /// Record a marker change as a step (nothing when the markers are the current ones).
+    pub fn push_markers(&mut self, label: impl Into<String>, markers: Arc<crate::Markers>) -> usize {
+        let state = self.current().with_markers(markers);
+        self.push_with_change(label.into(), state, Change::None, false)
+    }
+
     /// Make `state` the current step, after the cursor; any redo steps go. A state that is the
     /// current one (it shares every channel) records nothing. Returns how many old steps the cap
     /// dropped.
@@ -219,6 +225,7 @@ impl History {
         if !same_audio_ok
             && cur.channel_count() == state.channel_count()
             && cur.channels().iter().zip(state.channels()).all(|(a, b)| Arc::ptr_eq(a, b))
+            && cur.markers() == state.markers()
         {
             return 0;
         }

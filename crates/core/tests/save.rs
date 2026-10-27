@@ -453,3 +453,77 @@ fn a263_cancel_keeps_the_original_and_leaves_no_temp_file() {
     assert_eq!(std::fs::read(&target).unwrap(), b"the original bytes");
     assert!(temp_files(&target).is_empty());
 }
+
+// ---------------------------------------------------------------------------------------------
+// Markers in the file (A183)
+
+fn marked_doc(dir: &Path, frames: usize) -> DocState {
+    let d = doc_from(dir, &exact(16, frames));
+    let m = wavcraft_core::Markers::from_items(vec![
+        ("Start".into(), 0, 0),
+        ("Take two".into(), 1_000, 2_500),
+        ("End".into(), frames as u64 - 1, frames as u64 - 1),
+    ]);
+    d.with_markers(std::sync::Arc::new(m))
+}
+
+fn marker_view(d: &DocState) -> Vec<(String, u64, u64)> {
+    d.markers().iter().map(|m| (m.name.clone(), m.start, m.end)).collect()
+}
+
+#[test]
+fn m1_markers_round_trip_through_save_and_reopen_for_every_sample_type() {
+    let t = TempDir::new("marker-save");
+    for ty in [SampleType::Int16, SampleType::Int24, SampleType::Int32, SampleType::Float32] {
+        let doc = marked_doc(&t.0.join("s"), 3_001);
+        let path = t.0.join(format!("m-{ty:?}.wav"));
+        save_wav(&doc, &path, ty, &mut |_| {}).unwrap();
+        let back = reopen(&path, &t.0.join("r"));
+        assert_eq!(back.len_frames(), 3_001, "{ty:?}: the audio is whole");
+        assert_eq!(marker_view(&back), marker_view(&doc), "{ty:?}");
+        // The RIFF size covers the extra chunks.
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize, bytes.len() - 8, "{ty:?}");
+    }
+}
+
+#[test]
+fn m2_a_file_without_markers_saves_and_opens_without_them_and_damaged_marker_chunks_still_open() {
+    let t = TempDir::new("marker-none");
+    let doc = doc_from(&t.0.join("s"), &exact(16, 2_000));
+    let path = t.0.join("plain.wav");
+    save_wav(&doc, &path, SampleType::Int16, &mut |_| {}).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(!bytes.windows(4).any(|w| w == b"cue "), "no marker chunks without markers");
+    assert!(reopen(&path, &t.0.join("r")).markers().is_empty());
+    // A cue chunk that lies about its count, and a LIST that is cut short, after the audio.
+    let mut bad = bytes.clone();
+    bad.extend_from_slice(b"cue ");
+    bad.extend_from_slice(&6u32.to_le_bytes());
+    bad.extend_from_slice(&[9, 0, 0, 0, 1, 0]);
+    bad.extend_from_slice(b"LIST");
+    bad.extend_from_slice(&1000u32.to_le_bytes());
+    bad.extend_from_slice(b"adtlla");
+    let riff = (bad.len() - 8) as u32;
+    bad[4..8].copy_from_slice(&riff.to_le_bytes());
+    let bad_path = t.0.join("bad.wav");
+    std::fs::write(&bad_path, bad).unwrap();
+    let d = reopen(&bad_path, &t.0.join("r2"));
+    assert_eq!(d.len_frames(), 2_000);
+    assert!(d.markers().is_empty());
+}
+
+#[test]
+fn m3_markers_moved_by_an_edit_are_what_the_saved_file_holds() {
+    let t = TempDir::new("marker-edit-save");
+    let mut e = Editor::new(History::new(doc_from(&t.0.join("s"), &exact(16, 4_000)), u64::MAX));
+    e.crossfades = Crossfades::NONE;
+    e.run(ActionId::MarkerAdd, 3_000..3_500).unwrap();
+    e.run(ActionId::MarkerAdd, 500..500).unwrap();
+    e.run(ActionId::Delete, 1_000..2_000).unwrap();
+    let path = t.0.join("edited.wav");
+    save_wav(e.history.current(), &path, SampleType::Int16, &mut |_| {}).unwrap();
+    let back = reopen(&path, &t.0.join("r"));
+    assert_eq!(back.len_frames(), 3_000);
+    assert_eq!(back.markers().iter().map(|m| (m.start, m.end)).collect::<Vec<_>>(), [(500, 500), (2_000, 2_500)]);
+}

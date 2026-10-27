@@ -1828,7 +1828,12 @@ impl WaveApp {
         if actions::action(id).kind == Kind::Window {
             return self.run_window_action(id, ctx);
         }
-        let sel = self.selection_range();
+        let mut sel = self.selection_range();
+        // Markers go where play is, when it is playing (a point at the playhead).
+        if matches!(id, ActionId::MarkerAdd | ActionId::MarkerNext | ActionId::MarkerPrev) && self.player.is_playing() {
+            let at = self.player.position() as u64;
+            sel = at..at;
+        }
         if id == ActionId::Paste {
             self.take_system_clipboard();
         }
@@ -1843,7 +1848,7 @@ impl WaveApp {
                     out.message = Some(format!("Copied to clipboard {} only: {why}", editor.current_clipboard + 1));
                 }
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
-                if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd) {
+                if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::MarkerNext | ActionId::MarkerPrev) {
                     self.player.stop();
                     let frames = self.doc.as_ref().map_or(0, Document::frames);
                     self.view.reveal(self.selection.start() as f64, self.editor_width, frames);
@@ -3609,6 +3614,13 @@ impl WaveApp {
                     format!("OK ours={} path={}", u8::from(ours), first.map_or("-".to_string(), |p| p.display().to_string()))
                 }
             },
+            // The markers of the current state, in order: `OK count=<n> <id>,<start>,<end>,<name>;…`.
+            "MARKERS" => {
+                let list: Vec<String> = self.editor.as_ref().map_or_else(Vec::new, |e| {
+                    e.history.current().markers().iter().map(|m| format!("{},{},{},{}", m.id, m.start, m.end, m.name)).collect()
+                });
+                format!("OK count={} {}", list.len(), list.join(";"))
+            }
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -4442,6 +4454,14 @@ impl WaveApp {
                 chosen = Some(a.id);
             }
         }
+        ui.separator();
+        for a in TABLE.iter().filter(|a| a.name.starts_with("marker.")) {
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
+            let keys = self.keymap.menu_text(Command::Action(a.id), mac);
+            if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
+                chosen = Some(a.id);
+            }
+        }
         if let Some(id) = chosen {
             let _ = self.run_action(id, ui.ctx());
         }
@@ -4936,6 +4956,9 @@ impl WaveApp {
         let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate, self.time_format, self.dark);
+        if let Some(e) = &self.editor {
+            draw_markers(&painter, ruler, &self.view, e.history.current().markers());
+        }
 
         let (wave_area, spectrum_area) = match (self.editor_shows("waveform"), self.editor_shows("spectral")) {
             (true, true) => {
@@ -5584,6 +5607,34 @@ fn ruler_step_for(fmt: TimeFormat, min_seconds: f64, rate: u32) -> f64 {
             let frame = fmt.smpte().map_or(1.0 / 30.0, |r| r.frame_seconds());
             FRAMES.iter().map(|f| f * frame).find(|s| *s >= min_seconds).unwrap_or_else(|| ruler_step(min_seconds.max(1.0)))
         }
+    }
+}
+
+/// Markers on the ruler: a point is a small flag with its name, a range a band with a flag at
+/// each end of the name.
+fn draw_markers(painter: &egui::Painter, rect: Rect, view: &Viewport, markers: &wavcraft_core::Markers) {
+    let color = Color32::from_rgb(240, 190, 60);
+    let painter = painter.with_clip_rect(rect);
+    for m in markers.iter() {
+        let x0 = rect.left() + view.x_of(m.start as f64);
+        let x1 = rect.left() + view.x_of(m.end.max(m.start) as f64);
+        if x1 < rect.left() - 200.0 || x0 > rect.right() {
+            continue;
+        }
+        if !m.is_point() {
+            painter.rect_filled(
+                Rect::from_min_max(pos2(x0, rect.bottom() - 5.0), pos2(x1.max(x0 + 1.0), rect.bottom())),
+                0.0,
+                color.gamma_multiply(0.6),
+            );
+        }
+        painter.line_segment([pos2(x0, rect.top()), pos2(x0, rect.bottom())], Stroke::new(1.0, color));
+        painter.add(egui::Shape::convex_polygon(
+            vec![pos2(x0, rect.top()), pos2(x0 + 8.0, rect.top()), pos2(x0, rect.top() + 8.0)],
+            color,
+            Stroke::NONE,
+        ));
+        painter.text(pos2(x0 + 10.0, rect.bottom() - 3.0), egui::Align2::LEFT_BOTTOM, &m.name, egui::FontId::proportional(10.0), color);
     }
 }
 

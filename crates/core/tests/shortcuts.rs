@@ -64,6 +64,9 @@ shortcuts! {
     right_channel_down: "ArrowDown" => A(ActionId::RightChannel);
     cursor_to_start_home: "Home" => A(ActionId::CursorToStart);
     cursor_to_end_end: "End" => A(ActionId::CursorToEnd);
+    marker_add_m: "M" => A(ActionId::MarkerAdd);
+    marker_prev_ctrl_alt_left: "Ctrl+Alt+ArrowLeft" => A(ActionId::MarkerPrev);
+    marker_next_ctrl_alt_right: "Ctrl+Alt+ArrowRight" => A(ActionId::MarkerNext);
     zoom_in_equals: "=" => A(ActionId::ZoomIn);
     zoom_out_minus: "-" => A(ActionId::ZoomOut);
     zoom_to_selection_shift_s: "Shift+S" => A(ActionId::ZoomToSelection);
