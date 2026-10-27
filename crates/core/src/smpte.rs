@@ -23,7 +23,18 @@ pub enum SmpteRate {
     Fps2997Ndf,
     Fps30,
     Fps5994,
+    /// A user-set whole rate, [`CUSTOM_MIN_FPS`] to [`CUSTOM_MAX_FPS`] (A102); non-drop.
+    Custom(u16),
+    /// Compact Disc: 75 frames (sectors) a second, written `mm:ss:ff` with minutes past 59 kept (A103).
+    Cd75,
 }
+
+/// The lowest user-set frame rate.
+pub const CUSTOM_MIN_FPS: u16 = 2;
+/// The highest user-set frame rate.
+pub const CUSTOM_MAX_FPS: u16 = 1000;
+/// The custom rate before a person sets one.
+pub const CUSTOM_DEFAULT_FPS: u16 = 48;
 
 /// Timecode frames in ten minutes of 29.97 drop-frame.
 const FRAMES_PER_TEN_MINUTES: u64 = 17_982;
@@ -34,9 +45,16 @@ impl SmpteRate {
     pub const ALL: [SmpteRate; 6] =
         [SmpteRate::Fps24, SmpteRate::Fps25, SmpteRate::Fps2997Df, SmpteRate::Fps2997Ndf, SmpteRate::Fps30, SmpteRate::Fps5994];
 
+    /// A custom rate, or `None` outside 2 to 1000.
+    pub fn custom(fps: u32) -> Option<SmpteRate> {
+        u16::try_from(fps).ok().filter(|f| (CUSTOM_MIN_FPS..=CUSTOM_MAX_FPS).contains(f)).map(SmpteRate::Custom)
+    }
+
     /// Frames counted to a labelled second.
     pub fn nominal(self) -> u64 {
         match self {
+            SmpteRate::Custom(n) => u64::from(n.clamp(CUSTOM_MIN_FPS, CUSTOM_MAX_FPS)),
+            SmpteRate::Cd75 => 75,
             SmpteRate::Fps24 => 24,
             SmpteRate::Fps25 => 25,
             SmpteRate::Fps2997Df | SmpteRate::Fps2997Ndf | SmpteRate::Fps30 => 30,
@@ -47,6 +65,7 @@ impl SmpteRate {
     /// The true rate as (numerator, denominator) frames per second.
     pub fn ratio(self) -> (u64, u64) {
         match self {
+            SmpteRate::Custom(_) | SmpteRate::Cd75 => (self.nominal(), 1),
             SmpteRate::Fps24 => (24, 1),
             SmpteRate::Fps25 => (25, 1),
             SmpteRate::Fps2997Df | SmpteRate::Fps2997Ndf => (30_000, 1001),
@@ -92,6 +111,10 @@ impl SmpteRate {
             n
         };
         let secs = n / fps;
+        if self == SmpteRate::Cd75 {
+            // No hours: minutes run on past 59.
+            return (0, secs / 60, secs % 60, n % fps);
+        }
         (secs / 3600, secs / 60 % 60, secs % 60, n % fps)
     }
 
@@ -99,7 +122,8 @@ impl SmpteRate {
     /// past the rate, a minute or second of 60 or more, or a number drop-frame skips).
     pub fn frame_of_label(self, h: u64, m: u64, s: u64, f: u64) -> Option<u64> {
         let fps = self.nominal();
-        if m >= 60 || s >= 60 || f >= fps || (self.is_drop() && s == 0 && f < 2 && !m.is_multiple_of(10)) {
+        let cd = self == SmpteRate::Cd75;
+        if (cd && h != 0) || (!cd && m >= 60) || s >= 60 || f >= fps || (self.is_drop() && s == 0 && f < 2 && !m.is_multiple_of(10)) {
             return None;
         }
         let minutes = h.checked_mul(60)?.checked_add(m)?;
@@ -111,8 +135,13 @@ impl SmpteRate {
     /// `hh:mm:ss:ff`; drop-frame writes `;` before the frames.
     pub fn format_frame(self, n: u64) -> String {
         let (h, m, s, f) = self.label(n);
+        if self == SmpteRate::Cd75 {
+            return format!("{m:02}:{s:02}:{f:02}");
+        }
+        // Frame numbers past 99 (rates over 100) take three digits.
+        let w = if self.nominal() > 100 { 3 } else { 2 };
         let sep = if self.is_drop() { ';' } else { ':' };
-        format!("{h:02}:{m:02}:{s:02}{sep}{f:02}")
+        format!("{h:02}:{m:02}:{s:02}{sep}{f:0w$}")
     }
 
     /// Sample frame `sample` at `rate` Hz as a timecode.
@@ -316,6 +345,127 @@ mod tests {
             assert_eq!(ndf.snap(snapped, R, usize::MAX), snapped, "snapping twice changes nothing");
         }
         assert_eq!(f25.snap(777, 0, 100), 777, "no rate: nothing to snap to");
+    }
+
+    #[test]
+    fn custom_rates_are_limited_to_2_through_1000() {
+        assert_eq!(SmpteRate::custom(1), None);
+        assert_eq!(SmpteRate::custom(0), None);
+        assert_eq!(SmpteRate::custom(1001), None);
+        assert_eq!(SmpteRate::custom(u32::MAX), None);
+        assert_eq!(SmpteRate::custom(2), Some(SmpteRate::Custom(2)));
+        assert_eq!(SmpteRate::custom(1000), Some(SmpteRate::Custom(1000)));
+    }
+
+    #[test]
+    fn custom_rates_label_like_whole_rate_timecode() {
+        let c2 = SmpteRate::Custom(2);
+        assert_eq!(c2.format_frame(0), "00:00:00:00");
+        assert_eq!(c2.format_frame(1), "00:00:00:01");
+        assert_eq!(c2.format_frame(2), "00:00:01:00");
+        assert_eq!(c2.frame_of_label(0, 0, 0, 2), None, "frame 2 does not exist at 2 fps");
+        let c48 = SmpteRate::Custom(48);
+        assert_eq!(c48.format_frame(48 * 3723 + 47), "01:02:03:47");
+        assert_eq!(c48.parse("01:02:03:47", R), Some((48 * 3723 + 47) * 1000));
+        let c1000 = SmpteRate::Custom(1000);
+        assert_eq!(c1000.format_frame(999), "00:00:00:999", "three digits of frames");
+        assert_eq!(c1000.format_frame(1000), "00:00:01:000");
+        assert_eq!(c1000.frame_of_label(0, 0, 0, 1000), None);
+        assert_eq!(c1000.frame_of_label(0, 0, 0, 999), Some(999));
+        assert_eq!(c1000.parse("00:00:01:000", R), Some(R as usize));
+        // 100 fps still reads two digits.
+        assert_eq!(SmpteRate::Custom(100).format_frame(99), "00:00:00:99");
+        assert_eq!(SmpteRate::Custom(101).format_frame(100), "00:00:00:100");
+    }
+
+    #[test]
+    fn custom_and_cd_round_trip_at_the_boundaries() {
+        for fmt in [
+            SmpteRate::Custom(2),
+            SmpteRate::Custom(7),
+            SmpteRate::Custom(100),
+            SmpteRate::Custom(101),
+            SmpteRate::Custom(999),
+            SmpteRate::Custom(1000),
+            SmpteRate::Cd75,
+        ] {
+            for rate_hz in [8000u32, 44_100, 48_000, 96_000] {
+                for sample in [
+                    0usize,
+                    1,
+                    44,
+                    440,
+                    rate_hz as usize - 1,
+                    rate_hz as usize,
+                    59 * rate_hz as usize,
+                    60 * rate_hz as usize - 1,
+                    60 * rate_hz as usize,
+                    3600 * rate_hz as usize - 1,
+                    3600 * rate_hz as usize,
+                    3600 * rate_hz as usize + 17,
+                    100 * 60 * rate_hz as usize + 3,
+                ] {
+                    let text = fmt.format(sample, rate_hz);
+                    let back = fmt.parse(&text, rate_hz).unwrap_or_else(|| panic!("{fmt:?} {text:?} did not parse"));
+                    assert_eq!(fmt.format(back, rate_hz), text, "{fmt:?} at {rate_hz} Hz, sample {sample}");
+                    assert_eq!(back as u64, fmt.first_sample(fmt.frame_number(sample, rate_hz), rate_hz));
+                    assert!(back <= sample);
+                }
+            }
+            for n in (0..300).chain(tens_of_thousands()) {
+                let (h, m, s, f) = fmt.label(n);
+                assert_eq!(fmt.frame_of_label(h, m, s, f), Some(n), "{fmt:?} frame {n}");
+            }
+        }
+    }
+
+    fn tens_of_thousands() -> impl Iterator<Item = u64> {
+        (4_499..4_501).chain(269_990..270_010).chain(4_499_990..4_500_010)
+    }
+
+    #[test]
+    fn compact_disc_is_mm_ss_ff_at_75_frames() {
+        let cd = SmpteRate::Cd75;
+        assert_eq!(cd.ratio(), (75, 1));
+        assert_eq!(cd.format_frame(0), "00:00:00");
+        assert_eq!(cd.format_frame(74), "00:00:74");
+        assert_eq!(cd.format_frame(75), "00:01:00");
+        assert_eq!(cd.format_frame(75 * 60 - 1), "00:59:74");
+        assert_eq!(cd.format_frame(75 * 60), "01:00:00");
+        // No hours: minutes go on past 59 (an 80-minute disc is 360,000 frames).
+        assert_eq!(cd.format_frame(75 * 3600), "60:00:00");
+        assert_eq!(cd.format_frame(75 * 60 * 80 - 1), "79:59:74");
+        assert_eq!(cd.format_frame(75 * 60 * 100), "100:00:00");
+        assert_eq!(cd.frame_of_label(0, 0, 0, 75), None, "frame 75 does not exist");
+        assert_eq!(cd.frame_of_label(0, 0, 60, 0), None, "second 60 does not exist");
+        assert_eq!(cd.frame_of_label(0, 79, 59, 74), Some(75 * 60 * 80 - 1));
+        // At 44.1 kHz a CD frame (sector) is exactly 588 samples.
+        assert_eq!(cd.first_sample(1, 44_100), 588);
+        assert_eq!(cd.format(588 * 75 * 60 - 1, 44_100), "00:59:74");
+        assert_eq!(cd.format(588 * 75 * 60 + 587, 44_100), "01:00:00");
+        assert_eq!(cd.parse("01:00:00", 44_100), Some(588 * 75 * 60));
+        assert_eq!(cd.parse("80:00:00", 44_100), Some(588 * 75 * 60 * 80));
+        assert_eq!(cd.parse("1:30", 44_100), Some(588 * 75 + 588 * 30), "ss:ff");
+        assert_eq!(cd.parse("00:01:30", 44_100), Some(588 * 75 + 588 * 30));
+        assert_eq!(cd.parse("74", 44_100), None, "one field is not a time");
+        assert_eq!(cd.parse("01:75", 44_100), None);
+        assert_eq!(cd.parse("1:00:00:00", 44_100), None, "no hours field");
+        assert_eq!(cd.parse("60:00:00", 44_100), Some(588 * 75 * 3600));
+    }
+
+    #[test]
+    fn snapping_works_with_custom_and_cd() {
+        // 100 fps at 48 kHz: 480 samples a frame.
+        let c = SmpteRate::Custom(100);
+        assert_eq!(c.snap(239, R, usize::MAX), 0);
+        assert_eq!(c.snap(240, R, usize::MAX), 480);
+        assert_eq!(c.snap(481, R, usize::MAX), 480);
+        // CD at 44.1 kHz: 588 samples a frame.
+        let cd = SmpteRate::Cd75;
+        assert_eq!(cd.snap(293, 44_100, usize::MAX), 0);
+        assert_eq!(cd.snap(294, 44_100, usize::MAX), 588);
+        assert_eq!(cd.snap(588 * 5 + 100, 44_100, 588 * 5 + 100), 588 * 5);
+        assert_eq!(cd.snap(588 * 5 + 400, 44_100, 588 * 5 + 400), 588 * 5 + 400, "never past the end");
     }
 
     #[test]

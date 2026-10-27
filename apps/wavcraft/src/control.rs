@@ -25,6 +25,7 @@
 //! - `MARKERS` → `OK count=<n> <id>,<start>,<end>,<name>;…` (the markers of the current state; a point has start = end)
 //! - `EXPORT_RANGES <folder> [pattern=<p>]` → `OK` (every range marker as its own WAV in `folder`, named by the pattern: `{name}` `{index}` `{base}`; poll `STATE` until `busy=0`). `ACTION edit.extract_channels` writes each channel of the file as `<name>_L.wav`, `<name>_R.wav` beside it the same way
 //! - `MIXPASTE mode=insert|overlap|overwrite|modulate [copied=<pct>[,<pct>]] [existing=<pct>[,<pct>]] [invert=0|1] [fade=<ms>] [loops=<n>] [file=<path>]` → `OK selection=<a>-<b>` (Edit › Mix Paste at the cursor; the clipboard unless `file=`)
+//! - `PREF set custom_fps <n>` (2 to 1000; the generic `PREF`, so it answers plain `OK`, `ERR` when out of range); `ACTION view.time_display.custom` / `.cd75` pick the formats; `STATE` reports `custom_fps`
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `NOISE_PRINT` → `OK frames=<n> channels=<n> rate=<hz>` (the session's noise print, captured by `ACTION nr.capture_print`), or `OK none`
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)

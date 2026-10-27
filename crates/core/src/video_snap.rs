@@ -49,6 +49,8 @@ pub fn time_format_for(rate: SmpteRate) -> TimeFormat {
         SmpteRate::Fps2997Ndf => TimeFormat::Smpte2997Ndf,
         SmpteRate::Fps30 => TimeFormat::Smpte30,
         SmpteRate::Fps5994 => TimeFormat::Smpte5994,
+        SmpteRate::Custom(n) => TimeFormat::Custom(n),
+        SmpteRate::Cd75 => TimeFormat::Cd75,
     }
 }
 

@@ -331,6 +331,7 @@ pub const MAX_CROSSFADE_MS: u32 = 1000;
 
 pub mod video;
 const KEY_TIME_DISPLAY: &str = "time_display";
+const KEY_CUSTOM_FPS: &str = "custom_fps";
 const KEY_PANEL_LAYOUT: &str = "panel_layout";
 const KEY_ZONE_SIZES: &str = "zone_sizes";
 const KEY_WORKSPACE: &str = "workspace";
@@ -468,6 +469,8 @@ pub struct Settings {
     pub cache_mb: Option<u64>,
     /// The Markers panel's columns.
     pub marker_columns: MarkerColumns,
+    /// The frame rate of the custom time format, 2 to 1000 (A102).
+    pub custom_fps: u16,
 }
 
 impl Default for Settings {
@@ -515,6 +518,7 @@ impl Default for Settings {
             autosave_keep_days: DEFAULT_KEEP_DAYS,
             cache_mb: None,
             marker_columns: MarkerColumns::default(),
+            custom_fps: crate::smpte::CUSTOM_DEFAULT_FPS,
         }
     }
 }
@@ -571,6 +575,10 @@ impl Settings {
                     let _ = s.set(other, value);
                 }
             }
+        }
+        // The custom format carries the rate the file names, wherever the lines came.
+        if let crate::view::TimeFormat::Custom(_) = s.time_display {
+            s.time_display = crate::view::TimeFormat::Custom(s.custom_fps);
         }
         s
     }
@@ -639,6 +647,7 @@ impl Settings {
             KEY_OUTPUT => self.output_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
             KEY_INPUT => self.input_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
             KEY_TIME_DISPLAY => self.time_display.name().to_string(),
+            KEY_CUSTOM_FPS => self.custom_fps.to_string(),
             KEY_SRC_QUALITY => self.src_quality.name().to_string(),
             KEY_SAVE_MARKERS => self.save_markers.to_string(),
             KEY_SAVE_METADATA => self.save_metadata.to_string(),
@@ -689,7 +698,17 @@ impl Settings {
             KEY_EDGE => self.edge_ms = ms(value)?,
             KEY_OUTPUT => self.output_device = device(value),
             KEY_INPUT => self.input_device = device(value),
-            KEY_TIME_DISPLAY => self.time_display = crate::view::TimeFormat::from_name(value).ok_or_else(|| format!("{key} is one of decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994"))?,
+            KEY_TIME_DISPLAY => {
+                let f = crate::view::TimeFormat::from_name(value).ok_or_else(|| format!("{key} is one of decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994, custom, cd75"))?;
+                self.time_display = if let crate::view::TimeFormat::Custom(_) = f { crate::view::TimeFormat::Custom(self.custom_fps) } else { f };
+            }
+            KEY_CUSTOM_FPS => {
+                let rate = value.parse::<u32>().ok().and_then(crate::smpte::SmpteRate::custom).ok_or_else(|| format!("{key} is a whole number of frames a second, 2 to 1000"))?;
+                self.custom_fps = rate.nominal() as u16;
+                if let crate::view::TimeFormat::Custom(_) = self.time_display {
+                    self.time_display = crate::view::TimeFormat::Custom(self.custom_fps);
+                }
+            }
             KEY_SRC_QUALITY => {
                 self.src_quality = SrcQuality::from_name(value).ok_or_else(|| format!("{key} is one of low, medium, high, best"))?;
             }
@@ -836,10 +855,15 @@ impl Settings {
 "));
         }
         if self.time_display != crate::view::TimeFormat::default() {
-            out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30 or smpte_5994 (View > Time Display).
+            out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994, custom or cd75 (View > Time Display).
 ");
             out.push_str(&format!("{KEY_TIME_DISPLAY} = {}
 ", self.time_display.name()));
+        }
+        // The rate is written only when it isn't the default or a custom format needs it, so a default file stays as it was.
+        if self.custom_fps != crate::smpte::CUSTOM_DEFAULT_FPS || matches!(self.time_display, crate::view::TimeFormat::Custom(_)) {
+            out.push_str("# custom_fps: frames a second of the custom time display, 2 to 1000.\n");
+            out.push_str(&format!("{KEY_CUSTOM_FPS} = {}\n", self.custom_fps));
         }
         if !self.panel_layout.is_empty() || !self.zone_sizes.is_empty() {
             out.push_str("# panel_layout: dock zones and tab order, `zone:id,id;zone:id` (a * marks the front tab); zone_sizes: points.\n");

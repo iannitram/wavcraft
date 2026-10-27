@@ -340,6 +340,8 @@ pub struct WaveApp {
     raw_import: Option<RawDialog>,
     /// Edit › Mix Paste…: the dialog's fields while it is up.
     mix_paste: Option<mixpaste::Dialog>,
+    /// View › Time Display › Custom frame rate…: the rate being typed while the dialog is up (A102).
+    custom_fps_dialog: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
     /// Window › Markers: the panel, the picked markers, a handle being dragged.
@@ -559,6 +561,7 @@ impl WaveApp {
             stats: StatsPanel::default(),
             raw_import: None,
             mix_paste: None,
+            custom_fps_dialog: None,
             confirm_clear_history: false,
             show_metadata: false,
             meta_draft: Vec::new(),
@@ -684,6 +687,13 @@ impl WaveApp {
                 self.spectrum = None;
             }
             "time_display" => self.time_format = self.settings.time_display,
+            // A new custom rate moves a live custom display with it (the setting itself is already stored).
+            "custom_fps" => {
+                if matches!(self.time_format, TimeFormat::Custom(_)) {
+                    self.time_format = TimeFormat::Custom(self.settings.custom_fps);
+                    self.panel_edit = None;
+                }
+            }
             _ => {}
         }
         self.save_settings()
@@ -1832,6 +1842,9 @@ impl WaveApp {
         self.time_format = fmt;
         self.panel_edit = None;
         self.settings.time_display = fmt;
+        if let TimeFormat::Custom(n) = fmt {
+            self.settings.custom_fps = n;
+        }
         if let Some(file) = &self.settings_path
             && let Err(e) = self.settings.save(file)
         {
@@ -2169,8 +2182,15 @@ impl WaveApp {
             ActionId::TimeSmpte2997Ndf => Some(TimeFormat::Smpte2997Ndf),
             ActionId::TimeSmpte30 => Some(TimeFormat::Smpte30),
             ActionId::TimeSmpte5994 => Some(TimeFormat::Smpte5994),
+            ActionId::TimeCd75 => Some(TimeFormat::Cd75),
             _ => None,
         };
+        if id == ActionId::TimeCustom {
+            // Switch to the kept rate and offer to change it.
+            self.set_time_format(TimeFormat::Custom(self.settings.custom_fps));
+            self.custom_fps_dialog = Some(self.settings.custom_fps.to_string());
+            return Ok(false);
+        }
         if id == ActionId::SnapFrames {
             self.snap_frames = !self.snap_frames;
             return Ok(false);
@@ -2378,6 +2398,44 @@ impl WaveApp {
                 self.run_insert_silence(frames as u64, ctx);
             }
             Some(false) => self.insert_silence = None,
+            None => {}
+        }
+    }
+
+    /// The custom frame rate dialog: a whole number of frames a second, 2 to 1000.
+    fn custom_fps_dialog(&mut self, ctx: &egui::Context) {
+        let Some(text) = self.custom_fps_dialog.as_mut() else { return };
+        let mut choice = None;
+        egui::Window::new("Custom frame rate").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+            ctx,
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Frames per second (2 to 1000):");
+                    let r = ui.text_edit_singleline(text);
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        choice = Some(true);
+                    }
+                    r.request_focus();
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(false);
+                    }
+                });
+            },
+        );
+        match choice {
+            Some(true) => {
+                let typed = self.custom_fps_dialog.take().unwrap_or_default();
+                match typed.trim().parse::<u32>().ok().and_then(wavcraft_core::smpte::SmpteRate::custom) {
+                    Some(r) => self.set_time_format(TimeFormat::Custom(r.nominal() as u16)),
+                    None => self.error = Some("Custom frame rate: type a whole number from 2 to 1000".to_string()),
+                }
+            }
+            Some(false) => self.custom_fps_dialog = None,
             None => {}
         }
     }
@@ -3976,7 +4034,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} undo={} redo={} path={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} undo={} redo={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -3988,6 +4046,7 @@ impl WaveApp {
                             self.time_format.name(),
                             self.selection_text(),
                             u8::from(self.snap_frames),
+                            self.settings.custom_fps,
                             self.selection.start(),
                             self.fmt_time(self.selection.start()),
                             e.current_clipboard + 1,
@@ -4002,11 +4061,12 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {view} time_display={} selection_text=- snap_frames={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- undo=- redo=- path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {view} time_display={} selection_text=- snap_frames={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- undo=- redo=- path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         self.time_format.name(),
-                        u8::from(self.snap_frames)
+                        u8::from(self.snap_frames),
+                        self.settings.custom_fps
                     ),
                 }
             }
@@ -5232,16 +5292,25 @@ impl WaveApp {
                 }
                 ui.separator();
                 let mut picked = None;
+                let mut open_custom = false;
                 ui.menu_button("Time Display", |ui| {
                     for f in TimeFormat::ALL {
-                        if ui.radio(self.time_format == f, f.menu()).clicked() {
-                            picked = Some(f);
+                        let shown = if matches!(f, TimeFormat::Custom(_)) { TimeFormat::Custom(self.settings.custom_fps) } else { f };
+                        if ui.radio(self.time_format.name() == f.name(), shown.menu_with_rate()).clicked() {
+                            if matches!(f, TimeFormat::Custom(_)) {
+                                open_custom = true;
+                            } else {
+                                picked = Some(f);
+                            }
                             ui.close();
                         }
                     }
                 });
                 if let Some(f) = picked {
                     self.set_time_format(f);
+                }
+                if open_custom {
+                    let _ = self.run_action(ActionId::TimeCustom, ui.ctx());
                 }
                 ui.checkbox(&mut self.show_time_panel, "Time panel");
                 ui.checkbox(&mut self.show_metadata, "Metadata panel");
@@ -5951,6 +6020,7 @@ impl eframe::App for WaveApp {
         self.diagnostics_ui(&ctx);
         self.raw_import_dialog(&ctx);
         self.mix_paste_dialog(&ctx);
+        self.custom_fps_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         self.metadata_display_dialog(&ctx);
         self.batch.ui(&ctx);
