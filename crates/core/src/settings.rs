@@ -414,6 +414,8 @@ impl Default for MarkerColumns {
         MarkerColumns { start: true, end: true, duration: true, kind: true, description: false }
     }
 }
+const KEY_AMP_SCALE: &str = "amp_scale";
+const KEY_CHANNEL_LAYOUT: &str = "channel_layout";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, PartialEq)]
@@ -515,6 +517,10 @@ pub struct Settings {
     pub input_map: ChannelMap,
     /// Which things snapping pulls to, and whether it is on (f49; it lasts from run to run).
     pub snap: SnapSettings,
+    /// How the amplitude ruler labels its scale.
+    pub amp_scale: crate::view::AmpScale,
+    /// Whether the waveform shows channels layered in one lane or stacked in lanes.
+    pub channel_layout: crate::channels::ChannelLayout,
 }
 
 impl Default for Settings {
@@ -572,6 +578,8 @@ impl Default for Settings {
             output_map: ChannelMap::default(),
             input_map: ChannelMap::default(),
             snap: SnapSettings::default(),
+            amp_scale: crate::view::AmpScale::default(),
+            channel_layout: crate::channels::ChannelLayout::default(),
         }
     }
 }
@@ -734,6 +742,8 @@ impl Settings {
             KEY_OUTPUT => self.output_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
             KEY_INPUT => self.input_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
             KEY_TIME_DISPLAY => self.time_display.name().to_string(),
+            KEY_AMP_SCALE => self.amp_scale.name().to_string(),
+            KEY_CHANNEL_LAYOUT => self.channel_layout.name().to_string(),
             KEY_CUSTOM_FPS => self.custom_fps.to_string(),
             KEY_SRC_QUALITY => self.src_quality.name().to_string(),
             KEY_PLAYBACK_QUALITY => self.playback_quality.as_str().to_string(),
@@ -794,6 +804,12 @@ impl Settings {
             KEY_TIME_DISPLAY => {
                 let f = crate::view::TimeFormat::from_name(value).ok_or_else(|| format!("{key} is one of decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994, custom, cd75, bars_beats"))?;
                 self.time_display = if let crate::view::TimeFormat::Custom(_) = f { crate::view::TimeFormat::Custom(self.custom_fps) } else { f };
+            }
+            KEY_AMP_SCALE => {
+                self.amp_scale = crate::view::AmpScale::parse(value).ok_or_else(|| format!("{key} is one of db, percent, samples, normalized"))?;
+            }
+            KEY_CHANNEL_LAYOUT => {
+                self.channel_layout = crate::channels::ChannelLayout::parse(value).ok_or_else(|| format!("{key} is stacked or layered"))?;
             }
             KEY_CUSTOM_FPS => {
                 let rate = value.parse::<u32>().ok().and_then(crate::smpte::SmpteRate::custom).ok_or_else(|| format!("{key} is a whole number of frames a second, 2 to 1000"))?;
@@ -982,6 +998,14 @@ impl Settings {
             }
         }
         // The rate is written only when it isn't the default or a custom format needs it, so a default file stays as it was.
+        if self.amp_scale != crate::view::AmpScale::default() {
+            out.push_str(&format!("{KEY_AMP_SCALE} = {}
+", self.amp_scale.name()));
+        }
+        if self.channel_layout != crate::channels::ChannelLayout::default() {
+            out.push_str(&format!("{KEY_CHANNEL_LAYOUT} = {}
+", self.channel_layout.name()));
+        }
         if self.custom_fps != crate::smpte::CUSTOM_DEFAULT_FPS || matches!(self.time_display, crate::view::TimeFormat::Custom(_)) {
             out.push_str("# custom_fps: frames a second of the custom time display, 2 to 1000.\n");
             out.push_str(&format!("{KEY_CUSTOM_FPS} = {}\n", self.custom_fps));

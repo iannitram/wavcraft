@@ -133,6 +133,241 @@ impl Viewport {
         self.frames_per_px = frames.max(1) as f64 / f64::from(width_px.max(1.0));
         self.clamp(width_px, total_frames);
     }
+    /// Show the frames `[start, end)` across `width_px` pixels (clamped to the file and to the
+    /// closest zoom). Bad numbers leave the view as it was.
+    pub fn set_range(&mut self, start: f64, end: f64, width_px: f32, total_frames: usize) {
+        if !start.is_finite() || !end.is_finite() || end <= start {
+            return;
+        }
+        self.frames_per_px = (end - start) / f64::from(width_px.max(1.0));
+        self.start = start;
+        self.clamp(width_px, total_frames);
+    }
+
+    /// The zoom navigator's handle: the visible range as `(left, right)` pixels of a bar
+    /// `nav_px` wide that stands for the whole file.
+    pub fn nav_handle(&self, view_px: f32, nav_px: f32, total_frames: usize) -> (f32, f32) {
+        let total = total_frames.max(1) as f64;
+        let to_x = |frame: f64| (frame / total * f64::from(nav_px)).clamp(0.0, f64::from(nav_px)) as f32;
+        (to_x(self.start), to_x(self.end(view_px)))
+    }
+
+    /// Click outside the handle on the navigator: centre the view on pixel `x` of the bar.
+    pub fn nav_jump(&mut self, x: f32, view_px: f32, nav_px: f32, total_frames: usize) {
+        let frame = nav_frame(x, nav_px, total_frames);
+        self.start = frame - self.frames_per_px * f64::from(view_px) * 0.5;
+        self.clamp(view_px, total_frames);
+    }
+
+    /// Drag on the navigator with the pointer at pixel `x` of the bar. `grab` is how many frames
+    /// the pointer was right of the view's start when the drag began (used by the body).
+    pub fn nav_drag(&mut self, part: NavPart, x: f32, grab: f64, view_px: f32, nav_px: f32, total_frames: usize) {
+        let frame = nav_frame(x, nav_px, total_frames);
+        let end = self.end(view_px);
+        let least = f64::from(view_px.max(1.0)) / MAX_PX_PER_FRAME;
+        match part {
+            NavPart::Body => {
+                self.start = frame - grab;
+                self.clamp(view_px, total_frames);
+            }
+            NavPart::Left => self.set_range(frame.min(end - least), end, view_px, total_frames),
+            NavPart::Right => self.set_range(self.start, frame.max(self.start + least), view_px, total_frames),
+        }
+    }
+}
+
+/// What a press on the zoom navigator grabbed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavPart {
+    /// The middle of the handle: dragging scrolls.
+    Body,
+    /// The left edge: dragging zooms, the right end staying put.
+    Left,
+    /// The right edge.
+    Right,
+}
+
+/// What is under pixel `x` of a navigator whose handle runs `handle.0..handle.1`: an edge when
+/// within `edge_px` of it, the body between, `None` outside (a click there jumps).
+pub fn nav_hit(handle: (f32, f32), x: f32, edge_px: f32) -> Option<NavPart> {
+    let (l, r) = handle;
+    // Narrow handles still get a body: the edges share the width.
+    let edge = edge_px.min(((r - l) / 3.0).max(1.0));
+    if x < l - edge_px.min(3.0) || x > r + edge_px.min(3.0) {
+        None
+    } else if x <= l + edge {
+        Some(NavPart::Left)
+    } else if x >= r - edge {
+        Some(NavPart::Right)
+    } else {
+        Some(NavPart::Body)
+    }
+}
+
+fn nav_frame(x: f32, nav_px: f32, total_frames: usize) -> f64 {
+    if !x.is_finite() {
+        return 0.0;
+    }
+    (f64::from(x) / f64::from(nav_px.max(1.0))).clamp(0.0, 1.0) * total_frames as f64
+}
+
+/// Vertical zoom of the waveform: 1 shows the full range, 8 shows one eighth of it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmpZoom(f32);
+
+impl AmpZoom {
+    pub const MIN: f32 = 1.0;
+    pub const MAX: f32 = 1024.0;
+
+    pub fn full() -> AmpZoom {
+        AmpZoom(1.0)
+    }
+
+    pub fn get(self) -> f32 {
+        self.0
+    }
+
+    /// Zoom by `factor` (above 1 zooms in), stopping at the limits; bad numbers change nothing.
+    pub fn by(&mut self, factor: f32) {
+        if factor.is_finite() && factor > 0.0 {
+            self.0 = (self.0 * factor).clamp(Self::MIN, Self::MAX);
+        }
+    }
+}
+
+impl Default for AmpZoom {
+    fn default() -> Self {
+        AmpZoom::full()
+    }
+}
+
+/// How the amplitude ruler labels the scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AmpScale {
+    Db,
+    #[default]
+    Percent,
+    Samples,
+    Normalized,
+}
+
+/// One mark on the amplitude ruler: a level from 0 up to full scale 1, and its text (for the
+/// negative side the text of a linear scale gets a minus sign: [`AmpScale::label`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tick {
+    pub amp: f32,
+    pub label: String,
+}
+
+impl AmpScale {
+    pub const ALL: [AmpScale; 4] = [AmpScale::Db, AmpScale::Percent, AmpScale::Samples, AmpScale::Normalized];
+
+    /// The name in the settings file and on the control channel.
+    pub fn name(self) -> &'static str {
+        match self {
+            AmpScale::Db => "db",
+            AmpScale::Percent => "percent",
+            AmpScale::Samples => "samples",
+            AmpScale::Normalized => "normalized",
+        }
+    }
+
+    /// The menu text.
+    pub fn menu(self) -> &'static str {
+        match self {
+            AmpScale::Db => "Decibels",
+            AmpScale::Percent => "Percentage",
+            AmpScale::Samples => "Sample values",
+            AmpScale::Normalized => "Normalized (-1 to 1)",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<AmpScale> {
+        Self::ALL.into_iter().find(|s| s.name() == name.trim().to_ascii_lowercase())
+    }
+
+    /// Full scale in this scale's unit (a linear scale only).
+    fn full_scale(self) -> f64 {
+        match self {
+            AmpScale::Percent => 100.0,
+            AmpScale::Samples => 32768.0,
+            _ => 1.0,
+        }
+    }
+
+    /// The text for a level `amp` (signed, 1 is full scale).
+    pub fn label(self, amp: f32) -> String {
+        let a = f64::from(amp);
+        match self {
+            AmpScale::Db => {
+                if a == 0.0 {
+                    "-inf".to_string()
+                } else {
+                    format!("{:.0}", 20.0 * a.abs().log10())
+                }
+            }
+            AmpScale::Normalized => linear_text(a),
+            _ => linear_text(a * self.full_scale()),
+        }
+    }
+
+    /// The marks for a lane whose half height is `half_px` pixels at vertical zoom `zoom`, at
+    /// least `min_gap_px` apart, from the centre up to the top edge (only levels in view).
+    pub fn ticks(self, zoom: AmpZoom, half_px: f32, min_gap_px: f32) -> Vec<Tick> {
+        let visible = 1.0 / f64::from(zoom.get());
+        let px_per_amp = f64::from(half_px.max(1.0)) * f64::from(zoom.get());
+        let gap = f64::from(min_gap_px.max(1.0));
+        let mut out = Vec::new();
+        match self {
+            AmpScale::Db => {
+                // Full scale down, skipping marks that would crowd the one before.
+                let mut last = f64::NEG_INFINITY;
+                for db in [0, -1, -2, -3, -4, -6, -9, -12, -15, -18, -24, -30, -36, -42, -48, -60, -72, -84, -96, -120, -144] {
+                    let amp = 10f64.powf(f64::from(db) / 20.0);
+                    if amp > visible * 1.0001 {
+                        continue;
+                    }
+                    let y = amp * px_per_amp;
+                    if last - y >= gap || last == f64::NEG_INFINITY {
+                        out.push(Tick { amp: amp as f32, label: format!("{db}") });
+                        last = y;
+                    }
+                }
+            }
+            _ => {
+                let full = self.full_scale();
+                let step = nice_step(gap * full / px_per_amp);
+                let top = visible * full;
+                let mut k = 0u32;
+                while f64::from(k) * step <= top * 1.0001 && k < 200 {
+                    let value = f64::from(k) * step;
+                    let amp = (value / full) as f32;
+                    out.push(Tick { amp, label: linear_text(value) });
+                    k += 1;
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A number for the ruler: whole when it is, else with up to three decimals.
+fn linear_text(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-9 {
+        format!("{}", v.round() as i64)
+    } else {
+        let s = format!("{v:.3}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// The smallest 1, 2, 2.5 or 5 times a power of ten that is at least `min`.
+fn nice_step(min: f64) -> f64 {
+    if !min.is_finite() || min <= 0.0 {
+        return 1.0;
+    }
+    let mag = 10f64.powf(min.log10().floor());
+    [1.0, 2.0, 2.5, 5.0, 10.0].iter().map(|m| m * mag).find(|s| *s >= min * 0.9999).unwrap_or(10.0 * mag)
 }
 
 fn fit_scale(total_frames: usize, width_px: f32) -> f64 {
@@ -1163,6 +1398,156 @@ mod tests {
         v.zoom_to_range(100_000.0, 100_002.0, 1200.0, HOUR);
         assert_eq!(v.frames_per_px, 1.0 / 16.0);
         assert!((v.frame_at(600.0) - 100_001.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_range_shows_exactly_the_range_asked_for() {
+        let mut v = Viewport::fit(HOUR, 1200.0);
+        v.set_range(1_000_000.0, 2_200_000.0, 1200.0, HOUR);
+        assert_eq!(v.start, 1_000_000.0);
+        assert!((v.end(1200.0) - 2_200_000.0).abs() < 1e-6);
+        let before = v;
+        v.set_range(5.0, 5.0, 1200.0, HOUR);
+        v.set_range(f64::NAN, 9.0, 1200.0, HOUR);
+        assert_eq!(v, before, "bad ranges change nothing");
+        // Past the end or too tight: clamped like any other zoom.
+        v.set_range(HOUR as f64 - 10.0, HOUR as f64 + 1e6, 1200.0, HOUR);
+        assert!(v.end(1200.0) <= HOUR as f64 + 1e-6);
+        v.set_range(100.0, 100.5, 1200.0, HOUR);
+        assert_eq!(v.frames_per_px, 1.0 / 16.0);
+    }
+
+    #[test]
+    fn the_navigator_handle_is_the_visible_part_of_the_bar() {
+        let mut v = Viewport::fit(HOUR, 1000.0);
+        assert_eq!(v.nav_handle(1000.0, 500.0, HOUR), (0.0, 500.0));
+        v.set_range(HOUR as f64 / 4.0, HOUR as f64 / 2.0, 1000.0, HOUR);
+        let (l, r) = v.nav_handle(1000.0, 400.0, HOUR);
+        assert!((l - 100.0).abs() < 1e-3 && (r - 200.0).abs() < 1e-3, "{l} {r}");
+    }
+
+    #[test]
+    fn navigator_clicks_and_drags_scroll_and_zoom() {
+        let (view_px, nav_px) = (1000.0_f32, 400.0_f32);
+        let mut v = Viewport::fit(HOUR, view_px);
+        v.set_range(HOUR as f64 * 0.25, HOUR as f64 * 0.5, view_px, HOUR);
+        let span = v.end(view_px) - v.start;
+        // A click outside the handle centres the view there, same zoom.
+        v.nav_jump(300.0, view_px, nav_px, HOUR);
+        assert!((v.start + span / 2.0 - HOUR as f64 * 0.75).abs() < 1.0);
+        assert!((v.end(view_px) - v.start - span).abs() < 1e-3);
+        // Jumping to the far end stops at the end of the file.
+        v.nav_jump(400.0, view_px, nav_px, HOUR);
+        assert!((v.end(view_px) - HOUR as f64).abs() < 1e-3);
+        // Dragging the body by 40 bar pixels moves the view by a tenth of the file.
+        v.set_range(HOUR as f64 * 0.25, HOUR as f64 * 0.5, view_px, HOUR);
+        let handle = v.nav_handle(view_px, nav_px, HOUR);
+        let grab = (150.0 / f64::from(nav_px)) * HOUR as f64 - v.start;
+        assert_eq!(nav_hit(handle, 150.0, 5.0), Some(NavPart::Body));
+        v.nav_drag(NavPart::Body, 190.0, grab, view_px, nav_px, HOUR);
+        assert!((v.start - HOUR as f64 * 0.35).abs() < 1.0, "{}", v.start);
+        assert!((v.end(view_px) - v.start - span).abs() < 1e-3, "scrolling keeps the zoom");
+        // The left edge zooms and the right end stays.
+        let end = v.end(view_px);
+        v.nav_drag(NavPart::Left, 100.0, 0.0, view_px, nav_px, HOUR);
+        assert!((v.start - HOUR as f64 * 0.25).abs() < 1.0);
+        assert!((v.end(view_px) - end).abs() < 1.0);
+        // The right edge zooms and the left end stays; crossing over keeps a minimum width.
+        let start = v.start;
+        v.nav_drag(NavPart::Right, 399.0, 0.0, view_px, nav_px, HOUR);
+        assert_eq!(v.start, start);
+        assert!(v.end(view_px) > HOUR as f64 * 0.99);
+        v.nav_drag(NavPart::Right, 0.0, 0.0, view_px, nav_px, HOUR);
+        assert!(v.end(view_px) > v.start && v.frames_per_px >= 1.0 / 16.0);
+        v.nav_drag(NavPart::Body, f32::NAN, 0.0, view_px, nav_px, HOUR);
+        assert!(v.start.is_finite());
+    }
+
+    #[test]
+    fn navigator_hit_testing_finds_edges_body_and_outside() {
+        let handle = (100.0, 200.0);
+        assert_eq!(nav_hit(handle, 101.0, 6.0), Some(NavPart::Left));
+        assert_eq!(nav_hit(handle, 199.0, 6.0), Some(NavPart::Right));
+        assert_eq!(nav_hit(handle, 150.0, 6.0), Some(NavPart::Body));
+        assert_eq!(nav_hit(handle, 50.0, 6.0), None);
+        assert_eq!(nav_hit(handle, 260.0, 6.0), None);
+        // A sliver of a handle can still be grabbed and still has a middle.
+        assert_eq!(nav_hit((100.0, 103.0), 101.5, 6.0), Some(NavPart::Body));
+    }
+
+    #[test]
+    fn vertical_zoom_stays_within_its_limits() {
+        let mut z = AmpZoom::default();
+        z.by(0.5);
+        assert_eq!(z.get(), 1.0, "never below the full range");
+        for _ in 0..40 {
+            z.by(2.0);
+        }
+        assert_eq!(z.get(), AmpZoom::MAX);
+        z.by(f32::NAN);
+        z.by(0.0);
+        z.by(-2.0);
+        assert_eq!(z.get(), AmpZoom::MAX);
+    }
+
+    #[test]
+    fn scale_names_round_trip() {
+        for s in AmpScale::ALL {
+            assert_eq!(AmpScale::parse(s.name()), Some(s));
+        }
+        assert_eq!(AmpScale::parse(" DB "), Some(AmpScale::Db));
+        assert_eq!(AmpScale::parse("furlongs"), None);
+    }
+
+    #[test]
+    fn labels_follow_the_scale() {
+        assert_eq!(AmpScale::Percent.label(0.5), "50");
+        assert_eq!(AmpScale::Percent.label(-1.0), "-100");
+        assert_eq!(AmpScale::Samples.label(0.5), "16384");
+        assert_eq!(AmpScale::Normalized.label(0.25), "0.25");
+        assert_eq!(AmpScale::Db.label(0.5), "-6");
+        assert_eq!(AmpScale::Db.label(-1.0), "0");
+        assert_eq!(AmpScale::Db.label(0.0), "-inf");
+    }
+
+    #[test]
+    fn linear_ticks_are_round_and_spaced() {
+        // 100 px half height at zoom 1: percent marks every 20 or more px apart.
+        let t = AmpScale::Percent.ticks(AmpZoom::full(), 100.0, 25.0);
+        let labels: Vec<_> = t.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(labels, ["0", "25", "50", "75", "100"], "25 % is 25 px at 100 px per 100 %");
+        assert!(t.windows(2).all(|w| (w[1].amp - w[0].amp) * 100.0 >= 24.9));
+        // Zoomed 4x: only the lowest quarter is in view, with finer marks.
+        let z = {
+            let mut z = AmpZoom::full();
+            z.by(4.0);
+            z
+        };
+        let t = AmpScale::Normalized.ticks(z, 100.0, 40.0);
+        assert!(t.iter().all(|t| t.amp <= 0.25 + 1e-6), "{t:?}");
+        assert!(t.len() >= 3 && t[0].amp == 0.0);
+        // Sample values at full range.
+        let t = AmpScale::Samples.ticks(AmpZoom::full(), 100.0, 25.0);
+        assert_eq!(t.last().map(|t| t.label.as_str()), Some("30000"), "{t:?}");
+    }
+
+    #[test]
+    fn decibel_ticks_start_at_full_scale_and_thin_out_when_crowded() {
+        let roomy = AmpScale::Db.ticks(AmpZoom::full(), 200.0, 20.0);
+        assert_eq!(roomy[0], Tick { amp: 1.0, label: "0".to_string() });
+        assert!(roomy.iter().any(|t| t.label == "-6"));
+        let tight = AmpScale::Db.ticks(AmpZoom::full(), 40.0, 20.0);
+        assert!(tight.len() < roomy.len());
+        // Marks are in descending level, never closer than the gap.
+        for w in roomy.windows(2) {
+            assert!(w[1].amp < w[0].amp);
+            assert!((w[0].amp - w[1].amp) * 200.0 >= 19.9);
+        }
+        // Zoomed 8x: nothing above one eighth of full scale (-18 dB) is in view.
+        let mut z = AmpZoom::full();
+        z.by(8.0);
+        let t = AmpScale::Db.ticks(z, 100.0, 20.0);
+        assert!(t.iter().all(|t| t.amp <= 0.125 + 1e-4), "{t:?}");
     }
 
     #[test]

@@ -71,6 +71,18 @@ fn the_panel_layout_is_kept_in_the_settings_file() {
 }
 
 #[test]
+fn the_amplitude_scale_is_saved_and_a_bad_value_is_the_default() {
+    use wavcraft_core::AmpScale;
+    let dir = TempDir::new("ampscale");
+    let file = dir.0.join("settings.txt");
+    let s = Settings { amp_scale: AmpScale::Db, ..Settings::default() };
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file).amp_scale, AmpScale::Db);
+    assert_eq!(Settings::parse("amp_scale = samples").amp_scale, AmpScale::Samples);
+    assert_eq!(Settings::parse("amp_scale = furlongs").amp_scale, AmpScale::default());
+}
+
+#[test]
 fn the_flag_beats_the_environment_beats_the_settings_file_beats_the_default() {
     let default = PathBuf::from("/default/sessions");
     let settings = Settings { session_folder: Some(PathBuf::from("/from/settings")), ..Settings::default() };
@@ -422,4 +434,16 @@ fn snapping_choices_last_from_run_to_run() {
     assert_eq!(Settings::parse("session_folder = /x\n").snap, SnapSettings::default());
     // A default file keeps the old format: no snap lines are written.
     assert!(!Settings::default().to_text().contains("snap_"));
+}
+
+#[test]
+fn f68_the_channel_layout_is_kept_in_the_settings_file() {
+    use wavcraft_core::ChannelLayout;
+    assert_eq!(Settings::default().channel_layout, ChannelLayout::Stacked);
+    let dir = TempDir::new("f68-layout");
+    let file = dir.0.join("settings.txt");
+    let s = Settings { channel_layout: ChannelLayout::Layered, ..Settings::default() };
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file).channel_layout, ChannelLayout::Layered);
+    assert_eq!(Settings::parse("channel_layout = nonsense").channel_layout, ChannelLayout::Stacked);
 }

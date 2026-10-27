@@ -62,6 +62,11 @@ pub enum ActionId {
     ToolZoom,
     /// The Marquee tool (B135): drags a time x frequency rectangle on the spectral display.
     ToolMarquee,
+    ZoomAmpIn,
+    ZoomAmpOut,
+    ZoomAmpReset,
+    ChannelsLayered,
+    ChannelsStacked,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -246,6 +251,11 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out"),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection"),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full"),
+    window(ActionId::ZoomAmpIn, "view.zoom.ampIn", "Zoom In Vertically"),
+    window(ActionId::ZoomAmpOut, "view.zoom.ampOut", "Zoom Out Vertically"),
+    window(ActionId::ZoomAmpReset, "view.zoom.ampReset", "Reset Vertical Zoom"),
+    window(ActionId::ChannelsLayered, "view.channels.layered", "Layer Channels"),
+    window(ActionId::ChannelsStacked, "view.channels.stacked", "Stack Channels"),
     window(ActionId::MeterInputToggle, "meter.input.toggle", "Meter Input Signal"),
     window(ActionId::MeterInputArm, "meter.input.arm", "Test Input Levels (Monitor)"),
     window(ActionId::MicCheck, "meter.input.micCheck", "Mic Check..."),
@@ -376,6 +386,14 @@ pub fn action(id: ActionId) -> &'static Action {
 
 /// The action the control channel calls `name` (table rows only; see [`id_by_name`]).
 pub fn by_name(name: &str) -> Option<&'static Action> {
+    // The zoom actions also answer to a `view.zoom.*` name (the zoom panel's buttons).
+    let name = match name {
+        "view.zoom.in" => "view.zoomIn",
+        "view.zoom.out" => "view.zoomOut",
+        "view.zoom.selection" => "view.zoomToSelection",
+        "view.zoom.full" => "view.zoomOutFull",
+        n => n,
+    };
     // `select.*` also names the two rows that live in the Edit group.
     let name = match name {
         "select.all" => "edit.selectAll",
@@ -617,6 +635,7 @@ impl Editor {
             ActionId::ExtractChannels => self.channel_count() >= 2 && self.len() > 0,
             ActionId::ExportRanges => !crate::export::exportable_ranges(self.history.current(), None).is_empty(),
             ActionId::GotoTime | ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
+            ActionId::ZoomAmpIn | ActionId::ZoomAmpOut | ActionId::ZoomAmpReset | ActionId::ChannelsLayered | ActionId::ChannelsStacked => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom | ActionId::ToolMarquee => true,
             ActionId::ZoomToSelection => has_sel,
             ActionId::Play
@@ -1261,6 +1280,12 @@ impl Editor {
             | ActionId::Rewind
             | ActionId::FastForward
             | ActionId::ToggleRoll
+            | ActionId::ZoomAmpIn
+            | ActionId::ZoomAmpOut
+            | ActionId::ZoomAmpReset
+            | ActionId::ChannelsLayered
+            | ActionId::ChannelsStacked
+            // Repeat and the zero-crossing adjusts returned above.
             | ActionId::RepeatLastDialog
             | ActionId::MeterInputToggle
             | ActionId::MeterInputArm

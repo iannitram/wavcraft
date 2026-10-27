@@ -106,6 +106,7 @@ pub mod view;
 pub mod workspaces;
 pub mod vst3;
 
+pub use channels::{ChannelLayout, channel_color};
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;
 pub use doc::{Channel, DocState, Piece, SourceFormat};
@@ -116,4 +117,4 @@ pub use document::{Document, OpenError, PeakReport};
 pub use smpte::SmpteRate;
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
-pub use view::{Edge, GRAB_PX, Selection, TimeFormat, Viewport, format_time};
+pub use view::{AmpScale, AmpZoom, Edge, GRAB_PX, NavPart, Selection, TimeFormat, Viewport, format_time};

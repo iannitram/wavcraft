@@ -75,6 +75,48 @@ pub fn stereo_downmix(mask: Option<u32>, channels: usize) -> Vec<Gains> {
     gains
 }
 
+/// Layered or stacked waveform channels (View option, kept in the settings file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChannelLayout {
+    /// One lane per channel (the original display).
+    #[default]
+    Stacked,
+    /// Every channel drawn in one lane, each in its own colour.
+    Layered,
+}
+
+impl ChannelLayout {
+    pub fn name(self) -> &'static str {
+        match self {
+            ChannelLayout::Stacked => "stacked",
+            ChannelLayout::Layered => "layered",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ChannelLayout> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "stacked" => Some(ChannelLayout::Stacked),
+            "layered" => Some(ChannelLayout::Layered),
+            _ => None,
+        }
+    }
+}
+
+/// The colour (red, green, blue) channel `ch` is drawn in. Eight distinct hues, then repeated.
+pub fn channel_color(ch: usize) -> [u8; 3] {
+    const PALETTE: [[u8; 3]; 8] = [
+        [90, 200, 120],  // green
+        [235, 140, 70],  // orange
+        [90, 170, 235],  // blue
+        [225, 95, 140],  // rose
+        [200, 190, 80],  // olive
+        [160, 120, 230], // violet
+        [80, 205, 205],  // teal
+        [210, 210, 210], // grey
+    ];
+    PALETTE[ch % PALETTE.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +151,22 @@ mod tests {
         assert_eq!(stereo_downmix(None, 1), [[1.0, 1.0]]);
         assert_eq!(stereo_downmix(Some(3), 2), [[1.0, 0.0], [0.0, 1.0]]);
         assert!(stereo_downmix(None, 0).is_empty());
+    }
+
+    #[test]
+    fn colours_differ_for_the_first_eight_channels() {
+        let mut seen = std::collections::HashSet::new();
+        for ch in 0..8 {
+            assert!(seen.insert(channel_color(ch)));
+        }
+        assert_eq!(channel_color(8), channel_color(0));
+    }
+
+    #[test]
+    fn layout_names_round_trip() {
+        for l in [ChannelLayout::Stacked, ChannelLayout::Layered] {
+            assert_eq!(ChannelLayout::parse(l.name()), Some(l));
+        }
+        assert_eq!(ChannelLayout::parse("sideways"), None);
     }
 }

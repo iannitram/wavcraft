@@ -199,6 +199,8 @@ fn streamed_open_matches_audio_io_for_every_kit_file_and_layout() {
     ] {
         let p = write(&dir.0.join(name), &hand_wav(tag, bits, channels, data, ext));
         let doc = same_as_audio_io(&p, &root.0);
+        // Only an extensible header carries a speaker mask (hand_wav writes 3).
+        assert_eq!(doc.source().channel_mask, ext.then_some(3), "{name}");
         // Chunks the opener skipped are recorded, and where the marker chunks are.
         let skipped: Vec<String> = doc.source().skipped_chunks().iter().map(|c| c.id_str()).collect();
         assert_eq!(skipped, ["iXML", "cue ", "LIST"], "{name}");

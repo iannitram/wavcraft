@@ -43,6 +43,9 @@ const fn cmd_alt(key: &'static str) -> Shortcut {
 const fn shift(key: &'static str) -> Shortcut {
     Shortcut { cmd: false, shift: true, alt: false, key }
 }
+const fn alt(key: &'static str) -> Shortcut {
+    Shortcut { cmd: false, shift: false, alt: true, key }
+}
 
 /// Every key name a chord may use (egui's `Key::name`), for parsing text into a chord.
 const KEY_NAMES: &[&str] = &[
@@ -243,6 +246,8 @@ pub const BINDINGS: &[Binding] = &[
     // Snapping on or off (f09; Audition's default key S).
     act(ActionId::SnapToggle, key("S")),
     act(ActionId::ZoomOutFull, cmd("Backslash")),
+    act(ActionId::ZoomAmpIn, alt("Equals")),
+    act(ActionId::ZoomAmpOut, alt("Minus")),
     act(ActionId::ToolSelect, key("T")),
     act(ActionId::ToggleReturnOnStop, shift("X")),
     act(ActionId::ToolHand, key("H")),

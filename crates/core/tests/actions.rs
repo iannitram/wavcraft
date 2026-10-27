@@ -732,3 +732,53 @@ fn f42_a_channel_mask_from_a_drag_limits_edits_and_both_channels_undoes_it() {
     e.run(ActionId::Delete, 500..600).unwrap();
     assert_eq!(now(&e)[0].len(), 1000);
 }
+
+#[test]
+fn f19_zoom_actions_answer_to_their_panel_names_and_amplitude_zoom_is_bound() {
+    assert_eq!(by_name("view.zoom.in").map(|a| a.id), Some(ActionId::ZoomIn));
+    assert_eq!(by_name("view.zoom.out").map(|a| a.id), Some(ActionId::ZoomOut));
+    assert_eq!(by_name("view.zoom.selection").map(|a| a.id), Some(ActionId::ZoomToSelection));
+    assert_eq!(by_name("view.zoom.full").map(|a| a.id), Some(ActionId::ZoomOutFull));
+    assert_eq!(by_name("view.zoom.ampIn").map(|a| a.id), Some(ActionId::ZoomAmpIn));
+    assert_eq!(by_name("view.zoom.ampOut").map(|a| a.id), Some(ActionId::ZoomAmpOut));
+    assert_eq!(by_name("view.zoom.ampReset").map(|a| a.id), Some(ActionId::ZoomAmpReset));
+}
+
+#[test]
+fn f68_toggling_a_channel_enables_and_disables_it_for_edits() {
+    let dir = TempDir::new("f68-toggle");
+    let mut e = editor(&dir.0, &[vec![1.0; 1000], vec![2.0; 1000], vec![3.0; 1000]]);
+    assert_eq!(e.channels.active(3), [0, 1, 2], "all on to start with");
+    e.run(ActionId::ToggleChannel(1), 0..0).unwrap();
+    assert_eq!(e.channels.active(3), [0, 2]);
+    // Silence now acts on channels 0 and 2 only.
+    e.run(ActionId::Silence, 100..200).unwrap();
+    let c = now(&e);
+    assert_eq!((c[0][150], c[1][150], c[2][150]), (0.0, 2.0, 0.0));
+    e.run(ActionId::ToggleChannel(1), 0..0).unwrap();
+    assert_eq!(e.channels.active(3), [0, 1, 2]);
+    assert_eq!(e.channels, wavcraft_core::ChannelMask::ALL, "all on is the plain 'every channel' mask again");
+}
+
+#[test]
+fn f68_the_last_enabled_channel_cannot_be_turned_off_and_a_missing_channel_is_refused() {
+    let dir = TempDir::new("f68-last");
+    let mut e = editor(&dir.0, &stereo(100));
+    e.run(ActionId::ToggleChannel(0), 0..0).unwrap();
+    let out = e.run(ActionId::ToggleChannel(1), 0..0).unwrap();
+    assert_eq!(out.message.as_deref(), Some("At least one channel stays enabled"));
+    assert_eq!(e.channels.active(2), [1]);
+    assert!(!e.enabled(ActionId::ToggleChannel(2), &(0..0)), "a channel the file does not have cannot be toggled");
+}
+
+#[test]
+fn f68_the_layout_actions_are_in_the_table_and_run_without_changing_the_document() {
+    let dir = TempDir::new("f68-actions");
+    let mut e = editor(&dir.0, &stereo(100));
+    for name in ["view.channels.layered", "view.channels.stacked"] {
+        let a = by_name(name).unwrap();
+        assert!(e.enabled(a.id, &(0..0)));
+        let out = e.run(a.id, 10..20).unwrap();
+        assert!(!out.doc_changed);
+    }
+}
