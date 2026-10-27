@@ -1,6 +1,6 @@
 //! The Multitrack editor view (f103): track headers (name, mute, solo, volume) and a timeline
 //! that draws each track's clips as plain boxes, over `wavcraft_core::multitrack`. Also the
-//! control verbs `SESSION`, `TRACK`, `CLIP` and `VIEW`, so a script can drive it.
+//! control verbs `SESSION`, `TRACK`, `CLIP`, `CLIPPROP` and `VIEW`, so a script can drive it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,8 +10,8 @@ use soundcraft_playback::Player as DevicePlayer;
 use wavcraft_core::Document;
 use wavcraft_core::mtplay::{PlaybackSession, SilentPlayer};
 use wavcraft_core::mtrecord::{FAKE_CHANNELS, Recorder};
-use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, ChannelFormat, SourceId, TrackId};
-use wavcraft_core::multitrack::{MtError, Multitrack, bit_depth_from_bits, bits_of, parse_track_format};
+use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, ChannelFormat, ClipId, SourceId, TrackId};
+use wavcraft_core::multitrack::{ClipProps, MtError, Multitrack, bit_depth_from_bits, bits_of, parse_track_format};
 use wavcraft_core::session_file;
 
 const HEADER_W: f32 = 230.0;
@@ -100,6 +100,18 @@ pub struct NewDialog {
     five_one: bool,
 }
 
+/// The Clip Properties panel's fields while it is open (f119); tempo fields are text so a
+/// half-typed number is not lost, and empty means "not set".
+struct PropsForm {
+    track: TrackId,
+    clip: ClipId,
+    name: String,
+    gain: f32,
+    bpm: String,
+    beats: String,
+    key: String,
+}
+
 /// The Multitrack view's state: the session (if one was made), which view is up, and the small
 /// bits of UI state around it.
 pub struct MtView {
@@ -108,6 +120,9 @@ pub struct MtView {
     pub show: bool,
     dialog: Option<NewDialog>,
     selected: Option<TrackId>,
+    /// The clip the Clip Properties panel is about (f119): its track and id.
+    sel_clip: Option<(TrackId, ClipId)>,
+    props: Option<PropsForm>,
     rename: Option<(TrackId, String)>,
     pub message: Option<String>,
     pub transport: Transport,
@@ -134,6 +149,8 @@ impl Default for MtView {
             show: false,
             dialog: None,
             selected: None,
+            sel_clip: None,
+            props: None,
             rename: None,
             message: None,
             transport: Transport::default(),
@@ -359,6 +376,23 @@ impl MtView {
             {
                 note(&mut failure, mt.add_clip_document(t, d, self.import_at).map(|_| ()));
             }
+            let sel = self.sel_clip.filter(|(t, c)| mt.session.track(*t).is_some_and(|t| t.clips().iter().any(|x| x.id == *c)));
+            if ui.add_enabled(sel.is_some(), egui::Button::new("Clip Properties…")).on_hover_text("click a clip first").clicked()
+                && let Some((t, c)) = sel
+            {
+                let (cl, m) = (mt.session.track(t).and_then(|t| t.clips().iter().find(|x| x.id == c)).cloned(), mt.clip_tempo(c));
+                if let Some(cl) = cl {
+                    self.props = Some(PropsForm {
+                        track: t,
+                        clip: c,
+                        name: cl.name,
+                        gain: cl.gain_db,
+                        bpm: m.bpm.map(|b| b.to_string()).unwrap_or_default(),
+                        beats: m.beats.map(|b| b.to_string()).unwrap_or_default(),
+                        key: m.key.unwrap_or_default(),
+                    });
+                }
+            }
             ui.separator();
             ui.label("Zoom");
             ui.add(egui::Slider::new(&mut self.px_per_sec, 5.0..=400.0).logarithmic(true).show_value(false));
@@ -563,6 +597,11 @@ impl MtView {
                 let lane_resp = ui.interact(lane, ui.id().with(("lane", id.0)), Sense::click());
                 if lane_resp.clicked() {
                     self.selected = Some(id);
+                    let rate = f64::from(mt.rate());
+                    self.sel_clip = lane_resp.interact_pointer_pos().and_then(|pp| {
+                        let sec = f64::from(pp.x - lane.left()) / f64::from(self.px_per_sec);
+                        clips.iter().find(|c| (c.start as f64 / rate..(c.start + c.length) as f64 / rate).contains(&sec)).map(|c| (id, c.id))
+                    });
                 }
                 let rate = f64::from(mt.rate());
                 let p = ui.painter_at(lane);
@@ -576,7 +615,13 @@ impl MtView {
                     let cr = Rect::from_min_size(pos2(x0, lane.top() + 4.0), vec2(w, ROW_H - 8.0));
                     let fill = if mute { colour.gamma_multiply(0.25) } else { colour.gamma_multiply(0.6) };
                     p.rect_filled(cr, 3.0, fill);
-                    p.rect_stroke(cr, 3.0, Stroke::new(1.0, colour), StrokeKind::Inside);
+                    let picked = self.sel_clip == Some((id, c.id));
+                    p.rect_stroke(
+                        cr,
+                        3.0,
+                        Stroke::new(if picked { 2.5 } else { 1.0 }, if picked { Color32::WHITE } else { colour }),
+                        StrokeKind::Inside,
+                    );
                     p.text(cr.left_top() + vec2(4.0, 3.0), egui::Align2::LEFT_TOP, &c.name, egui::FontId::proportional(12.0), Color32::WHITE);
                     let cresp = ui.interact(cr, ui.id().with(("clip", id.0, c.id.0)), Sense::click());
                     if cresp.clicked() {
@@ -648,6 +693,65 @@ impl MtView {
     /// The track a control word names (name or position).
     pub fn find_track(&self, key: &str) -> Result<TrackId, MtError> {
         self.mt.as_ref().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?.find_track(key)
+    }
+
+    /// The Clip Properties panel (f119): name, gain, tempo in BPM, beats and key. "Apply" writes
+    /// them to the clip in the model. "Detect" (read the tempo from the audio) is not built yet.
+    pub fn props_ui(&mut self, ctx: &egui::Context) {
+        let (Some(mt), Some(f)) = (&mut self.mt, &mut self.props) else { return };
+        let (mut open, mut apply, mut close) = (true, false, false);
+        egui::Window::new("Clip Properties").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            egui::Grid::new("clip-props").num_columns(2).show(ui, |ui| {
+                ui.label("Name");
+                ui.text_edit_singleline(&mut f.name);
+                ui.end_row();
+                ui.label("Gain");
+                ui.add(egui::Slider::new(&mut f.gain, -60.0..=24.0).suffix(" dB").fixed_decimals(1));
+                ui.end_row();
+                ui.label("Original tempo");
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut f.bpm).desired_width(70.0).hint_text("BPM"));
+                    ui.add_enabled(false, egui::Button::new("Detect")).on_disabled_hover_text("Detecting the tempo from the audio comes later");
+                });
+                ui.end_row();
+                ui.label("Beats");
+                ui.add(egui::TextEdit::singleline(&mut f.beats).desired_width(70.0));
+                ui.end_row();
+                ui.label("Key");
+                ui.add(egui::TextEdit::singleline(&mut f.key).desired_width(90.0).hint_text("optional, e.g. A minor"));
+                ui.end_row();
+            });
+            ui.horizontal(|ui| {
+                apply = ui.button("Apply").clicked();
+                close = ui.button("Close").clicked();
+            });
+        });
+        let mut failure = None;
+        if apply {
+            let num = |s: &str| -> Result<Option<f64>, MtError> {
+                let s = s.trim();
+                if s.is_empty() { Ok(None) } else { s.parse().map(Some).map_err(|_| MtError(format!("{s:?} is not a number"))) }
+            };
+            let r = num(&f.bpm).and_then(|bpm| {
+                let beats = num(&f.beats)?;
+                mt.set_clip_props(
+                    f.track,
+                    f.clip,
+                    &ClipProps {
+                        name: Some(f.name.clone()),
+                        gain_db: Some(f.gain),
+                        bpm: Some(bpm),
+                        beats: Some(beats),
+                        key: Some(Some(f.key.clone())),
+                    },
+                )
+            });
+            note(&mut failure, r);
+        }
+        self.message = failure;
+        if !open || close {
+            self.props = None;
+        }
     }
 
     /// One control line for `SESSION`, `TRACK`, `CLIP` or `VIEW`; the answer starts `OK` or `ERR`.
@@ -901,6 +1005,29 @@ impl MtView {
                 mt.add_clip_document(id, d, at)?;
                 Ok(format!("OK clips={}", mt.clip_count()))
             }
+            ("CLIPPROP", _) if w.len() >= 2 => {
+                let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+                let t = mt.find_track(word(0))?;
+                let i: usize = word(1).parse().map_err(|_| MtError("<i> is a 0-based clip number".into()))?;
+                let clip = mt.clip_at_index(t, i)?;
+                let mut p = ClipProps::default();
+                let opt = |v: &str, what: &str| -> Result<Option<f64>, MtError> {
+                    if v.is_empty() || v == "none" { Ok(None) } else { v.parse().map(Some).map_err(|_| MtError(format!("{what} is a number"))) }
+                };
+                for kv in &w[2..] {
+                    match kv.split_once('=') {
+                        Some(("name", v)) => p.name = Some(v.into()),
+                        Some(("gain", v)) => p.gain_db = Some(v.parse().map_err(|_| MtError("gain is a number of dB".into()))?),
+                        Some(("tempo" | "bpm", v)) => p.bpm = Some(opt(v, "tempo")?),
+                        Some(("beats", v)) => p.beats = Some(opt(v, "beats")?),
+                        Some(("key", v)) => p.key = Some((!v.is_empty() && v != "none").then(|| v.to_string())),
+                        _ => return usage(CLIPPROP_USAGE),
+                    }
+                }
+                mt.set_clip_props(t, clip, &p)?;
+                Ok("OK".into())
+            }
+            ("CLIPPROP", _) => usage(CLIPPROP_USAGE),
             _ => usage("CLIP add <track> <path> <at_seconds> | CLIP adddoc <track> <at_seconds>"),
         }
     }
@@ -949,6 +1076,8 @@ fn stop_recording(rec: &mut Option<Recorder>, mt: &mut Multitrack, transport: &m
 fn stop_result(placed: usize, failures: &[String]) -> Result<usize, MtError> {
     if failures.is_empty() { Ok(placed) } else { Err(MtError(format!("placed {placed} take(s); problems: {}", failures.join("; ")))) }
 }
+
+const CLIPPROP_USAGE: &str = "CLIPPROP <track> <i> [tempo=<bpm>|none] [beats=<n>|none] [key=<text>] [name=<s>] [gain=<db>]";
 
 fn note(failure: &mut Option<String>, r: Result<(), MtError>) {
     if let Err(e) = r {
@@ -1094,5 +1223,17 @@ mod tests {
         assert!(v.control("SESSION", "state", None).contains(r#""name":"A""#), "the session is still the first one");
         assert!(v.recorder.is_some(), "and the recording goes on");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn clipprop_needs_a_session_and_a_clip_and_checks_its_values() {
+        let mut v = MtView::default();
+        assert!(v.control("CLIPPROP", "1 0 tempo=90", None).starts_with("ERR no session"));
+        v.control("SESSION", "new Demo", None);
+        v.control("TRACK", "add Drums", None);
+        assert!(v.control("CLIPPROP", "1 0 tempo=90", None).starts_with("ERR the track has 0 clip"));
+        assert!(v.control("CLIPPROP", "1", None).starts_with("ERR usage"));
+        assert!(v.control("CLIPPROP", "1 x", None).starts_with("ERR <i>"));
+        assert!(v.control("CLIPPROP", "nope 0", None).starts_with("ERR no track"));
     }
 }

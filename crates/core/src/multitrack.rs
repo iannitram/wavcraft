@@ -9,13 +9,14 @@
 //! ([`MAX_IMPORT_SAMPLES`]) and longer files are refused with a message. They wait for the
 //! disk-backed source trait being added to the fork (issue #302).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::json;
 pub use soundcraft_audio_io::AudioBuffer as ModelBuffer;
 use soundcraft_model::time::SampleRate;
-use soundcraft_model::{BitDepthSetting, ChannelFormat, Clip, Source, SourceAudio, SourceId, TrackId, TrackKind, truncate_chars};
+use soundcraft_model::{BitDepthSetting, ChannelFormat, Clip, ClipId, Source, SourceAudio, SourceId, TrackId, TrackKind, truncate_chars};
 use soundcraft_model::{MAX_NAME_CHARS, MarkerKind, Session};
 
 use crate::Document;
@@ -138,6 +139,33 @@ pub struct Multitrack {
     pub punch: crate::mtrecord::Punch,
     /// The session file this was opened from or last saved to (f117).
     pub file: Option<std::path::PathBuf>,
+    /// Tempo / beat metadata per clip (f119). The pinned model's `Clip` has no such field, so it
+    /// lives beside the session until the fork adds one; see [`ClipTempo`].
+    pub tempo_meta: BTreeMap<ClipId, ClipTempo>,
+}
+
+/// A clip's tempo and beat metadata (roadmap C204): the tempo it was recorded at, how many
+/// beats it holds, and its key as free text. All optional; `bpm` is what a later "follow the
+/// session tempo" feature (C206) stretches by.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClipTempo {
+    pub bpm: Option<f64>,
+    pub beats: Option<f64>,
+    pub key: Option<String>,
+}
+
+/// The tempo bounds a clip may carry (BPM).
+pub const BPM_RANGE: (f64, f64) = (10.0, 1000.0);
+
+/// A change to a clip's properties; `None` leaves a field alone. For the tempo fields,
+/// `Some(None)` clears them.
+#[derive(Debug, Clone, Default)]
+pub struct ClipProps {
+    pub name: Option<String>,
+    pub gain_db: Option<f32>,
+    pub bpm: Option<Option<f64>>,
+    pub beats: Option<Option<f64>>,
+    pub key: Option<Option<String>>,
 }
 
 impl Multitrack {
@@ -163,7 +191,7 @@ impl Multitrack {
         if let Some(o) = session.outputs.first_mut() {
             o.format = master;
         }
-        Ok(Multitrack { session, takes: Vec::new(), punch, file: None })
+        Ok(Multitrack { session, takes: Vec::new(), punch, tempo_meta: BTreeMap::new(), file: None })
     }
 
     /// The master's format (stereo or 5.1).
@@ -260,12 +288,80 @@ impl Multitrack {
         err(format!("no track {key:?}"))
     }
 
+    /// The clip at 0-based position `i` on the track's active playlist.
+    pub fn clip_at_index(&self, track: TrackId, i: usize) -> Result<ClipId, MtError> {
+        let Some(t) = self.session.track(track) else { return err("no such track") };
+        match t.clips().get(i) {
+            Some(c) => Ok(c.id),
+            None => err(format!("the track has {} clip(s); there is no clip {i}", t.clips().len())),
+        }
+    }
+
+    /// A clip's tempo metadata (empty if none was set).
+    pub fn clip_tempo(&self, id: ClipId) -> ClipTempo {
+        self.tempo_meta.get(&id).cloned().unwrap_or_default()
+    }
+
+    /// Change a clip's name, gain and tempo metadata together. Everything is checked first, so a
+    /// refused change alters nothing. Gain is -60 to +24 dB; BPM is [`BPM_RANGE`]; beats > 0.
+    pub fn set_clip_props(&mut self, track: TrackId, clip: ClipId, p: &ClipProps) -> Result<(), MtError> {
+        let name = p.name.as_deref().map(clean_name).transpose()?;
+        if let Some(g) = p.gain_db
+            && !(g.is_finite() && (-60.0..=24.0).contains(&g))
+        {
+            return err("a clip gain is -60 to +24 dB");
+        }
+        if let Some(Some(b)) = p.bpm
+            && !(b.is_finite() && (BPM_RANGE.0..=BPM_RANGE.1).contains(&b))
+        {
+            return err(format!("a tempo is {} to {} BPM", BPM_RANGE.0, BPM_RANGE.1));
+        }
+        if let Some(Some(b)) = p.beats
+            && !(b.is_finite() && b > 0.0 && b <= 1.0e6)
+        {
+            return err("beats is a number above 0");
+        }
+        let key = p.key.as_ref().map(|k| k.as_ref().map(|k| k.trim().chars().take(32).collect::<String>()));
+        let Some(c) = self.session.track_mut(track).and_then(|t| t.playlist_mut()).and_then(|p| p.clip_mut(clip)) else { return err("no such clip") };
+        if let Some(n) = name {
+            c.name = n;
+        }
+        if let Some(g) = p.gain_db {
+            c.gain_db = g;
+        }
+        let m = self.tempo_meta.entry(clip).or_default();
+        if let Some(b) = p.bpm {
+            m.bpm = b;
+        }
+        if let Some(b) = p.beats {
+            m.beats = b;
+        }
+        if let Some(k) = key {
+            m.key = k.filter(|k| !k.is_empty());
+        }
+        if *m == ClipTempo::default() {
+            self.tempo_meta.remove(&clip);
+        }
+        Ok(())
+    }
+
+    /// The factor that would make the clip follow the session's tempo (session BPM over the
+    /// clip's), or `None` with no clip tempo. Reported only; applying it is C206.
+    pub fn follow_ratio(&self, clip: ClipId) -> Option<f64> {
+        let bpm = self.tempo_meta.get(&clip)?.bpm?;
+        Some(self.tempo_bpm() / bpm)
+    }
+
     /// Remove a track with its clips; sources no clip uses any more are dropped with it.
     pub fn remove_track(&mut self, id: TrackId) -> Result<(), MtError> {
         let Some(i) = self.session.track_index(id) else { return err("no such track") };
         let used: Vec<SourceId> = self.session.tracks[i].playlists.iter().flat_map(|p| p.clips.iter().filter_map(Clip::source)).collect();
+        let gone: Vec<ClipId> = self.session.tracks[i].playlists.iter().flat_map(|p| p.clips.iter().map(|c| c.id)).collect();
         self.session.tracks.remove(i);
         self.takes.retain(|k| k.track != id);
+        for c in gone {
+            self.tempo_meta.remove(&c);
+        }
         for s in used {
             if self.session.clips_using(s).next().is_none() {
                 self.session.sources.retain(|x| x.id != s);
@@ -532,7 +628,11 @@ impl Multitrack {
                 let clips: Vec<_> = t
                     .clips()
                     .iter()
-                    .map(|c| json!({"name": c.name, "start": rate.seconds(c.start), "length": rate.seconds(c.length), "channels": c.source().and_then(|s| self.session.source(s)).map_or(0, |s| s.channels), "gain_db": c.gain_db, "offline": self.clip_offline(c)}))
+                    .map(|c| {
+                        let m = self.clip_tempo(c.id);
+                        json!({"name": c.name, "start": rate.seconds(c.start), "length": rate.seconds(c.length), "channels": c.source().and_then(|s| self.session.source(s)).map_or(0, |s| s.channels), "gain_db": c.gain_db, "offline": self.clip_offline(c),
+                            "tempo": m.bpm, "beats": m.beats, "key": m.key, "follow_ratio": self.follow_ratio(c.id)})
+                    })
                     .collect();
                 json!({"name": t.name, "format": t.format.label(), "channels": t.channels(), "armed": t.mixer.record_arm, "input": crate::mtrecord::input_label(&t.mixer.input), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "pan": t.mixer.pan.first().copied().unwrap_or(0.0), "clips": clips})
             })
@@ -751,6 +851,62 @@ mod tests {
         m.remove_track(a).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!((m.track_count(), m.find_track("Music").is_err()), (1, true));
         assert!(m.remove_track(a).is_err());
+    }
+
+    #[test]
+    fn clip_properties_round_trip_in_the_model() {
+        let (mut m, a, _) = two_tracks();
+        let id = m.add_clip_buffer(a, "Loop", "loop.wav", tone(48_000, 1.0, 2), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.clip_at_index(a, 0), Ok(id));
+        assert!(m.clip_at_index(a, 1).is_err());
+        assert_eq!(m.clip_tempo(id), ClipTempo::default());
+        let p = ClipProps {
+            name: Some(" Drum Loop ".into()),
+            gain_db: Some(-3.5),
+            bpm: Some(Some(96.0)),
+            beats: Some(Some(4.0)),
+            key: Some(Some("A minor".into())),
+        };
+        m.set_clip_props(a, id, &p).unwrap_or_else(|e| panic!("{e}"));
+        let c = m.session.track(a).and_then(|t| t.clips().iter().find(|c| c.id == id)).unwrap_or_else(|| panic!("clip"));
+        assert_eq!((c.name.as_str(), c.gain_db), ("Drum Loop", -3.5));
+        assert_eq!(m.clip_tempo(id), ClipTempo { bpm: Some(96.0), beats: Some(4.0), key: Some("A minor".into()) });
+        // The session is 120 BPM by default: following it would speed the clip up by 1.25.
+        assert_eq!(m.follow_ratio(id), Some(120.0 / 96.0));
+        let s = m.state_json();
+        assert!(s.contains(r#""tempo":96.0"#) && s.contains(r#""beats":4.0"#) && s.contains(r#""gain_db":-3.5"#), "{s}");
+        // A partial change keeps the rest; Some(None) clears.
+        m.set_clip_props(a, id, &ClipProps { bpm: Some(None), ..Default::default() }).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.clip_tempo(id).bpm, None);
+        assert_eq!(m.clip_tempo(id).beats, Some(4.0));
+        assert_eq!(m.follow_ratio(id), None);
+    }
+
+    #[test]
+    fn bad_clip_properties_are_refused_and_change_nothing() {
+        let (mut m, a, _) = two_tracks();
+        let id = m.add_clip_buffer(a, "Loop", "loop.wav", tone(48_000, 0.5, 1), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        for p in [
+            ClipProps { name: Some(String::new()), gain_db: Some(-1.0), ..Default::default() },
+            ClipProps { gain_db: Some(f32::NAN), ..Default::default() },
+            ClipProps { gain_db: Some(80.0), ..Default::default() },
+            ClipProps { name: Some("X".into()), bpm: Some(Some(0.0)), ..Default::default() },
+            ClipProps { name: Some("X".into()), beats: Some(Some(-2.0)), ..Default::default() },
+        ] {
+            assert!(m.set_clip_props(a, id, &p).is_err());
+        }
+        let c = m.session.track(a).and_then(|t| t.clips().iter().find(|c| c.id == id)).unwrap_or_else(|| panic!("clip"));
+        assert_eq!((c.name.as_str(), c.gain_db), ("Loop", 0.0));
+        assert!(m.set_clip_props(a, ClipId(999_999), &ClipProps::default()).is_err());
+    }
+
+    #[test]
+    fn removing_a_track_drops_its_clip_metadata() {
+        let (mut m, a, _) = two_tracks();
+        let id = m.add_clip_buffer(a, "Loop", "loop.wav", tone(48_000, 0.5, 1), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        m.set_clip_props(a, id, &ClipProps { bpm: Some(Some(100.0)), ..Default::default() }).unwrap_or_else(|e| panic!("{e}"));
+        m.remove_track(a).unwrap_or_else(|e| panic!("{e}"));
+        assert!(m.tempo_meta.is_empty());
     }
 
     #[test]

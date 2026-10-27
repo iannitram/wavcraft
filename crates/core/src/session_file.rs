@@ -185,7 +185,7 @@ impl Multitrack {
         }
         log::info!(target: "wavcraft_core::session_file", "opened session {:?}: {} source(s), {} offline", session.name, session.sources.len(), messages.len());
         let punch = crate::mtrecord::Punch::new(session.sample_rate.samples(crate::mtrecord::DEFAULT_PREROLL_S));
-        Ok((Multitrack { session, takes: Vec::new(), punch, file: Some(path) }, messages))
+        Ok((Multitrack { session, takes: Vec::new(), punch, tempo_meta: Default::default(), file: Some(path) }, messages))
     }
 }
 

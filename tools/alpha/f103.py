@@ -99,7 +99,7 @@ def main():
         check("CLIP add by position", c.ask(f'CLIP add 3 "{b}" 0.5') == "OK clips=2")
         s = c.state()
         clips = {t["name"]: t["clips"] for t in s["tracks"]}
-        check("two clips at their positions and lengths", clips["Drums"] == [{"name": "a", "start": 1.0, "length": 2.0, "channels": 2, "gain_db": 0.0, "offline": False}] and clips["Bass"] == [{"name": "b", "start": 0.5, "length": 1.0, "channels": 1, "gain_db": 0.0, "offline": False}], clips)
+        check("two clips at their positions and lengths", clips["Drums"] == [{"name": "a", "start": 1.0, "length": 2.0, "channels": 2, "gain_db": 0.0, "offline": False, "tempo": None, "beats": None, "key": None, "follow_ratio": None}] and clips["Bass"] == [{"name": "b", "start": 0.5, "length": 1.0, "channels": 1, "gain_db": 0.0, "offline": False, "tempo": None, "beats": None, "key": None, "follow_ratio": None}], clips)
         check("the session ends at 3.0 s", abs(s["end"] - 3.0) < 1e-9, s["end"])
         check("a clip at the wrong rate is refused", c.ask(f'CLIP add Drums "{odd}" 0').startswith("ERR") and c.state()["end"] == s["end"])
         check("TRACK mute and volume", c.ask("TRACK mute Bass 1") == "OK" and c.ask("TRACK volume Bass -6") == "OK")

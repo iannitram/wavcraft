@@ -2641,7 +2641,7 @@ impl WaveApp {
                 Ok(s) => s,
                 Err(e) => format!("ERR {e}"),
             },
-            "SESSION" | "TRACK" | "CLIP" | "VIEW" | "SMARKER" | "SPLAY" | "SSTOP" | "SREC" | "PUNCH" | "MASTER" => {
+            "SESSION" | "TRACK" | "CLIP" | "CLIPPROP" | "VIEW" | "SMARKER" | "SPLAY" | "SSTOP" | "SREC" | "PUNCH" | "MASTER" => {
                 self.mtv.control(cmd, rest, self.doc.as_ref())
             }
             "MIXER" if matches!(rest.trim(), "show" | "hide") => {
@@ -3397,6 +3397,7 @@ impl eframe::App for WaveApp {
         self.diagnostics_ui(&ctx);
         self.clear_history_prompt(&ctx);
         self.mtv.dialog_ui(&ctx);
+        self.mtv.props_ui(&ctx);
         if let Some((track, i)) = self.mtv.edit_request.take() {
             let r = self.edit_clip_source(track, i, &ctx);
             self.report(r);
