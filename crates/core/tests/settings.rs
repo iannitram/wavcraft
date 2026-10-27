@@ -481,3 +481,31 @@ spec_db_range = 120
 ").spec_db_range, 120);
     assert!(Settings::default().set("spec_split_pct", "95").is_err());
 }
+
+#[test]
+fn the_status_bar_fields_and_the_spectral_band_are_kept_in_the_file() {
+    use wavcraft_core::freq_axis::FreqAxis;
+    use wavcraft_core::statusbar::{StatusField, StatusFields};
+    let dir = TempDir::new("view");
+    let file = dir.0.join("settings.txt");
+    let mut fields = StatusFields::default();
+    fields.set(StatusField::FileSize, true);
+    fields.set(StatusField::Channels, false);
+    let axis = FreqAxis { min_hz: 250.5, max_hz: 8_000.0, log: false, partial: false };
+    let s = Settings { status_fields: fields, spectral_view: Some(axis), ..Settings::default() };
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file), s);
+    // No key: the defaults. An empty list: nothing shown. A band that makes no sense: ignored.
+    assert_eq!(Settings::parse("session_folder =\n").status_fields, StatusFields::default());
+    assert!(Settings::parse("status_fields =\n").status_fields.shown().is_empty());
+    for bad in ["spectral_view = 500 100 log", "spectral_view = x y", "spectral_view = 1 2 sideways", "spectral_view = -5 10"] {
+        assert_eq!(Settings::parse(bad).spectral_view, None, "{bad}");
+    }
+    let partly = Settings::parse("spectral_view = 0 8000 log_partial").spectral_view.unwrap();
+    assert!(partly.log && partly.partial);
+    assert!(Settings::parse(&Settings { spectral_view: Some(partly), ..Settings::default() }.to_text()).spectral_view == Some(partly));
+    assert_eq!(
+        Settings::parse("spectral_view = 100 2000").spectral_view,
+        Some(FreqAxis { min_hz: 100.0, max_hz: 2000.0, log: true, partial: false })
+    );
+}

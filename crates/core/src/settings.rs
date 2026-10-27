@@ -3,7 +3,7 @@
 //! Settings live in a small text file, `settings.txt` in the system's config folder under
 //! `wavcraft` (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on a
 //! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. Today it
-//! holds `session_folder`, `hidden_panels`, `panel_layout`, `zone_sizes` and `workspace`, and the preferences of the Preferences dialog (see
+//! holds `session_folder`, `hidden_panels`, `panel_layout`, `zone_sizes`, `workspace`, `status_fields` and `spectral_view`, and the preferences of the Preferences dialog (see
 //! [`KEYS`]; `input_device` is one of them); a file from an older build, with fewer keys, loads
 //! with the defaults for the rest, and an older build reading a newer file ignores the keys it
 //! doesn't know.
@@ -31,12 +31,17 @@ use std::time::Duration;
 
 pub mod multitrack;
 
+use crate::freq_axis::{FreqAxis, Scale};
+use crate::statusbar::StatusFields;
+
 /// The environment variable that sets the session folder (over the settings file).
 pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 /// How a person changes the session folder, for messages.
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_STATUS_FIELDS: &str = "status_fields";
+const KEY_SPECTRAL_VIEW: &str = "spectral_view";
 const KEY_SNAP: &str = "snap";
 const KEY_SNAP_ZERO: &str = "snap_zero_crossings";
 const KEY_SNAP_COARSE: &str = "snap_ruler_coarse";
@@ -532,6 +537,11 @@ pub struct Settings {
     pub zoom_presets: crate::view::ZoomPresets,
     /// Whether the waveform shows channels layered in one lane or stacked in lanes.
     pub channel_layout: crate::channels::ChannelLayout,
+    /// Which fields the status bar shows (`status_fields = name,format,…`).
+    pub status_fields: StatusFields,
+    /// The spectral display's frequency band and scale (`spectral_view = <lo_hz> <hi_hz> log|lin`);
+    /// `None`: the whole range on the logarithmic scale.
+    pub spectral_view: Option<FreqAxis>,
 }
 
 impl Default for Settings {
@@ -593,6 +603,8 @@ impl Default for Settings {
             amp_scale: crate::view::AmpScale::default(),
             zoom_presets: crate::view::ZoomPresets::default(),
             channel_layout: crate::channels::ChannelLayout::default(),
+            status_fields: StatusFields::default(),
+            spectral_view: None,
         }
     }
 }
@@ -669,6 +681,8 @@ impl Settings {
                         s.tempos.insert(path.to_string(), t);
                     }
                 }
+                KEY_STATUS_FIELDS => s.status_fields = StatusFields::parse_list(value),
+                KEY_SPECTRAL_VIEW => s.spectral_view = parse_view(value),
                 // A value that doesn't fit its key leaves the default, as an unknown key is ignored.
                 other => {
                     let _ = s.set(other, value);
@@ -977,6 +991,14 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        if self.status_fields != StatusFields::default() {
+            out.push_str("# status_fields: the status bar's fields that are shown, comma separated.\n");
+            out.push_str(&format!("{KEY_STATUS_FIELDS} = {}\n", self.status_fields.to_list()));
+        }
+        if let Some(v) = &self.spectral_view {
+            out.push_str("# spectral_view: the spectral display's lowest and highest Hz, and lin, log_partial or log.\n");
+            out.push_str(&format!("{KEY_SPECTRAL_VIEW} = {} {} {}\n", v.min_hz, v.max_hz, v.scale().word()));
+        }
         if self.right_click_menu {
             out.push_str("# right_click: `menu` opens a context menu on right-click; left out (the default), a right-click moves the nearest selection edge to the click.\n");
             out.push_str(&format!("{KEY_RIGHT_CLICK} = menu\n"));
@@ -1213,6 +1235,23 @@ pub fn reset_aside(path: &Path) -> io::Result<Option<PathBuf>> {
         }
     }
     Err(io::Error::other("too many earlier reset copies"))
+}
+
+/// `<lo> <hi> [lin|log_partial|log]`: a band that is finite and has a low end below its high end.
+fn parse_view(value: &str) -> Option<FreqAxis> {
+    let mut it = value.split_whitespace();
+    let lo: f32 = it.next()?.parse().ok()?;
+    let hi: f32 = it.next()?.parse().ok()?;
+    let scale = match it.next() {
+        None => Scale::LogFull,
+        Some(word) => Scale::parse(word)?,
+    };
+    (lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo).then_some(FreqAxis {
+        min_hz: lo,
+        max_hz: hi,
+        log: scale != Scale::Linear,
+        partial: scale == Scale::LogPartial,
+    })
 }
 
 /// Make `path` if it is missing and check that a file can be written in it. The error says why
