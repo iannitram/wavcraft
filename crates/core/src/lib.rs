@@ -48,6 +48,7 @@ pub mod export_presets;
 pub mod fade_handles;
 pub mod generate;
 pub mod hwprofile;
+pub mod input_meter;
 pub mod io;
 pub mod jobs;
 pub mod meta;

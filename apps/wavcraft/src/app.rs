@@ -15,6 +15,7 @@ use wavcraft_core::doc::span::EditSpan;
 use wavcraft_core::export::{self, DEFAULT_CHANNEL_PATTERN, DEFAULT_RANGE_PATTERN, ExportOptions};
 use wavcraft_core::export_presets::{ExportChoice, ExportPresets};
 use wavcraft_core::hwprofile::{Hardware, Outcome, ProfileStore};
+use wavcraft_core::input_meter::InputStats;
 use wavcraft_core::io::{OpenOptions, RawEncoding, RawSpec};
 use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
@@ -39,6 +40,7 @@ use crate::control;
 use crate::diagnostics_panel::{self, Ask, DiagPanel};
 use crate::effect_dialog::{Answer, EffectDialog};
 use crate::freq_panel::{self, FreqPanel};
+use crate::input::InputMonitor;
 use crate::markers_panel::MarkersUi;
 use crate::meters_ui::{self, MetersUi};
 use crate::mixer::MixerModel;
@@ -192,6 +194,22 @@ struct Hold {
     suppress_click: bool,
     /// K+J / K+L came from the control channel and lasts until `KEYJKL up`.
     ctl_nudge: bool,
+}
+
+/// A mic check listening (f56): the window answers when the time is up.
+struct MicCheck {
+    started: std::time::Instant,
+    secs: f32,
+    /// The control channel's `MICCHECK` waiting for the numbers.
+    reply: Option<std::sync::mpsc::Sender<String>>,
+}
+
+/// The mic check dialog (Window > Mic Check...).
+struct MicDialog {
+    /// Seconds to listen, as typed.
+    secs: f32,
+    /// The last run: what was heard and the source it came from.
+    result: Option<(InputStats, String)>,
 }
 
 /// A file being opened on a worker thread.
@@ -448,6 +466,12 @@ pub struct WaveApp {
     cdv: CdView,
     /// Window › Levels and the statistics window (f26).
     meters: MetersUi,
+    /// The input monitor (f56): open only while `meter_input` is on or a mic check listens.
+    input: InputMonitor,
+    /// Window › Meter Input Signal: the Levels panel shows the input while nothing plays.
+    meter_input: bool,
+    mic: Option<MicCheck>,
+    mic_dialog: Option<MicDialog>,
     /// Edit › Preferences…: the page showing while the dialog is up.
     prefs: Option<PrefPage>,
     /// Auto Save: the journal writer, and the offer to recover a crashed run's work.
@@ -668,6 +692,10 @@ impl WaveApp {
             mtv: MtView::default(),
             cdv: CdView::default(),
             meters: MetersUi::new(),
+            input: InputMonitor::new(),
+            meter_input: false,
+            mic: None,
+            mic_dialog: None,
             prefs: None,
             recovery,
             prefs_usage: None,
@@ -784,6 +812,8 @@ impl WaveApp {
                 self.player.set_output(output_choice(&self.settings));
                 self.devices_rx = Some(crate::player::list_devices_in_background(self.settings.audio_host.clone()));
             }
+            // sync_input reopens the monitor on the new device on the next frame.
+            "input_device" => {}
             "output_map" => self.player.set_map(self.settings.output_map.clone()),
             "playback_quality" => self.player.set_quality(self.settings.playback_quality),
             "spec_resolution" | "spec_db_range" => {
@@ -843,6 +873,165 @@ impl WaveApp {
         }
         self.save_profiles();
         outcome
+    }
+
+    /// Turn the input meter on or off (opening or closing the input stream with it).
+    fn set_meter_input(&mut self, on: bool) {
+        self.meter_input = on;
+        self.sync_input();
+    }
+
+    /// Keep the input stream open exactly while the meter is on or a mic check listens, and on
+    /// the device the preferences name.
+    fn sync_input(&mut self) {
+        let want = self.meter_input || self.mic.is_some();
+        let device = self.settings.input_device.clone();
+        if self.input.is_open() && (!want || self.input.stale(device.as_deref())) {
+            self.input.stop();
+        }
+        if want && !self.input.is_open() && self.input.error.is_none() {
+            self.input.start(device.as_deref());
+        }
+        if !want {
+            self.input.error = None;
+        }
+        self.meters.input_view = self.input.is_open() && !self.player.is_playing();
+    }
+
+    /// The peaks for this frame's bars: the input's while it is open and nothing plays, else the player's.
+    fn meter_peaks(&self) -> [f32; 2] {
+        let out = self.player.take_levels();
+        if self.input.is_open() {
+            let inp = self.input.tap.take_peaks();
+            if !self.player.is_playing() {
+                return inp;
+            }
+        }
+        out
+    }
+
+    /// `MICCHECK <seconds>`: listen, then answer the control channel with the numbers.
+    fn start_mic_check(&mut self, arg: &str, reply: std::sync::mpsc::Sender<String>) {
+        let secs: f32 = if arg.is_empty() { 5.0 } else { arg.parse().unwrap_or(f32::NAN) };
+        if !(0.1..=60.0).contains(&secs) {
+            let _ = reply.send("ERR MICCHECK <seconds>, 0.1 to 60".to_string());
+            return;
+        }
+        match self.begin_mic_check(secs, Some(reply.clone())) {
+            Ok(()) => {}
+            Err(e) => {
+                let _ = reply.send(format!("ERR {e}"));
+            }
+        }
+    }
+
+    /// Start listening for `secs` (the dialog's button and `MICCHECK`).
+    fn begin_mic_check(&mut self, secs: f32, reply: Option<std::sync::mpsc::Sender<String>>) -> Result<(), String> {
+        if self.mic.is_some() {
+            return Err("a mic check is already listening".to_string());
+        }
+        self.mic = Some(MicCheck { started: std::time::Instant::now(), secs, reply: None });
+        self.input.error = None;
+        self.sync_input();
+        if !self.input.is_open() {
+            self.mic = None;
+            return Err(self.input.error.clone().unwrap_or_else(|| "the input could not be opened".to_string()));
+        }
+        self.input.tap.reset_stats();
+        if let Some(m) = self.mic.as_mut() {
+            m.started = std::time::Instant::now();
+            m.reply = reply;
+        }
+        let dialog = self.mic_dialog.get_or_insert(MicDialog { secs, result: None });
+        dialog.secs = secs;
+        Ok(())
+    }
+
+    /// Finish a mic check whose time is up.
+    fn poll_mic_check(&mut self) {
+        let Some(m) = &self.mic else { return };
+        if m.started.elapsed().as_secs_f32() < m.secs {
+            return;
+        }
+        let stats = self.input.tap.stats();
+        let source = self.input.source.clone();
+        let m = self.mic.take();
+        if let Some(reply) = m.as_ref().and_then(|m| m.reply.as_ref()) {
+            let _ = reply.send(format!("OK seconds={:.1} {} source={}", m.as_ref().map_or(0.0, |m| m.secs), stats.line(), source.replace(' ', "_")));
+        }
+        if let Some(d) = self.mic_dialog.as_mut() {
+            d.result = Some((stats, source));
+        }
+        self.sync_input();
+    }
+
+    /// The row above the bars: what they show, and the input switch.
+    fn input_strip(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let mut on = self.meter_input;
+            if ui.toggle_value(&mut on, "Input").on_hover_text("Meter the input device while nothing plays (nothing is recorded)").changed() {
+                self.set_meter_input(on);
+            }
+            let text = if let Some(e) = self.input.error.clone() {
+                format!("Input unavailable: {e}")
+            } else if self.meters.input_view {
+                format!("Monitoring {} (armed, not recording)", self.input.source)
+            } else if self.input.is_open() {
+                "Input armed: the bars show playback".to_string()
+            } else {
+                "Output".to_string()
+            };
+            ui.weak(text);
+            if ui.small_button("Mic Check…").clicked() {
+                self.mic_dialog.get_or_insert(MicDialog { secs: 5.0, result: None });
+            }
+        });
+    }
+
+    /// Window › Mic Check…: listen for N seconds, then say how the level was.
+    fn mic_check_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.mic_dialog.take() else { return };
+        let mut open = true;
+        let mut start = false;
+        let listening = self.mic.as_ref().map(|m| (m.started.elapsed().as_secs_f32(), m.secs));
+        egui::Window::new("Mic Check").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+            ui.label("Speak or play at your normal level. Nothing is recorded.");
+            ui.horizontal(|ui| {
+                ui.label("Listen for");
+                ui.add_enabled(listening.is_none(), egui::DragValue::new(&mut dialog.secs).range(1.0..=30.0).suffix(" s"));
+                if ui.add_enabled(listening.is_none(), egui::Button::new("Start")).clicked() {
+                    start = true;
+                }
+            });
+            if let Some((t, total)) = listening {
+                ui.add(egui::ProgressBar::new((t / total).clamp(0.0, 1.0)).text(format!("Listening… {:.0} s", (total - t).max(0.0).ceil())));
+            } else if let Some(e) = &self.input.error {
+                ui.colored_label(CURSOR, format!("Input unavailable: {e}"));
+            }
+            if let Some((stats, source)) = &dialog.result {
+                ui.separator();
+                let f = |v: f32| if v.is_finite() { format!("{v:.1} dBFS") } else { "-inf".to_string() };
+                ui.label(format!("Source: {source}"));
+                ui.label(format!("Peak: {}   Average: {}", f(stats.peak_db()), f(stats.average_db())));
+                let v = stats.verdict();
+                let colour = match v {
+                    wavcraft_core::input_meter::Verdict::Ok => Color32::from_rgb(64, 200, 140),
+                    _ => CURSOR,
+                };
+                ui.colored_label(colour, v.advice());
+            }
+        });
+        if start {
+            let secs = dialog.secs;
+            self.mic_dialog = Some(dialog);
+            if let Err(e) = self.begin_mic_check(secs, None) {
+                self.error = Some(format!("Mic check: {e}"));
+            }
+            return;
+        }
+        if open {
+            self.mic_dialog = Some(dialog);
+        }
     }
 
     /// Put every preference back to its default: the settings file is moved aside, not deleted.
@@ -2785,6 +2974,22 @@ impl WaveApp {
     /// The actions the window carries out itself: zoom, In/Out points at the playhead, and the
     /// Insert Silence dialog.
     fn run_window_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
+        // The input meter needs no open file.
+        match id {
+            ActionId::MeterInputToggle => {
+                self.set_meter_input(!self.meter_input);
+                return Ok(false);
+            }
+            ActionId::MeterInputArm => {
+                self.set_meter_input(true);
+                return Ok(false);
+            }
+            ActionId::MicCheck => {
+                self.mic_dialog.get_or_insert(MicDialog { secs: 5.0, result: None });
+                return Ok(false);
+            }
+            _ => {}
+        }
         let frames = self.doc.as_ref().map_or(0, Document::frames);
         let fmt = match id {
             ActionId::TimeDecimal => Some(TimeFormat::Decimal),
@@ -5723,8 +5928,15 @@ impl WaveApp {
                     Some(_) => return "ERR METERS [PUSH <l> <r> | RESET]".to_string(),
                     None => {}
                 }
-                self.meters.update(self.player.take_levels());
-                meters_ui::readings_line(&self.meters.levels)
+                let peaks = self.meter_peaks();
+                self.meters.update(peaks);
+                format!(
+                    "{} view={} armed={} input_open={}",
+                    meters_ui::readings_line(&self.meters.levels),
+                    if self.meters.input_view { "input" } else { "output" },
+                    u8::from(self.meter_input),
+                    u8::from(self.input.is_open())
+                )
             }
             // f26: loudness of the selection (the whole file when none), or of `<start> <end>` frames.
             "LOUDNESS" => {
@@ -6252,6 +6464,18 @@ impl WaveApp {
                 }
                 ui.checkbox(&mut self.show_mixer, "Mixer panel");
                 ui.checkbox(&mut self.meters.show_levels, "Levels");
+                let mut on = self.meter_input;
+                if ui
+                    .checkbox(&mut on, "Meter Input Signal")
+                    .on_hover_text("Show the input device's level in the Levels panel while nothing plays. Nothing is recorded.")
+                    .changed()
+                {
+                    self.set_meter_input(on);
+                }
+                if ui.button("Mic Check…").clicked() {
+                    self.mic_dialog.get_or_insert(MicDialog { secs: 5.0, result: None });
+                    ui.close();
+                }
                 ui.checkbox(&mut self.meters.show_stats, "Amplitude/Loudness Statistics");
                 ui.add_enabled_ui(self.editor.is_some(), |ui| ui.checkbox(&mut self.stats.show, "Sample Statistics (RMS, clipping)"));
                 ui.separator();
@@ -6877,9 +7101,15 @@ impl eframe::App for WaveApp {
         // Follow a change of the system's default output device (f48): reopen at the same place.
         self.player.maintain();
         self.diag.poll();
-        self.meters.update(self.player.take_levels());
+        self.sync_input();
+        let peaks = self.meter_peaks();
+        self.meters.update(peaks);
+        self.poll_mic_check();
         if self.meters.animating() || self.player.is_playing() {
             ctx.request_repaint();
+        }
+        if self.input.is_open() || self.mic.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
         self.stats.poll();
         self.recovery.poll();
@@ -6892,6 +7122,11 @@ impl eframe::App for WaveApp {
             ctx.request_repaint();
         }
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            if let Some(rest) = req.line.strip_prefix("MICCHECK") {
+                // The answer comes when the time is up, not now.
+                self.start_mic_check(rest.trim(), req.reply);
+                continue;
+            }
             // `VIDEO frame` is answered when the worker has the picture, not before. With a
             // multitrack session holding video clips the time is a session time (f129): the
             // picture comes from the clip under it, at the time into that clip's movie.
@@ -7054,7 +7289,10 @@ impl eframe::App for WaveApp {
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.meters.show_levels {
-            egui::Panel::bottom("levels").show(ui, |ui| self.meters.panel(ui));
+            egui::Panel::bottom("levels").show(ui, |ui| {
+                self.input_strip(ui);
+                self.meters.panel(ui);
+            });
         }
         if self.meters.show_stats {
             let target = self.editor.as_ref().map(|e| {
@@ -7161,6 +7399,7 @@ impl eframe::App for WaveApp {
         self.insert_silence_dialog(&ctx);
         self.tempo_dialog(&ctx);
         self.effect_dialog_ui(&ctx);
+        self.mic_check_dialog(&ctx);
         self.preferences_dialog(&ctx);
         match self.recovery.show(&ctx) {
             Some(Choice::Recover(i)) => {

@@ -103,6 +103,11 @@
 //!   (session markers and ranges, f110)
 //! - `METERS [PUSH <l> <r> | RESET]` → `OK l=<dBFS> l_hold=<dBFS> l_clip=<0|1> r=… r_hold=… r_clip=…` (the Levels
 //!   panel's bars; `PUSH` gives the tap linear peaks as the audio callback would, `RESET` clears the clip lights)
+//! - `ACTION meter.input.toggle|meter.input.arm` (f56) switch the Levels panel to the input device while nothing
+//!   plays (`METERS` then also reports `view=input|output armed=<0|1> input_open=<0|1>`); with
+//!   `WAVCRAFT_FAKE_INPUT=sine:<hz>[:<dBFS>]|silence` the input is synthetic and no device is opened
+//! - `MICCHECK [<seconds>]` (default 5) → after that time `OK seconds=<s> peak=<dBFS> average=<dBFS> clips=<n>
+//!   verdict=<too-quiet|ok|clipping> source=<name>`; other connections keep being answered meanwhile
 //! - `LOUDNESS [<start> <end>]` → `OK scope=<file|selection|range> frames=<n> integrated=<LUFS> range=<LU>
 //!   true_peak=<dBTP> sample_peak=<dBFS> max_momentary=<LUFS>` (`-inf` for nothing to measure; runs on the
 //!   window's thread, so a long file waits)

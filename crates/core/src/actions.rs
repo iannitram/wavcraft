@@ -63,6 +63,12 @@ pub enum ActionId {
     ZeroRightToRight,
     RepeatLast,
     RepeatLastDialog,
+    /// Window > Meter Input Signal (f56): the Levels panel shows the input device while idle.
+    MeterInputToggle,
+    /// Arm the input monitor meter (on, never off): input peak and clip, nothing recorded.
+    MeterInputArm,
+    /// Window > Mic Check...
+    MicCheck,
     /// Capture Noise Print: learn the selection's noise spectrum (kept for the session).
     CaptureNoisePrint,
     /// Diagnostics › DeClipper (B045): scan and repair clipped peaks.
@@ -216,6 +222,9 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out"),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection"),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full"),
+    window(ActionId::MeterInputToggle, "meter.input.toggle", "Meter Input Signal"),
+    window(ActionId::MeterInputArm, "meter.input.arm", "Test Input Levels (Monitor)"),
+    window(ActionId::MicCheck, "meter.input.micCheck", "Mic Check..."),
     // The mouse tools (f64): a minimal switch; a fuller tool model is on another branch.
     window(ActionId::ToolSelect, "tool.select", "Time Selection Tool"),
     window(ActionId::ToolHand, "tool.hand", "Hand Tool"),
@@ -489,6 +498,7 @@ impl Editor {
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
             ActionId::InsertSilence | ActionId::InsertFile | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::MeterInputToggle | ActionId::MeterInputArm | ActionId::MicCheck => true,
             ActionId::TimeDecimal
             | ActionId::TimeCompact
             | ActionId::TimeSamples
@@ -1095,6 +1105,9 @@ impl Editor {
             | ActionId::FastForward
             | ActionId::ToggleRoll
             | ActionId::RepeatLastDialog
+            | ActionId::MeterInputToggle
+            | ActionId::MeterInputArm
+            | ActionId::MicCheck
             | ActionId::RepeatLast
             | ActionId::StatsShow
             | ActionId::StatsGotoPeak

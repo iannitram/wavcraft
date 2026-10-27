@@ -14,6 +14,7 @@ mod cd_ui;
 mod control;
 mod diagnostics_panel;
 mod effect_dialog;
+mod input;
 mod multitrack_ui;
 mod mixer;
 mod meters_ui;
