@@ -1,7 +1,7 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -665,6 +665,15 @@ impl WaveApp {
     }
 
     /// File › Session Folder…: pick a folder, check it, use it from the next open and save it.
+    /// Show the movie at `path` in the Video panel (a Video track's clip, f129): attached again
+    /// only when it is not the one already shown.
+    fn sync_session_video(&mut self, path: &str, ctx: &egui::Context) {
+        if self.video.as_ref().is_none_or(|v| v.path != Path::new(path)) {
+            self.video = Some(VideoPanel::attach(PathBuf::from(path), ctx));
+        }
+        self.show_video = true;
+    }
+
     /// Associate a video file with the open document (Video › Attach video file…).
     fn attach_video(&mut self, path: PathBuf, ctx: &egui::Context) -> Result<(), String> {
         if self.editor.is_none() {
@@ -3338,7 +3347,28 @@ impl eframe::App for WaveApp {
         }
         self.stats.poll();
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            // `VIDEO frame` is answered when the worker has the picture, not before.
+            // `VIDEO frame` is answered when the worker has the picture, not before. With a
+            // multitrack session holding video clips the time is a session time (f129): the
+            // picture comes from the clip under it, at the time into that clip's movie.
+            if let Some(arg) = req.line.strip_prefix("VIDEO frame")
+                && let Some(mt) = self.mtv.mt.as_mut().filter(|m| m.has_video())
+                && let Ok(secs) = arg.trim().parse::<f64>()
+            {
+                let _ = mt.set_playhead(secs);
+                match mt.video_at(secs) {
+                    Some(shot) => {
+                        self.sync_session_video(&shot.path, ctx);
+                        if let Some(v) = self.video.as_mut() {
+                            let seq = v.request(shot.movie_secs, true);
+                            self.video_waiters.add(seq, req.reply);
+                        }
+                    }
+                    None => {
+                        let _ = req.reply.send(format!("ERR no video clip at {secs} s"));
+                    }
+                }
+                continue;
+            }
             if let Some(arg) = req.line.strip_prefix("VIDEO frame") {
                 match (arg.trim().parse::<f64>(), self.video.as_mut()) {
                     (Ok(secs), Some(v)) if secs.is_finite() => {
@@ -3430,8 +3460,21 @@ impl eframe::App for WaveApp {
             });
             self.meters.stats_window(&ctx, target);
         }
+        // In the Multitrack view the panel follows the session playhead through the Video track.
+        let session_shot = if self.mtv.show {
+            self.mtv.mt.as_ref().and_then(|m| {
+                let secs =
+                    if self.mtv.transport.is_playing() { self.mtv.transport.position() as f64 / f64::from(m.rate()) } else { m.playhead_seconds() };
+                m.video_at(secs)
+            })
+        } else {
+            None
+        };
+        if let Some(shot) = &session_shot {
+            self.sync_session_video(&shot.path, &ctx);
+        }
         if self.show_video && self.video.is_some() {
-            let secs = self.playhead_secs();
+            let secs = if session_shot.is_some() { session_shot.as_ref().map(|s| s.movie_secs) } else { self.playhead_secs() };
             if let Some(v) = self.video.as_mut() {
                 if let Some(secs) = secs {
                     v.follow(secs);

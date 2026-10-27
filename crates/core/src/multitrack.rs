@@ -18,7 +18,7 @@ use serde_json::json;
 pub use soundcraft_audio_io::AudioBuffer as ModelBuffer;
 use soundcraft_model::time::SampleRate;
 use soundcraft_model::{BitDepthSetting, ChannelFormat, Clip, ClipId, Source, SourceAudio, SourceId, TrackId, TrackKind, truncate_chars};
-use soundcraft_model::{MAX_NAME_CHARS, MarkerKind, Session};
+use soundcraft_model::{MAX_NAME_CHARS, MarkerKind, Session, VideoSource};
 
 use crate::Document;
 
@@ -188,6 +188,24 @@ impl AudioType {
     }
 }
 
+/// What a movie file is, as probed by the app (the decoder lives in the app crate).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoMeta {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub duration: f64,
+    pub codec: String,
+}
+
+/// The picture a session time calls for: which movie file, and the time in that movie.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoShot {
+    pub path: String,
+    pub movie_secs: f64,
+    pub clip: String,
+}
+
 /// A multitrack session being edited.
 pub struct Multitrack {
     pub session: Session,
@@ -300,7 +318,7 @@ impl Multitrack {
 
     /// Total clips on the audio tracks' active playlists.
     pub fn clip_count(&self) -> usize {
-        self.session.tracks.iter().filter(|t| t.kind == TrackKind::Audio).map(|t| t.clips().len()).sum()
+        self.session.tracks.iter().filter(|t| matches!(t.kind, TrackKind::Audio | TrackKind::Video)).map(|t| t.clips().len()).sum()
     }
 
     /// The end of the last clip, in seconds.
@@ -337,10 +355,95 @@ impl Multitrack {
         Ok(self.session.add_track(TrackKind::Audio, format, name.as_deref()))
     }
 
+    /// Add a Video track (it holds movie clips; the picture only, no audio).
+    pub fn add_video_track(&mut self, name: Option<&str>) -> Result<TrackId, MtError> {
+        let name = match name {
+            Some(n) => {
+                let n = clean_name(n)?;
+                if self.session.tracks.iter().any(|t| t.name.eq_ignore_ascii_case(&n)) {
+                    return err(format!("there is already a track named {n:?}"));
+                }
+                Some(n)
+            }
+            None => None,
+        };
+        Ok(self.session.add_track(TrackKind::Video, ChannelFormat::Mono, name.as_deref()))
+    }
+
+    /// Put a movie on a Video track as a clip at `at_seconds`, as long as its picture. The
+    /// movie is referenced by `path`, never copied or loaded.
+    pub fn add_clip_video(&mut self, track: TrackId, path: &str, meta: &VideoMeta, at_seconds: f64) -> Result<soundcraft_model::ClipId, MtError> {
+        match self.session.track(track) {
+            None => return err("no such track"),
+            Some(t) if t.kind != TrackKind::Video => return err("a movie goes on a Video track: TRACK add video"),
+            Some(_) => {}
+        }
+        if !at_seconds.is_finite() || at_seconds < 0.0 {
+            return err("a clip's position is a number of seconds, 0 or more");
+        }
+        if !meta.duration.is_finite() || meta.duration <= 0.0 {
+            return err("the movie has no picture length");
+        }
+        let at = self.session.sample_rate.samples(at_seconds);
+        let length = self.session.sample_rate.samples(meta.duration).max(1);
+        let name = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("Video").to_string();
+        let file = std::path::Path::new(path).file_name().and_then(|s| s.to_str()).unwrap_or("movie").to_string();
+        let source = SourceId(self.session.alloc());
+        self.session.videos.push(VideoSource {
+            id: source,
+            name: file,
+            path: path.to_string(),
+            width: meta.width,
+            height: meta.height,
+            frame_rate: meta.fps,
+            duration: meta.duration,
+            codec: meta.codec.clone(),
+            offline: None,
+        });
+        let id = self.session.new_clip_id();
+        let clip = Clip::video(id, name, source, 0, at, length);
+        if let Some(pl) = self.session.track_mut(track).and_then(|t| t.playlist_mut()) {
+            pl.clips.push(clip);
+            pl.sort();
+        }
+        Ok(id)
+    }
+
+    /// Whether any Video track holds a clip.
+    pub fn has_video(&self) -> bool {
+        self.session.tracks.iter().any(|t| t.kind == TrackKind::Video && !t.clips().is_empty())
+    }
+
+    /// The picture at `session_secs`: the first Video track (in track order) with an unmuted
+    /// clip under that time, and within it the later clip when two overlap. `movie_secs` is the
+    /// time into the movie (the clip's offset counts), so a clip placed at 1.0 s shows the
+    /// movie's first frame at session time 1.0.
+    pub fn video_at(&self, session_secs: f64) -> Option<VideoShot> {
+        if !session_secs.is_finite() || session_secs < 0.0 {
+            return None;
+        }
+        let rate = self.session.sample_rate;
+        let t = rate.samples(session_secs);
+        for track in self.session.tracks.iter().filter(|t| t.kind == TrackKind::Video && !t.mixer.mute) {
+            let hit = track.clips().iter().rev().find(|c| !c.muted && c.is_video() && c.start <= t && t < c.end());
+            if let Some(c) = hit {
+                let Some(v) = c.video_source().and_then(|id| self.session.video(id)) else { continue };
+                if v.offline.is_some() {
+                    continue;
+                }
+                let into = t - c.start + c.source_offset();
+                return Some(VideoShot { path: v.path.clone(), movie_secs: rate.seconds(into), clip: c.name.clone() });
+            }
+        }
+        None
+    }
+
     /// A track by name (any case) or by 1-based position among the audio tracks ("2", or "#2").
     pub fn find_track(&self, key: &str) -> Result<TrackId, MtError> {
         let ids = self.track_ids();
-        if let Some(t) = self.session.tracks.iter().find(|t| t.kind == TrackKind::Audio && t.name.eq_ignore_ascii_case(key)) {
+        if let Some(t) =
+            self.session.tracks.iter().find(|t| matches!(t.kind, TrackKind::Audio | TrackKind::Video) && t.name.eq_ignore_ascii_case(key))
+        {
             return Ok(t.id);
         }
         if let Ok(n) = key.trim_start_matches('#').parse::<usize>()
@@ -737,7 +840,7 @@ impl Multitrack {
             .session
             .tracks
             .iter()
-            .filter(|t| t.kind == TrackKind::Audio)
+            .filter(|t| matches!(t.kind, TrackKind::Audio | TrackKind::Video))
             .map(|t| {
                 let clips: Vec<_> = t
                     .clips()
@@ -752,7 +855,7 @@ impl Multitrack {
                         j
                     })
                     .collect();
-                json!({"name": t.name, "format": t.format.label(), "channels": t.channels(), "armed": t.mixer.record_arm, "input": crate::mtrecord::input_label(&t.mixer.input), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "pan": t.mixer.pan.first().copied().unwrap_or(0.0), "clips": clips})
+                json!({"name": t.name, "kind": if t.kind == TrackKind::Video { "video" } else { "audio" }, "format": t.format.label(), "channels": t.channels(), "armed": t.mixer.record_arm, "input": crate::mtrecord::input_label(&t.mixer.input), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "pan": t.mixer.pan.first().copied().unwrap_or(0.0), "clips": clips})
             })
             .collect();
         let master = self
@@ -939,6 +1042,48 @@ mod tests {
         let a = m.add_track(None, 2).unwrap_or_else(|e| panic!("{e}"));
         let b = m.add_track(Some("Voice"), 1).unwrap_or_else(|e| panic!("{e}"));
         (m, a, b)
+    }
+
+    fn meta(duration: f64) -> VideoMeta {
+        VideoMeta { width: 160, height: 96, fps: 24.0, duration, codec: "h264".into() }
+    }
+
+    #[test]
+    fn a_video_track_holds_a_movie_and_maps_session_time_to_movie_time() {
+        let mut m = Multitrack::new("V", 48_000, BitDepthSetting::Int24).unwrap_or_else(|e| panic!("{e}"));
+        let a = m.add_track(None, 2).unwrap_or_else(|e| panic!("{e}"));
+        let v = m.add_video_track(None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.session.track(v).map(|t| t.kind), Some(TrackKind::Video));
+        assert_eq!(m.find_track("video"), Ok(v));
+        assert!(m.add_clip_video(a, "/x/c.mp4", &meta(2.0), 1.0).is_err(), "not on an audio track");
+        assert!(!m.has_video());
+        m.add_clip_video(v, "/x/c.mp4", &meta(2.0), 1.0).unwrap_or_else(|e| panic!("{e}"));
+        assert!(m.has_video());
+        assert_eq!(m.clip_count(), 1);
+        assert_eq!(m.video_at(0.5), None, "before the clip");
+        assert_eq!(m.video_at(-1.0), None);
+        let at = |s: f64| m.video_at(s).map(|x| (x.path, x.movie_secs));
+        assert_eq!(at(1.0), Some(("/x/c.mp4".into(), 0.0)));
+        assert_eq!(at(1.5), Some(("/x/c.mp4".into(), 0.5)));
+        assert_eq!(at(2.9), Some(("/x/c.mp4".into(), 1.9)));
+        assert_eq!(at(3.0), None, "the clip ends at 3.0 s");
+        let json = m.state_json();
+        assert!(json.contains("\"kind\":\"video\""), "{json}");
+    }
+
+    #[test]
+    fn a_trimmed_video_clip_counts_its_offset_and_a_muted_track_shows_nothing() {
+        let mut m = Multitrack::new("V", 48_000, BitDepthSetting::Int24).unwrap_or_else(|e| panic!("{e}"));
+        let v = m.add_video_track(Some("Pic")).unwrap_or_else(|e| panic!("{e}"));
+        let id = m.add_clip_video(v, "/x/c.mp4", &meta(2.0), 4.0).unwrap_or_else(|e| panic!("{e}"));
+        if let Some(c) = m.session.track_mut(v).and_then(|t| t.playlist_mut()).and_then(|p| p.clips.iter_mut().find(|c| c.id == id)) {
+            c.trim_start_to(c.start + 48_000);
+        }
+        assert_eq!(m.video_at(4.5), None, "the trimmed-off head");
+        let shot = m.video_at(5.5).unwrap_or_else(|| panic!("a picture"));
+        assert!((shot.movie_secs - 1.5).abs() < 1e-9, "{}", shot.movie_secs);
+        m.set_mute(v, true).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.video_at(5.5), None);
     }
 
     #[test]

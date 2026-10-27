@@ -291,6 +291,11 @@ fn open_movie(path: &Path) -> Result<(Movie, Info), Status> {
     Ok((movie, info))
 }
 
+/// What a movie file is, for putting it on a Video track (f129): opens it, reads its header only.
+pub fn probe(path: &Path) -> Result<Info, String> {
+    open_movie(path).map(|(_, info)| info).map_err(|s| s.text())
+}
+
 /// Decode the frame shown at `secs` and scale it for the window.
 fn decode(movie: &mut Movie, info: &Info, secs: f64) -> Result<Shown, String> {
     let index =

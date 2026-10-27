@@ -50,6 +50,7 @@
 //! - `SCSOURCE test` → `OK frames=<n> checksum=<hex>` (the open document read back as a SoundCraft clip source)
 //! - `VIDEO attach <path>` → `OK` (the Video panel opens the file on a worker; `ERR` with no file open)
 //! - `VIDEO frame <seconds>` → `OK index=<i> size=<w>x<h> time=<t>` once the worker has decoded it, or `ERR <why>`
+//!   (with a video clip in a Multitrack session, `<seconds>` is the session time, f129; the picture is the clip's movie frame)
 //! - `VIDEO status` → `OK <text>` (what the panel says about the file); `VIDEO detach` → `OK`
 //! - `SESSION new <name> [rate=48000] [depth=24]`, `SESSION state`, `TRACK add [name] [fmt=mono|stereo|5.1]|format|remove|rename|mute|solo|volume …`,
 //!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`, `CLIP select <track> <n>|none`, `MIXDOWN [selected] [normalize=<dB>]` (f111)
