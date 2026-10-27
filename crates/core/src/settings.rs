@@ -14,6 +14,7 @@
 //! ([`default_sessions_root`](crate::store::default_sessions_root)). A folder that can't be made
 //! or written falls back to the default, with a message saying why.
 
+use crate::appearance::{self, Colors, Preset};
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -35,9 +36,262 @@ const KEY_EDGE: &str = "crossfade_edge_ms";
 const KEY_OUTPUT: &str = "output_device";
 const KEY_INPUT: &str = "input_device";
 
-/// Every preference key the Preferences dialog and `PREF` use, in the order the file lists them
-/// (`hidden_panels` belongs to the Window menu and is not one of them).
-pub const KEYS: [&str; 5] = [KEY_SESSION_FOLDER, KEY_CUT_JOIN, KEY_EDGE, KEY_OUTPUT, KEY_INPUT];
+const KEY_SRC_QUALITY: &str = "src_quality";
+const KEY_SAVE_MARKERS: &str = "save_markers";
+const KEY_SAVE_METADATA: &str = "save_metadata";
+const KEY_MARKER_PATTERN: &str = "marker_name_pattern";
+const KEY_AUTOSCROLL: &str = "autoscroll";
+const KEY_JKL_STEPS: &str = "jkl_speed_steps";
+const KEY_PREROLL: &str = "preroll_s";
+const KEY_POSTROLL: &str = "postroll_s";
+const KEY_RECORD_OFFSET: &str = "record_offset_ms";
+
+const KEY_SPEC_WINDOW: &str = "spec_window";
+const KEY_SPEC_RESOLUTION: &str = "spec_resolution";
+const KEY_SPEC_DB_RANGE: &str = "spec_db_range";
+const KEY_SPEC_PLAY_FREQS: &str = "spec_play_selected_freqs";
+const KEY_LOUDNESS_TARGET: &str = "loudness_target_lufs";
+const KEY_TRUE_PEAK: &str = "true_peak_ceiling_dbtp";
+const KEY_ZOOM_FACTOR: &str = "zoom_factor";
+const KEY_EXTEND_SELECTION: &str = "extend_selection";
+const KEY_CONTEXT_CHANNELS: &str = "context_channel_editing";
+const KEY_THEME: &str = "theme";
+const KEY_WAVE_COLOUR: &str = "waveform_colour";
+const KEY_BRIGHTNESS: &str = "ui_brightness";
+const KEY_SPEC_PALETTE: &str = "spec_palette";
+const KEY_CONTRAST: &str = "ui_contrast";
+/// The settings-file key that holds one appearance preset per line.
+const KEY_PRESET: &str = "appearance_preset";
+
+/// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
+/// menu and is not one of them).
+pub const KEYS: [&str; 34] = [
+    KEY_SESSION_FOLDER,
+    KEY_CUT_JOIN,
+    KEY_EDGE,
+    KEY_OUTPUT,
+    KEY_INPUT,
+    KEY_SRC_QUALITY,
+    KEY_SAVE_MARKERS,
+    KEY_SAVE_METADATA,
+    KEY_MARKER_PATTERN,
+    KEY_AUTOSCROLL,
+    KEY_JKL_STEPS,
+    KEY_PREROLL,
+    KEY_POSTROLL,
+    KEY_RECORD_OFFSET,
+    KEY_SPEC_WINDOW,
+    KEY_SPEC_RESOLUTION,
+    KEY_SPEC_DB_RANGE,
+    KEY_SPEC_PLAY_FREQS,
+    KEY_TIME_DISPLAY,
+    KEY_LOUDNESS_TARGET,
+    KEY_TRUE_PEAK,
+    KEY_ZOOM_FACTOR,
+    KEY_EXTEND_SELECTION,
+    KEY_CONTEXT_CHANNELS,
+    KEY_THEME,
+    KEY_WAVE_COLOUR,
+    KEY_BRIGHTNESS,
+    "color.waveform",
+    "color.selection",
+    "color.cursor",
+    "color.playhead",
+    "color.background",
+    KEY_SPEC_PALETTE,
+    KEY_CONTRAST,
+];
+
+/// Spectral display resolutions (FFT lengths in frames) the page offers, and the default.
+pub const SPEC_RESOLUTIONS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
+pub const DEFAULT_SPEC_RESOLUTION: u32 = 2048;
+/// The spectral display's dB range (top is 0 dBFS): whole dB, limits and default.
+pub const MIN_SPEC_DB_RANGE: u32 = 40;
+pub const MAX_SPEC_DB_RANGE: u32 = 160;
+pub const DEFAULT_SPEC_DB_RANGE: u32 = 100;
+/// Default loudness target (LUFS) and true-peak ceiling (dBTP), and their limits.
+pub const DEFAULT_LOUDNESS_TARGET_LUFS: f32 = -16.0;
+pub const MIN_LOUDNESS_TARGET_LUFS: f32 = -70.0;
+pub const MAX_LOUDNESS_TARGET_LUFS: f32 = 0.0;
+pub const DEFAULT_TRUE_PEAK_DBTP: f32 = -1.0;
+pub const MIN_TRUE_PEAK_DBTP: f32 = -20.0;
+pub const MAX_TRUE_PEAK_DBTP: f32 = 0.0;
+/// Zoom In/Out multiplies the view by this much: limits and default.
+pub const MIN_ZOOM_FACTOR: f32 = 1.1;
+pub const MAX_ZOOM_FACTOR: f32 = 8.0;
+pub const DEFAULT_ZOOM_FACTOR: f32 = 2.0;
+/// Interface brightness (1 is the theme as drawn): limits and default.
+pub const MIN_BRIGHTNESS: f32 = 0.5;
+pub const MAX_BRIGHTNESS: f32 = 1.5;
+pub const DEFAULT_BRIGHTNESS: f32 = 1.0;
+/// Interface contrast (1 is the theme as drawn): limits and default.
+pub const MIN_CONTRAST: f32 = 0.5;
+pub const MAX_CONTRAST: f32 = 1.5;
+pub const DEFAULT_CONTRAST: f32 = 1.0;
+
+/// A preference that is one of a few named choices: `ALL`, `name`, `from_name`, `NAMES`.
+macro_rules! choice {
+    ($(#[$m:meta])* $name:ident { $($(#[$vm:meta])* $v:ident = $text:literal),+ $(,)? }) => {
+        $(#[$m])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum $name { $($(#[$vm])* $v),+ }
+
+        impl $name {
+            pub const ALL: &'static [$name] = &[$($name::$v),+];
+            /// The choices as the settings file and `PREF` spell them, for messages.
+            pub const NAMES: &'static str = concat!($($text, ", "),+);
+
+            pub fn name(self) -> &'static str {
+                match self { $($name::$v => $text),+ }
+            }
+
+            pub fn from_name(s: &str) -> Option<$name> {
+                $name::ALL.iter().copied().find(|c| c.name() == s)
+            }
+        }
+    };
+}
+
+choice! {
+    /// The window function of the spectral display's FFT.
+    SpecWindow {
+        Hann = "hann",
+        Hamming = "hamming",
+        Blackman = "blackman",
+        BlackmanHarris = "blackman-harris",
+        Rectangular = "rectangular",
+    }
+}
+
+choice! {
+    /// Which edge Shift-click moves when it extends a selection.
+    ExtendSelection {
+        /// The edge nearest the click.
+        Nearest = "nearest",
+        /// The edge away from the anchor, so the anchor never moves.
+        Anchor = "anchor",
+    }
+}
+
+choice! {
+    /// The interface theme.
+    Theme {
+        /// Follow the operating system (dark when it can't say).
+        System = "system",
+        Light = "light",
+        Dark = "dark",
+    }
+}
+
+choice! {
+    /// The spectrogram's colour ramp (quiet to loud); the stops are in [`appearance`].
+    SpecPalette {
+        /// Black through violet and orange to pale yellow.
+        Ember = "ember",
+        /// Black through deep blue and teal to ice white.
+        Glacier = "glacier",
+        /// Black to white.
+        Mono = "mono",
+        /// Black through dark green to pale lime.
+        Forest = "forest",
+        /// Navy through plum and rose to cream.
+        Dusk = "dusk",
+    }
+}
+
+choice! {
+    /// The waveform colour, from a small palette.
+    WaveColour {
+        Green = "green",
+        Blue = "blue",
+        Amber = "amber",
+        Rose = "rose",
+        Cyan = "cyan",
+        White = "white",
+    }
+}
+
+impl WaveColour {
+    /// The colour as red, green, blue.
+    pub fn rgb(self) -> [u8; 3] {
+        match self {
+            WaveColour::Green => [64, 200, 140],
+            WaveColour::Blue => [90, 150, 240],
+            WaveColour::Amber => [235, 170, 60],
+            WaveColour::Rose => [230, 100, 140],
+            WaveColour::Cyan => [70, 200, 215],
+            WaveColour::White => [235, 235, 235],
+        }
+    }
+}
+
+/// The default marker name pattern (`{n}` is the marker's number).
+pub const DEFAULT_MARKER_PATTERN: &str = "Marker {n}";
+/// The longest marker name pattern accepted, in characters.
+pub const MAX_MARKER_PATTERN_CHARS: usize = 64;
+/// Playback speeds the J/K/L keys step through, by default.
+pub const DEFAULT_JKL_STEPS: [f32; 4] = [0.5, 1.0, 2.0, 4.0];
+/// The most speeds, and the slowest and fastest speed, the JKL list accepts.
+pub const MAX_JKL_STEPS: usize = 8;
+pub const MIN_JKL_SPEED: f32 = 0.05;
+pub const MAX_JKL_SPEED: f32 = 16.0;
+/// Pre-roll and post-roll defaults and ceiling, in seconds.
+pub const DEFAULT_ROLL_S: f32 = 2.0;
+pub const MAX_ROLL_S: f32 = 60.0;
+/// The record offset (latency compensation) is within plus or minus this many ms.
+pub const MAX_RECORD_OFFSET_MS: i32 = 1000;
+
+/// Sample rate conversion quality (the default for conversions that don't ask for one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrcQuality {
+    Low,
+    Medium,
+    High,
+    Best,
+}
+
+impl SrcQuality {
+    pub const ALL: [SrcQuality; 4] = [SrcQuality::Low, SrcQuality::Medium, SrcQuality::High, SrcQuality::Best];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SrcQuality::Low => "low",
+            SrcQuality::Medium => "medium",
+            SrcQuality::High => "high",
+            SrcQuality::Best => "best",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<SrcQuality> {
+        SrcQuality::ALL.into_iter().find(|q| q.name() == s)
+    }
+}
+
+/// How the view follows the playhead while playing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoScroll {
+    /// Jump a page when the playhead reaches the edge.
+    Pagewise,
+    /// Keep the playhead in the middle.
+    Centred,
+    Off,
+}
+
+impl AutoScroll {
+    pub const ALL: [AutoScroll; 3] = [AutoScroll::Pagewise, AutoScroll::Centred, AutoScroll::Off];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            AutoScroll::Pagewise => "pagewise",
+            AutoScroll::Centred => "centred",
+            AutoScroll::Off => "off",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<AutoScroll> {
+        AutoScroll::ALL.into_iter().find(|a| a.name() == s)
+    }
+}
 
 /// What a device preference shows (and accepts) for "no device chosen: use the system's".
 pub const SYSTEM_DEFAULT: &str = "System default";
@@ -56,7 +310,7 @@ const KEY_WORKSPACE: &str = "workspace";
 const KEY_METADATA_FIELDS: &str = "metadata_fields";
 
 /// What the settings file holds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
@@ -81,6 +335,46 @@ pub struct Settings {
     /// Ids of the metadata fields file-listing panels show (`crate::panels::MetadataField`);
     /// `None`: never chosen, use the defaults.
     pub metadata_fields: Option<Vec<String>>,
+    /// Default sample rate conversion quality.
+    pub src_quality: SrcQuality,
+    /// Write the markers into a saved file by default.
+    pub save_markers: bool,
+    /// Write the metadata into a saved file by default.
+    pub save_metadata: bool,
+    /// The name a new marker gets (`{n}`: its number).
+    pub marker_name_pattern: String,
+    /// How the view follows the playhead.
+    pub autoscroll: AutoScroll,
+    /// The speeds J/K/L step through, ascending, as a multiple of normal speed.
+    pub jkl_steps: Vec<f32>,
+    /// Pre-roll and post-roll in seconds.
+    pub preroll_s: f32,
+    pub postroll_s: f32,
+    /// Record offset in ms (positive: later). Stored only; recording applies it when it exists.
+    pub record_offset_ms: i32,
+    /// Spectral Displays page: window function, FFT length, dB range (top is 0 dBFS).
+    pub spec_window: SpecWindow,
+    pub spec_resolution: u32,
+    pub spec_db_range: u32,
+    /// Placeholder: play only the selected frequencies. Stored only.
+    pub spec_play_selected_freqs: bool,
+    /// Loudness and Diagnostics page: the default target (LUFS) and true-peak ceiling (dBTP).
+    pub loudness_target_lufs: f32,
+    pub true_peak_ceiling_dbtp: f32,
+    /// General page: how much Zoom In/Out changes the view; the extend-selection rule; whether
+    /// an edit follows the channel the pointer is over.
+    pub zoom_factor: f32,
+    pub extend_selection: ExtendSelection,
+    pub context_channel_editing: bool,
+    /// Appearance page.
+    pub theme: Theme,
+    pub waveform_colour: WaveColour,
+    pub ui_brightness: f32,
+    /// Colour overrides (`color.<item>`), the spectrogram palette, contrast, and the named presets.
+    pub colors: Colors,
+    pub spec_palette: SpecPalette,
+    pub ui_contrast: f32,
+    pub presets: Vec<Preset>,
 }
 
 impl Default for Settings {
@@ -97,6 +391,31 @@ impl Default for Settings {
             zone_sizes: String::new(),
             workspace: String::new(),
             metadata_fields: None,
+            src_quality: SrcQuality::High,
+            save_markers: true,
+            save_metadata: true,
+            marker_name_pattern: DEFAULT_MARKER_PATTERN.to_string(),
+            autoscroll: AutoScroll::Pagewise,
+            jkl_steps: DEFAULT_JKL_STEPS.to_vec(),
+            preroll_s: DEFAULT_ROLL_S,
+            postroll_s: DEFAULT_ROLL_S,
+            record_offset_ms: 0,
+            spec_window: SpecWindow::Hann,
+            spec_resolution: DEFAULT_SPEC_RESOLUTION,
+            spec_db_range: DEFAULT_SPEC_DB_RANGE,
+            spec_play_selected_freqs: false,
+            loudness_target_lufs: DEFAULT_LOUDNESS_TARGET_LUFS,
+            true_peak_ceiling_dbtp: DEFAULT_TRUE_PEAK_DBTP,
+            zoom_factor: DEFAULT_ZOOM_FACTOR,
+            extend_selection: ExtendSelection::Nearest,
+            context_channel_editing: true,
+            theme: Theme::Dark,
+            waveform_colour: WaveColour::Green,
+            ui_brightness: DEFAULT_BRIGHTNESS,
+            colors: Colors::default(),
+            spec_palette: SpecPalette::Ember,
+            ui_contrast: DEFAULT_CONTRAST,
+            presets: Vec::new(),
         }
     }
 }
@@ -131,6 +450,14 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
+            if key.trim() == KEY_PRESET {
+                if let Some(p) =
+                    Preset::from_value(value, |b| (MIN_BRIGHTNESS..=MAX_BRIGHTNESS).contains(&b), |c| (MIN_CONTRAST..=MAX_CONTRAST).contains(&c))
+                {
+                    s.store_preset(p);
+                }
+                continue;
+            }
             match key.trim() {
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
                 KEY_PANEL_LAYOUT => s.panel_layout = value.to_string(),
@@ -153,6 +480,50 @@ impl Settings {
         (Duration::from_millis(u64::from(self.cut_join_ms)), Duration::from_millis(u64::from(self.edge_ms)))
     }
 
+    /// The JKL playback speeds, ascending (1 to 8 of them).
+    pub fn jkl_speed_steps(&self) -> &[f32] {
+        &self.jkl_steps
+    }
+
+    /// Pre-roll: play this long before the cursor when previewing an edit point.
+    pub fn preroll(&self) -> Duration {
+        Duration::from_secs_f32(self.preroll_s)
+    }
+
+    /// Post-roll: play this long after the selection's end when previewing.
+    pub fn postroll(&self) -> Duration {
+        Duration::from_secs_f32(self.postroll_s)
+    }
+
+    /// The spectral display's FFT length and lowest level (dBFS) from the preferences, put into
+    /// `params`. The window function is stored only: the analysis uses Hann.
+    pub fn apply_to_spectrogram(&self, params: &mut crate::SpectrogramParams) {
+        params.fft_size = self.spec_resolution as usize;
+        params.floor_db = -(self.spec_db_range as f32);
+        params.ceil_db = 0.0;
+    }
+
+    /// Default loudness target in LUFS (-16 unless changed).
+    pub fn loudness_target(&self) -> f32 {
+        self.loudness_target_lufs
+    }
+
+    /// Default true-peak ceiling in dBTP (-1 unless changed).
+    pub fn true_peak_ceiling(&self) -> f32 {
+        self.true_peak_ceiling_dbtp
+    }
+
+    /// The waveform colour as red, green, blue.
+    pub fn waveform_rgb(&self) -> [u8; 3] {
+        self.waveform_colour.rgb()
+    }
+
+    /// The name for marker number `n` from the pattern (`{n}` replaced; a pattern without it
+    /// gets the number appended).
+    pub fn marker_name(&self, n: u32) -> String {
+        marker_name(&self.marker_name_pattern, n)
+    }
+
     /// The value of preference `key` as text (a device none is chosen for reads
     /// [`SYSTEM_DEFAULT`], an unset session folder reads empty).
     pub fn get(&self, key: &str) -> Result<String, String> {
@@ -163,6 +534,33 @@ impl Settings {
             KEY_OUTPUT => self.output_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
             KEY_INPUT => self.input_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
             KEY_TIME_DISPLAY => self.time_display.name().to_string(),
+            KEY_SRC_QUALITY => self.src_quality.name().to_string(),
+            KEY_SAVE_MARKERS => self.save_markers.to_string(),
+            KEY_SAVE_METADATA => self.save_metadata.to_string(),
+            KEY_MARKER_PATTERN => self.marker_name_pattern.clone(),
+            KEY_AUTOSCROLL => self.autoscroll.name().to_string(),
+            KEY_JKL_STEPS => self.jkl_steps.iter().map(f32::to_string).collect::<Vec<_>>().join(","),
+            KEY_PREROLL => self.preroll_s.to_string(),
+            KEY_POSTROLL => self.postroll_s.to_string(),
+            KEY_RECORD_OFFSET => self.record_offset_ms.to_string(),
+            KEY_SPEC_WINDOW => self.spec_window.name().to_string(),
+            KEY_SPEC_RESOLUTION => self.spec_resolution.to_string(),
+            KEY_SPEC_DB_RANGE => self.spec_db_range.to_string(),
+            KEY_SPEC_PLAY_FREQS => self.spec_play_selected_freqs.to_string(),
+            KEY_LOUDNESS_TARGET => self.loudness_target_lufs.to_string(),
+            KEY_TRUE_PEAK => self.true_peak_ceiling_dbtp.to_string(),
+            KEY_ZOOM_FACTOR => self.zoom_factor.to_string(),
+            KEY_EXTEND_SELECTION => self.extend_selection.name().to_string(),
+            KEY_CONTEXT_CHANNELS => self.context_channel_editing.to_string(),
+            KEY_THEME => self.theme.name().to_string(),
+            KEY_WAVE_COLOUR => self.waveform_colour.name().to_string(),
+            KEY_BRIGHTNESS => self.ui_brightness.to_string(),
+            KEY_SPEC_PALETTE => self.spec_palette.name().to_string(),
+            KEY_CONTRAST => self.ui_contrast.to_string(),
+            _ if key.starts_with("color.") => match self.colors.get(&key[6..]) {
+                Some(c) => appearance::colour_text(c),
+                None => return Err(unknown_key(key)),
+            },
             _ => return Err(unknown_key(key)),
         })
     }
@@ -182,8 +580,109 @@ impl Settings {
             KEY_OUTPUT => self.output_device = device(value),
             KEY_INPUT => self.input_device = device(value),
             KEY_TIME_DISPLAY => self.time_display = crate::view::TimeFormat::from_name(value).ok_or_else(|| format!("{key} is one of decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994"))?,
+            KEY_SRC_QUALITY => {
+                self.src_quality = SrcQuality::from_name(value).ok_or_else(|| format!("{key} is one of low, medium, high, best"))?;
+            }
+            KEY_SAVE_MARKERS => self.save_markers = parse_bool(key, value)?,
+            KEY_SAVE_METADATA => self.save_metadata = parse_bool(key, value)?,
+            KEY_MARKER_PATTERN => {
+                let n = value.chars().count();
+                if n == 0 || n > MAX_MARKER_PATTERN_CHARS || value.chars().any(char::is_control) {
+                    return Err(format!("{key} is 1 to {MAX_MARKER_PATTERN_CHARS} characters on one line, e.g. {DEFAULT_MARKER_PATTERN}"));
+                }
+                self.marker_name_pattern = value.to_string();
+            }
+            KEY_AUTOSCROLL => {
+                self.autoscroll = AutoScroll::from_name(value).ok_or_else(|| format!("{key} is one of pagewise, centred, off"))?;
+            }
+            KEY_JKL_STEPS => self.jkl_steps = parse_steps(key, value)?,
+            KEY_PREROLL => self.preroll_s = parse_roll(key, value)?,
+            KEY_POSTROLL => self.postroll_s = parse_roll(key, value)?,
+            KEY_RECORD_OFFSET => {
+                self.record_offset_ms = match value.parse::<i32>() {
+                    Ok(n) if n.abs() <= MAX_RECORD_OFFSET_MS => n,
+                    _ => return Err(format!("{key} is a whole number of milliseconds, -{MAX_RECORD_OFFSET_MS} to {MAX_RECORD_OFFSET_MS}")),
+                }
+            }
+            KEY_SPEC_WINDOW => self.spec_window = choose(key, value, SpecWindow::from_name, SpecWindow::NAMES)?,
+            KEY_SPEC_RESOLUTION => {
+                self.spec_resolution = match value.parse::<u32>() {
+                    Ok(n) if SPEC_RESOLUTIONS.contains(&n) => n,
+                    _ => return Err(format!("{key} is one of {}", SPEC_RESOLUTIONS.map(|n| n.to_string()).join(", "))),
+                }
+            }
+            KEY_SPEC_DB_RANGE => {
+                self.spec_db_range = match value.parse::<u32>() {
+                    Ok(n) if (MIN_SPEC_DB_RANGE..=MAX_SPEC_DB_RANGE).contains(&n) => n,
+                    _ => return Err(format!("{key} is a whole number of dB, {MIN_SPEC_DB_RANGE} to {MAX_SPEC_DB_RANGE}")),
+                }
+            }
+            KEY_SPEC_PLAY_FREQS => self.spec_play_selected_freqs = parse_bool(key, value)?,
+            KEY_LOUDNESS_TARGET => {
+                self.loudness_target_lufs = parse_range(key, value, MIN_LOUDNESS_TARGET_LUFS, MAX_LOUDNESS_TARGET_LUFS, "LUFS")?;
+            }
+            KEY_TRUE_PEAK => self.true_peak_ceiling_dbtp = parse_range(key, value, MIN_TRUE_PEAK_DBTP, MAX_TRUE_PEAK_DBTP, "dBTP")?,
+            KEY_ZOOM_FACTOR => self.zoom_factor = parse_range(key, value, MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR, "times")?,
+            KEY_EXTEND_SELECTION => self.extend_selection = choose(key, value, ExtendSelection::from_name, ExtendSelection::NAMES)?,
+            KEY_CONTEXT_CHANNELS => self.context_channel_editing = parse_bool(key, value)?,
+            KEY_THEME => self.theme = choose(key, value, Theme::from_name, Theme::NAMES)?,
+            KEY_WAVE_COLOUR => self.waveform_colour = choose(key, value, WaveColour::from_name, WaveColour::NAMES)?,
+            KEY_BRIGHTNESS => self.ui_brightness = parse_range(key, value, MIN_BRIGHTNESS, MAX_BRIGHTNESS, "(1 is normal)")?,
+            KEY_SPEC_PALETTE => self.spec_palette = choose(key, value, SpecPalette::from_name, SpecPalette::NAMES)?,
+            KEY_CONTRAST => self.ui_contrast = parse_range(key, value, MIN_CONTRAST, MAX_CONTRAST, "(1 is normal)")?,
+            _ if key.starts_with("color.") => {
+                let colour = appearance::parse_colour(key, value)?;
+                match self.colors.slot(&key[6..]) {
+                    Some(slot) => *slot = colour,
+                    None => return Err(unknown_key(key)),
+                }
+            }
             _ => return Err(unknown_key(key)),
         }
+        Ok(())
+    }
+
+    fn store_preset(&mut self, p: Preset) {
+        match self.presets.iter_mut().find(|q| q.name == p.name) {
+            Some(q) => *q = p,
+            None => {
+                if self.presets.len() < appearance::MAX_PRESETS {
+                    self.presets.push(p);
+                }
+            }
+        }
+    }
+
+    /// The saved appearance presets' names, in the order saved.
+    pub fn preset_names(&self) -> Vec<String> {
+        self.presets.iter().map(|p| p.name.clone()).collect()
+    }
+
+    /// Save the current colours, palette, brightness and contrast as preset `name` (replacing one of that name).
+    pub fn save_preset(&mut self, name: &str) -> Result<(), String> {
+        let name = appearance::check_name(name)?;
+        if self.presets.len() >= appearance::MAX_PRESETS && !self.presets.iter().any(|p| p.name == name) {
+            return Err(format!("at most {} presets; delete one first", appearance::MAX_PRESETS));
+        }
+        let p = Preset { name, colors: self.colors, spec_palette: self.spec_palette, brightness: self.ui_brightness, contrast: self.ui_contrast };
+        self.store_preset(p);
+        Ok(())
+    }
+
+    /// Make preset `name` the current appearance.
+    pub fn load_preset(&mut self, name: &str) -> Result<(), String> {
+        let p = self.presets.iter().find(|p| p.name == name.trim()).ok_or_else(|| format!("no preset named {:?}", name.trim()))?.clone();
+        self.colors = p.colors;
+        self.spec_palette = p.spec_palette;
+        self.ui_brightness = p.brightness;
+        self.ui_contrast = p.contrast;
+        Ok(())
+    }
+
+    /// Delete preset `name`.
+    pub fn delete_preset(&mut self, name: &str) -> Result<(), String> {
+        let at = self.presets.iter().position(|p| p.name == name.trim()).ok_or_else(|| format!("no preset named {:?}", name.trim()))?;
+        self.presets.remove(at);
         Ok(())
     }
 
@@ -232,6 +731,26 @@ impl Settings {
             out.push_str("# metadata_fields: what file lists show (Metadata Display), comma separated.\n");
             out.push_str(&format!("{KEY_METADATA_FIELDS} = {}\n", fields.join(",")));
         }
+        // Preferences from the Preferences pages: a key is written only when it differs from its
+        // default, so a default file keeps the old format (see KEYS).
+        let defaults = Settings::default();
+        let mut block = String::new();
+        for k in KEYS[5..].iter().copied().filter(|k| *k != KEY_TIME_DISPLAY) {
+            let v = self.get(k).unwrap_or_default();
+            if v != defaults.get(k).unwrap_or_default() {
+                block.push_str(&format!("{k} = {v}
+"));
+            }
+        }
+        if !block.is_empty() {
+            out.push_str("# Preferences pages (non-default values only; the keys are listed in KEYS).
+");
+            out.push_str(&block);
+        }
+        for p in &self.presets {
+            out.push_str(&format!("{KEY_PRESET} = {}
+", p.to_value()));
+        }
         out
     }
 
@@ -272,6 +791,47 @@ impl Settings {
         }
         Err(io::Error::new(io::ErrorKind::AlreadyExists, "no unused temporary file name found"))
     }
+}
+
+fn parse_bool(key: &str, v: &str) -> Result<bool, String> {
+    match v {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("{key} is true or false")),
+    }
+}
+
+fn choose<T>(key: &str, v: &str, from: fn(&str) -> Option<T>, names: &str) -> Result<T, String> {
+    from(v).ok_or_else(|| format!("{key} is one of {}", names.trim_end_matches(", ")))
+}
+
+fn parse_range(key: &str, v: &str, lo: f32, hi: f32, unit: &str) -> Result<f32, String> {
+    match v.parse::<f32>() {
+        Ok(n) if n.is_finite() && (lo..=hi).contains(&n) => Ok(n),
+        _ => Err(format!("{key} is a number, {lo} to {hi} {unit}")),
+    }
+}
+
+fn parse_roll(key: &str, v: &str) -> Result<f32, String> {
+    match v.parse::<f32>() {
+        Ok(n) if n.is_finite() && (0.0..=MAX_ROLL_S).contains(&n) => Ok(n),
+        _ => Err(format!("{key} is a number of seconds, 0 to {MAX_ROLL_S}")),
+    }
+}
+
+fn parse_steps(key: &str, v: &str) -> Result<Vec<f32>, String> {
+    let why = || format!("{key} is 1 to {MAX_JKL_STEPS} speeds, {MIN_JKL_SPEED} to {MAX_JKL_SPEED}, slowest first, comma separated");
+    let steps: Vec<f32> = v.split(',').map(|p| p.trim().parse::<f32>().map_err(|_| why())).collect::<Result<_, _>>()?;
+    let ok = !steps.is_empty()
+        && steps.len() <= MAX_JKL_STEPS
+        && steps.iter().all(|s| s.is_finite() && (MIN_JKL_SPEED..=MAX_JKL_SPEED).contains(s))
+        && steps.windows(2).all(|w| w[0] < w[1]);
+    if ok { Ok(steps) } else { Err(why()) }
+}
+
+/// Marker name `n` from `pattern`: `{n}` becomes the number; a pattern without it gets " n" appended.
+pub fn marker_name(pattern: &str, n: u32) -> String {
+    if pattern.contains("{n}") { pattern.replace("{n}", &n.to_string()) } else { format!("{pattern} {n}") }
 }
 
 fn unknown_key(key: &str) -> String {

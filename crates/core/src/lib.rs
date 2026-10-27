@@ -19,6 +19,7 @@
 
 pub mod actions;
 pub mod analysis;
+pub mod appearance;
 pub mod atomic;
 pub mod autosave;
 pub mod cd;
