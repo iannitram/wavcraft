@@ -1,5 +1,7 @@
 # Code map
 
+*Status per v1 item (what is on main, what is still on a branch): [ROADMAP.md](../ROADMAP.md). This map describes the layout; parts of it predate the 2026-10-26 tree.*
+
 *Written 2026-10-15 (task 02) from the tree at `3cdf38f`, for a session that has seen nothing.
 Update it when the layout changes. The test kit and bench (task 02) are listed at the end.
 Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `random_edit` and

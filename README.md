@@ -10,7 +10,9 @@ audiobooks, files of one to three hours.
 **Clean room:** its behaviour is copied from Audition's published behaviour and documentation only.
 No code from Audacity (GPL) or any other GPL-family project is read or used. See [Rules](#rules).
 
-**Status: Phase 1, viewer; Phase 2 under way.** It opens a file, draws it, zooms, scrolls and
+**Stage and status:** [PIPELINE.md](PIPELINE.md) and [ROADMAP.md](ROADMAP.md) (2026-10-26); the spec is [SPEC.md](SPEC.md). The paragraph and table below are from 2026-10-12 and kept as history.
+
+**Status (2026-10-12): Phase 1, viewer; Phase 2 under way.** It opens a file, draws it, zooms, scrolls and
 plays, and edits and saves WAV in the app (tasks 06a, 07a, 07b). Underneath, the editor's storage is in place (task 03):
 an opened file is streamed into an on-disk store and held as a piece table; and the core has the
 edits and the undo history (task 04: delete, cut, copy, paste, silence, insert silence, crop, and
