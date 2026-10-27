@@ -83,13 +83,12 @@ The owner's ruling, 2026-10-26: "Stage 0, finish on Hyperion (Recommended)". The
 - **Then:** the 30 open PRs are triaged against v1 (merge, or close as superseded), and the remaining remote branches are swept (archive tags for unmerged ones, R33). Issues are v2-normalized (in progress, 2026-10-26).
 - **Done when:** the stage-0 branch is merged into `main`, CI (once added) or the full local checks pass on it, the open PRs and branches are triaged, and PIPELINE.md moves to Dev Loop.
 
-**Open questions for the owner (from the merge plan's judgement calls):**
+**The merge plan's judgement calls, decided by the owner (2026-10-26, question tool):**
 
-1. Save options: archiving `fleet/wav-c-186-a` accepts f51's meaning of metadata "off" (drop all metadata). The 186 branch's locked tests wanted "off" to drop markers only and keep INFO.
-2. Match Loudness: `fleet/card-wav-38` and the integration branch's f33 are two implementations at different module paths. The plan keeps both, with card-38's tests renamed (it adds 15 expected-red locked tests). Which one is the G3 implementation?
-3. Dither: `fleet/wav-c-12-b` (A4) and the integration branch's A163 are two dither designs; A4 lands after integration so the merge reconciles them. Which design wins where they differ?
-4. Playback: f05 and f74 both add a playback ring; the plan grafts f74's resampler onto f05's read-ahead ring.
-5. Dynamics: the integration branch's Compressor and HardLimiter overlap main's B029 Dynamics. The plan suggests porting only its DeEsser if they are redundant.
+1. Save options, metadata "off": "Everything, like Audition (Recommended)". Off drops markers and the INFO/BWF metadata, as Audition's "Include markers and other metadata" does. `fleet/wav-c-186-a` is archived; its markers-only tests are dropped.
+2. Match Loudness (G3): "One: f33, with card-38's tests (Recommended)". The integration branch's f33 is the one implementation; `fleet/card-wav-38`'s arithmetic tests are ported onto it (its expected-red locked tests become G3's acceptance checks) and its duplicate module is not merged.
+3. Dither (A4): "A4, as v1.md says (Recommended)". Where `fleet/wav-c-12-b` (A4) and the integration branch's A163 differ, A4 wins: off by default, Triangular first, Noise Shaping None, remembered when on, unedited 16-bit saves bit-identical. A163's extra options are after-1.0.
+4. and 5. Playback ring and Dynamics: "Accept both (Recommended)". f74's windowed-sinc resampler is grafted onto f05's read-ahead ring; main's Dynamics stays, and only the integration branch's DeEsser is ported if its Compressor/HardLimiter are redundant.
 
 ### Stage 1: Editor (v1 order 1)
 
