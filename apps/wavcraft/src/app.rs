@@ -1230,10 +1230,10 @@ impl WaveApp {
                     log::warn!(target: "wavcraft", "the peak cache could not be written: {e}");
                 }
                 self.peak_report = Some(r.clone());
-                self.player.set_audio(Some(doc.audio.clone()));
+                self.player.set_audio(Some(doc.state.clone()));
                 self.meters.new_file();
                 let cap = History::default_cap(&self.sessions.path);
-                self.editor = doc.state.clone().map(|state| Editor::new(History::new(state, cap)));
+                self.editor = Some(Editor::new(History::new(doc.state.clone(), cap)));
                 self.apply_crossfades();
                 self.saved = if fresh { None } else { self.editor.as_ref().map(|e| e.history.current().clone()) };
                 self.doc_path = doc.path.clone();
@@ -2920,8 +2920,10 @@ impl WaveApp {
         let rate = doc.sample_rate();
         let secs = g.duration(&dialog.values).min(PREVIEW_SECONDS);
         let frames = (secs * f64::from(rate)).round() as usize;
-        let channels = wavcraft_core::generate::render(g, &dialog.values, rate, doc.audio.channels.len().max(1), frames, PREVIEW_SEED);
-        self.player.set_audio(Some(Arc::new(wavcraft_core::AudioBuffer { sample_rate: rate, channels })));
+        let channels = wavcraft_core::generate::render(g, &dialog.values, rate, doc.channels().max(1), frames, PREVIEW_SEED);
+        let preview = wavcraft_core::AudioBuffer { sample_rate: rate, channels };
+        let state = wavcraft_core::Document::from_buffer(preview).map_err(|e| e.to_string())?.state;
+        self.player.set_audio(Some(state));
         self.player.play(0, frames);
         self.previewing = true;
         Ok(frames)
@@ -2931,7 +2933,7 @@ impl WaveApp {
     fn end_preview(&mut self) {
         if self.previewing {
             self.previewing = false;
-            self.player.set_audio(self.doc.as_ref().map(|d| d.audio.clone()));
+            self.player.set_audio(self.doc.as_ref().map(|d| d.state.clone()));
         }
     }
 
@@ -3374,7 +3376,7 @@ impl WaveApp {
             return Err(why.into());
         }
         let Some(doc) = &self.doc else { return Err("no document".into()) };
-        let audio = wavcraft_core::multitrack::ModelBuffer { sample_rate: doc.sample_rate(), channels: doc.audio.channels.clone() };
+        let audio = wavcraft_core::multitrack::ModelBuffer { sample_rate: doc.sample_rate(), channels: doc.audio_buffer().map_err(|e| e.to_string())?.channels };
         let change = match self.mtv.replace_source(edit.source, audio) {
             Ok(c) => c,
             Err(e) => {
@@ -3402,8 +3404,8 @@ impl WaveApp {
         Ok(format!("OK frames={} was={} trimmed={} removed={}", change.new_frames, change.old_frames, change.trimmed, change.removed))
     }
 
-    /// Read the current step back for the views and the player on a worker thread (task 05
-    /// replaces this with views that read the document directly).
+    /// Show the current step: build its peaks (reading the store a chunk at a time) on a worker
+    /// thread. No samples are copied; the views and the player read the step from the store.
     fn rebuild(&mut self, ctx: &egui::Context) {
         let Some(editor) = &self.editor else { return };
         let (tx, rx) = channel();
@@ -3501,7 +3503,7 @@ impl WaveApp {
         self.rebuilding = None;
         match result {
             Ok(doc) => {
-                self.player.set_audio(Some(doc.audio.clone()));
+                self.player.set_audio(Some(doc.state.clone()));
                 self.doc = Some(doc);
                 self.generation += 1;
                 self.spectrum = None;
@@ -4238,6 +4240,24 @@ impl WaveApp {
                 }
                 None => "ERR PROPERTIES needs a file open".to_string(),
             },
+            // Play frames <from> <to> (scripted checks of playback from the store).
+            "PLAY" => {
+                let mut it = rest.split_whitespace().map(str::parse::<usize>);
+                match (it.next(), it.next(), &self.doc) {
+                    (Some(Ok(a)), Some(Ok(b)), Some(doc)) => {
+                        self.player.play(a.min(doc.frames()), b.min(doc.frames()));
+                        "OK".to_string()
+                    }
+                    _ => "ERR PLAY <from> <to>, in frames, with a file open".to_string(),
+                }
+            }
+            "PLAYBACK" => format!(
+                "OK playing={} pos={} underruns={} output={}",
+                u8::from(self.player.is_playing()),
+                self.player.position(),
+                self.player.underruns(),
+                if self.player.error.is_some() { "none" } else { "ok" }
+            ),
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -5823,7 +5843,7 @@ impl WaveApp {
             let cols = (area.width() * 0.5).round().clamp(1.0, 2048.0);
             let rows = (area.height() / channels as f32).round().clamp(1.0, 384.0) as usize;
             let columns = Columns::covering(start, end, self.view.frames_per_px * f64::from(area.width() / cols), &self.params);
-            self.renderer.ask(Job { generation: self.generation, columns, rows, params: self.params }, &doc.audio);
+            self.renderer.ask(Job { generation: self.generation, columns, rows, params: self.params }, &doc.state);
             if let Some(picture) = self.renderer.take()
                 && picture.job.generation == self.generation
                 && picture.job.params == self.params

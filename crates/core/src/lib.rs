@@ -12,8 +12,8 @@
 //! - [`peakcache`]: saved waveform overviews, so a long file reopens fast.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`settings`]: the settings file and where the session folder is.
-//! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
-//!   and its waveform peaks.
+//! - [`Document`]: the open file as the app sees it: the document in the store, read in
+//!   chunks (no whole-file copy since task 05), and its waveform peaks.
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
 //! - [`smpte`]: SMPTE timecode at 24 to 59.94 fps (drop-frame too) and snapping to frames.
 //! - [`analysis`]: read-only analysis of a document's audio (the Frequency Analysis spectrum).

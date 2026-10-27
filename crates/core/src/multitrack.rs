@@ -743,7 +743,8 @@ impl Multitrack {
         if samples > MAX_IMPORT_SAMPLES {
             return err("the document is too long to hold in memory as a clip; long files wait for the disk-backed sources (issue #302)");
         }
-        let buf = ModelBuffer { sample_rate: doc.sample_rate(), channels: doc.audio.channels.clone() };
+        let channels = doc.audio_buffer().map_err(|e| MtError(e.to_string()))?.channels;
+        let buf = ModelBuffer { sample_rate: doc.sample_rate(), channels };
         let name = doc.name();
         self.add_clip_buffer(track, &name, &name, buf, at_seconds)
     }

@@ -13,14 +13,16 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use soundcraft_audio_io::peaks::Peaks;
+use crate::document::WavePeaks;
 
 /// Default cap for the cache folder: 256 MiB.
 pub const DEFAULT_CAP_BYTES: u64 = 256 << 20;
 /// How much of the source's start is hashed.
 pub const HEADER_HASH_BYTES: usize = 64 << 10;
 
-const MAGIC: &[u8; 8] = b"WCPEAK01";
+/// Version 02: the payload is [`WavePeaks`] (since task 05; 01 held soundcraft `Peaks`). An old file
+/// fails the magic check and is replaced by the next store.
+const MAGIC: &[u8; 8] = b"WCPEAK02";
 const EXT: &str = "peaks";
 
 /// What identifies a source file's peaks.
@@ -99,8 +101,9 @@ fn take_u64(b: &[u8], at: &mut usize) -> Option<u64> {
 }
 
 /// The cache file's bytes for `peaks` (one per channel, each of `frames` samples) under `key`.
-fn encode(key: &Key, frames: u64, peaks: &[Peaks]) -> Option<Vec<u8>> {
-    let payload = postcard::to_stdvec(&peaks).ok()?;
+fn encode(key: &Key, frames: u64, peaks: &[WavePeaks]) -> Option<Vec<u8>> {
+    let parts: Vec<(usize, &[Vec<(f32, f32)>])> = peaks.iter().map(WavePeaks::to_parts).collect();
+    let payload = postcard::to_stdvec(&parts).ok()?;
     let mut out = Vec::with_capacity(payload.len() + 64);
     out.extend_from_slice(MAGIC);
     put_u64(&mut out, key.size);
@@ -115,7 +118,7 @@ fn encode(key: &Key, frames: u64, peaks: &[Peaks]) -> Option<Vec<u8>> {
 }
 
 /// Parse a cache file's bytes against `key`, `channels` and `frames`.
-fn decode(bytes: &[u8], key: &Key, channels: usize, frames: u64) -> Result<Vec<Peaks>, Miss> {
+fn decode(bytes: &[u8], key: &Key, channels: usize, frames: u64) -> Result<Vec<WavePeaks>, Miss> {
     if bytes.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
         return Err(Miss::Corrupt);
     }
@@ -135,7 +138,8 @@ fn decode(bytes: &[u8], key: &Key, channels: usize, frames: u64) -> Result<Vec<P
     if size != key.size || mtime != key.mtime_ns || header != key.header_hash || ch != channels as u64 || fr != frames {
         return Err(Miss::Stale);
     }
-    let peaks: Vec<Peaks> = postcard::from_bytes(payload).map_err(|_| Miss::Corrupt)?;
+    let parts: Vec<(usize, Vec<Vec<(f32, f32)>>)> = postcard::from_bytes(payload).map_err(|_| Miss::Corrupt)?;
+    let peaks: Vec<WavePeaks> = parts.into_iter().map(|(len, levels)| WavePeaks::from_parts(len, levels)).collect::<Option<_>>().ok_or(Miss::Corrupt)?;
     if peaks.len() != channels || peaks.iter().any(|p| p.len_samples() as u64 != frames) {
         return Err(Miss::Corrupt);
     }
@@ -145,7 +149,7 @@ fn decode(bytes: &[u8], key: &Key, channels: usize, frames: u64) -> Result<Vec<P
 /// The cached peaks for `key` in `dir`, if there are any for this version of the file with this
 /// many channels and frames. A hit refreshes the entry's modification time, so eviction drops the
 /// least recently used first.
-pub fn load(dir: &Path, key: &Key, channels: usize, frames: u64) -> Result<Vec<Peaks>, Miss> {
+pub fn load(dir: &Path, key: &Key, channels: usize, frames: u64) -> Result<Vec<WavePeaks>, Miss> {
     let path = dir.join(key.file_name());
     let bytes = match fs::read(&path) {
         Ok(b) => b,
@@ -162,7 +166,7 @@ pub fn load(dir: &Path, key: &Key, channels: usize, frames: u64) -> Result<Vec<P
 /// Write the peaks of `key`'s file into `dir` (made if missing), replacing any older entry for
 /// the path, then evict down to `cap` bytes. Written to a temporary name and renamed, so a
 /// reader never sees half a file. A failure is returned for the log; opening never depends on it.
-pub fn store(dir: &Path, key: &Key, frames: u64, peaks: &[Peaks], cap: u64) -> std::io::Result<()> {
+pub fn store(dir: &Path, key: &Key, frames: u64, peaks: &[WavePeaks], cap: u64) -> std::io::Result<()> {
     let bytes = encode(key, frames, peaks).ok_or_else(|| std::io::Error::other("cannot encode the peaks"))?;
     fs::create_dir_all(dir)?;
     let name = key.file_name();
@@ -246,10 +250,10 @@ mod tests {
         dir
     }
 
-    fn sample_peaks(frames: usize) -> Vec<Peaks> {
+    fn sample_peaks(frames: usize) -> Vec<WavePeaks> {
         let a: Vec<f32> = (0..frames).map(|i| (i as f32 * 0.01).sin()).collect();
         let b: Vec<f32> = a.iter().map(|v| -v).collect();
-        vec![Peaks::build(&a), Peaks::build(&b)]
+        vec![WavePeaks::from_samples(&a), WavePeaks::from_samples(&b)]
     }
 
     fn key_for(dir: &Path, name: &str, bytes: &[u8]) -> Key {
@@ -390,7 +394,7 @@ mod tests {
         let dir = scratch("clear");
         let cache = dir.join("cache");
         let key = key_for(&dir, "a.wav", b"RIFF-x");
-        store(&cache, &key, 100, &[Peaks::build(&[0.5; 100])], DEFAULT_CAP_BYTES).unwrap();
+        store(&cache, &key, 100, &[WavePeaks::from_samples(&[0.5; 100])], DEFAULT_CAP_BYTES).unwrap();
         fs::write(cache.join("notes.txt"), "keep").unwrap();
         assert_eq!(clear(&cache), 1);
         assert_eq!(info(&cache), (0, 0));

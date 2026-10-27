@@ -7,6 +7,7 @@
 //!
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> tool=<name> view=<a>-<b> time_display=<format> selection_text=<range> snap_frames=<0|1> cursor_frame=<frame> cursor_text=<time in the format> clipboard=<1-5> clip_frames=<n> undo=<label> redo=<label> path=<the document's own path>`
 //!   (`path=` is last: it may hold spaces; Save Selection As and Export do not change it)
+//! - `PLAY <from> <to>` (frames) → `OK`; `PLAYBACK` → `OK playing=<0|1> pos=<frame> underruns=<n> output=<ok|none>`
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)

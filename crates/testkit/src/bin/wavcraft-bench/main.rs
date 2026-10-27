@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use soundcraft_audio_io::peaks::Peaks;
-use wavcraft_core::spectrogram::{Columns, Overview, render_columns};
+use wavcraft_core::document::{StoreChannel, WavePeaks};
+use wavcraft_core::spectrogram::{Columns, Overview, render_columns_from};
 use wavcraft_core::{Document, SpectrogramParams};
 
 /// Rows per channel of a picture: the most the app asks for.
@@ -74,13 +74,14 @@ fn main() -> ExitCode {
     println!("open (read + decode + peaks): {open_ms:.0} ms");
     println!("peak working set during open: {}", gb(after_open.peak));
     println!("working set after open: {}", gb(after_open.now));
-    println!("decoded samples (f32): {:.2} GB", (frames * channels * 4) as f64 / 1e9);
+    println!("samples as f32 (what the old whole-file copy held): {:.2} GB", (frames * channels * 4) as f64 / 1e9);
 
     // 2. Waveform peaks: built eagerly inside open; timed again alone, channels side by side as open does.
     let t = Instant::now();
-    let peaks: Vec<Peaks> = std::thread::scope(|s| {
-        let jobs: Vec<_> = doc.audio.channels.iter().map(|ch| s.spawn(move || Peaks::build(ch))).collect();
-        jobs.into_iter().filter_map(|job| job.join().ok()).collect()
+    let peaks: Vec<WavePeaks> = std::thread::scope(|s| {
+        let state = &doc.state;
+        let jobs: Vec<_> = (0..channels).map(|ch| s.spawn(move || WavePeaks::build(state, ch))).collect();
+        jobs.into_iter().filter_map(|job| job.join().ok().and_then(Result::ok)).collect()
     });
     println!("peaks build (inside open; timed again alone): {:.0} ms for {} channels", ms(t), peaks.len());
     drop(peaks);
@@ -90,18 +91,18 @@ fn main() -> ExitCode {
     let params = SpectrogramParams::default();
     let t = Instant::now();
     let mut per_channel = Vec::new();
-    let overviews: Vec<Overview> = doc
-        .audio
-        .channels
+    let sources: Vec<StoreChannel> = (0..channels).map(|ch| StoreChannel::new(&doc.state, ch)).collect();
+    let overviews: Vec<Overview> = sources
         .iter()
         .map(|samples| {
             let c = Instant::now();
-            let o = Overview::build(samples, &params);
+            let o = Overview::build_from(samples, &params);
             per_channel.push(format!("{:.0}", ms(c)));
             o
         })
         .collect();
     let overview_ms = ms(t);
+    println!("working set after the overviews: {}", gb(memory::read().now));
     let overview_bytes: usize = overviews.iter().map(Overview::bytes).sum();
     println!(
         "spectrogram overview build: {overview_ms:.0} ms for {channels} ch ({} ms per channel), {:.1} MB",
@@ -111,8 +112,8 @@ fn main() -> ExitCode {
     for cols in [640usize, 1280, 2048] {
         let columns = Columns { start: 0.0, end: frames as f64, cols };
         let (best, median) = timed(5, || {
-            for (samples, overview) in doc.audio.channels.iter().zip(&overviews) {
-                std::hint::black_box(render_columns(samples, rate, columns, ROWS, &params, Some(overview)));
+            for (samples, overview) in sources.iter().zip(&overviews) {
+                std::hint::black_box(render_columns_from(samples, rate, columns, ROWS, &params, Some(overview)));
             }
         });
         println!(
@@ -127,11 +128,15 @@ fn main() -> ExitCode {
     let t = Instant::now();
     let mut scratch = vec![0.0f32; READ_CHUNK];
     let mut sum = 0.0f64;
-    for samples in &doc.audio.channels {
-        for chunk in samples.chunks(READ_CHUNK) {
-            let into = scratch.get_mut(..chunk.len()).unwrap_or(&mut []);
-            into.copy_from_slice(chunk);
-            sum += into.iter().map(|v| f64::from(*v)).sum::<f64>();
+    for ch in 0..channels {
+        let mut at = 0u64;
+        while at < frames as u64 {
+            let got = doc.state.read(ch, at, &mut scratch).unwrap_or(0);
+            if got == 0 {
+                break;
+            }
+            sum += scratch.iter().take(got).map(|v| f64::from(*v)).sum::<f64>();
+            at += got as u64;
         }
     }
     let read_ms = ms(t);
