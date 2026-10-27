@@ -447,3 +447,16 @@ fn f68_the_channel_layout_is_kept_in_the_settings_file() {
     assert_eq!(Settings::load(&file).channel_layout, ChannelLayout::Layered);
     assert_eq!(Settings::parse("channel_layout = nonsense").channel_layout, ChannelLayout::Stacked);
 }
+
+#[test]
+fn f69_zoom_presets_are_saved_and_bad_values_fall_back() {
+    let dir = TempDir::new("zoom-presets");
+    let file = dir.0.join("settings.txt");
+    let mut s = Settings::default();
+    s.zoom_presets.set(3, 42.0);
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file), s);
+    assert_eq!(Settings::default().zoom_presets, wavcraft_core::view::ZoomPresets::default());
+    assert_eq!(Settings::parse("zoom_presets = 3,4\n").zoom_presets.0[..2], [3.0, 4.0]);
+    assert_eq!(Settings::parse("zoom_presets = banana\n").zoom_presets, wavcraft_core::view::ZoomPresets::default());
+}

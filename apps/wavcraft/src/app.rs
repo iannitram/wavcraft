@@ -889,6 +889,23 @@ impl WaveApp {
         }
     }
 
+    /// Put the time the window spans now in Zoom to Time slot `slot` (0-based); returns the seconds.
+    fn set_zoom_slot(&mut self, slot: usize) -> Result<f64, String> {
+        let rate = self.doc.as_ref().map_or(0, Document::sample_rate);
+        if rate == 0 {
+            return Err("no file is open".to_string());
+        }
+        // The view may show less than the window when the file is shorter than it.
+        let secs = self.view.span_frames(self.editor_width.max(1.0)) / f64::from(rate);
+        if !self.settings.zoom_presets.set(slot, secs) {
+            return Err(format!("slot {} cannot hold {secs} s", slot + 1));
+        }
+        if let Err(e) = self.save_settings() {
+            log::warn!(target: "wavcraft", "could not save the zoom slots: {e}");
+        }
+        Ok(self.settings.zoom_presets.0[slot])
+    }
+
     /// Show the waveform's channels layered or stacked, and keep the choice in the settings file.
     fn set_channel_layout(&mut self, layout: ChannelLayout) {
         self.settings.channel_layout = layout;
@@ -3421,6 +3438,13 @@ impl WaveApp {
         match id {
             ActionId::ZoomIn => self.view.zoom_at(f64::from(self.settings.zoom_factor), width * 0.5, width, frames),
             ActionId::ZoomOut => self.view.zoom_at(1.0 / f64::from(self.settings.zoom_factor), width * 0.5, width, frames),
+            ActionId::ZoomInAtIn => self.view.zoom_around_frame(f64::from(self.settings.zoom_factor), self.selection.start() as f64, width, frames),
+            ActionId::ZoomInAtOut => self.view.zoom_around_frame(f64::from(self.settings.zoom_factor), self.selection.end() as f64, width, frames),
+            id if actions::zoom_preset_slot(id).is_some() => {
+                let slot = actions::zoom_preset_slot(id).unwrap_or(0);
+                let rate = self.doc.as_ref().map_or(1, Document::sample_rate);
+                self.view.zoom_to_span(self.settings.zoom_presets.0[slot] * f64::from(rate), width, frames);
+            }
             ActionId::ZoomOutFull => self.fit_on_next_frame = true,
             ActionId::ZoomAmpIn => self.amp_zoom.by(2.0),
             ActionId::ZoomAmpOut => self.amp_zoom.by(0.5),
@@ -5668,6 +5692,7 @@ impl WaveApp {
                 let rec_state = self.rec.state_fields();
                 let width = self.editor_width.max(1.0);
                 let (vzoom, ampscale, layout) = (self.amp_zoom.get(), self.settings.amp_scale.name(), self.settings.channel_layout.name());
+        let zfactor = f64::from(self.settings.zoom_factor);
                 let view = format!(
                     "tool={} right_click={} view={:.0}-{:.0}",
                     self.tool.name(),
@@ -5702,7 +5727,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} selch={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} layout={layout} {tstate} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
+                            "OK frames={} channels={} rate={} selection={} selch={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -5747,7 +5772,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} layout={layout} {tstate} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         u8::from(self.player.is_playing()),
@@ -5905,6 +5930,20 @@ impl WaveApp {
                 }
                 None => "ERR AMPSCALE db|percent|samples|normalized".to_string(),
             },
+            // Zoom to Time slots: `ZOOMPRESET set <n>` stores the current view's time in slot n
+            // (1-5); `ZOOMPRESET get <n>` reports it in seconds.
+            "ZOOMPRESET" => {
+                let mut it = rest.split_whitespace();
+                let slot = it.nth(1).and_then(|n| n.parse::<usize>().ok()).filter(|n| (1..=wavcraft_core::view::ZOOM_SLOTS).contains(n));
+                match (rest.split_whitespace().next(), slot) {
+                    (Some("set"), Some(n)) => match self.set_zoom_slot(n - 1) {
+                        Ok(secs) => format!("OK slot={n} secs={secs:.4}"),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    (Some("get"), Some(n)) => format!("OK slot={n} secs={:.4}", self.settings.zoom_presets.0[n - 1]),
+                    _ => "ERR ZOOMPRESET set|get <1-5>".to_string(),
+                }
+            }
             // Turn a channel on or off for edits (the amplitude ruler's buttons), 0-based.
             "CHANNEL" => match rest.split_once(' ') {
                 Some(("toggle", n)) => match n.trim().parse::<u8>() {
@@ -7364,7 +7403,7 @@ impl WaveApp {
                 let mut chosen = None;
                 for a in
                     TABLE.iter().filter(|a| {
-                        (a.name.starts_with("view.") && !a.name.starts_with("view.time_display.") && !a.name.starts_with("view.snap."))
+                        (a.name.starts_with("view.") && !a.name.starts_with("view.time_display.") && !a.name.starts_with("view.snap.") && !a.name.starts_with("view.zoom.preset."))
                             || a.name.starts_with("tool.")
                     })
                 {
@@ -7373,6 +7412,25 @@ impl WaveApp {
                     if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
                         chosen = Some(a.id);
                     }
+                }
+                // Zoom to Time (f69): recall a slot, or store the view's time in one.
+                let (open, mut set_slot) = (self.doc.is_some(), None);
+                ui.menu_button("Zoom to Time", |ui| {
+                    for (slot, id) in actions::ZOOM_PRESET_ACTIONS.into_iter().enumerate() {
+                        let secs = self.settings.zoom_presets.0[slot];
+                        if ui.add_enabled(open, egui::Button::new(format!("Slot {}: {}", slot + 1, slot_text(secs)))).clicked() {
+                            chosen = Some(id);
+                        }
+                    }
+                    ui.separator();
+                    for slot in 0..wavcraft_core::view::ZOOM_SLOTS {
+                        if ui.add_enabled(open, egui::Button::new(format!("Set Slot {} from View", slot + 1))).clicked() {
+                            set_slot = Some(slot);
+                        }
+                    }
+                });
+                if let Some(slot) = set_slot {
+                    let _ = self.set_zoom_slot(slot);
                 }
                 if let Some(id) = chosen {
                     let _ = self.run_action(id, ui.ctx());
@@ -7714,6 +7772,8 @@ impl WaveApp {
                 (ActionId::ZoomIn, "Zoom In", "Zoom in on time (=)"),
                 (ActionId::ZoomOut, "Zoom Out", "Zoom out on time (-)"),
                 (ActionId::ZoomToSelection, "Selection", "Zoom to the selection (Shift+S)"),
+                (ActionId::ZoomInAtIn, "In @ In", "Zoom in, keeping the selection start where it is"),
+                (ActionId::ZoomInAtOut, "In @ Out", "Zoom in, keeping the selection end where it is"),
                 (ActionId::ZoomOutFull, "Full", "Zoom out to the whole file"),
                 (ActionId::ZoomAmpIn, "Amp +", "Zoom in vertically (Alt+=, Alt+wheel)"),
                 (ActionId::ZoomAmpOut, "Amp -", "Zoom out vertically (Alt+-, Alt+wheel)"),
@@ -7723,6 +7783,24 @@ impl WaveApp {
                 if ui.add_enabled(usable, egui::Button::new(text)).on_hover_text(tip).clicked() {
                     let _ = self.run_action(id, ui.ctx());
                 }
+            }
+        });
+        // Zoom to Time slots (click: recall; right-click: store the current view).
+        ui.horizontal(|ui| {
+            ui.label("Zoom to Time:");
+            for (slot, id) in actions::ZOOM_PRESET_ACTIONS.into_iter().enumerate() {
+                let secs = self.settings.zoom_presets.0[slot];
+                let tip = format!("Show {} across the window. Right-click: store the current view in this slot.", slot_text(secs));
+                let resp = ui.add_enabled(open, egui::Button::new((slot + 1).to_string())).on_hover_text(tip);
+                if resp.clicked() {
+                    let _ = self.run_action(id, ui.ctx());
+                }
+                resp.context_menu(|ui| {
+                    if ui.button("Set from current view").clicked() {
+                        let _ = self.set_zoom_slot(slot);
+                        ui.close();
+                    }
+                });
             }
         });
         self.navigator(ui);
@@ -7855,7 +7933,9 @@ impl WaveApp {
                 self.view.scroll_by(-(scroll.x + scroll.y), width, frames);
             } else {
                 if scroll.y != 0.0 {
-                    self.view.zoom_at(f64::from((scroll.y * 0.01).exp()), x, width, frames);
+                    // A wheel notch moves by the zoom factor preference (2 is the base rate).
+                    let rate = f64::from(self.settings.zoom_factor).ln() / std::f64::consts::LN_2;
+                    self.view.zoom_at((f64::from(scroll.y) * 0.01 * rate).exp(), x, width, frames);
                 }
                 if scroll.x != 0.0 {
                     self.view.scroll_by(-scroll.x, width, frames);
@@ -9017,6 +9097,17 @@ fn snap_items(ui: &mut egui::Ui, snap: &SnapSettings) -> Option<ActionId> {
         }
     }
     chosen
+}
+
+/// A Zoom to Time slot's span for a menu or tooltip: "250 ms", "5 s", "2 min".
+fn slot_text(secs: f64) -> String {
+    if secs < 1.0 {
+        format!("{} ms", (secs * 1000.0).round())
+    } else if secs < 60.0 {
+        format!("{} s", (secs * 100.0).round() / 100.0)
+    } else {
+        format!("{} min", (secs / 60.0 * 100.0).round() / 100.0)
+    }
 }
 
 /// The vertical slice of `area` for channel `ch` of `channels`.

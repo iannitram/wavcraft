@@ -65,6 +65,14 @@ pub enum ActionId {
     ZoomAmpIn,
     ZoomAmpOut,
     ZoomAmpReset,
+    /// Zoom In keeping the selection start (or end) where it is on screen (f69).
+    ZoomInAtIn,
+    ZoomInAtOut,
+    ZoomPreset1,
+    ZoomPreset2,
+    ZoomPreset3,
+    ZoomPreset4,
+    ZoomPreset5,
     ChannelsLayered,
     ChannelsStacked,
     ZeroInward,
@@ -254,6 +262,13 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomAmpIn, "view.zoom.ampIn", "Zoom In Vertically"),
     window(ActionId::ZoomAmpOut, "view.zoom.ampOut", "Zoom Out Vertically"),
     window(ActionId::ZoomAmpReset, "view.zoom.ampReset", "Reset Vertical Zoom"),
+    window(ActionId::ZoomInAtIn, "view.zoom.in_at_in", "Zoom In at In Point"),
+    window(ActionId::ZoomInAtOut, "view.zoom.in_at_out", "Zoom In at Out Point"),
+    window(ActionId::ZoomPreset1, "view.zoom.preset.1", "Zoom to Time: Slot 1"),
+    window(ActionId::ZoomPreset2, "view.zoom.preset.2", "Zoom to Time: Slot 2"),
+    window(ActionId::ZoomPreset3, "view.zoom.preset.3", "Zoom to Time: Slot 3"),
+    window(ActionId::ZoomPreset4, "view.zoom.preset.4", "Zoom to Time: Slot 4"),
+    window(ActionId::ZoomPreset5, "view.zoom.preset.5", "Zoom to Time: Slot 5"),
     window(ActionId::ChannelsLayered, "view.channels.layered", "Layer Channels"),
     window(ActionId::ChannelsStacked, "view.channels.stacked", "Stack Channels"),
     window(ActionId::MeterInputToggle, "meter.input.toggle", "Meter Input Signal"),
@@ -303,6 +318,14 @@ pub const TABLE: &[Action] = &[
     window(ActionId::FastForward, "transport.fastForward", "Fast Forward"),
     window(ActionId::ToggleRoll, "transport.roll", "Pre/Post-Roll"),
 ];
+
+/// The Zoom to Time actions, slot 1 first (f69).
+pub const ZOOM_PRESET_ACTIONS: [ActionId; 5] = [ActionId::ZoomPreset1, ActionId::ZoomPreset2, ActionId::ZoomPreset3, ActionId::ZoomPreset4, ActionId::ZoomPreset5];
+
+/// The 0-based Zoom to Time slot an action recalls, if it is one of them.
+pub fn zoom_preset_slot(id: ActionId) -> Option<usize> {
+    ZOOM_PRESET_ACTIONS.iter().position(|a| *a == id)
+}
 
 /// The one-shot effects (B002). Kept apart from [`TABLE`] (which holds no `effect.` rows; the
 /// registry's effects come through [`all_actions`]) and listed by [`all_actions`] before the registry's.
@@ -636,6 +659,8 @@ impl Editor {
             ActionId::ExportRanges => !crate::export::exportable_ranges(self.history.current(), None).is_empty(),
             ActionId::GotoTime | ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ZoomAmpIn | ActionId::ZoomAmpOut | ActionId::ZoomAmpReset | ActionId::ChannelsLayered | ActionId::ChannelsStacked => self.len() > 0,
+            ActionId::ZoomInAtIn | ActionId::ZoomInAtOut => self.len() > 0,
+            ActionId::ZoomPreset1 | ActionId::ZoomPreset2 | ActionId::ZoomPreset3 | ActionId::ZoomPreset4 | ActionId::ZoomPreset5 => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom | ActionId::ToolMarquee => true,
             ActionId::ZoomToSelection => has_sel,
             ActionId::Play
@@ -1283,6 +1308,13 @@ impl Editor {
             | ActionId::ZoomAmpIn
             | ActionId::ZoomAmpOut
             | ActionId::ZoomAmpReset
+            | ActionId::ZoomInAtIn
+            | ActionId::ZoomInAtOut
+            | ActionId::ZoomPreset1
+            | ActionId::ZoomPreset2
+            | ActionId::ZoomPreset3
+            | ActionId::ZoomPreset4
+            | ActionId::ZoomPreset5
             | ActionId::ChannelsLayered
             | ActionId::ChannelsStacked
             // Repeat and the zero-crossing adjusts returned above.

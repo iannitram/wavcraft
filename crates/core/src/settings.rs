@@ -415,6 +415,7 @@ impl Default for MarkerColumns {
     }
 }
 const KEY_AMP_SCALE: &str = "amp_scale";
+const KEY_ZOOM_PRESETS: &str = "zoom_presets";
 const KEY_CHANNEL_LAYOUT: &str = "channel_layout";
 
 /// What the settings file holds.
@@ -519,6 +520,8 @@ pub struct Settings {
     pub snap: SnapSettings,
     /// How the amplitude ruler labels its scale.
     pub amp_scale: crate::view::AmpScale,
+    /// The five Zoom to Time slots, in seconds (f69).
+    pub zoom_presets: crate::view::ZoomPresets,
     /// Whether the waveform shows channels layered in one lane or stacked in lanes.
     pub channel_layout: crate::channels::ChannelLayout,
 }
@@ -579,6 +582,7 @@ impl Default for Settings {
             input_map: ChannelMap::default(),
             snap: SnapSettings::default(),
             amp_scale: crate::view::AmpScale::default(),
+            zoom_presets: crate::view::ZoomPresets::default(),
             channel_layout: crate::channels::ChannelLayout::default(),
         }
     }
@@ -639,6 +643,7 @@ impl Settings {
                         }
                     }
                 }
+                KEY_ZOOM_PRESETS => s.zoom_presets = crate::view::ZoomPresets::parse(value),
                 KEY_MARKER_COLUMNS => s.marker_columns = MarkerColumns::from_list(value),
                 KEY_METADATA_FIELDS => {
                     s.metadata_fields = Some(value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect())
@@ -1001,6 +1006,10 @@ impl Settings {
         if self.amp_scale != crate::view::AmpScale::default() {
             out.push_str(&format!("{KEY_AMP_SCALE} = {}
 ", self.amp_scale.name()));
+        }
+        if self.zoom_presets != crate::view::ZoomPresets::default() {
+            out.push_str("# zoom_presets: the five Zoom to Time slots, in seconds, comma separated.\n");
+            out.push_str(&format!("{KEY_ZOOM_PRESETS} = {}\n", self.zoom_presets.to_text()));
         }
         if self.channel_layout != crate::channels::ChannelLayout::default() {
             out.push_str(&format!("{KEY_CHANNEL_LAYOUT} = {}

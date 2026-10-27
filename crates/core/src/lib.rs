@@ -117,4 +117,4 @@ pub use document::{Document, OpenError, PeakReport};
 pub use smpte::SmpteRate;
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
-pub use view::{AmpScale, AmpZoom, Edge, GRAB_PX, NavPart, Selection, TimeFormat, Viewport, format_time};
+pub use view::{AmpScale, AmpZoom, Edge, GRAB_PX, NavPart, Selection, TimeFormat, Viewport, ZoomPresets, format_time};
