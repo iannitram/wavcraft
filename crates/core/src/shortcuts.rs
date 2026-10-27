@@ -334,6 +334,22 @@ impl Keymap {
     pub fn menu_text(&self, command: Command, mac: bool) -> String {
         self.chords(command).next().map(|c| c.text(mac)).unwrap_or_default()
     }
+
+    /// Hover text for a command: its label and every chord bound to it (A350).
+    pub fn tooltip(&self, command: Command, label: &str, mac: bool) -> String {
+        let keys: Vec<Shortcut> = self.chords(command).collect();
+        tooltip(label, &keys, mac)
+    }
+}
+
+/// Hover text for a button: `label` and its keys, "Undo (Ctrl+Z)", "Redo (Ctrl+Shift+Z, Ctrl+Y)".
+/// Without keys it is just the label.
+pub fn tooltip(label: &str, keys: &[Shortcut], mac: bool) -> String {
+    if keys.is_empty() {
+        return label.to_string();
+    }
+    let list: Vec<String> = keys.iter().map(|k| k.text(mac)).collect();
+    format!("{label} ({})", list.join(", "))
 }
 
 impl Default for Keymap {

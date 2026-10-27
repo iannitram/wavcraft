@@ -79,6 +79,7 @@ pub mod playlist;
 pub mod metronome;
 pub mod random;
 pub mod resample;
+pub mod readout;
 pub mod recent_sessions;
 pub mod ruler;
 pub mod record;

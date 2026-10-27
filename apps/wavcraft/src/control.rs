@@ -6,6 +6,8 @@
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
 //! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> playing=<0|1> position=<frame> device=<name> reopens=<n> tool=<name> right_click=<menu|extend> view=<a>-<b> time_display=<format> selection_text=<range> snap_frames=<0|1> snap=<0|1> snapzero=<0|1> snaprc=<0|1> snaprf=<0|1> snapedges=<0|1> enabled=<one 0|1 per channel> cursor_frame=<frame> cursor_text=<time in the format> clipboard=<1-5> clip_frames=<n> labels=<a,b,..> active=<0-based,..> undo=<label> redo=<label> band=<lo-hi|none> path=<the document's own path>` (`band=` is after `redo=`, not last: a parser must split on it)`
+//! - `HOVER <x_px> <y_px>` (from the editor's top-left corner) → `OK pane=wave|spectrum|ruler|outside channel=<n|-> frame=<n> time=<m:ss.mmm>` plus `amp= dbfs= sample=` over a waveform or `hz=` over the spectrogram; `HOVER` alone → the editor's size and view
+//! - `STATE` also carries `last_op=<label> last_op_ms=<n>` (the last open, save or edit and how long it took; spaces as `_`)
 //!   (`path=` is last: it may hold spaces; Save Selection As and Export do not change it)
 //! - `PLAY <from> <to>` (frames) → `OK`; `PLAY` alone plays from the selection (as Space) → `OK playing=<0|1>`; `PLAYBACK` → see below
 //! - `DEVICE_CHANGED` → `OK` (simulate the system's default output device changing: the output is reopened at the same place, `reopens` counts it; f48)

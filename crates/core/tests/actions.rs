@@ -798,3 +798,23 @@ fn f69_zoom_to_time_and_zoom_at_point_actions_are_named_and_need_a_file() {
         assert!(e.enabled(id, &(0..0)), "{id:?}");
     }
 }
+
+/// A350: hover text carries the keys from the keymap, not a copy of them.
+#[test]
+fn a350_tooltips_name_every_key_of_the_action() {
+    let keys = Keymap::new();
+    let tip = |id: ActionId, label: &str, mac: bool| keys.tooltip(Command::Action(id), label, mac);
+    assert_eq!(tip(ActionId::Undo, "Undo", false), "Undo (Ctrl+Z)");
+    assert_eq!(tip(ActionId::Redo, "Redo", false), "Redo (Ctrl+Shift+Z, Ctrl+Y)");
+    assert_eq!(tip(ActionId::Redo, "Redo", true), "Redo (⇧⌘Z, ⌘Y)");
+    assert_eq!(tip(ActionId::Silence, "Silence", false), "Silence", "no keys: the label alone");
+    assert_eq!(wavcraft_core::shortcuts::tooltip("Play", &[], false), "Play");
+    // Every action with keys gets a tooltip that shows each of them.
+    for a in TABLE {
+        let chords: Vec<_> = keys.chords(Command::Action(a.id)).collect();
+        let t = tip(a.id, a.menu, false);
+        for k in chords {
+            assert!(t.contains(&k.text(false)), "{t}");
+        }
+    }
+}

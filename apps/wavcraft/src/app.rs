@@ -22,6 +22,7 @@ use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
+use wavcraft_core::readout::{self, EditorLayout, Readout};
 use wavcraft_core::resample::Quality;
 use wavcraft_core::save::{
     AiffKind, Container, ExtraChunk, FileKind, Part, SampleType, SaveError, SaveFormat, SaveOptions, SizeEstimate, VORBIS_DEFAULT_QUALITY,
@@ -250,6 +251,8 @@ struct Opening {
     progress: Arc<AtomicU32>,
     /// Made here (a mixdown), not read from a file: it opens unsaved.
     fresh: bool,
+    /// When it started, for the last operation's time (A327).
+    started: Instant,
 }
 
 /// A background edit (roadmap B003) running on a worker thread: the window's thread pushes the
@@ -312,6 +315,8 @@ struct Saving {
     doc_id: u64,
     /// A copy (Save Selection As, Export): the document keeps its own path and unsaved mark.
     copy: Option<&'static str>,
+    /// When it started, for the last operation's time (A327).
+    started: Instant,
 }
 
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
@@ -417,6 +422,12 @@ pub struct WaveApp {
     freq_drag: Option<spectral::FreqDrag>,
     /// Free space in the session folder's disk, when last read.
     free_space: Option<(Instant, Option<u64>)>,
+    /// What the last operation was and how long it took (A327): open, save, or an edit.
+    last_op: Option<(String, std::time::Duration)>,
+    /// The editor's geometry as last painted, for the pointer readout and `HOVER` (A079).
+    editor_layout: Option<EditorLayout>,
+    /// What is under the pointer now (A079); `None` when it is not over the editor.
+    pointer: Option<Readout>,
     renderer: Renderer,
     opening: Option<Opening>,
     inserting: Option<Inserting>,
@@ -706,6 +717,9 @@ impl WaveApp {
             spectrum: None,
             freq_drag: None,
             free_space: None,
+            last_op: None,
+            editor_layout: None,
+            pointer: None,
             renderer: Renderer::new(&cc.egui_ctx, initial_colours),
             opening: None,
             inserting: None,
@@ -1756,7 +1770,7 @@ impl WaveApp {
             let _ = tx.send(result);
             ctx.request_repaint();
         });
-        self.opening = Some(Opening { path, result: rx, cancel, progress, fresh: false });
+        self.opening = Some(Opening { path, result: rx, cancel, progress, fresh: false, started: Instant::now() });
         self.error = None;
         self.notice = None;
     }
@@ -1780,15 +1794,16 @@ impl WaveApp {
             let _ = tx.send(result);
             ctx.request_repaint();
         });
-        self.opening = Some(Opening { path: PathBuf::from("Mixdown"), result: rx, cancel, progress, fresh: true });
+        self.opening = Some(Opening { path: PathBuf::from("Mixdown"), result: rx, cancel, progress, fresh: true, started: Instant::now() });
         self.error = None;
         self.notice = None;
         Ok(())
     }
 
     fn finish_opening(&mut self) {
-        let Some(Opening { path, result: rx, fresh, .. }) = &self.opening else { return };
+        let Some(Opening { path, result: rx, fresh, started, .. }) = &self.opening else { return };
         let fresh = *fresh;
+        let took = started.elapsed();
         let result = match rx.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
@@ -1797,6 +1812,7 @@ impl WaveApp {
         };
         match result {
             Ok(doc) => {
+                self.last_op = Some(("Open".to_string(), took));
                 let r = &doc.peak_report;
                 log::info!(target: "wavcraft", "peaks for {}: {} in {:.1} ms", path.display(), r.result, r.ms);
                 if let Some(e) = &r.write_error {
@@ -2483,6 +2499,44 @@ impl WaveApp {
     }
 
     /// `frame` in the chosen time format at the open file's rate.
+    /// The stored sample at `frame` of channel `ch` in the current step.
+    fn sample_at(&self, ch: usize, frame: usize) -> Option<f32> {
+        let state = self.editor.as_ref()?.history.current();
+        let mut one = [0.0f32];
+        (state.read(ch, frame as u64, &mut one).ok()? == 1).then_some(one[0])
+    }
+
+    /// The readout for editor pixel (`x`, `y`) from the editor's top-left corner: what `HOVER` answers.
+    fn hover_at(&self, x: f32, y: f32) -> String {
+        let (Some(layout), Some(doc)) = (&self.editor_layout, &self.doc) else { return "ERR no file is shown yet".to_string() };
+        let rate = doc.sample_rate();
+        match Readout::at(layout, &self.view, &self.params, rate, doc.frames(), x, y) {
+            None => "OK pane=outside".to_string(),
+            Some(r) => {
+                let ch = r.channel().map_or_else(|| "-".to_string(), |c| c.to_string());
+                let (pane, extra) = match r.pane {
+                    readout::Pane::Ruler => ("ruler", String::new()),
+                    readout::Pane::Outside => ("outside", String::new()),
+                    readout::Pane::Wave { channel, amplitude } => {
+                        let db = readout::dbfs(amplitude).map_or_else(|| "-inf".to_string(), |d| format!("{d:.2}"));
+                        let sample = self.sample_at(channel, r.frame).map_or_else(|| "-".to_string(), |v| format!("{v:.6}"));
+                        ("wave", format!(" amp={amplitude:.4} dbfs={db} sample={sample}"))
+                    }
+                    readout::Pane::Spectrum { hz, .. } => ("spectrum", format!(" hz={hz:.1}")),
+                };
+                format!("OK pane={pane} channel={ch} frame={} time={}{extra}", r.frame, wavcraft_core::view::format_time(r.frame, rate))
+            }
+        }
+    }
+
+    /// The last operation and how long it took, for STATE (A327).
+    fn op_state(&self) -> String {
+        match &self.last_op {
+            Some((what, took)) => format!(" last_op={} last_op_ms={}", what.replace(' ', "_"), took.as_millis()),
+            None => " last_op=- last_op_ms=0".to_string(),
+        }
+    }
+
     fn fmt_time(&self, frame: usize) -> String {
         self.time_format.format_with(frame, self.doc.as_ref().map_or(0, |d| d.sample_rate()), &self.tempo)
     }
@@ -3301,6 +3355,7 @@ impl WaveApp {
             self.take_system_clipboard();
         }
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let began = Instant::now();
         let outcome = editor.run(id, sel);
         let snap = editor.snap;
         match outcome {
@@ -3313,6 +3368,9 @@ impl WaveApp {
                     out.message = Some(format!("Copied to clipboard {} only: {why}", editor.current_clipboard + 1));
                 }
                 self.keep_snap(snap);
+                if out.doc_changed {
+                    self.last_op = Some((actions::action(id).menu.to_string(), began.elapsed()));
+                }
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
                 if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::MarkerNext | ActionId::MarkerPrev) {
                     self.halt_play();
@@ -5065,7 +5123,7 @@ impl WaveApp {
         });
         self.halt_play();
         self.saving =
-            Some(Saving { path, state, ty, format, aiff, container, result: rx, progress, cancel, then_close, doc_id: self.doc_id, copy: None });
+            Some(Saving { path, state, ty, format, aiff, container, result: rx, progress, cancel, then_close, doc_id: self.doc_id, copy: None, started: Instant::now() });
         Ok(())
     }
 
@@ -5130,6 +5188,7 @@ impl WaveApp {
             then_close: false,
             doc_id: self.doc_id,
             copy,
+            started: Instant::now(),
         });
         Ok(())
     }
@@ -5151,7 +5210,10 @@ impl WaveApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err(SaveError::Io(std::io::Error::other("the save stopped unexpectedly"))),
         };
-        let Some(Saving { path, state, ty, format, aiff, container, then_close, doc_id, copy, .. }) = self.saving.take() else { return };
+        let Some(Saving { path, state, ty, format, aiff, container, then_close, doc_id, copy, started, .. }) = self.saving.take() else { return };
+        if result.is_ok() {
+            self.last_op = Some(("Save".to_string(), started.elapsed()));
+        }
         let label = container.map_or_else(|| format_label(format, aiff).to_string(), |c| c.describe().to_string());
         if let Some(what) = copy {
             match result {
@@ -5715,7 +5777,7 @@ impl WaveApp {
                 let width = self.editor_width.max(1.0);
                 let (vzoom, ampscale, layout) = (self.amp_zoom.get(), self.settings.amp_scale.name(), self.settings.channel_layout.name());
         let zfactor = f64::from(self.settings.zoom_factor);
-                let spectral = format!("{} {} {}", self.spectral_state(), self.freq_band_state(), self.status_state());
+                let spectral = format!("{} {} {}{}", self.spectral_state(), self.freq_band_state(), self.status_state(), self.op_state());
                 let view = format!(
                     "tool={} right_click={} view={:.0}-{:.0}",
                     self.tool.name(),
@@ -5892,6 +5954,29 @@ impl WaveApp {
             }
             // METRONOME on|off | countin <bars> | volume <0..1> | clicks <start_s> <end_s> | render <start_s> <end_s>
             "METRONOME" => self.control_metronome(rest),
+            // The pointer readout at pixel (x, y) from the editor's top-left corner (A079).
+            "HOVER" => {
+                let mut it = rest.split_whitespace().map(str::parse::<f32>);
+                match (it.next(), it.next()) {
+                    // No arguments: the editor's size and view, so a script can work out where to point.
+                    (None, _) => match &self.editor_layout {
+                        Some(l) => format!(
+                            "OK width={} height={} ruler={} wave={} spectrum={} channels={} start={} frames_per_px={}",
+                            l.width,
+                            l.height,
+                            l.ruler_height,
+                            u8::from(l.show_waveform),
+                            u8::from(l.show_spectrum),
+                            l.channels,
+                            self.view.start,
+                            self.view.frames_per_px
+                        ),
+                        None => "ERR no file is shown yet".to_string(),
+                    },
+                    (Some(Ok(x)), Some(Ok(y))) => self.hover_at(x, y),
+                    _ => "ERR HOVER <x_px> <y_px>, from the editor's top-left corner".to_string(),
+                }
+            }
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -7112,7 +7197,8 @@ impl WaveApp {
             let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
             let enabled = enabled && self.saving.is_none() && self.running.is_none();
             let keys = self.keymap.menu_text(Command::Action(a.id), mac);
-            if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).clicked() {
+            let tip = self.keymap.tooltip(Command::Action(a.id), &label, mac);
+            if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys)).on_hover_text(tip).clicked() {
                 chosen = Some(a.id);
             }
         }
@@ -7124,7 +7210,8 @@ impl WaveApp {
             let a = actions::action(id);
             let label = s.editor.as_ref().map_or_else(|| a.menu.to_string(), |e| e.label(id));
             let keys = s.keymap.menu_text(Command::Action(id), mac);
-            if ui.add_enabled(enabled_for(s, id), egui::Button::new(label).shortcut_text(keys)).clicked() {
+            let tip = s.keymap.tooltip(Command::Action(id), &label, mac);
+            if ui.add_enabled(enabled_for(s, id), egui::Button::new(label).shortcut_text(keys)).on_hover_text(tip).clicked() {
                 *chosen = Some(id);
                 ui.close();
             }
@@ -7664,6 +7751,24 @@ impl WaveApp {
                 }
                 // What was wrong with the file that still opened: the first in the bar, all of
                 // them on hover. Always shown, whichever fields are.
+                // The transport and the last operation (A327), then what is under the pointer (A079).
+                let transport = match self.transport.mode {
+                    Mode::Playing => "Playing",
+                    Mode::Paused => "Paused",
+                    Mode::Stopped => "Stopped",
+                };
+                gap(ui);
+                ui.label(transport);
+                if let Some((what, took)) = &self.last_op {
+                    gap(ui);
+                    ui.label(format!("· {what}: {}", readout::duration_text(took.as_millis() as u64)))
+                        .on_hover_text("How long the last operation took");
+                }
+                if let Some(r) = &self.pointer {
+                    gap(ui);
+                    let sample = r.channel().and_then(|c| self.sample_at(c, r.frame));
+                    ui.label(r.text(rate, sample));
+                }
                 if let Some(first_warning) = doc.warnings().first() {
                     gap(ui);
                     ui.colored_label(CURSOR, format!("Warning: {first_warning}")).on_hover_text(doc.warnings().join("\n"));
@@ -7994,6 +8099,19 @@ impl WaveApp {
             self.view = Viewport::fit(frames, width);
             self.fit_on_next_frame = false;
         }
+        // The editor's geometry as painted, and what is under the pointer (A079).
+        self.editor_layout = Some(EditorLayout {
+            width,
+            height: rect.height(),
+            ruler_height: RULER_HEIGHT,
+            show_waveform: self.editor_shows("waveform"),
+            show_spectrum: self.editor_shows("spectral"),
+            channels,
+        });
+        self.pointer = response.hover_pos().and_then(|p| {
+            let layout = self.editor_layout?;
+            Readout::at(&layout, &self.view, &self.params, rate, frames, p.x - rect.left(), p.y - rect.top())
+        });
 
         // The frequency ruler: a strip down the left of the spectral display, if it has room.
         let spectrum_zone = {
