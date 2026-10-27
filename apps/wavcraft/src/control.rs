@@ -111,6 +111,9 @@
 //!   Batch Process panel (`status` lists `running= files= done= ok= failed= … results=`)
 //! - `CD add <path>|adddoc|pause <i> <s>|meta <i> title=.. performer=.. isrc=..|move|remove|limit 74|80|view|state|export <dir>`
 //!   (CD Layout, f121; see `cd_ui.rs`; `export` writes `disc.wav` and `disc.cue` in `<dir>`)
+//! - `AUDIOINFO` → `OK host=<h> hosts=<a|b> buffer=<frames|default> buffer_range=<min-max|unknown> out_channels=<n> output_map=<1:3,2:4> input_map=<..> device=<name>`
+//! - `AUDIOPROFILE list` → `OK active=<key> count=<n> setups=<key=label;..>`; `AUDIOPROFILE simulate <devices...>` (`_` is a space) treats those as the devices on offer and restores that setup's hardware settings → `OK outcome=<..> active=<key>`; `AUDIOINFO` also reports `profile=<key>`
+//! - `CHANMAP out <file ch> <output ch|off>` / `CHANMAP in <input ch> <record ch|off>` / `CHANMAP reset` → `OK output_map=.. input_map=..` (channels count from 1)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

@@ -12,6 +12,8 @@
 //! - [`peakcache`]: saved waveform overviews, so a long file reopens fast.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`resample`]: windowed-sinc sample-rate conversion for playback.
+//! - [`hwprofile`]: audio hardware settings kept per device setup.
+//! - [`chanmap`]: output/input channel maps and the output buffer size choice.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app sees it: the document in the store, read in
 //!   chunks (no whole-file copy since task 05), and its waveform peaks.
@@ -30,6 +32,7 @@ pub mod autosave;
 pub mod batch;
 pub mod batch_cli;
 pub mod cd;
+pub mod chanmap;
 pub mod diagnostics;
 pub mod clipboard;
 pub mod doc;
@@ -42,6 +45,7 @@ mod flac_enc;
 pub mod export_presets;
 pub mod fade_handles;
 pub mod generate;
+pub mod hwprofile;
 pub mod io;
 pub mod jobs;
 pub mod meta;

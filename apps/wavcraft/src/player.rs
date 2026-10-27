@@ -25,6 +25,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::DocState;
 use wavcraft_core::levels::LevelTap;
 use wavcraft_core::rack::{MAX_BLOCK, RackConfig, RackProcessor};
+use wavcraft_core::chanmap::{ChannelMap, choose_buffer};
 use wavcraft_core::resample::{Quality, Resampler};
 
 /// Frames the read-ahead ring holds (a power of two).
@@ -88,6 +89,9 @@ struct Shared {
     /// UI to drop.
     rack_mailbox: Mutex<Option<Box<RackProcessor>>>,
     rack_new: AtomicBool,
+    /// Document channel -> device output channel (empty: the automatic layout). Changing it needs
+    /// no new stream; the callback `try_lock`s it like the rest.
+    map: Mutex<ChannelMap>,
 }
 
 impl Shared {
@@ -108,6 +112,7 @@ impl Shared {
             levels: LevelTap::default(),
             rack_mailbox: Mutex::new(None),
             rack_new: AtomicBool::new(false),
+            map: Mutex::new(ChannelMap::default()),
         }
     }
 
@@ -173,6 +178,17 @@ enum Command {
     Play { from: u64, to: u64, generation: u64 },
 }
 
+/// What the preferences ask of the output: the device, the audio host and the buffer size.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OutputChoice {
+    /// The device's name (`None`: the host's default).
+    pub device: Option<String>,
+    /// The audio host's name (`None`: the system's default).
+    pub host: Option<String>,
+    /// The buffer size in frames (`None`: the device's default).
+    pub buffer: Option<u32>,
+}
+
 /// The output stream, the read-ahead thread and the play state shared with the callback.
 pub struct Player {
     shared: Arc<Shared>,
@@ -184,35 +200,79 @@ pub struct Player {
     pub error: Option<String>,
     /// The output device's name, for the status bar.
     pub device: String,
-    /// The device the preferences asked for (`None`: the system default).
-    wanted: Option<String>,
+    /// The audio host in use (CoreAudio, WASAPI, ALSA...).
+    pub host: String,
+    /// The buffer size in use in frames (`None`: the device's default).
+    pub buffer: Option<u32>,
+    /// The buffer sizes the device supports, when it says.
+    pub buffer_range: Option<(u32, u32)>,
     /// The output stream's channel count and sample rate (what a rack is built for).
-    out_channels: usize,
+    pub out_channels: usize,
     out_rate: u32,
+    /// What the preferences asked for.
+    wanted: OutputChoice,
+}
+
+/// The audio hosts this build offers (more than one on Windows with ASIO compiled in, or Linux
+/// with JACK; one elsewhere).
+pub fn host_names() -> Vec<String> {
+    cpal::available_hosts().iter().map(|h| h.name().to_string()).collect()
+}
+
+/// The host named `wanted`, or the system default (with a warning when the name is not there).
+fn host_for(wanted: Option<&str>) -> cpal::Host {
+    if let Some(w) = wanted {
+        match cpal::available_hosts().into_iter().find(|h| h.name() == w).map(cpal::host_from_id) {
+            Some(Ok(host)) => return host,
+            _ => log::warn!("audio host {w:?} is not available; using the system default"),
+        }
+    }
+    cpal::default_host()
 }
 
 impl Player {
     /// Open the output device named `wanted` (the system default for `None`, or when that name is
     /// not there). Without a device the player still works, silently.
-    pub fn new(wanted: Option<String>, quality: Quality) -> Player {
+    pub fn new(wanted: OutputChoice, map: ChannelMap, quality: Quality) -> Player {
         let shared = Arc::new(Shared::new());
         shared.quality.store(quality_code(quality), Ordering::Relaxed);
+        *shared.map.lock().unwrap_or_else(|e| e.into_inner()) = map;
         let (commands, inbox) = channel();
         let fill_shared = Arc::clone(&shared);
         if let Err(e) = std::thread::Builder::new().name("wavcraft-readahead".to_string()).spawn(move || read_ahead(&fill_shared, &inbox)) {
             log::warn!(target: "wavcraft", "could not start the playback read-ahead thread: {e}");
         }
-        let mut player = Player { shared, commands, stream: None, sink: None, error: None, device: String::new(), wanted, out_channels: 2, out_rate: 48_000 };
+        let mut player = Player {
+            shared,
+            commands,
+            stream: None,
+            sink: None,
+            error: None,
+            device: String::new(),
+            host: String::new(),
+            buffer: None,
+            buffer_range: None,
+            wanted,
+            out_channels: 2,
+            out_rate: 48_000,
+        };
         player.reopen();
         player
     }
 
     /// Play through the device named `wanted` from now on (`None`: the system default): stops
     /// playback and reopens the output.
-    pub fn set_output(&mut self, wanted: Option<String>) {
+    pub fn set_output(&mut self, wanted: OutputChoice) {
         self.stop();
         self.wanted = wanted;
         self.reopen();
+    }
+
+    /// Route the document's channels to the device's from now on (takes effect at once).
+    pub fn set_map(&self, map: ChannelMap) {
+        if let Ok(mut slot) = self.shared.map.lock() {
+            *slot = map;
+        }
     }
 
     /// (Re)open the wanted output device, replacing any stream there was.
@@ -223,17 +283,23 @@ impl Player {
         if no_audio() {
             let sink = Sink::start(&self.shared);
             self.device = "test sink (no audio)".to_string();
+            self.host = String::new();
+            self.buffer = None;
+            self.buffer_range = None;
             self.out_channels = SINK_CHANNELS;
             self.out_rate = sink.rate;
             self.sink = Some(sink);
             self.error = None;
         } else {
-            match open_stream(&self.shared, self.wanted.as_deref()) {
-                Ok((stream, device, channels, rate)) => {
-                    self.stream = Some(stream);
-                    self.device = device;
-                    self.out_channels = channels;
-                    self.out_rate = rate;
+            match open_stream(&self.shared, &self.wanted) {
+                Ok(o) => {
+                    self.stream = Some(o.stream);
+                    self.device = o.device;
+                    self.host = o.host;
+                    self.buffer = o.buffer;
+                    self.buffer_range = o.range;
+                    self.out_channels = o.channels;
+                    self.out_rate = o.rate;
                     self.error = None;
                 }
                 Err(e) => self.error = Some(e),
@@ -424,12 +490,13 @@ pub struct Devices {
 /// device whether it does output; one stuck device must not freeze the window). The answer comes
 /// through the receiver: the output and input devices, or, if that takes too long, every device
 /// the system names under both headings.
-pub fn list_devices_in_background() -> std::sync::mpsc::Receiver<Devices> {
+pub fn list_devices_in_background(host: Option<String>) -> std::sync::mpsc::Receiver<Devices> {
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new().name("audio devices".into()).spawn(move || {
         let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        let probe_host = host.clone();
         let _ = std::thread::Builder::new().name("audio device probe".into()).spawn(move || {
-            let host = cpal::default_host();
+            let host = host_for(probe_host.as_deref());
             let names = |devices: Vec<cpal::Device>| -> Vec<String> { devices.iter().filter_map(|d| d.name().ok()).collect() };
             let _ = probe_tx.send(Devices {
                 output: names(host.output_devices().map(Iterator::collect).unwrap_or_default()),
@@ -438,7 +505,7 @@ pub fn list_devices_in_background() -> std::sync::mpsc::Receiver<Devices> {
         });
         let devices = probe_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or_else(|_| {
             log::warn!("the audio system is slow to list output and input devices; listing every device under both");
-            let all: Vec<String> = cpal::default_host().devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+            let all: Vec<String> = host_for(host.as_deref()).devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
             Devices { output: all.clone(), input: all }
         });
         let _ = tx.send(devices);
@@ -447,8 +514,20 @@ pub fn list_devices_in_background() -> std::sync::mpsc::Receiver<Devices> {
 }
 
 /// [`list_devices_in_background`], waited for (the control channel's `DEVICES`).
-pub fn list_devices() -> Devices {
-    list_devices_in_background().recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_default()
+pub fn list_devices(host: Option<String>) -> Devices {
+    list_devices_in_background(host).recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_default()
+}
+
+/// The names of every device the host knows (no device is asked whether it does output, which
+/// can block; none is opened), on a worker thread. This keys the audio hardware profile.
+pub fn list_device_names_in_background(host: Option<String>) -> std::sync::mpsc::Receiver<Vec<String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new().name("audio device names".into()).spawn(move || {
+        let host = host_for(host.as_deref());
+        let names: Vec<String> = host.devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+        let _ = tx.send(names);
+    });
+    rx
 }
 
 /// Which of `available` to open for the wanted name: its position, or `None` (take the system
@@ -458,9 +537,21 @@ fn pick(wanted: Option<&str>, available: &[String]) -> Option<usize> {
     available.iter().position(|n| n == wanted)
 }
 
-fn open_stream(shared: &Arc<Shared>, wanted: Option<&str>) -> Result<(cpal::Stream, String, usize, u32), String> {
-    let host = cpal::default_host();
-    let chosen = wanted.and_then(|w| {
+/// An opened output stream and what it turned out to be.
+struct Opened {
+    stream: cpal::Stream,
+    device: String,
+    host: String,
+    buffer: Option<u32>,
+    range: Option<(u32, u32)>,
+    channels: usize,
+    rate: u32,
+}
+
+fn open_stream(shared: &Arc<Shared>, wanted: &OutputChoice) -> Result<Opened, String> {
+    let host = host_for(wanted.host.as_deref());
+    let host_name = host.id().name().to_string();
+    let chosen = wanted.device.as_deref().and_then(|w| {
         // Not `output_devices()`: that asks every device about output, which can block.
         let devices: Vec<cpal::Device> = host.devices().ok()?.collect();
         let names: Vec<String> = devices.iter().map(|d| d.name().unwrap_or_default()).collect();
@@ -476,16 +567,43 @@ fn open_stream(shared: &Arc<Shared>, wanted: Option<&str>) -> Result<(cpal::Stre
     };
     let name = device.name().unwrap_or_else(|_| "output".to_string());
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
-    let config: cpal::StreamConfig = supported.clone().into();
-    let stream = match supported.sample_format() {
-        cpal::SampleFormat::F32 => build::<f32>(&device, &config, shared),
-        cpal::SampleFormat::I16 => build::<i16>(&device, &config, shared),
-        cpal::SampleFormat::U16 => build::<u16>(&device, &config, shared),
-        cpal::SampleFormat::I32 => build::<i32>(&device, &config, shared),
+    let range = match supported.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => Some((*min, *max)),
+        cpal::SupportedBufferSize::Unknown => None,
+    };
+    let format = supported.sample_format();
+    let mut config: cpal::StreamConfig = supported.into();
+    let channels = usize::from(config.channels).max(1);
+    let rate = config.sample_rate.0.max(1);
+    let build_with = |config: &cpal::StreamConfig| match format {
+        cpal::SampleFormat::F32 => build::<f32>(&device, config, shared),
+        cpal::SampleFormat::I16 => build::<i16>(&device, config, shared),
+        cpal::SampleFormat::U16 => build::<u16>(&device, config, shared),
+        cpal::SampleFormat::I32 => build::<i32>(&device, config, shared),
         other => Err(format!("unsupported output sample format {other:?}")),
-    }?;
+    };
+    let mut buffer = choose_buffer(wanted.buffer, range);
+    if let (Some(asked), Some(got)) = (wanted.buffer, buffer)
+        && asked != got
+    {
+        log::warn!("buffer size {asked} is outside what {name:?} supports; using {got}");
+    }
+    if let Some(n) = buffer {
+        config.buffer_size = cpal::BufferSize::Fixed(n);
+    }
+    let stream = match build_with(&config) {
+        Ok(s) => s,
+        Err(e) if buffer.is_some() => {
+            log::warn!("{name:?} refused a buffer of {buffer:?} frames ({e}); using its default");
+            config.buffer_size = cpal::BufferSize::Default;
+            buffer = None;
+            build_with(&config)?
+        }
+        Err(e) => return Err(e),
+    };
     stream.play().map_err(|e| e.to_string())?;
-    Ok((stream, name, usize::from(config.channels).max(1), config.sample_rate.0.max(1)))
+    log::info!("audio output: host {host_name}, device {name:?}, {channels} channels, buffer {buffer:?}");
+    Ok(Opened { stream, device: name, host: host_name, buffer, range, channels, rate })
 }
 
 fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, shared: &Arc<Shared>) -> Result<cpal::Stream, String>
@@ -591,6 +709,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
     if file_channels == 0 || rate == 0 {
         return;
     }
+    let Ok(map) = shared.map.try_lock() else { return };
     let step = f64::from(rate) / device_rate;
     let end = playback.end;
     let last = end.ceil().max(0.0) as u64;
@@ -634,7 +753,14 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
         let l = interp(0);
         let r = if file_channels > 1 { interp(1) } else { l };
         peak = [peak[0].max(l.abs()), peak[1].max(r.abs())];
-        if channels == 1 && file_channels > 1 {
+        if !map.is_default() {
+            // An explicit map: each device channel plays the document channels mapped to it
+            // (summed), and nothing else.
+            for (c, slot) in frame.iter_mut().enumerate() {
+                let sum: f32 = map.sources(c).filter(|src| *src < file_channels).map(|src| interp(src)).sum();
+                *slot = T::from_sample(sum);
+            }
+        } else if channels == 1 && file_channels > 1 {
             // A one-channel device gets the average of the file's channels, not just the left
             // one (a host-left, guest-right recording would lose the guest).
             let sum: f32 = (0..file_channels).map(|c| interp(c)).sum();
@@ -979,6 +1105,41 @@ mod tests {
     }
 
     /// f26: what the callback sends is what the Levels panel gets, per channel, without a lock.
+    /// Set the channel map a play is rendered through (the text form, as the settings hold it).
+    fn set_map(shared: &Shared, text: &str) {
+        let map = ChannelMap::parse(text).unwrap_or_default();
+        *shared.map.lock().unwrap_or_else(|e| e.into_inner()) = map;
+    }
+
+    #[test]
+    fn a_channel_map_routes_stereo_to_outputs_three_and_four() {
+        let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 100], vec![-0.5; 100]] });
+        let shared = shared_with(&state);
+        set_map(&shared, "1:3,2:4");
+        play(&shared, &state, 0.0, 100.0);
+        let mut out = vec![9.0f32; 4 * 3];
+        render(&shared, &mut out, 4, 48_000.0);
+        for k in 0..3 {
+            assert_eq!(out[4 * k..4 * k + 4], [0.0, 0.0, 0.25, -0.5], "frame {k}");
+        }
+    }
+
+    #[test]
+    fn a_map_sums_channels_sharing_an_output_and_drops_those_off_the_device() {
+        let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 100], vec![0.5; 100]] });
+        let shared = shared_with(&state);
+        // Both on output 2 (summed); a mapping to output 9 on a 2-channel device is dropped.
+        set_map(&shared, "1:2,2:2");
+        play(&shared, &state, 0.0, 100.0);
+        let mut out = vec![9.0f32; 4];
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(out, [0.0, 0.75, 0.0, 0.75]);
+        set_map(&shared, "1:9");
+        play(&shared, &state, 0.0, 100.0);
+        render(&shared, &mut out, 2, 48_000.0);
+        assert!(out.iter().all(|v| *v == 0.0), "{out:?}");
+    }
+
     #[test]
     fn the_callback_records_the_peaks_it_sends() {
         let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0, 0.25, -0.5, 0.0], vec![0.0, 0.125, 0.0, -1.0]] });

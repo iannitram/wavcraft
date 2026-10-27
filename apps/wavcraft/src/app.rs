@@ -9,8 +9,10 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::appearance;
+use wavcraft_core::chanmap::ChannelMap;
 use wavcraft_core::export::{self, DEFAULT_CHANNEL_PATTERN, DEFAULT_RANGE_PATTERN, ExportOptions};
 use wavcraft_core::export_presets::{ExportChoice, ExportPresets};
+use wavcraft_core::hwprofile::{Hardware, Outcome, ProfileStore};
 use wavcraft_core::io::{OpenOptions, RawEncoding, RawSpec};
 use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
@@ -39,7 +41,7 @@ use crate::meters_ui::{self, MetersUi};
 use crate::mixer::MixerModel;
 use crate::mixpaste;
 use crate::multitrack_ui::MtView;
-use crate::player::{Devices, Player};
+use crate::player::{Devices, OutputChoice, Player};
 use crate::playlist_panel::PlaylistUi;
 use crate::rack_panel::{RackPanel, Request};
 use crate::recovery::{self, Choice, Recovery};
@@ -81,10 +83,11 @@ enum PrefPage {
     TimeDisplay,
     Loudness,
     Appearance,
+    ChannelMapping,
 }
 
 impl PrefPage {
-    const ALL: [PrefPage; 11] = [
+    const ALL: [PrefPage; 12] = [
         PrefPage::General,
         PrefPage::Appearance,
         PrefPage::Data,
@@ -96,6 +99,7 @@ impl PrefPage {
         PrefPage::TimeDisplay,
         PrefPage::Loudness,
         PrefPage::AudioHardware,
+        PrefPage::ChannelMapping,
     ];
 
     fn title(self) -> &'static str {
@@ -111,6 +115,7 @@ impl PrefPage {
             PrefPage::TimeDisplay => "Time Display",
             PrefPage::Loudness => "Loudness and Diagnostics",
             PrefPage::Appearance => "Appearance",
+            PrefPage::ChannelMapping => "Audio Channel Mapping",
         }
     }
 }
@@ -126,7 +131,35 @@ enum PrefAction {
     CancelCleanup,
     CleanUp(u32),
     RefreshUsage,
+    ClearMaps,
 }
+
+/// The output choice the preferences describe.
+fn output_choice(s: &Settings) -> OutputChoice {
+    OutputChoice { device: s.output_device.clone(), host: s.audio_host.clone(), buffer: s.buffer_frames }
+}
+
+/// The text of `map` with `from` (0-based) mapped to `to` (0-based; `None`: no pair). The first
+/// time a map is set from the automatic layout, the file's other channels (`fill`, 0 for none)
+/// keep their automatic place (channel n to output n) so setting one does not silence the rest.
+fn map_text_with(map: &ChannelMap, from: usize, to: Option<usize>, fill: usize) -> String {
+    let mut next = map.clone();
+    if next.is_default() {
+        for c in (0..fill).filter(|c| *c != from) {
+            let _ = next.set(c, c);
+        }
+    }
+    match to {
+        Some(t) => {
+            let _ = next.set(from, t);
+        }
+        None => next.remove(from),
+    }
+    next.to_string()
+}
+
+/// The settings a device setup's profile keeps (their change re-keys the setup's profile).
+const HW_KEYS: [&str; 6] = ["audio_host", "output_device", "input_device", "buffer_frames", "output_map", "input_map"];
 
 /// Frames at the start in which a held Shift means "reset the preferences".
 const SHIFT_RESET_FRAMES: u32 = 30;
@@ -404,6 +437,11 @@ pub struct WaveApp {
     devices: Devices,
     /// The device list being read (the system can be slow to answer).
     devices_rx: Option<Receiver<Devices>>,
+    /// The audio hardware settings kept per device setup (f97), and its file.
+    profiles: ProfileStore,
+    profiles_path: Option<PathBuf>,
+    /// The system's devices being read, to pick the setup's profile (at launch).
+    profile_rx: Option<Receiver<Vec<String>>>,
     /// Frames still to look at for a held Shift (Shift at launch resets the preferences).
     shift_frames: u32,
     /// Window › Sample Statistics.
@@ -474,6 +512,7 @@ impl WaveApp {
         let reset_note = if reset_preferences { settings_path.as_deref().map(move_settings_aside) } else { None };
         let settings = settings_path.as_deref().map(Settings::load).unwrap_or_default();
         let metadata = MetadataDisplay::from_ids(settings.metadata_fields.as_deref());
+        let profiles_path = settings_path.as_deref().map(ProfileStore::default_path);
         let env = std::env::var_os(settings::ENV_SESSION_DIR);
         let sessions = settings::resolve_session_folder(session_dir, env, &settings, default_sessions_root(), settings::check_folder);
         // Folders left by runs that ended without closing their store (a crash, a kill, a
@@ -497,7 +536,7 @@ impl WaveApp {
             tool: Tool::default(),
             drag_origin: None,
             selection: Selection::default(),
-            player: Player::new(settings.output_device.clone(), settings.playback_quality),
+            player: Player::new(output_choice(&settings), settings.output_map.clone(), settings.playback_quality),
             params: {
                 let mut p = SpectrogramParams::default();
                 settings.apply_to_spectrogram(&mut p);
@@ -602,6 +641,9 @@ impl WaveApp {
             preset_name: String::new(),
             devices: Devices::default(),
             devices_rx: None,
+            profiles: profiles_path.as_deref().map(ProfileStore::load).unwrap_or_default(),
+            profiles_path,
+            profile_rx: Some(crate::player::list_device_names_in_background(None)),
             shift_frames: SHIFT_RESET_FRAMES,
             rack: RackPanel::new(),
             clip_edit: None,
@@ -692,9 +734,18 @@ impl WaveApp {
             return Ok(());
         }
         self.settings = next;
+        if HW_KEYS.contains(&key) {
+            self.remember_hardware();
+        }
         match key {
             "crossfade_cut_join_ms" | "crossfade_edge_ms" => self.apply_crossfades(),
-            "output_device" => self.player.set_output(self.settings.output_device.clone()),
+            "output_device" | "buffer_frames" => self.player.set_output(output_choice(&self.settings)),
+            "audio_host" => {
+                // The devices belong to the host: ask again, and reopen on it.
+                self.player.set_output(output_choice(&self.settings));
+                self.devices_rx = Some(crate::player::list_devices_in_background(self.settings.audio_host.clone()));
+            }
+            "output_map" => self.player.set_map(self.settings.output_map.clone()),
             "playback_quality" => self.player.set_quality(self.settings.playback_quality),
             "spec_resolution" | "spec_db_range" => {
                 self.settings.apply_to_spectrogram(&mut self.params);
@@ -725,6 +776,36 @@ impl WaveApp {
         self.save_settings()
     }
 
+    /// Keep the hardware settings as the active device setup's profile.
+    fn remember_hardware(&mut self) {
+        self.profiles.remember(&Hardware::of(&self.settings));
+        self.save_profiles();
+    }
+
+    fn save_profiles(&self) {
+        if let Some(p) = &self.profiles_path
+            && let Err(e) = self.profiles.save(p)
+        {
+            log::warn!("could not save the audio profiles to {}: {e}", p.display());
+        }
+    }
+
+    /// The device setup is now `outputs`/`inputs`: restore that setup's hardware settings (a
+    /// stored device that is not on offer falls back to the system default) and reopen the output.
+    fn activate_setup(&mut self, outputs: &[String], inputs: &[String]) -> Outcome {
+        let (outcome, hw) = self.profiles.activate(outputs, inputs, &Hardware::of(&self.settings));
+        if outcome != Outcome::Unchanged {
+            hw.apply(&mut self.settings);
+            self.player.set_output(output_choice(&self.settings));
+            self.player.set_map(self.settings.output_map.clone());
+            if let Err(e) = self.save_settings() {
+                log::warn!("{e}");
+            }
+        }
+        self.save_profiles();
+        outcome
+    }
+
     /// Put every preference back to its default: the settings file is moved aside, not deleted.
     fn reset_preferences(&mut self) {
         let note = self.settings_path.as_deref().map(move_settings_aside);
@@ -734,7 +815,8 @@ impl WaveApp {
             self.mtv.take_dir = self.sessions.path.join("takes");
         }
         self.apply_crossfades();
-        self.player.set_output(None);
+        self.player.set_output(OutputChoice::default());
+        self.player.set_map(ChannelMap::default());
         self.player.set_quality(self.settings.playback_quality);
         self.settings.apply_to_spectrogram(&mut self.params);
         self.spectrum = None;
@@ -744,7 +826,7 @@ impl WaveApp {
 
     /// Edit › Preferences…
     fn open_preferences(&mut self) {
-        self.devices_rx = Some(crate::player::list_devices_in_background());
+        self.devices_rx = Some(crate::player::list_devices_in_background(self.settings.audio_host.clone()));
         self.prefs.get_or_insert(PrefPage::General);
         self.prefs_usage = None;
         self.prefs_confirm_cleanup = false;
@@ -1055,6 +1137,40 @@ impl WaveApp {
                             ui.label("Stored only for now: loudness features read these when they are merged.");
                         }
                         PrefPage::AudioHardware => {
+                            let hosts = crate::player::host_names();
+                            let host_now = self.settings.audio_host.clone();
+                            ui.horizontal(|ui| {
+                                ui.label("Audio host");
+                                let shown = if host_now.is_none() { format!("{} (default)", self.player.host) } else { self.player.host.clone() };
+                                egui::ComboBox::from_id_salt("audio_host").width(300.0).selected_text(shown).show_ui(ui, |ui| {
+                                    if ui.selectable_label(host_now.is_none(), settings::SYSTEM_DEFAULT).clicked() {
+                                        action = Some(PrefAction::Set("audio_host", String::new()));
+                                    }
+                                    for name in &hosts {
+                                        if ui.selectable_label(host_now.as_ref() == Some(name), name).clicked() {
+                                            action = Some(PrefAction::Set("audio_host", name.clone()));
+                                        }
+                                    }
+                                });
+                                if hosts.len() < 2 {
+                                    ui.weak("(the only one this system offers)");
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Buffer size");
+                                let shown = self.settings.buffer_frames.map_or(settings::DEVICE_DEFAULT.to_string(), |n| format!("{n} frames"));
+                                egui::ComboBox::from_id_salt("buffer_frames").width(300.0).selected_text(shown).show_ui(ui, |ui| {
+                                    if ui.selectable_label(self.settings.buffer_frames.is_none(), settings::DEVICE_DEFAULT).clicked() {
+                                        action = Some(PrefAction::Set("buffer_frames", String::new()));
+                                    }
+                                    for n in self.player.buffer_range.map(wavcraft_core::chanmap::buffer_choices).unwrap_or_default() {
+                                        if ui.selectable_label(self.settings.buffer_frames == Some(n), format!("{n} frames")).clicked() {
+                                            action = Some(PrefAction::Set("buffer_frames", n.to_string()));
+                                        }
+                                    }
+                                });
+                            });
+                            ui.weak("The buffer size is applied when the output reopens (now, and when you change the device).");
                             for (label, key, list, now) in [
                                 ("Output", "output_device", &self.devices.output, &self.settings.output_device),
                                 ("Input (for recording)", "input_device", &self.devices.input, &self.settings.input_device),
@@ -1090,8 +1206,70 @@ impl WaveApp {
                             ui.add_space(6.0);
                             match &self.player.error {
                                 Some(e) => ui.colored_label(CURSOR, format!("No sound: {e}")),
-                                None => ui.label(format!("Playing on: {}", self.player.device)),
+                                None => ui.label(format!(
+                                    "Playing on: {} ({}, {} channels, buffer {})",
+                                    self.player.device,
+                                    self.player.host,
+                                    self.player.out_channels,
+                                    self.player.buffer.map_or("device default".to_string(), |n| format!("{n} frames"))
+                                )),
                             };
+                        }
+                        PrefPage::ChannelMapping => {
+                            let doc_channels = self.doc.as_ref().map_or(2, |d| d.state.channel_count()).max(1);
+                            let out_channels = self.player.out_channels.max(2);
+                            ui.label("Output: which device output plays each channel of the open file.");
+                            if self.settings.output_map.is_default() {
+                                ui.weak("Automatic (a mono file on both speakers, stereo on outputs 1 and 2). Choose any output to set a map.");
+                            }
+                            for c in 0..doc_channels {
+                                let now = self.settings.output_map.get(c);
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("File channel {}", c + 1));
+                                    let shown = match (now, self.settings.output_map.is_default()) {
+                                        (Some(t), _) => format!("Output {}", t + 1),
+                                        (None, true) => "Automatic".to_string(),
+                                        (None, false) => "Not played".to_string(),
+                                    };
+                                    egui::ComboBox::from_id_salt(("out_map", c)).selected_text(shown).show_ui(ui, |ui| {
+                                        if ui.selectable_label(now.is_none(), "Not played").clicked() {
+                                            action =
+                                                Some(PrefAction::Set("output_map", map_text_with(&self.settings.output_map, c, None, doc_channels)));
+                                        }
+                                        for t in 0..out_channels {
+                                            if ui.selectable_label(now == Some(t), format!("Output {}", t + 1)).clicked() {
+                                                action = Some(PrefAction::Set(
+                                                    "output_map",
+                                                    map_text_with(&self.settings.output_map, c, Some(t), doc_channels),
+                                                ));
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                            ui.add_space(10.0);
+                            ui.label("Input: which record channel each device input is recorded to (used by recording).");
+                            for i in 0..2usize {
+                                let now = self.settings.input_map.get(i);
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("Device input {}", i + 1));
+                                    let shown = now.map_or("Automatic".to_string(), |t| format!("Channel {}", t + 1));
+                                    egui::ComboBox::from_id_salt(("in_map", i)).selected_text(shown).show_ui(ui, |ui| {
+                                        if ui.selectable_label(now.is_none(), "Automatic").clicked() {
+                                            action = Some(PrefAction::Set("input_map", map_text_with(&self.settings.input_map, i, None, 0)));
+                                        }
+                                        for t in 0..2usize {
+                                            if ui.selectable_label(now == Some(t), format!("Channel {}", t + 1)).clicked() {
+                                                action = Some(PrefAction::Set("input_map", map_text_with(&self.settings.input_map, i, Some(t), 0)));
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                            ui.add_space(6.0);
+                            if ui.button("Back to automatic").clicked() {
+                                action = Some(PrefAction::ClearMaps);
+                            }
                         }
                     }
                 });
@@ -1114,9 +1292,10 @@ impl WaveApp {
                 .map_or(Ok(()), |p| self.pref_set("session_folder", &p.to_string_lossy())),
             Some(PrefAction::Preset(verb, name)) => self.preset_do(verb, &name),
             Some(PrefAction::RefreshDevices) => {
-                self.devices_rx = Some(crate::player::list_devices_in_background());
+                self.devices_rx = Some(crate::player::list_devices_in_background(self.settings.audio_host.clone()));
                 Ok(())
             }
+            Some(PrefAction::ClearMaps) => self.pref_set("output_map", "").and_then(|()| self.pref_set("input_map", "")),
             Some(PrefAction::ResetAll) => {
                 self.reset_preferences();
                 Ok(())
@@ -5070,9 +5249,69 @@ impl WaveApp {
                     _ => "ERR APPEARANCE preset save|load|delete <name> | APPEARANCE preset list".to_string(),
                 }
             }
+            // The output as it is: host, buffer, channels and the maps.
+            "AUDIOINFO" => {
+                let p = &self.player;
+                format!(
+                    "OK host={} hosts={} buffer={} buffer_range={} out_channels={} output_map={} input_map={} profile={} device={}",
+                    if p.host.is_empty() { "none" } else { &p.host },
+                    crate::player::host_names().join("|"),
+                    p.buffer.map_or("default".to_string(), |n| n.to_string()),
+                    p.buffer_range.map_or("unknown".to_string(), |(a, b)| format!("{a}-{b}")),
+                    p.out_channels,
+                    self.settings.output_map,
+                    self.settings.input_map,
+                    self.profiles.active.as_deref().unwrap_or("none"),
+                    p.device
+                )
+            }
+            // `CHANMAP out <file ch> <output ch|off>`, `CHANMAP in <input ch> <record ch|off>`
+            // (channels count from 1), `CHANMAP reset`, or `CHANMAP` alone to show both maps.
+            "CHANMAP" => {
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                let number = |w: &str| w.parse::<usize>().ok().filter(|n| *n >= 1);
+                let result = match words.as_slice() {
+                    [] => Ok(()),
+                    ["reset"] => self.pref_set("output_map", "").and_then(|()| self.pref_set("input_map", "")),
+                    [dir @ ("out" | "in"), from, to] => match (number(from), *to == "off" || *to == "0" || number(to).is_some()) {
+                        (Some(f), true) => {
+                            let (key, map) =
+                                if *dir == "out" { ("output_map", &self.settings.output_map) } else { ("input_map", &self.settings.input_map) };
+                            let text = map_text_with(map, f - 1, number(to).map(|t| t - 1), 0);
+                            self.pref_set(key, &text)
+                        }
+                        _ => Err("channels count from 1; the target may be off".to_string()),
+                    },
+                    _ => Err("CHANMAP out <file ch> <output ch|off> | CHANMAP in <input ch> <record ch|off> | CHANMAP reset".to_string()),
+                };
+                match result {
+                    Ok(()) => format!("OK output_map={} input_map={}", self.settings.output_map, self.settings.input_map),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+            // `AUDIOPROFILE list` / `AUDIOPROFILE simulate <devices...>` (treat these names as the
+            // devices on offer, as when an interface is plugged in or out).
+            "AUDIOPROFILE" => {
+                let words: Vec<String> = rest.split_whitespace().map(String::from).collect();
+                match words.first().map(String::as_str) {
+                    Some("list") => format!(
+                        "OK active={} count={} setups={}",
+                        self.profiles.active.as_deref().unwrap_or("none"),
+                        self.profiles.profiles.len(),
+                        self.profiles.profiles.iter().map(|p| format!("{}={}", p.key, p.label.replace(' ', "_"))).collect::<Vec<_>>().join(";")
+                    ),
+                    Some("simulate") if words.len() > 1 => {
+                        self.profile_rx = None;
+                        let names: Vec<String> = words[1..].iter().map(|w| w.replace('_', " ")).collect();
+                        let outcome = self.activate_setup(&names, &names);
+                        format!("OK outcome={outcome:?} active={}", self.profiles.active.as_deref().unwrap_or("none"))
+                    }
+                    _ => "ERR AUDIOPROFILE list | AUDIOPROFILE simulate <device names...> (_ stands for a space)".to_string(),
+                }
+            }
             // The devices the system offers, and the one the player is on.
             "DEVICES" => {
-                let d = crate::player::list_devices();
+                let d = crate::player::list_devices(self.settings.audio_host.clone());
                 format!("OK output={} input={} playing_on={}", d.output.join("|"), d.input.join("|"), self.player.device)
             }
             // Test-only slow job (roadmap B003): `JOB testslow <ms per 64K-frame chunk>` copies the
@@ -5993,6 +6232,17 @@ impl eframe::App for WaveApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finish_opening();
         self.finish_inserting(ctx);
+        if let Some(rx) = &self.profile_rx {
+            match rx.try_recv() {
+                Ok(names) => {
+                    self.profile_rx = None;
+                    let outcome = self.activate_setup(&names, &names);
+                    log::info!("audio setup: {outcome:?}");
+                }
+                Err(TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+                Err(TryRecvError::Disconnected) => self.profile_rx = None,
+            }
+        }
         self.finish_rebuild();
         self.finish_job(ctx);
         self.finish_saving(ctx);

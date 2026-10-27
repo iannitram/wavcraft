@@ -21,6 +21,7 @@
 //! [`default_cache_bytes`](crate::store::default_cache_bytes)).
 
 use crate::appearance::{self, Colors, Preset};
+use crate::chanmap::ChannelMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,10 @@ const KEY_CUT_JOIN: &str = "crossfade_cut_join_ms";
 const KEY_EDGE: &str = "crossfade_edge_ms";
 const KEY_OUTPUT: &str = "output_device";
 const KEY_INPUT: &str = "input_device";
+const KEY_HOST: &str = "audio_host";
+const KEY_BUFFER: &str = "buffer_frames";
+const KEY_OUT_MAP: &str = "output_map";
+const KEY_IN_MAP: &str = "input_map";
 
 const KEY_SRC_QUALITY: &str = "src_quality";
 const KEY_PLAYBACK_QUALITY: &str = "playback_quality";
@@ -88,7 +93,7 @@ pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
 /// menu and is not one of them).
-pub const KEYS: [&str; 40] = [
+pub const KEYS: [&str; 44] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
@@ -129,6 +134,10 @@ pub const KEYS: [&str; 40] = [
     KEY_KEEP_DAYS,
     KEY_CACHE_MB,
     KEY_PLAYBACK_QUALITY,
+    KEY_HOST,
+    KEY_BUFFER,
+    KEY_OUT_MAP,
+    KEY_IN_MAP,
 ];
 
 /// Spectral display resolutions (FFT lengths in frames) the page offers, and the default.
@@ -321,6 +330,10 @@ impl AutoScroll {
         AutoScroll::ALL.into_iter().find(|a| a.name() == s)
     }
 }
+/// What the buffer size preference shows (and accepts) for "the device's own default".
+pub const DEVICE_DEFAULT: &str = "Device default";
+/// The largest buffer size (frames) the preference accepts.
+pub const MAX_BUFFER_FRAMES: u32 = 65_536;
 
 /// What a device preference shows (and accepts) for "no device chosen: use the system's".
 pub const SYSTEM_DEFAULT: &str = "System default";
@@ -478,6 +491,14 @@ pub struct Settings {
     pub marker_columns: MarkerColumns,
     /// The frame rate of the custom time format, 2 to 1000 (A102).
     pub custom_fps: u16,
+    /// The audio host (driver API) by name: CoreAudio, WASAPI, ALSA… (`None`: the system's default).
+    pub audio_host: Option<String>,
+    /// The output buffer size in frames, applied when the stream reopens (`None`: the device's).
+    pub buffer_frames: Option<u32>,
+    /// Document channel → device output channel (empty: the automatic layout).
+    pub output_map: ChannelMap,
+    /// Device input channel → record channel (empty: the automatic layout). Kept for recording.
+    pub input_map: ChannelMap,
 }
 
 impl Default for Settings {
@@ -528,6 +549,10 @@ impl Default for Settings {
             cache_mb: None,
             marker_columns: MarkerColumns::default(),
             custom_fps: crate::smpte::CUSTOM_DEFAULT_FPS,
+            audio_host: None,
+            buffer_frames: None,
+            output_map: ChannelMap::default(),
+            input_map: ChannelMap::default(),
         }
     }
 }
@@ -712,6 +737,10 @@ impl Settings {
                 Some(c) => appearance::colour_text(c),
                 None => return Err(unknown_key(key)),
             },
+            KEY_HOST => self.audio_host.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
+            KEY_BUFFER => self.buffer_frames.map_or_else(|| DEVICE_DEFAULT.to_string(), |n| n.to_string()),
+            KEY_OUT_MAP => self.output_map.to_string(),
+            KEY_IN_MAP => self.input_map.to_string(),
             _ => return Err(unknown_key(key)),
         })
     }
@@ -808,6 +837,18 @@ impl Settings {
                     None => return Err(unknown_key(key)),
                 }
             }
+            KEY_HOST => self.audio_host = device(value),
+            KEY_BUFFER => {
+                self.buffer_frames = match value {
+                    "" | "0" | DEVICE_DEFAULT => None,
+                    v => match v.parse::<u32>() {
+                        Ok(n) if n <= MAX_BUFFER_FRAMES => Some(n),
+                        _ => return Err(format!("{key} is a whole number of frames, 1 to {MAX_BUFFER_FRAMES} (0: the device default)")),
+                    },
+                }
+            }
+            KEY_OUT_MAP => self.output_map = ChannelMap::parse(value)?,
+            KEY_IN_MAP => self.input_map = ChannelMap::parse(value)?,
             _ => return Err(unknown_key(key)),
         }
         Ok(())
