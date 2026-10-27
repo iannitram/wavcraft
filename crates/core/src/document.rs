@@ -33,6 +33,26 @@ pub struct Document {
     /// The document in the session store, when it was opened from a file (`None` for audio
     /// made in memory). `audio` is a copy of it until task 05.
     pub state: Option<DocState>,
+    /// How the overviews were made at open (see [`PeakReport`]).
+    pub peak_report: PeakReport,
+}
+
+/// How a document's waveform overviews came about, for the status line and scripted checks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeakReport {
+    /// `off` (no cache folder, or not opened from a file), `hit` (loaded from the cache), or
+    /// `miss`, `stale`, `corrupt` (computed, and saved for next time).
+    pub result: &'static str,
+    /// Milliseconds spent loading (on a hit) or computing the overviews.
+    pub ms: f64,
+    /// Why the cache file could not be written, if it could not.
+    pub write_error: Option<String>,
+}
+
+impl PeakReport {
+    fn off(ms: f64) -> PeakReport {
+        PeakReport { result: "off", ms, write_error: None }
+    }
 }
 
 impl Document {
@@ -48,8 +68,10 @@ impl Document {
 
     /// [`open_with`](Self::open_with) with the session folder and store set by `opts`.
     pub fn open_in(path: &Path, opts: &OpenOptions, progress: &mut dyn FnMut(f64), cancel: &AtomicBool) -> Result<Document, OpenError> {
+        // The key is taken before the file is read, so a file changed while it opens is stale next time.
+        let key = opts.peak_cache.as_ref().and_then(|dir| Some((dir, crate::peakcache::Key::of_file(path).ok()?)));
         let state = crate::io::open(path, opts, progress, cancel)?;
-        Document::from_state(path.to_path_buf(), state)
+        Document::from_state_cached(path.to_path_buf(), state, key.as_ref().map(|(d, k)| (d.as_path(), k)))
     }
 
     /// File > Import > Raw Data: [`open_in`](Self::open_in) for a headerless file described by `spec`.
@@ -67,6 +89,12 @@ impl Document {
     /// The document for `state` (after an edit, or an undo), read back whole for the views and
     /// the player (see the module notes): the same adapter `open` uses, until task 05.
     pub fn from_state(path: PathBuf, state: DocState) -> Result<Document, OpenError> {
+        Document::from_state_cached(path, state, None)
+    }
+
+    /// [`from_state`](Self::from_state) with a peak cache (folder and key): the overviews are
+    /// loaded from it when it holds them for this version of the file, otherwise computed and saved.
+    pub fn from_state_cached(path: PathBuf, state: DocState, cache: Option<(&Path, &crate::peakcache::Key)>) -> Result<Document, OpenError> {
         let audio = state.to_audio_buffer().map_err(|e| OpenError::Io(e.to_string()))?;
         let src = state.source();
         let info = AudioInfo {
@@ -77,8 +105,36 @@ impl Document {
             frames: state.len_frames(),
             bwf: src.bwf.clone(),
         };
-        let mut doc = Document::build(path, info, audio)?;
+        let frames = state.len_frames();
+        let channels = state.channel_count();
+        let started = std::time::Instant::now();
+        let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
+        let mut report = PeakReport::off(0.0);
+        let mut cached = None;
+        if let Some((dir, key)) = cache {
+            match crate::peakcache::load(dir, key, channels, frames) {
+                Ok(peaks) => {
+                    report = PeakReport { result: "hit", ms: ms(started), write_error: None };
+                    cached = Some(peaks);
+                }
+                Err(miss) => report.result = miss.word(),
+            }
+        }
+        let mut doc = match cached {
+            Some(peaks) => Document::with_peaks(path, info, audio, peaks)?,
+            None => {
+                let t = std::time::Instant::now();
+                let doc = Document::build(path, info, audio)?;
+                report.ms = ms(t);
+                if let Some((dir, key)) = cache {
+                    report.write_error =
+                        crate::peakcache::store(dir, key, frames, &doc.peaks, crate::peakcache::DEFAULT_CAP_BYTES).err().map(|e| e.to_string());
+                }
+                doc
+            }
+        };
         doc.state = Some(state);
+        doc.peak_report = report;
         Ok(doc)
     }
 
@@ -102,6 +158,13 @@ impl Document {
         Document::build(PathBuf::new(), info, audio)
     }
 
+    fn with_peaks(path: PathBuf, info: AudioInfo, audio: AudioBuffer, peaks: Vec<Peaks>) -> Result<Document, OpenError> {
+        if audio.frames() == 0 || audio.sample_rate == 0 {
+            return Err(OpenError::Empty);
+        }
+        Ok(Document { path, info, audio: Arc::new(audio), peaks, state: None, peak_report: PeakReport::off(0.0) })
+    }
+
     fn build(path: PathBuf, info: AudioInfo, audio: AudioBuffer) -> Result<Document, OpenError> {
         if audio.frames() == 0 || audio.sample_rate == 0 {
             return Err(OpenError::Empty);
@@ -111,7 +174,7 @@ impl Document {
             let jobs: Vec<_> = audio.channels.iter().map(|ch| s.spawn(move || Peaks::build(ch))).collect();
             jobs.into_iter().zip(&audio.channels).map(|(job, ch)| job.join().unwrap_or_else(|_| Peaks::build(ch))).collect()
         });
-        Ok(Document { path, info, audio: Arc::new(audio), peaks, state: None })
+        Ok(Document { path, info, audio: Arc::new(audio), peaks, state: None, peak_report: PeakReport::off(0.0) })
     }
 
     /// Length in frames.
@@ -139,6 +202,43 @@ impl Document {
     /// document made in memory.
     pub fn warnings(&self) -> &[String] {
         self.state.as_ref().map(|s| s.source().warnings.as_slice()).unwrap_or(&[])
+    }
+
+    /// The Properties panel's rows, `(label, value)`: the file's path, format, sample rate,
+    /// channels, bit depth, duration and size on disk, then what the file carries (Broadcast Wave
+    /// fields when present, and what was wrong with it). Audio made in memory has no path or size.
+    pub fn properties(&self) -> Vec<(&'static str, String)> {
+        let info = &self.info;
+        let on_disk = (!self.path.as_os_str().is_empty()).then(|| std::fs::metadata(&self.path).ok()).flatten();
+        let mut rows = vec![
+            ("Path", if self.path.as_os_str().is_empty() { "(not saved)".to_string() } else { self.path.display().to_string() }),
+            ("Format", format!("{:?}", info.format).to_uppercase()),
+            ("Sample rate", format!("{} Hz", self.sample_rate())),
+            ("Channels", self.channels().to_string()),
+            ("Bit depth", bit_depth_text(info.sample_format).to_string()),
+            ("Duration", format!("{} ({} frames)", crate::view::format_time(self.frames(), self.sample_rate()), self.frames())),
+            ("Size", on_disk.map_or_else(|| "(no file)".to_string(), |m| format!("{} ({} bytes)", crate::space::format_bytes(m.len()), m.len()))),
+        ];
+        if let Some(b) = &info.bwf {
+            for (label, v) in [
+                ("BWF description", &b.description),
+                ("BWF originator", &b.originator),
+                ("BWF originator reference", &b.originator_reference),
+                ("BWF origination date", &b.origination_date),
+                ("BWF origination time", &b.origination_time),
+            ] {
+                if !v.is_empty() {
+                    rows.push((label, v.clone()));
+                }
+            }
+            if b.time_reference != 0 {
+                rows.push(("BWF time reference", format!("{} samples", b.time_reference)));
+            }
+        }
+        for w in self.warnings() {
+            rows.push(("Warning", w.clone()));
+        }
+        rows
     }
 
     /// File name for a title bar ("Untitled" for a document made in memory).
@@ -189,6 +289,19 @@ impl Document {
     }
 }
 
+/// The bit depth as the Properties panel says it.
+fn bit_depth_text(f: SampleFormat) -> &'static str {
+    match f {
+        SampleFormat::Int8 => "8-bit integer",
+        SampleFormat::Int16 => "16-bit integer",
+        SampleFormat::Int24 => "24-bit integer",
+        SampleFormat::Int32 => "32-bit integer",
+        SampleFormat::Float32 => "32-bit float",
+        SampleFormat::Float64 => "64-bit float",
+        SampleFormat::Compressed => "compressed (no fixed depth)",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +327,80 @@ mod tests {
         assert_eq!(doc.name(), "take 1.wav");
         assert!((doc.duration_secs() - 1.0).abs() < 1e-9);
         assert_eq!(*doc.audio, buf, "a float WAV round trip is exact");
+    }
+
+    #[test]
+    fn a_second_open_loads_the_peaks_from_the_cache_and_a_changed_file_does_not() {
+        let dir = std::env::temp_dir().join(format!("wavcraft-doc-peaks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = |frames: usize| {
+            soundcraft_audio_io::encode(
+                &ramp(frames, 2),
+                &EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, ..EncodeOptions::default() },
+            )
+            .unwrap()
+        };
+        let file = dir.join("take.wav");
+        std::fs::write(&file, wav(96_000)).unwrap();
+        let opts = OpenOptions { sessions_root: Some(dir.join("sessions")), peak_cache: Some(dir.join("peaks")), ..OpenOptions::default() };
+        let open = |opts: &OpenOptions| Document::open_in(&file, opts, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        let first = open(&opts);
+        assert_eq!(first.peak_report.result, "miss");
+        let second = open(&opts);
+        assert_eq!(second.peak_report.result, "hit");
+        assert_eq!(second.peaks, first.peaks, "the cached overview is the computed one");
+        assert_eq!(second.waveform_columns(0, 0.0, 96_000.0, 200), first.waveform_columns(0, 0.0, 96_000.0, 200));
+        // The audio itself still comes through the store.
+        assert_eq!(*second.audio, *first.audio);
+        // A different file at the same path: stale, computed again, then a hit again.
+        std::fs::write(&file, wav(120_000)).unwrap();
+        assert_eq!(open(&opts).peak_report.result, "stale");
+        assert_eq!(open(&opts).peak_report.result, "hit");
+        // With no cache folder, nothing is read or written.
+        let off = OpenOptions { peak_cache: None, ..opts.clone() };
+        assert_eq!(open(&off).peak_report.result, "off");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn properties_list_the_file_and_what_it_carries() {
+        let dir = std::env::temp_dir().join(format!("wavcraft-doc-props-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bwf = soundcraft_audio_io::BwfInfo { description: "scene 4".into(), originator: "kit".into(), time_reference: 480, ..Default::default() };
+        let bytes = soundcraft_audio_io::encode(
+            &ramp(96_000, 2),
+            &EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int24, bwf: Some(bwf), ..EncodeOptions::default() },
+        )
+        .unwrap();
+        let file = dir.join("props.wav");
+        std::fs::write(&file, &bytes).unwrap();
+        let doc = Document::open_in(
+            &file,
+            &OpenOptions { sessions_root: Some(dir.join("s")), ..OpenOptions::default() },
+            &mut |_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let rows = doc.properties();
+        let get = |k: &str| rows.iter().find(|r| r.0 == k).map(|r| r.1.clone()).unwrap_or_default();
+        assert_eq!(get("Path"), file.display().to_string());
+        assert_eq!(get("Format"), "WAV");
+        assert_eq!(get("Sample rate"), "48000 Hz");
+        assert_eq!(get("Channels"), "2");
+        assert_eq!(get("Bit depth"), "24-bit integer");
+        assert!(get("Duration").starts_with("0:02.000") && get("Duration").contains("96000 frames"), "{}", get("Duration"));
+        assert!(get("Size").ends_with(&format!("({} bytes)", bytes.len())), "{}", get("Size"));
+        // Broadcast Wave fields show only when the reader found them.
+        if doc.info.bwf.is_some() {
+            assert_eq!(get("BWF description"), "scene 4");
+        }
+        // In-memory audio has no path or size.
+        let mem = Document::from_buffer(ramp(480, 1)).unwrap().properties();
+        assert_eq!(mem[0], ("Path", "(not saved)".to_string()));
+        assert_eq!(mem[6].1, "(no file)");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

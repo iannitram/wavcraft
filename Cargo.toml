@@ -76,6 +76,10 @@ rustix = { version = "1.1", features = ["fs"] }
 # Codex review CX-W2/W4 (2026-10-19): random names and tokens from the operating system's CSPRNG.
 # Already in Cargo.lock (0.4.3, through other crates), so no new crate. Licence MIT OR Apache-2.0.
 getrandom = "0.4"
+# Item f84 (peak files): the overview is saved with postcard (MIT OR Apache-2.0, a compact serde
+# format); serde is already in Cargo.lock through soundcraft-audio-io (MIT OR Apache-2.0).
+serde = "1"
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 
 # Roadmap A152/A153 (feature f12, 2026-10-20): Copy puts the audio on the OS clipboard as a WAV
 # file entry, Paste takes one. arboard 3.6.1, MIT OR Apache-2.0, already in Cargo.lock through

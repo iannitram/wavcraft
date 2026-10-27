@@ -153,6 +153,9 @@ pub struct OpenOptions {
     /// `sessions_root` is not used then. A cancelled or failed open leaves the store alone; the
     /// blocks it had written are freed when the dropped pieces release them.
     pub into_store: Option<Store>,
+    /// The folder for saved waveform overviews ([`crate::peakcache`]); `None` leaves the cache
+    /// off. Used by [`Document::open_in`](crate::Document::open_in).
+    pub peak_cache: Option<PathBuf>,
 }
 
 /// Frames per chunk read (and per block written).

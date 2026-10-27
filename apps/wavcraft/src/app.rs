@@ -436,6 +436,10 @@ pub struct WaveApp {
     /// The Time panel's readout being typed in (Go to Time), and a digit-drag in progress.
     goto: Option<String>,
     scrub: Option<Scrub>,
+    /// Where saved waveform overviews live (`WAVCRAFT_PEAK_CACHE_DIR`, else the system cache).
+    peak_dir: PathBuf,
+    /// How the open file's overviews were made (cache hit or computed), for `PEAKCACHE info`.
+    peak_report: Option<wavcraft_core::PeakReport>,
 }
 
 /// A clip's source open in the Waveform editor (f116).
@@ -604,6 +608,8 @@ impl WaveApp {
             metadata_dialog: false,
             markers_ui: MarkersUi::new(),
             playlist_ui: PlaylistUi::default(),
+            peak_dir: std::env::var_os("WAVCRAFT_PEAK_CACHE_DIR").map_or_else(wavcraft_core::peakcache::default_dir, PathBuf::from),
+            peak_report: None,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -1158,7 +1164,7 @@ impl WaveApp {
         let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
         let (ctx, job_path, job_cancel, job_progress) = (ctx.clone(), path.clone(), cancel.clone(), progress.clone());
         let store = wavcraft_core::store::StoreOptions { cache_bytes: self.settings.cache_bytes(), ..Default::default() };
-        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), store, ..OpenOptions::default() };
+        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), store, peak_cache: Some(self.peak_dir.clone()), ..OpenOptions::default() };
         std::thread::spawn(move || {
             let mut last = 0;
             let mut report = |p: f64| {
@@ -1218,6 +1224,12 @@ impl WaveApp {
         };
         match result {
             Ok(doc) => {
+                let r = &doc.peak_report;
+                log::info!(target: "wavcraft", "peaks for {}: {} in {:.1} ms", path.display(), r.result, r.ms);
+                if let Some(e) = &r.write_error {
+                    log::warn!(target: "wavcraft", "the peak cache could not be written: {e}");
+                }
+                self.peak_report = Some(r.clone());
                 self.player.set_audio(Some(doc.audio.clone()));
                 self.meters.new_file();
                 let cap = History::default_cap(&self.sessions.path);
@@ -1583,6 +1595,7 @@ impl WaveApp {
             }
             "markers" => self.markers_panel(ui),
             "playlist" => self.playlist_panel(ui),
+            "properties" => self.properties_panel(ui),
             _ => {}
         }
     }
@@ -3236,6 +3249,27 @@ impl WaveApp {
         }
     }
 
+    /// Window › Properties (a registry panel: docked on the right by default, floats, hides from
+    /// the Window menu like the others): the open file's path, format, rate, channels, depth,
+    /// duration, size.
+    fn properties_panel(&mut self, ui: &mut egui::Ui) {
+        let rows = self.doc.as_ref().map(Document::properties);
+        match &rows {
+            Some(rows) => {
+                egui::Grid::new("properties").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                    for (label, value) in rows {
+                        ui.label(*label);
+                        ui.add(egui::Label::new(value).wrap().selectable(true));
+                        ui.end_row();
+                    }
+                });
+            }
+            None => {
+                ui.label("No file is open.");
+            }
+        }
+    }
+
     fn clear_history_prompt(&mut self, ctx: &egui::Context) {
         if !self.confirm_clear_history {
             return;
@@ -4184,6 +4218,26 @@ impl WaveApp {
             "MARKER" => self.control_marker(rest),
             // `PLAYLIST add <marker> [loops=<n>] | move <i> <j> | remove <i> | loops <i> <n> | play | stop | clear | state | sequence`.
             "PLAYLIST" => self.control_playlist(rest),
+            "PEAKCACHE" => match rest.trim() {
+                "info" => {
+                    let (files, bytes) = wavcraft_core::peakcache::info(&self.peak_dir);
+                    let last = self
+                        .peak_report
+                        .as_ref()
+                        .map_or_else(|| "last=none last_ms=0".to_string(), |r| format!("last={} last_ms={:.1}", r.result, r.ms));
+                    format!("OK files={files} bytes={bytes} cap={} {last}", wavcraft_core::peakcache::DEFAULT_CAP_BYTES)
+                }
+                "clear" => format!("OK removed={}", wavcraft_core::peakcache::clear(&self.peak_dir)),
+                _ => "ERR PEAKCACHE info|clear".to_string(),
+            },
+            "PROPERTIES" => match &self.doc {
+                Some(d) => {
+                    let parts: Vec<String> =
+                        d.properties().into_iter().map(|(k, v)| format!("{}={}", k.to_lowercase().replace(' ', "_"), v)).collect();
+                    format!("OK {}", parts.join(" | "))
+                }
+                None => "ERR PROPERTIES needs a file open".to_string(),
+            },
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()

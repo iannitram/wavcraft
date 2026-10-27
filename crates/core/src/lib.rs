@@ -9,6 +9,7 @@
 //! - [`batch`]: the Batch Process runner (a list of files through a chain of operations to WAV).
 //! - [`cd`]: the CD layout (track order, pauses, ISRC), and its single-WAV-plus-CUE export.
 //! - [`io`]: streamed open into the store.
+//! - [`peakcache`]: saved waveform overviews, so a long file reopens fast.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app still sees it (whole-channel buffers until task 05)
@@ -60,6 +61,7 @@ pub mod loudness;
 pub mod presets;
 pub mod rack;
 pub mod markers;
+pub mod peakcache;
 pub mod playlist;
 pub mod random;
 pub mod recent_sessions;
@@ -95,7 +97,7 @@ pub use doc::{Channel, DocState, Piece, SourceFormat};
 pub use markers::{Marker, MarkerPick, Markers};
 pub use playlist::Playlist;
 
-pub use document::{Document, OpenError};
+pub use document::{Document, OpenError, PeakReport};
 pub use smpte::SmpteRate;
 pub use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 pub use spectrogram::SpectrogramParams;
