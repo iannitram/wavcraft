@@ -58,6 +58,7 @@ const KEY_JKL_STEPS: &str = "jkl_speed_steps";
 const KEY_PREROLL: &str = "preroll_s";
 const KEY_POSTROLL: &str = "postroll_s";
 const KEY_RECORD_OFFSET: &str = "record_offset_ms";
+const KEY_MONITOR_INPUT: &str = "monitor_input";
 
 const KEY_SPEC_WINDOW: &str = "spec_window";
 const KEY_SPEC_RESOLUTION: &str = "spec_resolution";
@@ -93,7 +94,7 @@ pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
 /// menu and is not one of them).
-pub const KEYS: [&str; 44] = [
+pub const KEYS: [&str; 45] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
@@ -109,6 +110,7 @@ pub const KEYS: [&str; 44] = [
     KEY_PREROLL,
     KEY_POSTROLL,
     KEY_RECORD_OFFSET,
+    KEY_MONITOR_INPUT,
     KEY_SPEC_WINDOW,
     KEY_SPEC_RESOLUTION,
     KEY_SPEC_DB_RANGE,
@@ -456,6 +458,8 @@ pub struct Settings {
     pub postroll_s: f32,
     /// Record offset in ms (positive: later). Stored only; recording applies it when it exists.
     pub record_offset_ms: i32,
+    /// Hear the input through the output while recording (C025). Off by default.
+    pub monitor_input: bool,
     /// Spectral Displays page: window function, FFT length, dB range (top is 0 dBFS).
     pub spec_window: SpecWindow,
     pub spec_resolution: u32,
@@ -527,6 +531,7 @@ impl Default for Settings {
             preroll_s: DEFAULT_ROLL_S,
             postroll_s: DEFAULT_ROLL_S,
             record_offset_ms: 0,
+            monitor_input: false,
             spec_window: SpecWindow::Hann,
             spec_resolution: DEFAULT_SPEC_RESOLUTION,
             spec_db_range: DEFAULT_SPEC_DB_RANGE,
@@ -715,6 +720,7 @@ impl Settings {
             KEY_PREROLL => self.preroll_s.to_string(),
             KEY_POSTROLL => self.postroll_s.to_string(),
             KEY_RECORD_OFFSET => self.record_offset_ms.to_string(),
+            KEY_MONITOR_INPUT => self.monitor_input.to_string(),
             KEY_SPEC_WINDOW => self.spec_window.name().to_string(),
             KEY_SPEC_RESOLUTION => self.spec_resolution.to_string(),
             KEY_SPEC_DB_RANGE => self.spec_db_range.to_string(),
@@ -798,6 +804,7 @@ impl Settings {
                     _ => return Err(format!("{key} is a whole number of milliseconds, -{MAX_RECORD_OFFSET_MS} to {MAX_RECORD_OFFSET_MS}")),
                 }
             }
+            KEY_MONITOR_INPUT => self.monitor_input = parse_bool(key, value)?,
             KEY_SPEC_WINDOW => self.spec_window = choose(key, value, SpecWindow::from_name, SpecWindow::NAMES)?,
             KEY_SPEC_RESOLUTION => {
                 self.spec_resolution = match value.parse::<u32>() {

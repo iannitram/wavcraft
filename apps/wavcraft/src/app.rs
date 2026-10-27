@@ -41,6 +41,8 @@ use crate::diagnostics_panel::{self, Ask, DiagPanel};
 use crate::effect_dialog::{Answer, EffectDialog};
 use crate::freq_panel::{self, FreqPanel};
 use crate::input::InputMonitor;
+use crate::recording::{DEFAULT_PREROLL_MS, Max, Recording};
+use wavcraft_core::doc::rec_edit::{self, RecMode, RecPlan, RecTarget};
 use crate::markers_panel::MarkersUi;
 use crate::meters_ui::{self, MetersUi};
 use crate::mixer::MixerModel;
@@ -252,6 +254,16 @@ struct BatchWrite {
     progress: Arc<AtomicU32>,
 }
 
+/// A finished take being brought into the document on a worker thread (C026, C027, C030): the
+/// take is opened from its own file by the normal streamed open, then one edit is built from it.
+struct Integrating {
+    result: Receiver<Result<wavcraft_core::Edit, String>>,
+    base: Arc<DocState>,
+    doc_id: u64,
+    path: PathBuf,
+    plan: RecPlan,
+}
+
 /// A save running on a worker thread.
 struct Saving {
     path: PathBuf,
@@ -431,6 +443,10 @@ pub struct WaveApp {
     custom_fps_dialog: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Recording a take (File › New Recording…, the Record button, `RECORD` on the control channel).
+    rec: Recording,
+    /// A take being brought into the document.
+    integrating: Option<Integrating>,
     /// Window › Markers: the panel, the picked markers, a handle being dragged.
     markers_ui: MarkersUi,
     /// The Playlist panel's list and its runner (session only).
@@ -676,6 +692,8 @@ impl WaveApp {
             mix_paste: None,
             custom_fps_dialog: None,
             confirm_clear_history: false,
+            rec: Recording::default(),
+            integrating: None,
             show_metadata: false,
             meta_draft: Vec::new(),
             meta_for: None,
@@ -1555,6 +1573,14 @@ impl WaveApp {
     /// Stream `path` into a session store on a worker thread; the window stays responsive for
     /// long files. A file still opening is cancelled first.
     fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
+        if self.rec.is_active() {
+            self.error = Some("Stop recording before opening a file".to_string());
+            return;
+        }
+        if self.integrating.is_some() {
+            self.error = Some("Wait for the recording to be brought into the file".to_string());
+            return;
+        }
         self.open_as(path, None, ctx);
     }
 
@@ -2384,7 +2410,242 @@ impl WaveApp {
     }
 
     /// Space and the menu's Play button: stop while playing, resume while paused, else play.
+    /// Hear the take's input through the output when it is being monitored (C025); say so if the
+    /// output cannot (the take is recorded either way).
+    fn attach_monitor(&mut self) {
+        let Some(m) = self.rec.monitor_for_output() else { return };
+        if let Err(why) = self.player.set_monitor(Some(m)) {
+            log::warn!(target: "wavcraft", "recording: {why}");
+            self.rec.set_monitor_audible(false);
+            self.notice = Some(why);
+        }
+    }
+
+    /// The record offset preference (C010) in milliseconds. A negative `record_offset_ms` (later
+    /// is positive) cannot shift a take's start, so it counts as 0 here.
+    fn offset_ms(&self) -> u32 {
+        self.settings.record_offset_ms.clamp(0, rec_edit::MAX_OFFSET_MS as i32) as u32
+    }
+
+    /// The record offset for a take that just ended (C010). Returns (ms, frames at `rate`).
+    fn record_offset(&mut self, rate: u32) -> (u32, u64) {
+        let ms = self.offset_ms();
+        let frames = rec_edit::offset_frames(ms, rate);
+        let reported = self.rec.last_reported_latency_us().map_or_else(|| "none".to_string(), |us| format!("{} ms", (us + 500) / 1000));
+        log::info!(target: "wavcraft", "record offset {ms} ms = {frames} frames at {rate} Hz (the device reported {reported})");
+        self.rec.last_offset = Some((ms, frames));
+        (ms, frames)
+    }
+
+    /// Start a take. Nothing plays while it runs (C024).
+    fn start_recording(&mut self, fmt: wavcraft_core::record::RecFormat) -> Result<PathBuf, String> {
+        self.start_recording_max(fmt, None)
+    }
+
+    /// Start a take that stops by itself after `max_secs` of recorded audio, if given (C028).
+    fn start_recording_max(&mut self, fmt: wavcraft_core::record::RecFormat, max_secs: Option<u64>) -> Result<PathBuf, String> {
+        if self.opening.is_some() || self.saving.is_some() || self.inserting.is_some() || self.running.is_some() {
+            return Err("wait for the open, save or background job to finish".to_string());
+        }
+        self.halt_play();
+        self.player.set_muted(true);
+        self.rec.monitor_default = self.settings.monitor_input;
+        match self.rec.start(fmt, max_secs) {
+            Ok(path) => {
+                self.error = None;
+                self.notice = None;
+                self.attach_monitor();
+                Ok(path)
+            }
+            Err(e) => {
+                self.player.set_muted(false);
+                let why = format!("Recording: {e}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// Why the document may not be edited now: a recording is going into it, or has just been
+    /// recorded and is being brought in.
+    fn edit_lock(&self) -> Option<&'static str> {
+        (self.rec.going_into_doc().is_some() || self.integrating.is_some()).then_some("wait for the recording to finish going into the file")
+    }
+
+    /// Record into the open document (C026 insert at the cursor or replace the selection, C027
+    /// punch-in, C030 target channel). The take is written to its own file first, exactly like a
+    /// take for a new file; only when it has stopped is it brought into the document, as one edit.
+    /// Nothing in the document changes before then, and the edit is refused if it did meanwhile.
+    fn start_recording_into(
+        &mut self,
+        want: wavcraft_core::record::RecFormat,
+        mode: RecMode,
+        target: RecTarget,
+        preroll_ms: u64,
+    ) -> Result<PathBuf, String> {
+        let fail = |app: &mut WaveApp, e: String| {
+            let why = format!("Recording: {e}");
+            log::warn!(target: "wavcraft", "{why}");
+            app.error = Some(why.clone());
+            Err(why)
+        };
+        if self.opening.is_some() || self.saving.is_some() || self.rebuilding.is_some() || self.inserting.is_some() || self.running.is_some() || self.integrating.is_some() {
+            return fail(self, "wait for the open, save or earlier recording to finish".to_string());
+        }
+        let Some(editor) = self.editor.as_ref() else { return fail(self, "open a file to record into first".to_string()) };
+        let base = editor.history.current().clone();
+        let sel = self.selection_range();
+        let plan = RecPlan { mode, target, cursor: sel.start, selection: sel.clone() };
+        if let Err(e) = plan.check(&base) {
+            return fail(self, e);
+        }
+        let fmt = wavcraft_core::record::RecFormat { rate: base.sample_rate(), channels: plan.take_channels(&base), bits: want.bits };
+        let punch = mode == RecMode::Punch;
+        // A punch-in's take runs the preference's offset longer, so the range is still filled to its end.
+        let pref_frames = rec_edit::offset_frames(self.offset_ms(), base.sample_rate());
+        let limit = plan.limit_frames_with_offset(pref_frames).map(Max::Frames);
+        let from = sel.start.saturating_sub(preroll_ms * u64::from(base.sample_rate()) / 1000);
+        self.halt_play();
+        self.player.set_muted(!punch);
+        self.rec.monitor_default = self.settings.monitor_input;
+        match self.rec.start_with(fmt, limit, punch) {
+            Ok(path) => {
+                self.rec.set_into(plan, base, self.doc_id, punch.then_some(from), fmt.rate);
+                if punch {
+                    // The preroll and the selection play from the original audio while the take waits.
+                    self.player.play(from as usize, sel.end as usize);
+                }
+                self.error = None;
+                self.notice = None;
+                self.attach_monitor();
+                Ok(path)
+            }
+            Err(e) => {
+                self.player.set_muted(false);
+                fail(self, e)
+            }
+        }
+    }
+
+    /// Open the finished take by the normal streamed open and build the one edit that puts it in
+    /// the document; `finish_integration` applies it.
+    fn integrate_take(&mut self, take: &wavcraft_core::record::Take, into: crate::recording::IntoDoc, offset_frames: u64, ctx: &egui::Context) {
+        let Some(editor) = self.editor.as_ref() else { return };
+        let (tx, rx) = channel();
+        let (ctx, path, base, plan, xf) = (ctx.clone(), take.path.clone(), into.base.clone(), into.plan.clone(), editor.crossfades);
+        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), ..OpenOptions::default() };
+        std::thread::spawn(move || {
+            let cancel = AtomicBool::new(false);
+            let result = wavcraft_core::io::open(&path, &opts, &mut |_| {}, &cancel)
+                .map_err(|e| e.to_string())
+                .and_then(|take| rec_edit::apply_take_with_offset(&base, &take, &plan, xf, offset_frames).map_err(|e| e.to_string()));
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        self.integrating = Some(Integrating { result: rx, base: into.base, doc_id: into.doc_id, path: take.path.clone(), plan: into.plan });
+    }
+
+    fn finish_integration(&mut self, ctx: &egui::Context) {
+        let Some(job) = &self.integrating else { return };
+        let result = match job.result.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the worker stopped unexpectedly".to_string()),
+        };
+        let Some(Integrating { base, doc_id, path, plan, .. }) = self.integrating.take() else { return };
+        let kept = format!("The take is kept in {}", path.display());
+        let edit = match result {
+            Ok(edit) => edit,
+            Err(e) => {
+                let why = format!("Recording could not be brought into the file: {e}. {kept}");
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why);
+                return;
+            }
+        };
+        let Some(editor) = self.editor.as_mut() else { return };
+        if doc_id != self.doc_id || !Arc::ptr_eq(editor.history.current(), &base) {
+            let why = format!("The file changed while recording, so the take was not put in. {kept}");
+            log::warn!(target: "wavcraft", "{why}");
+            self.error = Some(why);
+            return;
+        }
+        if edit.is_noop() {
+            self.notice = Some(format!("Nothing was recorded. {kept}"));
+            return;
+        }
+        let (old_len, new_len) = (base.len_frames(), edit.state.len_frames());
+        let selected = match &edit.change {
+            wavcraft_core::doc::edit::Change::SameLength { range, .. } => range.clone(),
+            wavcraft_core::doc::edit::Change::LengthFrom { frame } => {
+                let replaced = if plan.mode == RecMode::Replace { plan.selection.end - plan.selection.start } else { 0 };
+                *frame..(*frame + (new_len + replaced).saturating_sub(old_len)).min(new_len)
+            }
+            wavcraft_core::doc::edit::Change::None => plan.cursor..plan.cursor,
+        };
+        let label = edit.label.clone();
+        editor.history.push_edit(edit);
+        log::info!(target: "wavcraft", "{label}: frames {}..{} of {new_len}, one history step", selected.start, selected.end);
+        self.selection = Selection { anchor: selected.start as usize, head: selected.end as usize };
+        self.error = None;
+        self.notice = Some(format!("{label}: {kept}"));
+        self.rebuild(ctx);
+    }
+
+    /// Stop the take and, when `open` is set, open it in the editor by the normal path.
+    fn finish_recording(&mut self, open: bool, ctx: &egui::Context) -> Option<wavcraft_core::record::Take> {
+        let take = self.rec.stop()?;
+        let into = self.rec.take_into();
+        let _ = self.player.set_monitor(None);
+        self.player.set_muted(false);
+        if into.is_some() {
+            self.player.stop();
+        }
+        if let Some(e) = &take.error {
+            self.error = Some(format!("Recording stopped early: {e} The take so far is kept in {}", take.path.display()));
+        }
+        if take.dropped_frames > 0 {
+            let ms = take.dropped_frames * 1000 / u64::from(take.fmt.rate.max(1));
+            let why = format!(
+                "Recording lost {} frames (about {ms} ms) because the disk could not keep up. The take is kept in {} but has gaps.",
+                take.dropped_frames,
+                take.path.display()
+            );
+            log::warn!(target: "wavcraft", "{why}");
+            self.error.get_or_insert(why);
+        }
+        if let Some(into) = into {
+            if open && take.frames > 0 {
+                let (_, frames) = self.record_offset(take.fmt.rate);
+                self.integrate_take(&take, into, frames, ctx);
+            } else {
+                log::info!(target: "wavcraft", "the take {} was not put in the file ({} frames); it is kept", take.path.display(), take.frames);
+                if take.frames == 0 {
+                    self.notice = Some("Nothing was recorded".to_string());
+                }
+            }
+        } else if open && take.frames > 0 {
+            self.open(take.path.clone(), ctx);
+            if take.error.is_none() {
+                self.notice = Some(format!("Recorded {}", take.path.display()));
+            }
+        }
+        Some(take)
+    }
+
+    /// Record now with the last format used (the default the first time): no dialog (C031).
+    fn quick_record(&mut self) -> Result<PathBuf, String> {
+        let fmt = self.rec.last_format();
+        self.start_recording(fmt)
+    }
+
     fn toggle_play(&mut self) {
+        if self.rec.is_active() {
+            // Space while recording pauses and resumes the take (C029).
+            self.rec.set_paused(!self.rec.is_paused());
+            return;
+        }
         match self.transport.mode {
             Mode::Playing => self.stop_play(),
             Mode::Paused => self.resume_play(),
@@ -2869,6 +3130,9 @@ impl WaveApp {
         if self.running.is_some() {
             return Err("wait for the background job to finish, or cancel it".to_string());
         }
+        if let Some(why) = self.edit_lock() {
+            return Err(why.to_string());
+        }
         if actions::action(id).kind == Kind::Window {
             return self.run_window_action(id, ctx);
         }
@@ -3331,6 +3595,9 @@ impl WaveApp {
     }
 
     fn run_insert_silence(&mut self, frames: u64, ctx: &egui::Context) -> Option<String> {
+        if let Some(why) = self.edit_lock() {
+            return Some(why.to_string());
+        }
         if self.running.is_some() || self.saving.is_some() {
             return Some("wait for the background job or the save to finish".to_string());
         }
@@ -5013,9 +5280,11 @@ impl WaveApp {
                     || self.rebuilding.is_some()
                     || self.saving.is_some()
                     || self.running.is_some()
-                    || self.batch_write.is_some();
+                    || self.batch_write.is_some()
+                    || self.integrating.is_some();
                 let progress = self.running.as_ref().map_or(0, |r| r.job.permille() / 10);
                 let unsaved = u8::from(self.unsaved());
+                let rec_state = self.rec.state_fields();
                 let width = self.editor_width.max(1.0);
                 let view = format!("tool={} view={:.0}-{:.0}", self.tool.name(), self.view.start, self.view.end(width));
                 self.poll_transport();
@@ -5045,7 +5314,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved} playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text={} snap_frames={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} path={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text={} snap_frames={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -5790,7 +6059,7 @@ impl WaveApp {
             }
             // The History panel's click: go to step <index> (0 is Open).
             "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
-                (Ok(i), true) if self.saving.is_none() && self.running.is_none() => {
+                (Ok(i), true) if self.saving.is_none() && self.running.is_none() && self.rec.going_into_doc().is_none() && self.integrating.is_none() => {
                     if self.history_go(i, ctx) {
                         "OK".to_string()
                     } else {
@@ -6161,8 +6430,62 @@ impl WaveApp {
             "SAVEOPTS" => self.control_saveopts(ctx, rest),
             "EXPORTPRESET" => self.control_export_preset(rest),
             // A plain QUIT refuses with unsaved changes; `QUIT discard` closes anyway.
+            // RECORD start [rate=48000 ch=1 bits=24] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop
+            "RECORD" => {
+                let (verb, args) = rest.split_once(' ').unwrap_or((rest, ""));
+                match verb {
+                    "start" => {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                        let parsed = crate::recording::parse_start_args(args, now);
+                        self.rec.monitor_override = parsed.as_ref().ok().and_then(|(_, o)| o.monitor);
+                        match parsed {
+                            Ok((f, o)) if o.delay_secs.is_some_and(|d| d > 0) => {
+                                match self.rec.arm(f, std::time::Duration::from_secs(o.delay_secs.unwrap_or(0)), o.max_secs) {
+                                    Ok(()) => format!("OK armed in={}", o.delay_secs.unwrap_or(0)),
+                                    Err(e) => format!("ERR {e}"),
+                                }
+                            }
+                            Ok((f, o)) if o.mode.is_some() => {
+                                let mode = o.mode.unwrap_or(RecMode::Insert);
+                                match self.start_recording_into(f, mode, o.target.unwrap_or_default(), o.preroll_ms.unwrap_or(DEFAULT_PREROLL_MS)) {
+                                    Ok(path) => format!("OK path={}", path.display()),
+                                    Err(e) => format!("ERR {e}"),
+                                }
+                            }
+                            Ok((f, o)) => match self.start_recording_max(f, o.max_secs) {
+                                Ok(path) => format!("OK path={}", path.display()),
+                                Err(e) => format!("ERR {e}"),
+                            },
+                            Err(e) => format!("ERR {e}"),
+                        }
+                    }
+                    "quick" => match self.quick_record() {
+                        Ok(path) => format!("OK path={}", path.display()),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    "pause" | "resume" => {
+                        if !self.rec.is_active() {
+                            "ERR not recording".to_string()
+                        } else if self.rec.set_paused(verb == "pause") {
+                            "OK".to_string()
+                        } else {
+                            format!("ERR already {}", if verb == "pause" { "paused" } else { "recording" })
+                        }
+                    }
+                    "cancel" if self.rec.disarm() => "OK".to_string(),
+                    "cancel" => "ERR nothing is waiting to start".to_string(),
+                    "stop" => match self.finish_recording(true, ctx) {
+                        Some(t) if t.error.is_none() => format!("OK frames={} dropped={} path={}", t.frames, t.dropped_frames, t.path.display()),
+                        Some(t) => format!("ERR the take stopped early: {} (kept at {})", t.error.unwrap_or_default(), t.path.display()),
+                        None => "ERR not recording".to_string(),
+                    },
+                    _ => "ERR RECORD start [rate=48000 ch=1 bits=24] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop"
+                        .to_string(),
+                }
+            }
             "QUIT" if self.unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
             "QUIT" => {
+                self.finish_recording(false, ctx);
                 self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 "OK".to_string()
@@ -6420,6 +6743,14 @@ impl WaveApp {
                     self.batch.open = true;
                 }
                 ui.separator();
+                let idle = !self.rec.is_active() && self.opening.is_none() && self.saving.is_none();
+                if ui.add_enabled(idle, egui::Button::new("New Recording…")).clicked() {
+                    self.rec.dialog = Some(self.rec.last_format());
+                }
+                if ui.add_enabled(idle, egui::Button::new("Record Now").shortcut_text("Shift+Space")).clicked() {
+                    let _ = self.quick_record();
+                }
+                ui.separator();
                 let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
                 if ui.button("Session Folder…").on_hover_text(&now).clicked() {
                     self.pick_session_folder();
@@ -6567,8 +6898,27 @@ impl WaveApp {
                 ui.checkbox(&mut self.show_video, "Video panel");
             });
             let label = if self.player.is_playing() { "■ Stop" } else if self.transport.mode == Mode::Paused { "▶ Resume" } else { "▶ Play" };
-            if ui.button(label).on_hover_text("Space").clicked() {
+            if ui.add_enabled(!self.rec.is_active(), egui::Button::new(label)).on_hover_text("Space").clicked() {
                 self.toggle_play();
+            }
+            if self.rec.is_active() {
+                if ui.button("■ Stop Recording").clicked() {
+                    self.finish_recording(true, ui.ctx());
+                }
+                let label = if self.rec.is_paused() { "● Resume" } else { "❚❚ Pause" };
+                if ui.button(label).on_hover_text("Space").clicked() {
+                    self.rec.set_paused(!self.rec.is_paused());
+                }
+            } else if self.rec.is_armed() {
+                if ui.button("Cancel Timed Recording").clicked() {
+                    self.rec.disarm();
+                }
+            } else if ui
+                .add_enabled(self.opening.is_none() && self.saving.is_none(), egui::Button::new("● Record"))
+                .on_hover_text("New Recording (Shift+Space records at once with the last settings)")
+                .clicked()
+            {
+                self.rec.dialog = Some(self.rec.last_format());
             }
         });
     }
@@ -6576,7 +6926,9 @@ impl WaveApp {
     fn status(&mut self, ui: &mut egui::Ui) {
         let mut cancel_job = false;
         ui.horizontal(|ui| {
-            if let Some(o) = &self.opening {
+            if let Some((text, warn)) = self.rec.status_text() {
+                ui.colored_label(if warn { CURSOR } else { Color32::from_rgb(230, 230, 230) }, text);
+            } else if let Some(o) = &self.opening {
                 ui.spinner();
                 let permille = o.progress.load(Ordering::Relaxed);
                 ui.label(format!("Opening {}… {}%", o.path.display(), permille / 10));
@@ -7096,6 +7448,27 @@ impl eframe::App for WaveApp {
         self.finish_job(ctx);
         self.finish_saving(ctx);
         self.finish_batch();
+        self.finish_integration(ctx);
+        if self.rec.punch_waiting() {
+            let at = self.player.is_playing().then(|| self.player.position());
+            self.rec.punch_tick(at);
+            ctx.request_repaint_after(std::time::Duration::from_millis(4));
+        }
+        if let Some(why) = self.rec.refresh() {
+            log::warn!(target: "wavcraft", "recording: {why}");
+            self.finish_recording(true, ctx);
+        }
+        if self.rec.max_reached() {
+            log::info!(target: "wavcraft", "recording: the time limit is reached, stopping");
+            self.finish_recording(true, ctx);
+        }
+        if let Some((fmt, max)) = self.rec.due() {
+            // Errors show in the status bar and the log.
+            let _ = self.start_recording_max(fmt, max);
+        }
+        if self.rec.is_active() || self.rec.is_armed() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.poll_transport();
         self.run_scrub();
         // Follow a change of the system's default output device (f48): reopen at the same place.
@@ -7182,6 +7555,25 @@ impl eframe::App for WaveApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.apply_look(&ctx);
+        if self.rec.is_active() {
+            // Closing the window ends the take cleanly; a kill is covered by the header.
+            if ctx.input(|i| i.viewport().close_requested()) {
+                self.finish_recording(false, &ctx);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
+        if let Some(fmt) = self.rec.dialog(&ctx, self.editor.is_some()) {
+            // Errors show in the status bar.
+            match self.rec.dialog_mode {
+                Some(mode) if self.editor.is_some() => {
+                    let _ = self.start_recording_into(fmt, mode, self.rec.dialog_target, DEFAULT_PREROLL_MS);
+                }
+                _ => {
+                    let _ = self.start_recording(fmt);
+                }
+            }
+        }
         self.close_prompt(&ctx);
         self.export_window(&ctx);
         self.selection_keys(&ctx);
@@ -7207,6 +7599,16 @@ impl eframe::App for WaveApp {
         }
         if close && let Some(id) = self.hover {
             self.close_panel(id);
+        }
+        // Shift+Space: record now (C031); while recording it stops the take.
+        if !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::Space)) {
+            if self.rec.is_active() {
+                self.finish_recording(true, &ctx);
+            } else if self.rec.is_armed() {
+                self.rec.disarm();
+            } else {
+                let _ = self.quick_record();
+            }
         }
         for command in pressed_commands(&ctx, &self.keymap) {
             if let Err(e) = self.run_command(command, &ctx) {

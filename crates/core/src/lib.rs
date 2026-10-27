@@ -14,6 +14,7 @@
 //! - [`resample`]: windowed-sinc sample-rate conversion for playback.
 //! - [`hwprofile`]: audio hardware settings kept per device setup.
 //! - [`chanmap`]: output/input channel maps and the output buffer size choice.
+//! - [`record`]: recording a take: the ring buffer, the crash-safe WAV writer, the fake input.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app sees it: the document in the store, read in
 //!   chunks (no whole-file copy since task 05), and its waveform peaks.
@@ -75,6 +76,7 @@ pub mod random;
 pub mod resample;
 pub mod recent_sessions;
 pub mod ruler;
+pub mod record;
 pub mod save;
 pub mod sc_source;
 pub mod session_file;

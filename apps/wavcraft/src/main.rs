@@ -15,6 +15,8 @@ mod control;
 mod diagnostics_panel;
 mod effect_dialog;
 mod input;
+mod recording;
+mod rec_input;
 mod multitrack_ui;
 mod mixer;
 mod meters_ui;

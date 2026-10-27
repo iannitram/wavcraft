@@ -384,3 +384,10 @@ fn the_playback_quality_is_stored_and_a_bad_word_is_the_default() {
     assert_eq!(Settings::parse("playback_quality = best\n").playback_quality, Quality::High);
     assert!(Settings::default().set("playback_quality", "best").is_err());
 }
+
+#[test]
+fn the_monitor_preference_round_trips_and_defaults_off() {
+    assert!(!Settings::parse("").monitor_input, "off by default");
+    let s = Settings { monitor_input: true, ..Settings::default() };
+    assert!(Settings::parse(&s.to_text()).monitor_input);
+}
