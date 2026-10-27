@@ -884,7 +884,7 @@ mod tests {
         assert!(!l.set_size(DockSide::Bottom, 300.4));
         l.toggle_maximize("history");
         let (tabs, sizes) = l.encode();
-        assert_eq!(tabs, "left:selection*;right:markers,playlist;bottom:freq,history*");
+        assert_eq!(tabs, "left:selection*;right:markers,playlist;bottom:freq,properties,history*");
         assert_eq!(sizes, "left:220,right:240,bottom:300");
         let back = Layout::decode(&tabs, &sizes);
         l.restore();
@@ -926,7 +926,7 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         assert_eq!(
             l.report(&set),
-            "zone.left=- zone.right=history,selection,markers,playlist zone.bottom=freq zone.center=waveform,spectral front.left=- front.right=history front.bottom=freq maximized=- floating=-"
+            "zone.left=- zone.right=history,selection,markers,playlist zone.bottom=freq,properties zone.center=waveform,spectral front.left=- front.right=history front.bottom=freq maximized=- floating=-"
         );
         l.apply_command(&mut set, "move selection left").unwrap();
         l.apply_command(&mut set, "maximize selection").unwrap();
@@ -1004,11 +1004,11 @@ mod tests {
         l.apply_command(&mut set, "dock history bottom").unwrap();
         let r = l.report(&set);
         assert!(r.contains("floating=- ") || r.ends_with("floating=-"), "{r}");
-        assert!(r.contains("zone.bottom=freq,history"), "{r}");
+        assert!(r.contains("zone.bottom=freq,properties,history"), "{r}");
         l.apply_command(&mut set, "float selection").unwrap();
         l.apply_command(&mut set, "dock selection").unwrap();
         assert_eq!(l.zone_of("selection"), Some(DockSide::Right));
-        assert_eq!(l.float_group(DockSide::Bottom, &set), 2, "freq and history are both in the bottom zone");
+        assert_eq!(l.float_group(DockSide::Bottom, &set), 3, "freq, properties and history are all in the bottom zone");
     }
 
     fn mons(text: &str) -> Vec<Monitor> {
