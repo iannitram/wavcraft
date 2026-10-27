@@ -95,6 +95,8 @@
 //! - `AUTO add|move|delete|thin <track> <param> …`, `AUTO show <track> <param>|off`, `AUTO state` (automation lanes, f109)
 //! - `BATCH add <path>|op <step>|out <folder> [pattern=<p>]|overwrite on|off|clear|run|cancel|status` → the
 //!   Batch Process panel (`status` lists `running= files= done= ok= failed= … results=`)
+//! - `CD add <path>|adddoc|pause <i> <s>|meta <i> title=.. performer=.. isrc=..|move|remove|limit 74|80|view|state|export <dir>`
+//!   (CD Layout, f121; see `cd_ui.rs`; `export` writes `disc.wav` and `disc.cue` in `<dir>`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

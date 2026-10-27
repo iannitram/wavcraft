@@ -10,6 +10,7 @@
 
 mod app;
 mod batch_panel;
+mod cd_ui;
 mod control;
 mod diagnostics_panel;
 mod effect_dialog;

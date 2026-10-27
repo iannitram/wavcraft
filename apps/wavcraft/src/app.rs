@@ -27,6 +27,7 @@ use wavcraft_core::workspaces::{self, Snapshot, Workspaces};
 use wavcraft_core::{DocState, Document, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport};
 
 use crate::batch_panel::BatchPanel;
+use crate::cd_ui::CdView;
 use crate::control;
 use crate::diagnostics_panel::{self, Ask, DiagPanel};
 use crate::effect_dialog::{Answer, EffectDialog};
@@ -340,6 +341,8 @@ pub struct WaveApp {
     keymap: Keymap,
     /// The Multitrack session and its editor view (f103).
     mtv: MtView,
+    /// The CD Layout and its view (f121).
+    cdv: CdView,
     /// Window › Levels and the statistics window (f26).
     meters: MetersUi,
     /// Edit › Preferences…: the page showing while the dialog is up.
@@ -518,6 +521,7 @@ impl WaveApp {
             previewing: false,
             keymap,
             mtv: MtView::default(),
+            cdv: CdView::default(),
             meters: MetersUi::new(),
             prefs: None,
             recovery,
@@ -4199,7 +4203,15 @@ impl WaveApp {
                 Err(e) => format!("ERR {e}"),
             },
             "SESSION" | "TRACK" | "CLIP" | "CLIPTYPE" | "CLIPPROP" | "VIEW" | "SMARKER" | "SPLAY" | "SSTOP" | "SREC" | "PUNCH" | "MASTER" | "AUTO" => {
+                if cmd == "VIEW" {
+                    self.cdv.show = false;
+                }
                 self.mtv.control(cmd, rest, self.doc.as_ref())
+            }
+            "CD" => {
+                let current = self.editor.as_ref().map(|e| e.history.current().clone());
+                let sessions = self.sessions.path.clone();
+                self.cdv.control(rest, current, &sessions)
             }
             "MIXER" if matches!(rest.trim(), "show" | "hide") => {
                 self.show_mixer = rest.trim() == "show";
@@ -4574,8 +4586,12 @@ impl WaveApp {
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
             ui.menu_button("Generate", |ui| self.generate_menu(ui));
             ui.menu_button("View", |ui| {
-                ui.radio_value(&mut self.mtv.show, false, "Waveform editor");
-                ui.radio_value(&mut self.mtv.show, true, "Multitrack editor");
+                if ui.radio_value(&mut self.mtv.show, false, "Waveform editor").clicked()
+                    | ui.radio_value(&mut self.mtv.show, true, "Multitrack editor").clicked()
+                {
+                    self.cdv.show = false;
+                }
+                ui.radio_value(&mut self.cdv.show, true, "CD Layout");
                 if self.clip_edit.is_some() && ui.button("Return to session").clicked() {
                     let r = self.return_to_session(ui.ctx()).map(|_| ());
                     self.report(r);
@@ -5229,7 +5245,11 @@ impl eframe::App for WaveApp {
                 self.dock_zone(ui, DockSide::Bottom);
             }
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-                if self.mtv.show {
+                if self.cdv.show {
+                    let current = self.editor.as_ref().map(|e| e.history.current().clone());
+                    let (name, sessions) = (self.doc.as_ref().map(|d| d.name()).unwrap_or_default(), self.sessions.path.clone());
+                    self.cdv.ui(ui, current, &name, &sessions);
+                } else if self.mtv.show {
                     self.mtv.ui(ui, self.doc.as_ref());
                 } else {
                     self.editor(ui);

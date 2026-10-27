@@ -1104,7 +1104,7 @@ fn extended(rate: u32) -> [u8; 10] {
 /// The RIFF (or, above `rf64_over`, RF64) header, `fmt ` and (float) `fact`; returns the data
 /// size and the file offset the next chunk starts at. `extra` is the bytes of every other chunk
 /// (headers and pads included) that follow; the `data` chunk is counted here.
-fn write_header(
+pub(crate) fn write_header(
     out: &mut impl Write,
     channels: u16,
     sample_rate: u32,
