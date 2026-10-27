@@ -103,6 +103,8 @@ pub enum ActionId {
     MarkerDelete,
     MarkerToRange,
     MarkerToPoint,
+    ExtractChannels,
+    ExportRanges,
 }
 
 /// Which part of the program carries an action out.
@@ -188,6 +190,9 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::MarkerDelete, "marker.delete", "Delete Marker"),
     edit(ActionId::MarkerToRange, "marker.toRange", "Convert Marker to Range"),
     edit(ActionId::MarkerToPoint, "marker.toPoint", "Convert Marker to Point"),
+    // f79: batch writes of parts of the file; the window picks the folder and writes them.
+    window(ActionId::ExtractChannels, "edit.extract_channels", "Extract Channels to Mono Files…"),
+    window(ActionId::ExportRanges, "marker.exportRanges", "Export Audio of Range Markers…"),
     window(ActionId::ZoomIn, "view.zoomIn", "Zoom In"),
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out"),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection"),
@@ -464,6 +469,8 @@ impl Editor {
             ActionId::MarkerDelete => !self.history.current().markers().touched(selection).is_empty(),
             ActionId::MarkerToRange => has_sel && !self.history.current().markers().touched_kind(selection, true).is_empty(),
             ActionId::MarkerToPoint => !self.history.current().markers().touched_kind(selection, false).is_empty(),
+            ActionId::ExtractChannels => self.channel_count() >= 2 && self.len() > 0,
+            ActionId::ExportRanges => !crate::export::exportable_ranges(self.history.current(), None).is_empty(),
             ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
             ActionId::ZoomToSelection => has_sel,
@@ -985,6 +992,8 @@ impl Editor {
             | ActionId::ZoomOut
             | ActionId::ZoomToSelection
             | ActionId::ZoomOutFull
+            | ActionId::ExtractChannels
+            | ActionId::ExportRanges
             | ActionId::ToolSelect
             | ActionId::ToolHand
             | ActionId::ToolZoom

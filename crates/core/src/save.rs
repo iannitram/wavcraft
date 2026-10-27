@@ -507,6 +507,48 @@ pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dy
     save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, no_hooks())
 }
 
+/// A part of a document to write as a WAV file: some channels (in this order), a frame range,
+/// and the bytes of the `cue `/`LIST` chunks to put after the audio (empty for none).
+/// Used by Extract Channels and by exporting ranges (f79); the whole-file save is the part of
+/// every channel and every frame, and keeps its source chunks.
+pub struct Slice {
+    pub channels: Vec<usize>,
+    pub range: Range<u64>,
+    pub markers: Vec<u8>,
+}
+
+/// [`save_wav`] for a [`Slice`] of `doc`: the same temporary file, sync and atomic rename, and a
+/// failure leaves no temporary file and the target as it was. The slice's chunks go after the
+/// audio, and nothing is recorded for a later copy (the file is not the document's).
+pub fn save_slice(
+    doc: &DocState,
+    slice: &Slice,
+    target: &Path,
+    ty: SampleType,
+    progress: &mut dyn FnMut(f64),
+    fail_after: Option<u64>,
+) -> Result<(), SaveError> {
+    let part = Part { frames: slice.range.clone(), channels: slice.channels.clone() };
+    let extra = split_chunks(&slice.markers);
+    let hooks = Hooks { fail_after, relocate: false, extra: &extra, ..no_hooks() };
+    save_inner(doc, target, SaveFormat::Wav, ty, &part, progress, hooks)
+}
+
+/// The chunks of a headed chunk list (`id`, little-endian size, body, pad byte when odd); the
+/// pad is left out, because the writer adds it.
+fn split_chunks(mut bytes: &[u8]) -> Vec<ExtraChunk> {
+    let mut out = Vec::new();
+    while bytes.len() >= 8 {
+        let id = [bytes[0], bytes[1], bytes[2], bytes[3]];
+        let size = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let end = (8 + size).min(bytes.len());
+        out.push(ExtraChunk { id, data: bytes[8..end].to_vec() });
+        let next = (end + (size & 1)).min(bytes.len());
+        bytes = &bytes[next..];
+    }
+    out
+}
+
 /// [`save_wav`] with a [`Transform`] applied to every chunk as it goes out; still streamed, so the
 /// document is never held whole. No metadata is written: the transform changes the channels, so
 /// the source's chunks would not describe the file.

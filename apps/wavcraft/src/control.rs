@@ -23,6 +23,7 @@
 //! - `FREQ [fft=4096] [window=hann|blackman|rectangular] [start end]` → `OK range=<a>-<b> fft=<n> window=<w> ch1=<hz>Hz/<db>dB …` (the peak of each channel; `start end` in frames, else the selection, else the moment at the cursor, `at=<frame>`)
 //! - `OSCLIP` → `OK ours=<0|1> path=<first file on the system clipboard or ->`; `OSCLIP set <path>` puts a file there as another program would
 //! - `MARKERS` → `OK count=<n> <id>,<start>,<end>,<name>;…` (the markers of the current state; a point has start = end)
+//! - `EXPORT_RANGES <folder> [pattern=<p>]` → `OK` (every range marker as its own WAV in `folder`, named by the pattern: `{name}` `{index}` `{base}`; poll `STATE` until `busy=0`). `ACTION edit.extract_channels` writes each channel of the file as `<name>_L.wav`, `<name>_R.wav` beside it the same way
 //! - `MIXPASTE mode=insert|overlap|overwrite|modulate [copied=<pct>[,<pct>]] [existing=<pct>[,<pct>]] [invert=0|1] [fade=<ms>] [loops=<n>] [file=<path>]` → `OK selection=<a>-<b>` (Edit › Mix Paste at the cursor; the clipboard unless `file=`)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `NOISE_PRINT` → `OK frames=<n> channels=<n> rate=<hz>` (the session's noise print, captured by `ACTION nr.capture_print`), or `OK none`

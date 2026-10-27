@@ -32,6 +32,7 @@ pub mod diagnostics;
 pub mod clipboard;
 pub mod doc;
 pub mod document;
+pub mod export;
 pub mod dsp;
 pub mod effects;
 pub mod export_chunks;
