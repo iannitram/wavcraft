@@ -12,11 +12,13 @@
 //!   and its waveform peaks.
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
 //! - [`smpte`]: SMPTE timecode at 24 to 59.94 fps (drop-frame too) and snapping to frames.
+//! - [`analysis`]: read-only analysis of a document's audio (the Frequency Analysis spectrum).
 //! - [`view`]: zoom and scroll arithmetic, selections and time formatting.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod actions;
+pub mod analysis;
 pub mod atomic;
 pub mod autosave;
 pub mod cd;

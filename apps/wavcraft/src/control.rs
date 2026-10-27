@@ -14,12 +14,13 @@
 //! - `PARAM <amplify.db|normalize.db> <number>` → `OK` (the number Effects › Amplify or Normalize uses)
 //! - `KEY <chord>` (`Ctrl+Z`, `Cmd+Shift+Z`, `Space`, `F3`; Ctrl and Cmd mean the same) → `OK command=<name> selection=<a>-<b> changed=<0|1>` (runs what the shortcut table binds the chord to, as the key would; `ERR` when none)
 //! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
-//! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1> selection=<0|1> zone.left=<ids|-> zone.right=… zone.bottom=… zone.center=… front.left=<id|-> front.right=… front.bottom=… maximized=<id|->` (which panels are shown, then the shown tabs of each dock zone in order, the front tab of each, and the maximised panel)
+//! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1> selection=<0|1> freq=<0|1> zone.left=<ids|-> zone.right=… zone.bottom=… zone.center=… front.left=<id|-> front.right=… front.bottom=… maximized=<id|->` (which panels are shown, then the shown tabs of each dock zone in order, the front tab of each, and the maximised panel)
 //! - `PANEL move <id> <left|right|bottom>` | `PANEL maximize <id>` (again restores) | `PANEL close <id>` | `PANEL activate <id>` → the same line as `PANELS`; the layout is saved in the settings file
 //! - `PANELMENU <panel> list` → `OK items=close,maximize,… maximized=<id|none>`; `PANELMENU <panel> run <item>` → `OK maximized=<id|none> confirm_clear_history=<0|1> <panel>=<0|1> …` (a panel's ≡ menu)
 //! - `METADATA` → `OK fields=name,duration,… dialog=<0|1>`; `METADATA set <field,…|none>`; `METADATA open` (the Metadata Display dialog)
 //! - `SELECT_TIME <start> <end>` (each in the chosen time format, no spaces inside) → `OK selection=<a>-<b>`; `STATE` also reports `time_display`, `selection_text` and `snap_frames`
 //! - `SNAP_FRAME <frame>` → `OK frame=<snapped>` (what a ruler click or drag calls: SMPTE display and Snap to Frames on)
+//! - `FREQ [fft=4096] [window=hann|blackman|rectangular] [start end]` → `OK range=<a>-<b> fft=<n> window=<w> ch1=<hz>Hz/<db>dB …` (the peak of each channel; `start end` in frames, else the selection, else the moment at the cursor, `at=<frame>`)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `NOISE_PRINT` → `OK frames=<n> channels=<n> rate=<hz>` (the session's noise print, captured by `ACTION nr.capture_print`), or `OK none`
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)

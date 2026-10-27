@@ -24,6 +24,7 @@ use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError,
 use crate::control;
 use crate::diagnostics_panel::{self, Ask, DiagPanel};
 use crate::effect_dialog::{Answer, EffectDialog};
+use crate::freq_panel::{self, FreqPanel};
 use crate::multitrack_ui::MtView;
 use crate::mixer::MixerModel;
 use crate::meters_ui::{self, MetersUi};
@@ -190,6 +191,8 @@ pub struct WaveApp {
     workspaces: Workspaces,
     /// The name being typed in Window › Workspace › Save as New Workspace.
     workspace_name: String,
+    /// Window › Frequency Analysis.
+    freq: FreqPanel,
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
@@ -359,6 +362,7 @@ impl WaveApp {
             }),
             workspaces: Workspaces::new(settings_path.as_deref().and_then(|p| p.parent()).map(|d| d.join("workspaces")), &settings.workspace),
             workspace_name: String::new(),
+            freq: FreqPanel::default(),
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
@@ -695,6 +699,7 @@ impl WaveApp {
                 self.drop_video();
                 self.generation += 1;
                 self.selection = Selection::default();
+                self.freq.reset();
                 self.spectrum = None;
                 self.fit_on_next_frame = true;
             }
@@ -891,6 +896,13 @@ impl WaveApp {
         match id {
             "history" => self.history_panel(ui),
             "selection" => self.selection_view_panel(ui),
+            // Window › Frequency Analysis: a docked panel like the others (Window menu, zones, tabs).
+            "freq" => {
+                let doc = self.editor.as_ref().map(|e| e.history.current().clone());
+                let channels = self.editor.as_ref().map_or(wavcraft_core::ChannelMask::ALL, |e| e.channels);
+                let sel = self.selection_range();
+                self.freq.show(ui, doc.as_ref(), channels, sel);
+            }
             _ => {}
         }
     }
@@ -2795,6 +2807,11 @@ impl WaveApp {
                     self.panels_report()
                 }
                 Err(e) => format!("ERR {e}"),
+            },
+            // The spectrum's peaks: `FREQ [fft=4096] [window=hann] [start end]`.
+            "FREQ" => match &self.editor {
+                Some(e) => freq_panel::control(e.history.current(), e.channels, self.selection_range(), rest),
+                None => "ERR no file open".to_string(),
             },
             "ACTION" => match actions::by_name(rest) {
                 Some(a) => match self.run_action(a.id, ctx) {
