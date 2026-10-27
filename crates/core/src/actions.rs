@@ -43,6 +43,10 @@ pub enum ActionId {
     ClearTimeSelection,
     LeftChannel,
     RightChannel,
+    BothChannels,
+    SelectCurrentView,
+    SelectToStart,
+    SelectToEnd,
     InsertSilence,
     InsertFile,
     CursorToStart,
@@ -220,6 +224,11 @@ pub const TABLE: &[Action] = &[
     window(ActionId::SetOut, "edit.setOut", "Set Out Point to Playhead"),
     edit(ActionId::LeftChannel, "edit.leftChannel", "Left Channel Only"),
     edit(ActionId::RightChannel, "edit.rightChannel", "Right Channel Only"),
+    edit(ActionId::BothChannels, "edit.bothChannels", "Both Channels"),
+    // The Select submenu's own entries (Select All and Deselect All are the rows above).
+    window(ActionId::SelectCurrentView, "select.currentView", "Select Current View"),
+    edit(ActionId::SelectToStart, "select.toStart", "Select from Cursor to Start of File"),
+    edit(ActionId::SelectToEnd, "select.toEnd", "Select from Cursor to End of File"),
     edit(ActionId::CursorToStart, "view.cursorToStart", "Playhead to Start"),
     edit(ActionId::CursorToEnd, "view.cursorToEnd", "Playhead to End"),
     // Markers (A171, A176, A121): Add Marker is M; the playhead jumps with Ctrl+Alt+Left/Right.
@@ -367,6 +376,12 @@ pub fn action(id: ActionId) -> &'static Action {
 
 /// The action the control channel calls `name` (table rows only; see [`id_by_name`]).
 pub fn by_name(name: &str) -> Option<&'static Action> {
+    // `select.*` also names the two rows that live in the Edit group.
+    let name = match name {
+        "select.all" => "edit.selectAll",
+        "select.none" => "edit.deselectAll",
+        n => n,
+    };
     all_actions().find(|a| a.name == name)
 }
 
@@ -566,7 +581,10 @@ impl Editor {
             ActionId::Delete | ActionId::Silence | ActionId::Crop | ActionId::CaptureNoisePrint => has_sel,
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
-            ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
+            ActionId::LeftChannel | ActionId::RightChannel | ActionId::BothChannels => self.channel_count() >= 2,
+            ActionId::SelectCurrentView => self.len() > 0,
+            ActionId::SelectToStart => self.len() > 0 && selection.start > 0,
+            ActionId::SelectToEnd => self.len() > 0 && selection.end < self.len(),
             ActionId::InsertSilence | ActionId::InsertFile | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::MeterInputToggle | ActionId::MeterInputArm | ActionId::MicCheck => true,
             ActionId::TimeDecimal
@@ -1154,6 +1172,12 @@ impl Editor {
                 return Ok(Outcome { doc_changed: false, selection: sel, message: Some(message) });
             }
             ActionId::SelectAll => return unchanged(0..len),
+            ActionId::SelectToStart => return unchanged(crate::view::select_to_start(&sel, len)),
+            ActionId::SelectToEnd => return unchanged(crate::view::select_to_end(&sel, len)),
+            ActionId::BothChannels => {
+                self.channels = ChannelMask::ALL;
+                return Ok(Outcome { doc_changed: false, selection: sel, message: Some("Editing both channels".to_string()) });
+            }
             ActionId::DeselectAll | ActionId::ClearTimeSelection => return unchanged(sel.start..sel.start),
             ActionId::CursorToStart => return unchanged(0..0),
             ActionId::CursorToEnd => return unchanged(len..len),
@@ -1189,6 +1213,7 @@ impl Editor {
             }
             ActionId::InsertSilence
             | ActionId::InsertFile
+            | ActionId::SelectCurrentView
             | ActionId::SetIn
             | ActionId::SetOut
             | ActionId::ZoomIn

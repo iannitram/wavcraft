@@ -15,6 +15,7 @@
 //! - `GESTURE marquee <frame0> <frame1> <hz0> <hz1>` / `GESTURE marquee_move <dframes> <dhz>` → `OK selection=<a>-<b> band=<lo-hi>` (the Marquee tool: a time range and a frequency band; a plain selection change clears the band)
 //! - `GESTURE right_click <frame>` → `OK selection=<a>-<b> moved=<0|1>` (Select tool, `right_click = extend`: the nearest edge moves; the menu setting turns it off)
 //! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)
+//! - `GESTURE channel_drag <y_fraction> <start> <end>` → `OK selection=<a>-<b> selch=<L|R|LR|…>` (a drag from a height of the waveform area, 0 top to 1 bottom; with context-sensitive channel editing on, a stereo file's top quarter picks L, the bottom quarter R, the middle both)
 //! - `ACTION <name>` (an action table name, `edit.delete`, or an effect, `effect.invert`; the snapping switches `view.snap.toggle`, `view.snap.zero.toggle`, `view.snap.ruler_coarse.toggle`, `view.snap.ruler_fine.toggle`, `view.snap.edges.toggle`; `channel.toggle.<n>` with n from 0) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `PARAM <amplify.db|normalize.db> <number>` → `OK` (the number Effects › Amplify or Normalize uses)
 //! - `KEY <chord>` (`Ctrl+Z`, `Cmd+Shift+Z`, `Space`, `F3`; Ctrl and Cmd mean the same) → `OK command=<name> selection=<a>-<b> changed=<0|1>` (runs what the shortcut table binds the chord to, as the key would; `ERR` when none)

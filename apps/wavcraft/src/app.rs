@@ -32,7 +32,7 @@ use wavcraft_core::snap::SnapSettings;
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::transport::{self, Follow, Mode, Scrub as DragTracker, Transport};
-use wavcraft_core::view::{Band, SpectralSelection, fraction_of_hz, hz_at_fraction};
+use wavcraft_core::view::{self, Band, SpectralSelection, fraction_of_hz, hz_at_fraction};
 use wavcraft_core::workspaces::{self, Snapshot, Workspaces};
 use wavcraft_core::{DocState, Document, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport, tempo::Tempo};
 
@@ -3397,6 +3397,7 @@ impl WaveApp {
                 self.view.start = a;
                 self.view.clamp(width, frames);
             }
+            ActionId::SelectCurrentView => self.selection = Selection::visible(&self.view, width, frames),
             ActionId::SetIn => {
                 let end = self.selection.end().max(playhead);
                 self.selection = Selection { anchor: playhead, head: end };
@@ -5430,6 +5431,26 @@ impl WaveApp {
         if let Some(answer) = self.pointer_gesture(rest) {
             return answer;
         }
+        // `channel_drag <y_fraction> <start> <end>`: a drag from a height of the waveform area (0 top,
+        // 1 bottom) over the frames, as the mouse would. Context-sensitive channel editing picks the channels.
+        let mut head = rest.split_whitespace();
+        if head.next() == Some("channel_drag") {
+            let args: Vec<&str> = head.collect();
+            let usage = "ERR GESTURE channel_drag <y_fraction> <start> <end>, with a file open".to_string();
+            let y = args.first().and_then(|w| w.parse::<f32>().ok());
+            let a = args.get(1).and_then(|w| w.parse::<usize>().ok());
+            let b = args.get(2).and_then(|w| w.parse::<usize>().ok());
+            let (Some(y), Some(a), Some(b)) = (y, a, b) else { return usage };
+            let context = self.settings.context_channel_editing;
+            let Some(editor) = self.editor.as_mut() else { return usage };
+            let (len, channels) = (editor.history.current().len_frames() as usize, editor.history.current().channel_count());
+            if context {
+                editor.channels = view::mask_after_drag(y, channels, true, editor.channels);
+            }
+            let selch = view::channels_text(editor.channels, channels);
+            self.selection = Selection { anchor: a.min(len), head: b.min(len) };
+            return format!("OK selection={}-{} selch={selch}", self.selection.start(), self.selection.end());
+        }
         let frames = self.doc.as_ref().map_or(0, Document::frames);
         let mut it = rest.split_whitespace();
         let name = it.next().unwrap_or("");
@@ -5482,7 +5503,7 @@ impl WaveApp {
             ("shift_home" | "shift_end", _) => {
                 self.gesture(name, 0, frames);
             }
-            _ => return "ERR GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end | hand_drag <dx_px> | zoom_click <frame> [out] | ruler_rdrag <start> <end>".to_string(),
+            _ => return "ERR GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end | hand_drag <dx_px> | zoom_click <frame> [out] | ruler_rdrag <start> <end> | channel_drag <y_fraction> <start> <end>".to_string(),
         }
         format!("OK selection={}-{}", self.selection.start(), self.selection.end())
     }
@@ -5640,11 +5661,12 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
+                            "OK frames={} channels={} rate={} selection={} selch={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
                             sel(self),
+                            view::channels_text(e.channels, doc.channel_count()),
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
@@ -5684,7 +5706,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         u8::from(self.player.is_playing()),
@@ -6921,16 +6943,22 @@ impl WaveApp {
         let sel = self.selection_range();
         let mac = cfg!(target_os = "macos");
         let mut chosen = None;
-        for a in TABLE.iter().filter(|a| a.name.starts_with("edit.")) {
+        // The Select and Enable Channels groups are submenus; the rest stays flat.
+        let grouped = |id: ActionId| {
+            matches!(
+                id,
+                ActionId::SelectAll
+                    | ActionId::DeselectAll
+                    | ActionId::ClearTimeSelection
+                    | ActionId::LeftChannel
+                    | ActionId::RightChannel
+                    | ActionId::BothChannels
+            )
+        };
+        for a in TABLE.iter().filter(|a| a.name.starts_with("edit.") && !grouped(a.id)) {
             if matches!(
                 a.id,
-                ActionId::Cut
-                    | ActionId::Clipboard1
-                    | ActionId::Delete
-                    | ActionId::Crop
-                    | ActionId::ZeroInward
-                    | ActionId::SetIn
-                    | ActionId::LeftChannel
+                ActionId::Cut | ActionId::Clipboard1 | ActionId::Delete | ActionId::Crop | ActionId::ZeroInward | ActionId::SetIn
             ) {
                 ui.separator();
             }
@@ -6941,6 +6969,44 @@ impl WaveApp {
                 chosen = Some(a.id);
             }
         }
+        ui.separator();
+        let enabled_for = |s: &Self, id: ActionId| {
+            s.saving.is_none() && s.running.is_none() && s.editor.as_ref().is_some_and(|e| e.enabled(id, &sel))
+        };
+        let item = |s: &Self, ui: &mut egui::Ui, id: ActionId, chosen: &mut Option<ActionId>| {
+            let a = actions::action(id);
+            let label = s.editor.as_ref().map_or_else(|| a.menu.to_string(), |e| e.label(id));
+            let keys = s.keymap.menu_text(Command::Action(id), mac);
+            if ui.add_enabled(enabled_for(s, id), egui::Button::new(label).shortcut_text(keys)).clicked() {
+                *chosen = Some(id);
+                ui.close();
+            }
+        };
+        ui.menu_button("Select", |ui| {
+            for id in [
+                ActionId::SelectAll,
+                ActionId::SelectCurrentView,
+                ActionId::DeselectAll,
+                ActionId::ClearTimeSelection,
+                ActionId::SelectToStart,
+                ActionId::SelectToEnd,
+            ] {
+                item(self, ui, id, &mut chosen);
+            }
+        });
+        ui.menu_button("Enable Channels", |ui| {
+            for id in [ActionId::LeftChannel, ActionId::RightChannel, ActionId::BothChannels] {
+                item(self, ui, id, &mut chosen);
+            }
+            ui.separator();
+            let mut on = self.settings.context_channel_editing;
+            if ui.checkbox(&mut on, "Select Channel by Drag Position").changed() {
+                self.settings.context_channel_editing = on;
+                if let Err(e) = self.save_settings() {
+                    log::warn!(target: "wavcraft", "{e}");
+                }
+            }
+        });
         ui.separator();
         for a in TABLE.iter().filter(|a| a.name.starts_with("marker.")) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
@@ -7728,6 +7794,15 @@ impl WaveApp {
                 let (anchor, head) =
                     (snap(self, frame_at(&self.view, origin), &self.snap_targets), snap(self, frame_at(&self.view, pos), &self.snap_targets));
                 self.selection = Selection { anchor, head };
+                // Context-sensitive channel editing: where the drag began picks the channel(s).
+                if self.settings.context_channel_editing
+                    && let Some(editor) = self.editor.as_mut()
+                {
+                    let channels = editor.history.current().channel_count();
+                    let top = rect.top() + RULER_HEIGHT;
+                    let y = (origin.y - top) / (rect.bottom() - top).max(1.0);
+                    editor.channels = view::mask_after_drag(y, channels, true, editor.channels);
+                }
             }
         } else if select
             && response.dragged_by(egui::PointerButton::Primary)

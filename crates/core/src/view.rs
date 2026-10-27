@@ -2,6 +2,9 @@
 
 use crate::smpte::{CUSTOM_DEFAULT_FPS, SmpteRate};
 use crate::tempo::Tempo;
+use std::ops::Range;
+
+use crate::doc::edit::ChannelMask;
 
 /// The closest zoom: one frame spread over this many pixels.
 const MAX_PX_PER_FRAME: f64 = 16.0;
@@ -750,6 +753,55 @@ pub fn hz_at_fraction(lo: f32, hi: f32, log: bool, t: f32) -> f32 {
     if log { lo * (hi / lo).powf(t) } else { lo + (hi - lo) * t }
 }
 
+/// Which channels a drag that starts at `y_fraction` of the editor's height (0 is the top of the
+/// waveform area, 1 the bottom) selects. With `context` on (the default) and a stereo file, the
+/// top quarter selects the left channel only, the bottom quarter the right only, and the middle
+/// both. Files with other channel counts, or `context` off, always select every channel.
+pub fn channels_for_drag(y_fraction: f32, channels: usize, context: bool) -> ChannelMask {
+    if !context || channels != 2 || !y_fraction.is_finite() {
+        return ChannelMask::ALL;
+    }
+    if y_fraction <= CHANNEL_STRIP {
+        ChannelMask::only(0)
+    } else if y_fraction >= 1.0 - CHANNEL_STRIP {
+        ChannelMask::only(1)
+    } else {
+        ChannelMask::ALL
+    }
+}
+
+/// The mask after a drag that starts at `y_fraction`. A negative fraction means the drag began
+/// above the waveform area (on the time ruler): that keeps the `current` mask unchanged.
+pub fn mask_after_drag(y_fraction: f32, channels: usize, context: bool, current: ChannelMask) -> ChannelMask {
+    if y_fraction < 0.0 { current } else { channels_for_drag(y_fraction, channels, context) }
+}
+
+/// How tall the top and bottom channel strips are, as a fraction of the editor's height.
+pub const CHANNEL_STRIP: f32 = 0.25;
+
+/// `mask` for a `channels`-channel file as letters: `L`, `R`, `LR` for stereo, otherwise the
+/// channel numbers from 1 (`1,3`); `-` for none.
+pub fn channels_text(mask: ChannelMask, channels: usize) -> String {
+    let active = mask.active(channels);
+    match (channels, active.as_slice()) {
+        (_, []) => "-".to_string(),
+        (2, [0]) => "L".to_string(),
+        (2, [1]) => "R".to_string(),
+        (2, [0, 1]) => "LR".to_string(),
+        (_, list) => list.iter().map(|c| (c + 1).to_string()).collect::<Vec<_>>().join(","),
+    }
+}
+
+/// Select from the start of the file to the cursor (the selection's first frame).
+pub fn select_to_start(selection: &Range<u64>, total_frames: u64) -> Range<u64> {
+    0..selection.start.min(total_frames)
+}
+
+/// Select from the cursor (the selection's last frame) to the end of the file.
+pub fn select_to_end(selection: &Range<u64>, total_frames: u64) -> Range<u64> {
+    selection.end.min(total_frames)..total_frames
+}
+
 /// `frame` at `sample_rate` as `m:ss.mmm`, or `h:mm:ss.mmm` from one hour up.
 pub fn format_time(frame: usize, sample_rate: u32) -> String {
     if sample_rate == 0 {
@@ -766,6 +818,47 @@ pub fn format_time(frame: usize, sample_rate: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruler_origin_drag_keeps_the_channel_mask() {
+        assert_eq!(mask_after_drag(-0.1, 2, true, ChannelMask::ALL), ChannelMask::ALL);
+        assert_eq!(mask_after_drag(-0.1, 2, true, ChannelMask::only(1)), ChannelMask::only(1));
+        assert_eq!(mask_after_drag(0.05, 2, true, ChannelMask::ALL), ChannelMask::only(0));
+        assert_eq!(mask_after_drag(0.0, 2, true, ChannelMask::ALL), ChannelMask::only(0), "the lane top is in the lane");
+    }
+
+    #[test]
+    fn stereo_drags_pick_a_channel_by_height() {
+        assert_eq!(channels_for_drag(0.05, 2, true), ChannelMask::only(0));
+        assert_eq!(channels_for_drag(0.95, 2, true), ChannelMask::only(1));
+        assert_eq!(channels_for_drag(0.5, 2, true), ChannelMask::ALL);
+        assert_eq!(channels_for_drag(0.25, 2, true), ChannelMask::only(0), "the strip's edge counts");
+        assert_eq!(channels_for_drag(0.26, 2, true), ChannelMask::ALL);
+        // Off, mono, surround and bad numbers always take every channel.
+        assert_eq!(channels_for_drag(0.05, 2, false), ChannelMask::ALL);
+        assert_eq!(channels_for_drag(0.05, 1, true), ChannelMask::ALL);
+        assert_eq!(channels_for_drag(0.95, 6, true), ChannelMask::ALL);
+        assert_eq!(channels_for_drag(f32::NAN, 2, true), ChannelMask::ALL);
+    }
+
+    #[test]
+    fn channel_masks_read_as_text() {
+        assert_eq!(channels_text(ChannelMask::only(0), 2), "L");
+        assert_eq!(channels_text(ChannelMask::only(1), 2), "R");
+        assert_eq!(channels_text(ChannelMask::ALL, 2), "LR");
+        assert_eq!(channels_text(ChannelMask::ALL, 1), "1");
+        assert_eq!(channels_text(ChannelMask::only(2).with(0), 4), "1,3");
+        assert_eq!(channels_text(ChannelMask::NONE, 2), "-");
+        assert_eq!(channels_text(ChannelMask::only(1), 1), "-", "a channel the file lacks");
+    }
+
+    #[test]
+    fn select_variants_follow_the_view_and_the_cursor() {
+        assert_eq!(select_to_start(&(400..900), 1000), 0..400);
+        assert_eq!(select_to_start(&(0..0), 1000), 0..0);
+        assert_eq!(select_to_end(&(400..900), 1000), 900..1000);
+        assert_eq!(select_to_end(&(5000..6000), 1000), 1000..1000);
+    }
 
     const HOUR: usize = 48_000 * 3600;
 
