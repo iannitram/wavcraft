@@ -8,10 +8,11 @@
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::diagnostics::silence::{self, SilenceError, SilenceParams};
 use crate::diagnostics::{declick, declip};
-use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, PasteAt};
+use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, MixOptions, PasteAt};
 use crate::doc::history::History;
 use crate::effects::{self, EffectParams, FadeCurve, FadeDir};
 use crate::generate;
@@ -42,6 +43,7 @@ pub enum ActionId {
     LeftChannel,
     RightChannel,
     InsertSilence,
+    InsertFile,
     CursorToStart,
     CursorToEnd,
     SetIn,
@@ -154,6 +156,8 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::Silence, "edit.silence", "Silence"),
     // Insert › Silence… asks for a length (the window's dialog), then runs `Editor::insert_silence`.
     window(ActionId::InsertSilence, "edit.insertSilence", "Insert Silence…"),
+    // Insert > Audio from File… picks a file (the window's dialog), then `Editor::insert_file`.
+    window(ActionId::InsertFile, "edit.insertFile", "Insert Audio from File…"),
     edit(ActionId::Crop, "edit.crop", "Crop"),
     edit(ActionId::DeleteSilence, "edit.deleteSilence", "Delete Silence"),
     edit(ActionId::SelectAll, "edit.selectAll", "Select All"),
@@ -442,7 +446,7 @@ impl Editor {
             ActionId::SelectAll => self.len() > 0,
             ActionId::DeselectAll | ActionId::ClearTimeSelection => has_sel,
             ActionId::LeftChannel | ActionId::RightChannel => self.channel_count() >= 2,
-            ActionId::InsertSilence | ActionId::CursorToStart | ActionId::CursorToEnd => true,
+            ActionId::InsertSilence | ActionId::InsertFile | ActionId::CursorToStart | ActionId::CursorToEnd => true,
             ActionId::TimeDecimal
             | ActionId::TimeCompact
             | ActionId::TimeSamples
@@ -673,6 +677,55 @@ impl Editor {
             stretches: done.stretches,
             removed_frames: done.removed_frames,
         })
+    }
+
+    /// Insert > Audio from File: `file` (opened into this document's store with
+    /// `OpenOptions::into_store`) goes in at the cursor, or in place of the selection, as one
+    /// step. The inserted audio ends up selected. The errors are messages for the status bar.
+    pub fn insert_file(&mut self, file: &crate::doc::DocState, selection: Range<u64>) -> Result<Outcome, String> {
+        let doc = self.history.current().clone();
+        let len = doc.len_frames();
+        let sel = selection.start.min(len)..selection.end.min(len);
+        if !doc.store().same_store(file.store()) {
+            return Err("the file was not opened into this document's session store".to_string());
+        }
+        let at = if sel.start < sel.end { PasteAt::Replace(sel.clone()) } else { PasteAt::Insert(sel.start) };
+        let edit = edit::insert_file(&doc, at, file, self.crossfades).map_err(|e| match e {
+            EditError::SampleRate { clip, doc } => format!(
+                "the file is at {clip} Hz and this document at {doc} Hz; converting sample rates is not supported yet, so nothing was inserted"
+            ),
+            EditError::Channels { clip, doc } => format!("a {clip}-channel file can't be inserted into a {doc}-channel document"),
+            e => e.to_string(),
+        })?;
+        let changed = !edit.is_noop();
+        let label = edit.label.clone();
+        self.history.push_edit(edit);
+        let end = (sel.start + file.len_frames()).min(self.len());
+        Ok(Outcome { doc_changed: changed, selection: sel.start..end, message: changed.then_some(label) })
+    }
+
+    /// Edit › Mix Paste at `at`: `source` is the audio to mix in (a file opened as a clip), or
+    /// the clipboard when `None`. The pasted stretch ends up selected. This and
+    /// [`Editor::clipboard_clip`] are the only places Mix Paste touches the clipboard.
+    pub fn mix_paste(&mut self, at: u64, source: Option<Clip>, opts: &MixOptions, cancel: &AtomicBool) -> Result<Outcome, EditError> {
+        let doc = self.history.current().clone();
+        let at = at.min(doc.len_frames());
+        let Some(clip) = source.or_else(|| self.clipboard_clip()) else {
+            return Ok(Outcome { doc_changed: false, selection: at..at, message: Some("Mix Paste: the clipboard is empty".to_string()) });
+        };
+        let channels = self.channels.within(doc.channel_count());
+        let pasted = edit::mix_paste_frames(&doc, at, &clip, channels, opts);
+        let e = edit::mix_paste(&doc, at, &clip, channels, opts, cancel)?;
+        let changed = !e.is_noop();
+        let label = e.label.clone();
+        self.history.push_edit(e);
+        let new_len = self.len();
+        Ok(Outcome { doc_changed: changed, selection: at.min(new_len)..(at + pasted).min(new_len), message: changed.then_some(label) })
+    }
+
+    /// The clipboard's audio (the one place its content is read).
+    fn clipboard_clip(&self) -> Option<Clip> {
+        self.clipboard().cloned()
     }
 
     /// Run `id` on `selection`. A disabled action does nothing and says why.
@@ -925,6 +978,7 @@ impl Editor {
                 return unchanged(to.map_or(sel.clone(), |f| f..f));
             }
             ActionId::InsertSilence
+            | ActionId::InsertFile
             | ActionId::SetIn
             | ActionId::SetOut
             | ActionId::ZoomIn

@@ -34,6 +34,7 @@ use crate::effect_dialog::{Answer, EffectDialog};
 use crate::freq_panel::{self, FreqPanel};
 use crate::multitrack_ui::MtView;
 use crate::mixer::MixerModel;
+use crate::mixpaste;
 use crate::meters_ui::{self, MetersUi};
 use crate::player::{Devices, Player};
 use crate::rack_panel::{RackPanel, Request};
@@ -147,6 +148,17 @@ struct Running {
 /// What a shown size estimate was worked out for: the choice and the document step.
 type SizeKey = (SaveFormat, SampleType, AiffKind, usize);
 
+/// A file being streamed into the open document's session store for Insert > Audio from File.
+struct Inserting {
+    path: PathBuf,
+    result: Receiver<Result<DocState, String>>,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<AtomicU32>,
+    /// The document it belongs to ([`WaveApp::doc_id`] when it started): a result that arrives
+    /// after another file was opened is dropped.
+    doc_id: u64,
+}
+
 /// A save running on a worker thread.
 struct Saving {
     path: PathBuf,
@@ -247,6 +259,7 @@ pub struct WaveApp {
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
+    inserting: Option<Inserting>,
     error: Option<String>,
     /// A message that is not an error (the session folder was changed).
     notice: Option<String>,
@@ -312,6 +325,8 @@ pub struct WaveApp {
     insert_silence: Option<String>,
     /// File › Import › Raw Data…: the settings being typed while the dialog is up.
     raw_import: Option<RawDialog>,
+    /// Edit › Mix Paste…: the dialog's fields while it is up.
+    mix_paste: Option<mixpaste::Dialog>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
     /// Window › Metadata.
@@ -468,6 +483,7 @@ impl WaveApp {
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, initial_colours),
             opening: None,
+            inserting: None,
             error: sessions.warning.clone(),
             notice: reset_note,
             time_format: settings.time_display,
@@ -509,6 +525,7 @@ impl WaveApp {
             insert_silence: None,
             stats: StatsPanel::default(),
             raw_import: None,
+            mix_paste: None,
             confirm_clear_history: false,
             show_metadata: false,
             meta_draft: Vec::new(),
@@ -1082,6 +1099,10 @@ impl WaveApp {
         if let Some(r) = self.running.take() {
             r.job.cancel();
         }
+        // A file being inserted belongs to the document that is being replaced.
+        if let Some(old) = self.inserting.take() {
+            old.cancel.store(true, Ordering::Relaxed);
+        }
         let (tx, rx) = channel();
         let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
         let (ctx, job_path, job_cancel, job_progress) = (ctx.clone(), path.clone(), cancel.clone(), progress.clone());
@@ -1168,6 +1189,94 @@ impl WaveApp {
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
         }
         self.opening = None;
+    }
+
+    /// Insert › Audio from File…: pick a file, then [`insert_file`](Self::insert_file).
+    fn pick_insert_file(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        if self.editor.is_none() {
+            return Err("no file is open".to_string());
+        }
+        let picked =
+            rfd::FileDialog::new().add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "caf"]).pick_file();
+        match picked {
+            Some(path) => self.insert_file(path, ctx),
+            None => Ok(()),
+        }
+    }
+
+    /// Stream `path` into the open document's own session store on a worker thread (never the
+    /// whole file in memory), then insert it at the cursor or over the selection as one step.
+    fn insert_file(&mut self, path: PathBuf, ctx: &egui::Context) -> Result<(), String> {
+        let why = if self.saving.is_some() {
+            Some("wait for the save to finish")
+        } else if self.opening.is_some() {
+            Some("wait for the file to finish opening")
+        } else if self.inserting.is_some() {
+            Some("another file is being inserted")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Err(why.to_string());
+        }
+        let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
+        let opts = OpenOptions { into_store: Some(editor.history.current().store().clone()), ..OpenOptions::default() };
+        let (tx, rx) = channel();
+        let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
+        let (ctx, job_path, job_cancel, job_progress) = (ctx.clone(), path.clone(), cancel.clone(), progress.clone());
+        std::thread::spawn(move || {
+            let mut last = 0;
+            let mut report = |p: f64| {
+                let permille = (p.clamp(0.0, 1.0) * 1000.0) as u32;
+                job_progress.store(permille, Ordering::Relaxed);
+                if permille >= last + 10 {
+                    last = permille;
+                    ctx.request_repaint();
+                }
+            };
+            let result = wavcraft_core::io::open(&job_path, &opts, &mut report, &job_cancel).map_err(|e| e.to_string());
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        self.inserting = Some(Inserting { path, result: rx, cancel, progress, doc_id: self.doc_id });
+        self.error = None;
+        self.notice = None;
+        Ok(())
+    }
+
+    fn finish_inserting(&mut self, ctx: &egui::Context) {
+        let Some(Inserting { path, result: rx, doc_id, .. }) = &self.inserting else { return };
+        let (path, doc_id) = (path.clone(), *doc_id);
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("the decoder stopped unexpectedly".to_string()),
+        };
+        self.inserting = None;
+        if doc_id != self.doc_id {
+            return;
+        }
+        let sel = self.selection_range();
+        let outcome = match (result, self.editor.as_mut()) {
+            (Ok(file), Some(editor)) => editor.insert_file(&file, sel),
+            (Err(e), _) => Err(e),
+            (_, None) => Err("no file is open".to_string()),
+        };
+        match outcome {
+            Ok(out) => {
+                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                self.notice = out.message;
+                self.error = None;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+            }
+            Err(e) => {
+                let why = format!("Insert Audio from File: {}: {e}", path.display());
+                log::warn!(target: "wavcraft", "{why}");
+                self.error = Some(why);
+            }
+        }
     }
 
     fn pick_file(&mut self, ctx: &egui::Context) {
@@ -1951,7 +2060,7 @@ impl WaveApp {
             self.set_time_format(fmt);
             return Ok(false);
         }
-        if frames == 0 && id != ActionId::InsertSilence {
+        if frames == 0 && !matches!(id, ActionId::InsertSilence | ActionId::InsertFile) {
             return Err("no file is open".to_string());
         }
         let width = self.editor_width.max(1.0);
@@ -1979,6 +2088,7 @@ impl WaveApp {
                 self.selection = Selection { anchor: start, head: playhead };
             }
             ActionId::InsertSilence if self.editor.is_some() => self.insert_silence = Some("1.000".to_string()),
+            ActionId::InsertFile => self.pick_insert_file(ctx)?,
             // Repeat Last Command with its dialog: Insert Silence opens its dialog with the last
             // length; the other repeatable commands have no dialog and simply run again.
             ActionId::RepeatLastDialog => {
@@ -2057,6 +2167,46 @@ impl WaveApp {
                 Err(e) => self.error = Some(format!("Import Raw Data: {e}")),
             },
             Some(false) => self.raw_import = None,
+            None => {}
+        }
+    }
+
+    /// Edit › Mix Paste: paste the clipboard (or a file) at the cursor with the request's mode.
+    /// One History step, "Mix Paste".
+    fn run_mix_paste(&mut self, req: mixpaste::Request, ctx: &egui::Context) -> Result<(), String> {
+        let at = self.selection.start() as u64;
+        let source = match &req.file {
+            Some(path) => Some(mixpaste::clip_from_file(path, &self.sessions.path)?),
+            None => None,
+        };
+        let editor = self.editor.as_mut().ok_or("Mix Paste: no file is open")?;
+        let out = editor.mix_paste(at, source, &req.opts, &AtomicBool::new(false)).map_err(|e| format!("Mix Paste: {e}"))?;
+        self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+        self.notice = out.message;
+        self.error = None;
+        if out.doc_changed {
+            self.rebuild(ctx);
+        }
+        Ok(())
+    }
+
+    fn mix_paste_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.mix_paste.as_mut() else { return };
+        let mut choice = None;
+        egui::Window::new("Mix Paste").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+            choice = dialog.ui(ui);
+        });
+        match choice {
+            Some(true) => match dialog.request() {
+                Ok(req) => {
+                    self.mix_paste = None;
+                    if let Err(why) = self.run_mix_paste(req, ctx) {
+                        self.error = Some(why);
+                    }
+                }
+                Err(why) => self.error = Some(format!("Mix Paste: {why}")),
+            },
+            Some(false) => self.mix_paste = None,
             None => {}
         }
     }
@@ -3565,7 +3715,7 @@ impl WaveApp {
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
             "STATE" => {
-                let busy = self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() || self.running.is_some();
+                let busy = self.opening.is_some() || self.inserting.is_some() || self.rebuilding.is_some() || self.saving.is_some() || self.running.is_some();
                 let progress = self.running.as_ref().map_or(0, |r| r.job.permille() / 10);
                 let unsaved = u8::from(self.unsaved());
                 let width = self.editor_width.max(1.0);
@@ -3633,6 +3783,12 @@ impl WaveApp {
                 }
                 Err(e) => format!("ERR {e}"),
             },
+            // Insert › Audio from File at the cursor (or over the selection); poll STATE until busy=0.
+            "INSERT_FILE" if !rest.is_empty() => match self.insert_file(PathBuf::from(rest), ctx) {
+                Ok(()) => "OK".to_string(),
+                Err(e) => format!("ERR {e}"),
+            },
+            "INSERT_FILE" => "ERR INSERT_FILE <path>".to_string(),
             "SELECT" => {
                 let mut it = rest.split_whitespace().map(str::parse::<usize>);
                 match (it.next(), it.next()) {
@@ -4039,6 +4195,14 @@ impl WaveApp {
                     Err(e) => format!("ERR {e}"),
                 }
             }
+            // Edit › Mix Paste (see `mixpaste::parse` for the settings).
+            "MIXPASTE" => match mixpaste::parse(rest) {
+                Ok(req) => match self.run_mix_paste(req, ctx) {
+                    Ok(()) => format!("OK selection={}", sel(self)),
+                    Err(e) => format!("ERR {e}"),
+                },
+                Err(e) => format!("ERR {e}"),
+            },
             "INSERT_SILENCE" => match rest.trim().parse::<f64>() {
                 Ok(secs) if secs.is_finite() && secs > 0.0 => match self.run_insert_silence(secs, ctx) {
                     None => format!("OK selection={}", sel(self)),
@@ -4462,6 +4626,11 @@ impl WaveApp {
                 chosen = Some(a.id);
             }
         }
+        ui.separator();
+        if ui.add_enabled(self.editor.is_some() && self.saving.is_none(), egui::Button::new("Mix Paste…")).clicked() {
+            self.mix_paste = Some(mixpaste::Dialog::new());
+            ui.close();
+        }
         if let Some(id) = chosen {
             let _ = self.run_action(id, ui.ctx());
         }
@@ -4732,6 +4901,9 @@ impl WaveApp {
                 if ui.button("Cancel").clicked() {
                     cancel_job = true;
                 }
+            } else if let Some(i) = &self.inserting {
+                ui.spinner();
+                ui.label(format!("Inserting {}… {}%", i.path.display(), i.progress.load(Ordering::Relaxed) / 10));
             } else if let Some(s) = &self.saving {
                 ui.spinner();
                 ui.label(format!("Saving {}… {}%", s.path.display(), s.progress.load(Ordering::Relaxed) / 10));
@@ -5100,6 +5272,7 @@ impl eframe::App for WaveApp {
     /// found the channel silent behind another window).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.finish_opening();
+        self.finish_inserting(ctx);
         self.finish_rebuild();
         self.finish_job(ctx);
         self.finish_saving(ctx);
@@ -5216,9 +5389,26 @@ impl eframe::App for WaveApp {
                 self.reset_preferences();
             }
         }
-        let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()));
+        let (dropped, hovering, dropped_without_path) = ctx.input(|i| {
+            (
+                dropped_path(&i.raw.dropped_files),
+                !i.raw.hovered_files.is_empty(),
+                !i.raw.dropped_files.is_empty() && dropped_path(&i.raw.dropped_files).is_none(),
+            )
+        });
         if let Some(path) = dropped {
             self.open(path, &ctx);
+        } else if dropped_without_path {
+            self.error = Some("The dropped item has no file path here, so it was not opened (use File › Open)".to_string());
+        }
+        if hovering {
+            // The OS is carrying a file over the window: say that dropping opens it.
+            egui::Area::new(egui::Id::new("drop-hint")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+                &ctx,
+                |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| ui.heading("Drop a file to open it"));
+                },
+            );
         }
         let star = if self.unsaved() { "*" } else { "" };
         let title = self.doc.as_ref().map_or_else(|| "WavCraft".to_string(), |d| format!("{star}{} — WavCraft", d.name()));
@@ -5353,6 +5543,7 @@ impl eframe::App for WaveApp {
         self.rack_ui(&ctx);
         self.diagnostics_ui(&ctx);
         self.raw_import_dialog(&ctx);
+        self.mix_paste_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         self.metadata_display_dialog(&ctx);
         self.batch.ui(&ctx);
@@ -5464,6 +5655,13 @@ fn parse_import_raw(rest: &str) -> Result<(PathBuf, RawSpec), String> {
 /// The History step an Up or Down key moves to from `cursor` among `len` steps (none at an end).
 fn history_arrow_target(cursor: usize, len: usize, down: bool) -> Option<usize> {
     if down { (cursor + 1 < len).then_some(cursor + 1) } else { cursor.checked_sub(1) }
+}
+
+/// The file to open from the files dropped on the window this frame: the first with a path. The
+/// path is empty or missing where the platform hands over no file (a browser, some Wayland
+/// compositors, #66); then nothing is opened.
+fn dropped_path(files: &[Arc<dyn egui::DroppedFile + Send + Sync>]) -> Option<PathBuf> {
+    files.iter().map(|f| f.path()).find(|p| !p.as_os_str().is_empty()).map(std::path::Path::to_path_buf)
 }
 
 /// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
@@ -5864,6 +6062,24 @@ mod tests {
         assert_eq!(brighten(Color32::from_rgb(100, 200, 50), 1.0), Color32::from_rgb(100, 200, 50));
         assert_eq!(brighten(Color32::from_rgb(100, 200, 50), 0.5), Color32::from_rgb(50, 100, 25));
         assert_eq!(brighten(Color32::from_rgb(100, 200, 50), 1.5), Color32::from_rgb(150, 255, 75));
+    }
+
+    #[test]
+    fn a_drop_opens_the_first_file_that_has_a_path() {
+        #[derive(Debug)]
+        struct Dropped(PathBuf);
+        impl egui::DroppedFile for Dropped {
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                Err("not a file".to_string())
+            }
+        }
+        let file = |path: &str| -> Arc<dyn egui::DroppedFile + Send + Sync> { Arc::new(Dropped(PathBuf::from(path))) };
+        assert_eq!(dropped_path(&[]), None);
+        assert_eq!(dropped_path(&[file("")]), None);
+        assert_eq!(dropped_path(&[file(""), file("/a/b.wav"), file("/c.wav")]), Some(PathBuf::from("/a/b.wav")));
     }
 
     #[test]
