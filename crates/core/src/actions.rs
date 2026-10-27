@@ -110,6 +110,20 @@ pub enum ActionId {
     ExtractChannels,
     ExportRanges,
     GotoTime,
+    /// Transport (task f23): all run in the window.
+    Play,
+    Pause,
+    Stop,
+    ToggleLoop,
+    ToggleSkipSelection,
+    ToggleReturnOnStop,
+    ToggleAutoScroll,
+    FollowPage,
+    FollowCenter,
+    /// Transport (task f36).
+    Rewind,
+    FastForward,
+    ToggleRoll,
 }
 
 /// Which part of the program carries an action out.
@@ -225,6 +239,19 @@ pub const TABLE: &[Action] = &[
     window(ActionId::TimeBarsBeats, "view.time_display.bars_beats", "Bars and Beats"),
     window(ActionId::EditTempo, "view.editTempo", "Edit Tempo…"),
     window(ActionId::SnapFrames, "view.snap_frames.toggle", "Snap to Frames"),
+    // Transport (f23, f36). Space (Play / Stop, and resume after Pause) is handled by the window itself.
+    window(ActionId::Play, "transport.play", "Play"),
+    window(ActionId::Pause, "transport.pause", "Pause"),
+    window(ActionId::Stop, "transport.stop", "Stop"),
+    window(ActionId::ToggleLoop, "transport.loop", "Loop Playback"),
+    window(ActionId::ToggleSkipSelection, "transport.skipSelection", "Skip Selection"),
+    window(ActionId::ToggleReturnOnStop, "transport.returnOnStop", "Return to Start Position on Stop"),
+    window(ActionId::ToggleAutoScroll, "transport.autoScroll", "Auto-Scroll"),
+    window(ActionId::FollowPage, "transport.followPage", "Auto-Scroll Pagewise"),
+    window(ActionId::FollowCenter, "transport.followCenter", "Auto-Scroll Centered"),
+    window(ActionId::Rewind, "transport.rewind", "Rewind"),
+    window(ActionId::FastForward, "transport.fastForward", "Fast Forward"),
+    window(ActionId::ToggleRoll, "transport.roll", "Pre/Post-Roll"),
 ];
 
 /// The one-shot effects (B002). Kept apart from [`TABLE`] (which holds no `effect.` rows; the
@@ -488,6 +515,18 @@ impl Editor {
             ActionId::GotoTime | ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
             ActionId::ZoomToSelection => has_sel,
+            ActionId::Play
+            | ActionId::Pause
+            | ActionId::Stop
+            | ActionId::ToggleLoop
+            | ActionId::ToggleSkipSelection
+            | ActionId::ToggleReturnOnStop
+            | ActionId::ToggleAutoScroll
+            | ActionId::FollowPage
+            | ActionId::FollowCenter
+            | ActionId::Rewind
+            | ActionId::FastForward
+            | ActionId::ToggleRoll => true,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -1043,6 +1082,18 @@ impl Editor {
             | ActionId::GotoTime
             // Repeat, Delete Silence and the zero-crossing adjusts returned above.
             | ActionId::DeleteSilence
+            | ActionId::Play
+            | ActionId::Pause
+            | ActionId::Stop
+            | ActionId::ToggleLoop
+            | ActionId::ToggleSkipSelection
+            | ActionId::ToggleReturnOnStop
+            | ActionId::ToggleAutoScroll
+            | ActionId::FollowPage
+            | ActionId::FollowCenter
+            | ActionId::Rewind
+            | ActionId::FastForward
+            | ActionId::ToggleRoll
             | ActionId::RepeatLastDialog
             | ActionId::RepeatLast
             | ActionId::StatsShow

@@ -12,6 +12,14 @@
 //! too wide for the ring's margin, the callback interpolates linearly). The playhead stays in
 //! file frames. At most [`RING_CHANNELS`] channels of the file are buffered and played.
 //!
+//! The ring holds the file **in play order**, not file order (f23, f36): the read-ahead thread walks
+//! the play's [`Plan`] (loop, skipped part, forward or backward) and writes the frames it plays one
+//! after the other, so the callback only ever reads ahead of one counter and a loop wrap, a skip
+//! or a backward play costs it nothing. The play speed is the callback's step through that
+//! counter (linear interpolation; the sinc kernel is for normal speed). A change of direction, of
+//! the plan or of the place (a seek) starts a new play under a new generation, so the guard that
+//! keeps a stale callback from overwriting a restart (#376) covers them too.
+//!
 //! `WAVCRAFT_NO_AUDIO=1` swaps the sound card for a silent real-time sink (stereo, 48 kHz unless
 //! `WAVCRAFT_NO_AUDIO_RATE`), so the whole path can be driven without a device.
 
@@ -27,6 +35,7 @@ use wavcraft_core::levels::LevelTap;
 use wavcraft_core::rack::{MAX_BLOCK, RackConfig, RackProcessor};
 use wavcraft_core::chanmap::{ChannelMap, choose_buffer};
 use wavcraft_core::resample::{Quality, Resampler};
+use wavcraft_core::transport::{self, Plan};
 
 /// Frames the read-ahead ring holds (a power of two).
 const RING_FRAMES: usize = 1 << 17;
@@ -41,15 +50,49 @@ const PRIME_FRAMES: u64 = 16_384;
 /// is not used, see [`rebuild_resampler`]).
 const RING_MARGIN: u64 = 1024;
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone)]
 struct Playback {
     /// Bumped by every play/stop; a render pass started under an older value must not write back.
     generation: u64,
-    /// Play position in file frames.
+    /// Play position, counted in frames of play order from `from` (equal to the file frame while
+    /// nothing loops, skips or runs backward; see [`Playback::file_position`]).
     pos: f64,
-    /// Frame to stop at (clamped to the document by the read-ahead thread).
+    /// Where playback finishes in the same count (clamped to the document by the read-ahead
+    /// thread; infinite in a loop).
     end: f64,
     playing: bool,
+    /// The part of the file being played and the file frame the play began at.
+    plan: Plan,
+    from: f64,
+    /// Playing backward.
+    rev: bool,
+    /// The speed (> 0; the direction is `rev`).
+    speed: f64,
+    /// A scrub grain: its ends are faded.
+    grain: bool,
+}
+
+impl Default for Playback {
+    fn default() -> Playback {
+        Playback { generation: 0, pos: 0.0, end: 0.0, playing: false, plan: Plan::new(0.0, 0.0), from: 0.0, rev: false, speed: 1.0, grain: false }
+    }
+}
+
+impl Playback {
+    /// The file frame the play is at (where it finished, once it has).
+    fn file_position(&self) -> f64 {
+        let mut wraps = 0;
+        self.plan
+            .position_after(self.from, (self.pos - self.from).max(0.0), self.rev, &mut wraps)
+            .unwrap_or(if self.rev { self.plan.start } else { self.plan.end })
+    }
+
+    /// How many times a loop has gone round since the play began.
+    fn wraps(&self) -> u32 {
+        let mut wraps = 0;
+        let _ = self.plan.position_after(self.from, (self.pos - self.from).max(0.0), self.rev, &mut wraps);
+        wraps
+    }
 }
 
 struct Shared {
@@ -129,20 +172,48 @@ impl Shared {
         *self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    #[cfg(test)]
     fn start(&self, from: f64, to: f64) -> u64 {
         self.start_with(from, to, || {})
     }
 
-    /// Start a play and return its generation. The ring must be primed for it before it sounds.
+    #[cfg(test)]
     fn start_with<F: FnOnce()>(&self, from: f64, to: f64, between: F) -> u64 {
+        self.start_plan_with(Plan::new(from, to), from, false, 1.0, false, between)
+    }
+
+    /// Start a play of `plan` from file frame `from` (backward when `rev`, at `speed` times normal,
+    /// `grain` fading its ends) and return its generation. The ring must be primed for it before
+    /// it sounds.
+    fn start_plan(&self, plan: Plan, from: f64, rev: bool, speed: f64, grain: bool) -> u64 {
+        self.start_plan_with(plan, from, rev, speed, grain, || {})
+    }
+
+    fn start_plan_with<F: FnOnce()>(&self, plan: Plan, from: f64, rev: bool, speed: f64, grain: bool, between: F) -> u64 {
+        let from = from.floor().max(0.0);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.generation += 1;
         // Test seam: keep the state lock held so a callback cannot see a half-applied start.
         between();
+        let frames = plan.frames_from(from, rev);
+        state.plan = plan;
+        state.from = from;
+        state.rev = rev;
+        state.speed = speed;
+        state.grain = grain;
         state.pos = from;
-        state.end = to;
-        state.playing = to > from;
+        state.end = from + frames;
+        state.playing = frames > 0.0;
         state.generation
+    }
+
+    /// Change the speed (and the direction it is shown with) without starting a new play.
+    fn set_speed(&self, speed: f64, rev: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.speed = speed;
+        if !state.playing {
+            state.rev = rev;
+        }
     }
 
     fn halt(&self) {
@@ -174,8 +245,8 @@ enum Command {
     Rebuild,
     /// The document to play (`None`: nothing).
     Document(Option<DocState>),
-    /// Prime the ring for a play of `[from, to)` begun as `generation`.
-    Play { from: u64, to: u64, generation: u64 },
+    /// Prime the ring for the play begun as `generation` (its plan is in the play state).
+    Play { generation: u64 },
 }
 
 /// What the preferences ask of the output: the device, the audio host and the buffer size.
@@ -211,6 +282,20 @@ pub struct Player {
     out_rate: u32,
     /// What the preferences asked for.
     wanted: OutputChoice,
+    /// The play Pause stopped, to carry on from with Resume (f23).
+    held: Mutex<Option<Held>>,
+    /// Loop passes of the plays this one replaced (a seek or a speed change starts a new play).
+    wraps_base: AtomicU32,
+}
+
+/// A paused play: what Resume starts again.
+#[derive(Debug, Clone, Copy)]
+struct Held {
+    plan: Plan,
+    pos: f64,
+    rev: bool,
+    speed: f64,
+    grain: bool,
 }
 
 /// The audio hosts this build offers (more than one on Windows with ASIO compiled in, or Linux
@@ -255,6 +340,8 @@ impl Player {
             wanted,
             out_channels: 2,
             out_rate: 48_000,
+            held: Mutex::new(None),
+            wraps_base: AtomicU32::new(0),
         };
         player.reopen();
         player
@@ -311,7 +398,8 @@ impl Player {
         }
     }
 
-    fn has_output(&self) -> bool {
+    /// Whether an output (a device or the silent test sink) is moving the position.
+    pub fn has_output(&self) -> bool {
         self.stream.is_some() || self.sink.is_some()
     }
 
@@ -364,24 +452,149 @@ impl Player {
     /// has since failed) the device is tried again first; if there still is none, nothing starts,
     /// so the playhead does not sit there "playing" with no callback to move it.
     pub fn play(&mut self, from: usize, to: usize) {
+        self.start(&Plan::new(from as f64, to as f64), from as f64);
+    }
+
+    /// Play `plan` from file frame `from` at normal speed. Returns whether it started (it does
+    /// not when there is no output, nothing in the plan, or `from` is past its end).
+    pub fn start(&mut self, plan: &Plan, from: f64) -> bool {
+        self.wraps_base.store(0, Ordering::Relaxed);
+        self.begin_play(*plan, from, false, 1.0, false)
+    }
+
+    /// Play a short scrub grain: `plan` from `from` at `speed` (negative runs backward), with
+    /// faded ends. Replaces whatever was playing.
+    pub fn grain(&mut self, plan: &Plan, from: f64, speed: f64) -> bool {
+        self.wraps_base.store(0, Ordering::Relaxed);
+        self.begin_play(*plan, from, speed < 0.0, speed.abs().max(MIN_SPEED), true)
+    }
+
+    fn begin_play(&mut self, plan: Plan, from: f64, rev: bool, speed: f64, grain: bool) -> bool {
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if !self.has_output() || self.failed() {
             self.reopen();
         }
         if !self.has_output() {
+            return false;
+        }
+        let generation = self.shared.start_plan(plan, from, rev, speed, grain);
+        let started = self.shared.snapshot().playing;
+        if started {
+            let _ = self.commands.send(Command::Play { generation });
+        }
+        started
+    }
+
+    /// Start a new play from where the current one is (a change that the ring cannot follow: a
+    /// seek, another plan, the other direction).
+    fn restart(&mut self, plan: Plan, from: f64, rev: bool, speed: f64, grain: bool) -> bool {
+        let now = self.shared.snapshot();
+        self.wraps_base.fetch_add(now.wraps(), Ordering::Relaxed);
+        self.begin_play(plan, from, rev, speed, grain)
+    }
+
+    /// Change the speed (negative: backward), taking effect at once while playing. Turning round
+    /// starts a new play from the same place.
+    pub fn set_speed(&mut self, speed: f64) {
+        if !speed.is_finite() || speed == 0.0 {
             return;
         }
-        let generation = self.shared.start(from as f64, to as f64);
-        if to > from {
-            let _ = self.commands.send(Command::Play { from: from as u64, to: to as u64, generation });
+        let (rev, mag) = (speed < 0.0, speed.abs().max(MIN_SPEED));
+        if let Some(h) = self.held.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            h.rev = rev;
+            h.speed = mag;
+        }
+        let now = self.shared.snapshot();
+        if now.playing && now.rev != rev {
+            self.restart(now.plan, now.file_position(), rev, mag, now.grain);
+        } else {
+            self.shared.set_speed(mag, rev);
         }
     }
 
-    pub fn stop(&self) {
+    /// The speed, negative when going backward.
+    pub fn speed(&self) -> f64 {
+        if let Some(h) = *self.held.lock().unwrap_or_else(|e| e.into_inner()) {
+            return if h.rev { -h.speed } else { h.speed };
+        }
+        let now = self.shared.snapshot();
+        if now.rev { -now.speed } else { now.speed }
+    }
+
+    /// Swap the plan while playing or paused, keeping the place (a shuttle that changes direction
+    /// needs the other half of the file).
+    pub fn replace_plan(&mut self, plan: &Plan) {
+        if let Some(h) = self.held.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            h.plan = *plan;
+            return;
+        }
+        let now = self.shared.snapshot();
+        if now.playing {
+            self.restart(*plan, now.file_position(), now.rev, now.speed, false);
+        }
+    }
+
+    /// Move the play position (Rewind / Fast Forward while playing or paused).
+    pub fn seek(&mut self, frame: f64) {
+        if !frame.is_finite() {
+            return;
+        }
+        let frame = frame.max(0.0);
+        if let Some(h) = self.held.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            h.pos = frame;
+            return;
+        }
+        let now = self.shared.snapshot();
+        if now.playing {
+            self.restart(now.plan, frame, now.rev, now.speed, now.grain);
+        }
+    }
+
+    /// Stop where it is, keeping the place and the plan for [`Player::resume`].
+    pub fn pause(&self) {
+        let now = self.shared.snapshot();
+        if now.playing {
+            *self.held.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(Held { plan: now.plan, pos: now.file_position(), rev: now.rev, speed: now.speed, grain: now.grain });
+        }
         self.shared.halt();
     }
 
+    /// Carry on from the place `pause` left. False when there is nothing to resume.
+    pub fn resume(&mut self) -> bool {
+        let held = self.held.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let Some(h) = held else { return false };
+        // The paused play's loop passes are kept; the new play counts from zero.
+        let base = self.wraps_base.load(Ordering::Relaxed);
+        let ok = self.begin_play(h.plan, h.pos, h.rev, h.speed, h.grain);
+        self.wraps_base.store(base, Ordering::Relaxed);
+        ok
+    }
+
+    pub fn stop(&self) {
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.shared.halt();
+    }
+
+    /// Loop on or off, taking effect at once while playing.
+    pub fn set_looping(&mut self, on: bool) {
+        if let Some(h) = self.held.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            h.plan.looping = on;
+            return;
+        }
+        let mut plan = self.shared.snapshot().plan;
+        plan.looping = on;
+        self.replace_plan(&plan);
+    }
+
+    /// Whether a play is running (a paused one is not).
     pub fn is_playing(&self) -> bool {
         self.shared.snapshot().playing
+    }
+
+    /// Times the loop has gone round since playback started.
+    pub fn wraps(&self) -> u32 {
+        self.wraps_base.load(Ordering::Relaxed).saturating_add(self.shared.snapshot().wraps())
     }
 
     /// How many audio callbacks found the read-ahead ring dry since start-up (each played silence
@@ -401,11 +614,21 @@ impl Player {
         self.shared.levels.record(1, peaks[1]);
     }
 
-    /// The frame being played right now.
+    /// The frame being played right now (where a paused play will carry on).
     pub fn position(&self) -> usize {
-        self.shared.snapshot().pos.max(0.0) as usize
+        self.position_f64() as usize
+    }
+
+    fn position_f64(&self) -> f64 {
+        if let Some(h) = *self.held.lock().unwrap_or_else(|e| e.into_inner()) {
+            return h.pos.max(0.0);
+        }
+        self.shared.snapshot().file_position().max(0.0)
     }
 }
+
+/// The slowest play speed (a crawl); anything below is raised to it.
+const MIN_SPEED: f64 = 0.05;
 
 /// What [`Player::info`] reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -710,7 +933,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
         return;
     }
     let Ok(map) = shared.map.try_lock() else { return };
-    let step = f64::from(rate) / device_rate;
+    let step = f64::from(rate) / device_rate * playback.speed;
     let end = playback.end;
     let last = end.ceil().max(0.0) as u64;
     let mut pos = playback.pos.max(0.0);
@@ -720,7 +943,14 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
     // The sinc resampler, when one is parked for exactly this (file rate, device rate) pair. A busy
     // lock or a stale pair (a rebuild is on its way) falls back to linear interpolation.
     let parked = shared.resampler.try_lock().ok();
-    let sinc = parked.as_deref().and_then(|p| p.as_deref()).filter(|r| r.in_rate() == rate && f64::from(r.out_rate()) == device_rate && !r.is_identity());
+    // The kernel is for normal speed; shuttle and scrub speeds interpolate linearly.
+    let sinc = parked
+        .as_deref()
+        .and_then(|p| p.as_deref())
+        .filter(|r| playback.speed == 1.0 && r.in_rate() == rate && f64::from(r.out_rate()) == device_rate && !r.is_identity());
+    let fade = transport::GRAIN_FADE_SECS * f64::from(rate);
+    // The sinc kernel's end of the play, as a signed frame (an unbounded loop has none).
+    let last_k = last.min(i64::MAX as u64) as i64;
     let reach = sinc.map_or(0, |r| r.half_width().ceil() as u64);
     let mut finished = false;
     let mut peak = [0.0f32; 2];
@@ -740,14 +970,21 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
             }
         }
         let frac = (pos - i as f64) as f32;
+        // A scrub grain fades in and out; the file frame it is at follows from the play order.
+        let gain = if playback.grain {
+            let at = if playback.rev { playback.from - (pos - playback.from) } else { pos };
+            transport::grain_gain(at, playback.plan.start, playback.plan.end, fade)
+        } else {
+            1.0
+        };
         let interp = |c: usize| {
             if let Some(r) = sinc {
                 // Frames before this play's start and at or past its end are silence.
-                return r.sample_with(pos, |k| if k < origin as i64 || k >= last as i64 { 0.0 } else { sample(k as u64, c) });
+                return gain * r.sample_with(pos, |k| if k < origin as i64 || k >= last_k { 0.0 } else { sample(k as u64, c) });
             }
             let a = sample(i, c);
             let b = if i + 1 < last { sample(i + 1, c) } else { a };
-            a + (b - a) * frac
+            gain * (a + (b - a) * frac)
         };
         // Level tap: the first two file channels (a mono file shows on both), before the mix-down.
         let l = interp(0);
@@ -798,24 +1035,33 @@ struct Feed {
     state: DocState,
     /// Channels buffered (the document's, at most [`RING_CHANNELS`]).
     channels: usize,
-    /// One past the last frame this play needs.
+    /// The play: its plan (the end clamped to the document), the file frame it began at (also
+    /// the ring's first slot) and whether it runs backward.
+    plan: Plan,
+    from: f64,
+    rev: bool,
+    /// One past the last slot of the ring this play needs (`u64::MAX` in a loop).
     last: u64,
 }
 
-/// Start feeding `[from, to)` of `state` as play `generation`: reset the ring, clamp the end to the
+/// Start feeding the play `generation` of `state`: reset the ring, clamp the end of the plan to the
 /// document, and fill enough to start. Marks the ring ready for `generation` unless a newer play
 /// has begun since.
-fn begin(shared: &Shared, state: &DocState, from: u64, to: u64, generation: u64) -> Feed {
-    let last = to.min(state.len_frames());
-    {
+fn begin(shared: &Shared, state: &DocState, generation: u64) -> Feed {
+    let play = {
         let mut play = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if play.generation == generation {
-            play.end = play.end.min(last as f64);
+            play.plan.end = play.plan.end.min(state.len_frames() as f64);
+            play.end = play.from + play.plan.frames_from(play.from, play.rev);
+            play.playing &= play.end > play.from;
         }
-    }
+        *play
+    };
+    let from = play.from as u64;
+    let last = play.end.ceil() as u64;
     shared.origin.store(from, Ordering::Release);
     shared.filled_to.store(from, Ordering::Release);
-    let feed = Feed { state: state.clone(), channels: state.channel_count().min(RING_CHANNELS), last };
+    let feed = Feed { state: state.clone(), channels: state.channel_count().min(RING_CHANNELS), plan: play.plan, from: play.from, rev: play.rev, last };
     let want = (from + PRIME_FRAMES).min(last);
     while shared.filled_to.load(Ordering::Relaxed) < want {
         if !top_up(shared, &feed) {
@@ -840,17 +1086,34 @@ fn top_up(shared: &Shared, feed: &Feed) -> bool {
     }
     let n = (target - filled).min(FILL_CHUNK as u64) as usize;
     let mut buf = vec![0.0f32; n];
+    let mut wraps = 0;
     for c in 0..feed.channels {
-        let got = match feed.state.read(c, filled, &mut buf) {
-            Ok(got) => got,
-            Err(e) => {
-                log::warn!(target: "wavcraft", "playback read from the store failed: {e}");
-                0
+        // The chunk is `n` frames of play order: copy each run of consecutive file frames in one read.
+        let mut done = 0;
+        while done < n {
+            let at = feed.plan.position_after(feed.from, (filled + done as u64 - feed.from as u64) as f64, feed.rev, &mut wraps);
+            let Some(at) = at else {
+                buf[done..].fill(0.0);
+                break;
+            };
+            let run = (feed.plan.run_len(at, feed.rev) as usize).min(n - done);
+            let first = if feed.rev { (at.floor() as u64 + 1).saturating_sub(run as u64) } else { at.floor() as u64 };
+            let Some(dst) = buf.get_mut(done..done + run) else { break };
+            let got = match feed.state.read(c, first, dst) {
+                Ok(got) => got,
+                Err(e) => {
+                    log::warn!(target: "wavcraft", "playback read from the store failed: {e}");
+                    0
+                }
+            };
+            // A short or failed read plays as silence for the rest of the run.
+            if let Some(rest) = dst.get_mut(got..) {
+                rest.fill(0.0);
             }
-        };
-        // A short or failed read plays as silence for the rest of the chunk.
-        if let Some(rest) = buf.get_mut(got..) {
-            rest.fill(0.0);
+            if feed.rev {
+                dst.reverse();
+            }
+            done += run;
         }
         for (k, v) in buf.iter().enumerate() {
             if let Some(slot) = shared.ring.get(Shared::slot(filled + k as u64, c)) {
@@ -883,8 +1146,8 @@ fn read_ahead(shared: &Shared, inbox: &Receiver<Command>) {
                 rebuild_resampler(shared);
             }
             Ok(Command::Rebuild) => rebuild_resampler(shared),
-            Ok(Command::Play { from, to, generation }) => {
-                feed = state.as_ref().map(|s| begin(shared, s, from, to, generation));
+            Ok(Command::Play { generation }) => {
+                feed = state.as_ref().map(|s| begin(shared, s, generation));
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -920,7 +1183,7 @@ mod tests {
     /// the ring for it, then fill it.
     fn play(shared: &Shared, state: &DocState, from: f64, to: f64) {
         let generation = shared.start(from, to);
-        let feed = begin(shared, state, from as u64, to as u64, generation);
+        let feed = begin(shared, state, generation);
         fill_all(shared, &feed);
     }
 
@@ -1067,7 +1330,7 @@ mod tests {
         let mut out = vec![9.0f32; 8];
         render(&shared, &mut out, 1, 48_000.0);
         assert!(out.iter().all(|v| *v == 0.0), "not primed for this play: silence");
-        let feed = begin(&shared, &state, 0, 100, generation);
+        let feed = begin(&shared, &state, generation);
         render(&shared, &mut out, 1, 48_000.0);
         assert_eq!(out[0], ramp[0]);
         drop(feed);
@@ -1314,5 +1577,128 @@ mod tests {
             assert!((i32::from(out[4 * f]) + 8192).abs() <= 1 && (i32::from(out[4 * f + 1]) - 16384).abs() <= 1, "{out:?}");
             assert_eq!((out[4 * f + 2], out[4 * f + 3]), (1234, 0), "channels 3 and 4 are not the rack's");
         }
+    }
+
+    /// Start `plan` the way `Player::start` / `Player::grain` and the read-ahead thread do.
+    fn play_plan(shared: &Shared, state: &DocState, plan: &Plan, from: f64, rev: bool, speed: f64, grain: bool) {
+        let generation = shared.start_plan(*plan, from, rev, speed, grain);
+        let feed = begin(shared, state, generation);
+        fill_all(shared, &feed);
+    }
+
+    fn ramp_state(rate: u32, n: usize) -> DocState {
+        doc_of(AudioBuffer { sample_rate: rate, channels: vec![(0..n).map(|i| i as f32).collect()] })
+    }
+
+    fn left(out: &[f32]) -> Vec<f32> {
+        out.chunks(2).map(|f| f[0]).collect()
+    }
+
+    #[test]
+    fn a_loop_goes_round_through_the_ring() {
+        let state = ramp_state(48_000, 100);
+        let shared = shared_with(&state);
+        play_plan(&shared, &state, &Plan { looping: true, ..Plan::new(10.0, 14.0) }, 12.0, false, 1.0, false);
+        let mut out = vec![0.0f32; 2 * 10];
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(left(&out), [12.0, 13.0, 10.0, 11.0, 12.0, 13.0, 10.0, 11.0, 12.0, 13.0]);
+        assert!(playback(&shared).playing, "a loop does not stop");
+        assert_eq!(playback(&shared).wraps(), 3, "two wraps inside the buffer and one at its end");
+        assert_eq!(playback(&shared).file_position(), 10.0);
+    }
+
+    #[test]
+    fn the_skipped_part_is_not_heard() {
+        let state = ramp_state(48_000, 100);
+        let shared = shared_with(&state);
+        let plan = Plan { skip_start: 5.0, skip_end: 8.0, ..Plan::new(2.0, 11.0) };
+        play_plan(&shared, &state, &plan, 2.0, false, 1.0, false);
+        let mut out = vec![0.0f32; 2 * 10];
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(left(&out), [2.0, 3.0, 4.0, 8.0, 9.0, 10.0, 0.0, 0.0, 0.0, 0.0]);
+        assert!(!playback(&shared).playing);
+    }
+
+    #[test]
+    fn backward_playback_reads_the_file_in_reverse() {
+        let state = ramp_state(48_000, 100);
+        let shared = shared_with(&state);
+        play_plan(&shared, &state, &Plan::new(10.0, 20.0), 19.0, true, 1.0, false);
+        let mut out = vec![0.0f32; 2 * 14];
+        render(&shared, &mut out, 2, 48_000.0);
+        let l = left(&out);
+        assert_eq!(&l[..10], [19.0, 18.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0]);
+        assert!(l[10..].iter().all(|v| *v == 0.0), "then silence at the start");
+        assert!(!playback(&shared).playing, "stopped at the start");
+        assert_eq!(playback(&shared).file_position(), 10.0);
+    }
+
+    #[test]
+    fn a_backward_loop_wraps_to_the_end() {
+        let state = ramp_state(48_000, 100);
+        let shared = shared_with(&state);
+        play_plan(&shared, &state, &Plan { looping: true, ..Plan::new(10.0, 14.0) }, 11.0, true, 1.0, false);
+        let mut out = vec![0.0f32; 2 * 6];
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(left(&out), [11.0, 10.0, 13.0, 12.0, 11.0, 10.0]);
+        assert!(playback(&shared).playing);
+    }
+
+    #[test]
+    fn double_speed_skips_every_other_frame_and_a_half_speed_interpolates() {
+        let state = ramp_state(48_000, 100);
+        let shared = shared_with(&state);
+        play_plan(&shared, &state, &Plan::new(0.0, 100.0), 0.0, false, 2.0, false);
+        let mut out = vec![0.0f32; 2 * 4];
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(left(&out), [0.0, 2.0, 4.0, 6.0]);
+        play_plan(&shared, &state, &Plan::new(0.0, 100.0), 0.0, false, 0.5, false);
+        render(&shared, &mut out, 2, 48_000.0);
+        assert_eq!(left(&out), [0.0, 0.5, 1.0, 1.5]);
+    }
+
+    #[test]
+    fn a_grain_fades_in_and_out() {
+        let state = doc_of(AudioBuffer { sample_rate: 1000, channels: vec![vec![1.0; 2000]] });
+        let shared = shared_with(&state);
+        play_plan(&shared, &state, &Plan::new(100.0, 400.0), 100.0, false, 1.0, true);
+        let mut out = vec![0.0f32; 2 * 300];
+        render(&shared, &mut out, 2, 1000.0);
+        let l = left(&out);
+        assert_eq!(l[0], 0.0, "starts silent");
+        assert!(l[3] > 0.0 && l[3] < 1.0, "fading in: {}", l[3]);
+        assert_eq!(l[150], 1.0);
+        assert!(l[298] < 1.0, "fading out");
+    }
+
+    /// Pause keeps the place; resume carries on from it (the silent test sink moves the position).
+    #[test]
+    fn pause_keeps_the_place_and_resume_carries_on() {
+        let mut p = Player::new(OutputChoice::default(), ChannelMap::default(), Quality::default());
+        // The silent sink stands in for the device (what `WAVCRAFT_NO_AUDIO=1` does at start-up).
+        p.stream = None;
+        let sink = Sink::start(&p.shared);
+        p.out_rate = sink.rate;
+        p.out_channels = SINK_CHANNELS;
+        p.shared.device_rate.store(sink.rate, Ordering::Release);
+        p.sink = Some(sink);
+        let _ = p.commands.send(Command::Rebuild);
+        assert!(p.has_output());
+        p.set_audio(Some(ramp_state(48_000, 480_000)));
+        assert!(p.start(&Plan::new(0.0, 480_000.0), 1000.0));
+        std::thread::sleep(Duration::from_millis(150));
+        let moved = p.position();
+        assert!(p.is_playing() && moved > 1000, "the sink moves it: {moved}");
+        p.pause();
+        let held = p.position();
+        assert!(!p.is_playing() && held >= moved);
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(p.position(), held, "paused: still");
+        assert!(p.resume());
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(p.position() > held, "resumed from the same place");
+        p.stop();
+        assert!(!p.is_playing());
+        assert!(!p.resume(), "nothing to resume after a stop");
     }
 }

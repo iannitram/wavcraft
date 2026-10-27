@@ -15,7 +15,7 @@
 //! - `PARAM <amplify.db|normalize.db> <number>` → `OK` (the number Effects › Amplify or Normalize uses)
 //! - `KEY <chord>` (`Ctrl+Z`, `Cmd+Shift+Z`, `Space`, `F3`; Ctrl and Cmd mean the same) → `OK command=<name> selection=<a>-<b> changed=<0|1>` (runs what the shortcut table binds the chord to, as the key would; `ERR` when none)
 //! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
-//! - `PANELS` →`OK waveform=<0|1> spectral=<0|1> history=<0|1> selection=<0|1> freq=<0|1> markers=<0|1> playlist=<0|1> properties=<0|1> zone.left=<ids|-> zone.right=… zone.bottom=… zone.center=… front.left=<id|-> front.right=… front.bottom=… maximized=<id|->` (which panels are shown, then the shown tabs of each dock zone in order, the front tab of each, and the maximised panel)
+//! - `PANELS` →`OK waveform=<0|1> spectral=<0|1> history=<0|1> selection=<0|1> freq=<0|1> markers=<0|1> playlist=<0|1> properties=<0|1> transport=<0|1> zone.left=<ids|-> zone.right=… zone.bottom=… zone.center=… front.left=<id|-> front.right=… front.bottom=… maximized=<id|->` (which panels are shown, then the shown tabs of each dock zone in order, the front tab of each, and the maximised panel)
 //! - `PANEL move <id> <left|right|bottom>` | `PANEL maximize <id>` (again restores) | `PANEL close <id>` | `PANEL activate <id>` → the same line as `PANELS`; the layout is saved in the settings file
 //! - `PANELMENU <panel> list` → `OK items=close,maximize,… maximized=<id|none>`; `PANELMENU <panel> run <item>` → `OK maximized=<id|none> confirm_clear_history=<0|1> <panel>=<0|1> …` (a panel's ≡ menu)
 //! - `METADATA` → `OK fields=name,duration,… dialog=<0|1>`; `METADATA set <field,…|none>`; `METADATA open` (the Metadata Display dialog)
@@ -29,6 +29,8 @@
 //! - `PREF set custom_fps <n>` (2 to 1000; the generic `PREF`, so it answers plain `OK`, `ERR` when out of range); `ACTION view.time_display.custom` / `.cd75` pick the formats; `STATE` reports `custom_fps`
 //! - `PEAKCACHE info` → `OK files=<n> bytes=<n> cap=<n> last=<hit|miss|stale|corrupt|off|none> last_ms=<ms>` (the cache folder, and how the open file's overviews were made); `PEAKCACHE clear` → `OK removed=<n>`
 //! - `PROPERTIES` → `OK path=… | format=… | sample_rate=… | channels=… | bit_depth=… | duration=… | size=…` (the Properties panel's rows; BWF fields and warnings follow when present)
+//! - `KEYJKL l|j|k|k+l|k+j|up` (task f36) → `OK speed=<n>x level=<n>`: the JKL shuttle (`k+l`/`k+j` crawl until `up`)
+//! - `SCRUB <frame>` / `SCRUB end` (task f36) → `OK pos=<frame> speed=<signed>`: drag the playhead, hearing a grain
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `NOISE_PRINT` → `OK frames=<n> channels=<n> rate=<hz>` (the session's noise print, captured by `ACTION nr.capture_print`), or `OK none`
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)

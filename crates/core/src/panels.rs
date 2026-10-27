@@ -68,6 +68,7 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "markers", title: "Markers", default_dock: DockSide::Right },
     PanelInfo { id: "playlist", title: "Playlist", default_dock: DockSide::Right },
     PanelInfo { id: "properties", title: "Properties", default_dock: DockSide::Bottom },
+    PanelInfo { id: "transport", title: "Transport", default_dock: DockSide::Bottom },
 ];
 
 /// The registered panel with this id.
@@ -792,9 +793,9 @@ mod tests {
     #[test]
     fn actions_toggle_show_hide_and_report() {
         let mut s = PanelSet::default();
-        assert_eq!(s.report(), "waveform=1 spectral=1 history=1 selection=1 freq=1 markers=1 playlist=1 properties=1");
+        assert_eq!(s.report(), "waveform=1 spectral=1 history=1 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1");
         assert_eq!(s.apply_action("window.toggle.history"), Some(Ok(false)));
-        assert_eq!(s.report(), "waveform=1 spectral=1 history=0 selection=1 freq=1 markers=1 playlist=1 properties=1");
+        assert_eq!(s.report(), "waveform=1 spectral=1 history=0 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1");
         assert_eq!(s.apply_action("window.show.history"), Some(Ok(true)));
         assert_eq!(s.apply_action("window.hide.spectral"), Some(Ok(false)));
         assert!(matches!(s.apply_action("window.toggle.nope"), Some(Err(_))));
@@ -884,7 +885,7 @@ mod tests {
         assert!(!l.set_size(DockSide::Bottom, 300.4));
         l.toggle_maximize("history");
         let (tabs, sizes) = l.encode();
-        assert_eq!(tabs, "left:selection*;right:markers,playlist;bottom:freq,properties,history*");
+        assert_eq!(tabs, "left:selection*;right:markers,playlist;bottom:freq,properties,transport,history*");
         assert_eq!(sizes, "left:220,right:240,bottom:300");
         let back = Layout::decode(&tabs, &sizes);
         l.restore();
@@ -926,7 +927,7 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         assert_eq!(
             l.report(&set),
-            "zone.left=- zone.right=history,selection,markers,playlist zone.bottom=freq,properties zone.center=waveform,spectral front.left=- front.right=history front.bottom=freq maximized=- floating=-"
+            "zone.left=- zone.right=history,selection,markers,playlist zone.bottom=freq,properties,transport zone.center=waveform,spectral front.left=- front.right=history front.bottom=freq maximized=- floating=-"
         );
         l.apply_command(&mut set, "move selection left").unwrap();
         l.apply_command(&mut set, "maximize selection").unwrap();
@@ -1004,11 +1005,11 @@ mod tests {
         l.apply_command(&mut set, "dock history bottom").unwrap();
         let r = l.report(&set);
         assert!(r.contains("floating=- ") || r.ends_with("floating=-"), "{r}");
-        assert!(r.contains("zone.bottom=freq,properties,history"), "{r}");
+        assert!(r.contains("zone.bottom=freq,properties,transport,history"), "{r}");
         l.apply_command(&mut set, "float selection").unwrap();
         l.apply_command(&mut set, "dock selection").unwrap();
         assert_eq!(l.zone_of("selection"), Some(DockSide::Right));
-        assert_eq!(l.float_group(DockSide::Bottom, &set), 3, "freq, properties and history are all in the bottom zone");
+        assert_eq!(l.float_group(DockSide::Bottom, &set), 4, "freq, properties, transport and history are all in the bottom zone");
     }
 
     fn mons(text: &str) -> Vec<Monitor> {

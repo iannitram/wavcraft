@@ -20,6 +20,7 @@
 //! - [`spectrogram`]: the spectral frequency display for any time range, at screen resolution.
 //! - [`smpte`]: SMPTE timecode at 24 to 59.94 fps (drop-frame too) and snapping to frames.
 //! - [`analysis`]: read-only analysis of a document's audio (the Frequency Analysis spectrum).
+//! - [`transport`]: play modes, loop and skip arithmetic, and the view following the playhead.
 //! - [`view`]: zoom and scroll arithmetic, selections and time formatting.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -93,6 +94,7 @@ pub mod tempo;
 pub mod transcript_cut;
 pub mod video_snap;
 pub mod timepitch;
+pub mod transport;
 pub mod view;
 pub mod workspaces;
 pub mod vst3;

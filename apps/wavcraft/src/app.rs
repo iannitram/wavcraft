@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::time::Instant;
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
@@ -27,6 +28,7 @@ use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
+use wavcraft_core::transport::{self, Follow, Mode, Scrub as DragTracker, Transport};
 use wavcraft_core::workspaces::{self, Snapshot, Workspaces};
 use wavcraft_core::{DocState, Document, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport, tempo::Tempo};
 
@@ -164,6 +166,33 @@ const HW_KEYS: [&str; 6] = ["audio_host", "output_device", "input_device", "buff
 /// Frames at the start in which a held Shift means "reset the preferences".
 const SHIFT_RESET_FRAMES: u32 = 30;
 
+/// Dragging the playhead along the ruler (task f36): the drag asks for grains, the window plays them.
+#[derive(Default)]
+struct ScrubState {
+    tracker: DragTracker,
+    /// The drag is going on.
+    dragging: bool,
+    /// The latest frame the drag asked for and the window has not played yet.
+    pending: Option<usize>,
+    /// The drag ended; the window finishes it.
+    ended: bool,
+    /// Where the playhead is while scrubbing (and after, until something else moves it).
+    pos: Option<usize>,
+    /// The speed of the latest grain (signed).
+    speed: f64,
+}
+
+/// A Rewind or Fast Forward button held down.
+#[derive(Default)]
+struct Hold {
+    since: Option<f64>,
+    engaged: bool,
+    /// The release that ended a shuttle also clicks; that click is not a step.
+    suppress_click: bool,
+    /// K+J / K+L came from the control channel and lasts until `KEYJKL up`.
+    ctl_nudge: bool,
+}
+
 /// A file being opened on a worker thread.
 struct Opening {
     path: PathBuf,
@@ -275,6 +304,11 @@ pub struct WaveApp {
     view: Viewport,
     selection: Selection,
     player: Player,
+    /// Play mode and options (loop, skip selection, return on stop, pre/post-roll).
+    transport: Transport,
+    head_scrub: ScrubState,
+    hold: Hold,
+    clock: Instant,
     params: SpectrogramParams,
     /// Which registered panels are shown (Window menu; kept in the settings file).
     panels: PanelSet,
@@ -537,6 +571,10 @@ impl WaveApp {
             drag_origin: None,
             selection: Selection::default(),
             player: Player::new(output_choice(&settings), settings.output_map.clone(), settings.playback_quality),
+            transport: Transport::default(),
+            head_scrub: ScrubState::default(),
+            hold: Hold::default(),
+            clock: Instant::now(),
             params: {
                 let mut p = SpectrogramParams::default();
                 settings.apply_to_spectrogram(&mut p);
@@ -1412,7 +1450,7 @@ impl WaveApp {
                     log::warn!(target: "wavcraft", "the peak cache could not be written: {e}");
                 }
                 self.peak_report = Some(r.clone());
-                self.player.set_audio(Some(doc.state.clone()));
+                self.set_audio(Some(doc.state.clone()));
                 self.meters.new_file();
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = Some(Editor::new(History::new(doc.state.clone(), cap)));
@@ -1572,7 +1610,7 @@ impl WaveApp {
     /// Where the playhead is (or the cursor when stopped), in seconds.
     fn playhead_secs(&self) -> Option<f64> {
         let rate = self.editor.as_ref()?.history.current().sample_rate();
-        let frame = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
+        let frame = if self.playhead_live() { self.player.position() } else { self.selection.start() };
         (rate > 0).then(|| frame as f64 / f64::from(rate))
     }
 
@@ -1596,7 +1634,7 @@ impl WaveApp {
         self.saved = None;
         self.doc_id += 1;
         self.doc = None;
-        self.player.set_audio(None);
+        self.set_audio(None);
         self.selection = Selection::default();
         self.spectrum = None;
         self.fit_on_next_frame = true;
@@ -1778,6 +1816,7 @@ impl WaveApp {
             "markers" => self.markers_panel(ui),
             "playlist" => self.playlist_panel(ui),
             "properties" => self.properties_panel(ui),
+            "transport" => self.transport_panel(ui),
             _ => {}
         }
     }
@@ -2154,14 +2193,368 @@ impl WaveApp {
         }
     }
 
+    /// Space and the menu's Play button: stop while playing, resume while paused, else play.
     fn toggle_play(&mut self) {
+        match self.transport.mode {
+            Mode::Playing => self.stop_play(),
+            Mode::Paused => self.resume_play(),
+            Mode::Stopped => {
+                if self.player.is_playing() {
+                    // Something else is playing (the Playlist): Space stops it.
+                    self.halt_play();
+                } else {
+                    self.start_play();
+                }
+            }
+        }
+    }
+
+    /// Hand the player the document to play (or none); playback ends.
+    fn set_audio(&mut self, state: Option<DocState>) {
+        self.transport.mode = Mode::Stopped;
+        self.head_scrub = ScrubState::default();
+        self.player.set_audio(state);
+    }
+
+    /// Stop at once with the cursor left where it is (the file or the cursor changed under it).
+    fn halt_play(&mut self) {
+        self.player.stop();
+        self.transport.shuttle.stop();
+        self.transport.mode = Mode::Stopped;
+    }
+
+    /// How the view follows the playhead: the Playback preference (`autoscroll`), unless a manual
+    /// scroll turned it off for this play.
+    fn follow_mode(&self) -> Option<Follow> {
+        if !self.transport.auto_scroll {
+            return None;
+        }
+        match self.settings.autoscroll {
+            settings::AutoScroll::Pagewise => Some(Follow::Page),
+            settings::AutoScroll::Centred => Some(Follow::Center),
+            settings::AutoScroll::Off => None,
+        }
+    }
+
+    /// Play from the cursor, or the selection, as the Loop and Skip Selection options say.
+    fn start_play(&mut self) {
         let Some(doc) = &self.doc else { return };
-        if self.player.is_playing() {
-            self.player.stop();
-        } else if self.selection.is_empty() {
-            self.player.play(self.selection.start(), doc.frames());
+        let width = self.editor_width.max(1.0);
+        let rate = doc.sample_rate();
+        let req = transport::Request {
+            selection: self.selection.start()..self.selection.end(),
+            cursor: self.selection.start(),
+            frames: doc.frames(),
+            view: self.view.start..self.view.end(width),
+            rate,
+            looping: self.transport.looping,
+            skip_selection: self.transport.skip_selection,
+            preroll: self.roll_frames(self.settings.preroll().as_secs_f64(), rate),
+            postroll: self.roll_frames(self.settings.postroll().as_secs_f64(), rate),
+        };
+        let Some((plan, from)) = transport::plan_for(&req) else {
+            self.notice = Some("Nothing to play from here".to_string());
+            return;
+        };
+        self.head_scrub.pos = None;
+        self.transport.auto_scroll = true;
+        if self.player.start(&plan, from) {
+            self.transport.mode = Mode::Playing;
+            self.transport.play_start = self.selection.start();
+        }
+    }
+
+    /// Pre-roll or post-roll as frames: nothing while the option is off.
+    fn roll_frames(&self, secs: f64, rate: u32) -> usize {
+        if self.transport.roll { (secs.max(0.0) * f64::from(rate)) as usize } else { 0 }
+    }
+
+    /// The speeds the J and L keys step through (the `jkl_speed_steps` preference).
+    fn shuttle_ladder(&self) -> Vec<f64> {
+        transport::shuttle_ladder(self.settings.jkl_speed_steps())
+    }
+
+    /// The shuttle's signed speed now.
+    fn shuttle_speed(&self) -> f64 {
+        self.transport.shuttle.speed_in(&self.shuttle_ladder())
+    }
+
+    /// The JKL keys (`key` is `'j'`, `'k'` or `'l'`); `k_held` is true for K+J and K+L.
+    fn shuttle_key(&mut self, key: char, k_held: bool) {
+        if self.doc.is_none() {
+            return;
+        }
+        let top = self.shuttle_ladder().len();
+        match (key, k_held) {
+            ('k', _) => {
+                self.transport.shuttle.stop();
+                self.stop_play();
+            }
+            ('l', true) => self.transport.shuttle.nudge_held(1),
+            ('j', true) => self.transport.shuttle.nudge_held(-1),
+            ('l', false) => self.transport.shuttle.forward_in(top),
+            ('j', false) => self.transport.shuttle.backward_in(top),
+            _ => return,
+        }
+        self.apply_shuttle();
+    }
+
+    /// Make the player run at the shuttle's speed, starting it if it is stopped.
+    fn apply_shuttle(&mut self) {
+        let speed = self.shuttle_speed();
+        let Some(doc) = &self.doc else { return };
+        if speed == 0.0 {
+            return;
+        }
+        let (frames, backward, looping) = (doc.frames(), speed < 0.0, self.transport.looping);
+        self.head_scrub.pos = None;
+        let sel = self.selection.start()..self.selection.end();
+        match self.transport.mode {
+            Mode::Stopped => {
+                let Some((plan, from)) = transport::shuttle_plan(&sel, self.selection.start(), frames, looping, backward) else {
+                    self.transport.shuttle.stop();
+                    self.notice = Some("Nothing to play that way from here".to_string());
+                    return;
+                };
+                self.transport.auto_scroll = true;
+                if self.player.start(&plan, from) {
+                    self.transport.mode = Mode::Playing;
+                    self.transport.play_start = self.selection.start();
+                    self.player.set_speed(speed);
+                }
+            }
+            Mode::Playing | Mode::Paused => {
+                // The whole file (or the selection) so it can run either way from here.
+                if let Some((plan, _)) = transport::shuttle_plan(&sel, self.player.position(), frames, looping, backward) {
+                    self.player.replace_plan(&plan);
+                }
+                if self.transport.mode == Mode::Paused {
+                    self.resume_play();
+                } else {
+                    self.player.set_speed(speed);
+                }
+            }
+        }
+    }
+
+    /// K+J / K+L let go: the crawl ends and the playhead stays where it is.
+    fn release_nudge(&mut self) {
+        self.hold.ctl_nudge = false;
+        if self.transport.shuttle.nudge != 0 {
+            self.transport.shuttle.stop();
+            self.pause_play();
+        }
+    }
+
+    /// Rewind (`dir` -1) or Fast Forward (1) one step: the playhead while playing, else the cursor.
+    fn step_playhead(&mut self, dir: i8) {
+        let Some(doc) = &self.doc else { return };
+        let (frames, step) = (doc.frames() as i64, (transport::STEP_SECS * f64::from(doc.sample_rate())) as i64);
+        let delta = i64::from(dir) * step;
+        if self.transport.mode == Mode::Stopped {
+            let from = if dir < 0 { self.selection.start() } else { self.selection.end() } as i64;
+            self.selection = Selection::at((from + delta).clamp(0, frames) as usize);
+            self.head_scrub.pos = None;
         } else {
-            self.player.play(self.selection.start(), self.selection.end());
+            self.player.seek((self.player.position() as i64 + delta).clamp(0, frames) as f64);
+        }
+    }
+
+    /// Play the grain for the playhead the drag has reached, and finish a drag that ended.
+    fn run_scrub(&mut self) {
+        if let Some(frame) = self.head_scrub.pending.take() {
+            self.scrub_to(frame);
+        }
+        if self.head_scrub.ended {
+            self.head_scrub.ended = false;
+            self.scrub_end();
+        }
+    }
+
+    /// Scrub: put the playhead at `frame` and play a short grain there, at the speed of the drag.
+    fn scrub_to(&mut self, frame: usize) {
+        let Some(doc) = &self.doc else { return };
+        let (frames, rate) = (doc.frames(), doc.sample_rate());
+        if self.transport.mode != Mode::Stopped {
+            self.stop_play();
+        }
+        let frame = frame.min(frames);
+        let speed = self.head_scrub.tracker.touch(frame as f64, self.clock.elapsed().as_secs_f64(), rate);
+        self.head_scrub.pos = Some(frame);
+        self.head_scrub.speed = speed;
+        if let Some((plan, from)) = transport::grain_plan(frame as f64, speed, rate, frames) {
+            self.player.grain(&plan, from, speed);
+        }
+    }
+
+    /// The drag is over: with nothing selected the cursor stays where the playhead was left.
+    fn scrub_end(&mut self) {
+        if let Some(p) = self.head_scrub.pos.take()
+            && self.selection.is_empty()
+        {
+            self.selection = Selection::at(p);
+        }
+        self.head_scrub.tracker.end();
+        self.head_scrub.dragging = false;
+    }
+
+    fn pause_play(&mut self) {
+        match self.transport.mode {
+            Mode::Playing => {
+                self.player.pause();
+                self.transport.mode = Mode::Paused;
+            }
+            Mode::Paused => self.resume_play(),
+            Mode::Stopped => {}
+        }
+    }
+
+    fn resume_play(&mut self) {
+        let shuttle_speed = self.shuttle_speed();
+        self.player.set_speed(if self.transport.shuttle.active() { shuttle_speed } else { 1.0 });
+        if self.player.resume() {
+            self.transport.mode = Mode::Playing;
+        } else {
+            self.stop_play();
+        }
+    }
+
+    /// Stop. With nothing selected the cursor returns to where play started, or stays where
+    /// playback stopped when Return to Start Position is off.
+    fn stop_play(&mut self) {
+        let was = self.transport.mode;
+        let at = self.player.position();
+        self.halt_play();
+        if was != Mode::Stopped && self.selection.is_empty() {
+            let frames = self.doc.as_ref().map_or(0, Document::frames);
+            self.selection = Selection::at(self.transport.cursor_after_stop(at).min(frames));
+        }
+    }
+
+    /// Notice when playback has run out by itself.
+    fn poll_transport(&mut self) {
+        if self.transport.mode == Mode::Playing && !self.player.is_playing() {
+            self.stop_play();
+        }
+    }
+
+    /// Whether a playhead is shown and moves: playing or paused (stopped, the cursor stands for it).
+    fn playhead_live(&self) -> bool {
+        self.player.is_playing() || self.transport.mode == Mode::Paused
+    }
+
+    /// The Transport panel: Play, Pause, Stop, Loop, go to start / end, the marker buttons, the
+    /// options and the current time.
+    fn transport_panel(&mut self, ui: &mut egui::Ui) {
+        let mut chosen: Option<ActionId> = None;
+        let rate = self.doc.as_ref().map_or(0, Document::sample_rate);
+        let enabled = self.doc.is_some() && self.saving.is_none();
+        let t = self.transport;
+        let auto_scroll = self.settings.autoscroll;
+        // Rewind / Fast Forward: (direction held down, direction clicked).
+        let mut held: Option<i8> = None;
+        let mut stepped: Option<i8> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(enabled, |ui| {
+                let mut button = |ui: &mut egui::Ui, label: &str, tip: &str, id: ActionId, on: bool| {
+                    if ui.add(egui::Button::new(label).selected(on)).on_hover_text(tip).clicked() {
+                        chosen = Some(id);
+                    }
+                };
+                button(ui, "|◀ Start", "Go to start (Home)", ActionId::CursorToStart, false);
+                button(ui, "◀ Marker", "Playhead to the previous marker", ActionId::MarkerPrev, false);
+                for (label, tip, dir) in [
+                    ("◀◀", "Rewind: click to step back a second, hold to shuttle backward (J plays backward)", -1i8),
+                    ("▶▶", "Fast Forward: click to step on a second, hold to shuttle forward (L plays forward)", 1),
+                ] {
+                    let r = ui.add(egui::Button::new(label)).on_hover_text(tip);
+                    if r.is_pointer_button_down_on() {
+                        held = Some(dir);
+                    }
+                    if r.clicked() {
+                        stepped = Some(dir);
+                    }
+                }
+                button(ui, "▶ Play", "Play (Space)", ActionId::Play, t.mode == Mode::Playing);
+                button(ui, "❚❚ Pause", "Pause; again to resume", ActionId::Pause, t.mode == Mode::Paused);
+                button(ui, "■ Stop", "Stop", ActionId::Stop, false);
+                button(ui, "Marker ▶", "Playhead to the next marker", ActionId::MarkerNext, false);
+                button(ui, "End ▶|", "Go to end (End)", ActionId::CursorToEnd, false);
+                ui.separator();
+                button(ui, "Loop", "Repeat the selection, or the view with nothing selected", ActionId::ToggleLoop, t.looping);
+                button(
+                    ui,
+                    "Pre/Post-Roll",
+                    "Play a selection from a little before it to a little after it (set the times in Preferences › Playback and Recording)",
+                    ActionId::ToggleRoll,
+                    t.roll,
+                );
+                button(
+                    ui,
+                    "Skip Selection",
+                    "Play around the selection, skipping it, to hear a cut",
+                    ActionId::ToggleSkipSelection,
+                    t.skip_selection,
+                );
+                button(
+                    ui,
+                    "Return on Stop",
+                    "Stop puts the cursor back where play started (Shift+X)",
+                    ActionId::ToggleReturnOnStop,
+                    t.return_on_stop,
+                );
+                button(
+                    ui,
+                    "Auto-Scroll",
+                    "The view follows the playhead; moving it by hand turns this off for the play",
+                    ActionId::ToggleAutoScroll,
+                    auto_scroll != settings::AutoScroll::Off && t.auto_scroll,
+                );
+                button(
+                    ui,
+                    if auto_scroll == settings::AutoScroll::Centred { "Centered" } else { "Pagewise" },
+                    "How auto-scroll follows: click to switch",
+                    if auto_scroll == settings::AutoScroll::Centred { ActionId::FollowPage } else { ActionId::FollowCenter },
+                    false,
+                );
+            });
+            let live = self.playhead_live();
+            let frame = if live { self.player.position() } else { self.head_scrub.pos.unwrap_or(self.selection.start()) };
+            ui.separator();
+            ui.monospace(self.time_format.format_with(frame, rate.max(1), &self.tempo));
+            ui.label(t.mode.name());
+            let speed = if self.player.is_playing() { self.player.speed() } else { 0.0 };
+            ui.monospace(format!("Speed {}", transport::speed_label(speed))).on_hover_text("Playback speed; L, J and K shuttle");
+        });
+        let now = ui.input(|i| i.time);
+        match held {
+            Some(dir) => {
+                let since = *self.hold.since.get_or_insert(now);
+                if !self.hold.engaged && now - since > transport::HOLD_SECS {
+                    self.hold.engaged = true;
+                    self.transport.shuttle = transport::Shuttle { level: dir * transport::HOLD_LEVEL, nudge: 0 };
+                    self.apply_shuttle();
+                }
+                ui.ctx().request_repaint();
+            }
+            None => {
+                if self.hold.since.take().is_some() && self.hold.engaged {
+                    self.hold.engaged = false;
+                    self.hold.suppress_click = true;
+                    self.transport.shuttle.stop();
+                    self.pause_play();
+                }
+            }
+        }
+        if let Some(dir) = stepped {
+            if std::mem::take(&mut self.hold.suppress_click) {
+                // The button was held to shuttle; letting go is not a step.
+            } else {
+                self.step_playhead(dir);
+            }
+        }
+        if let Some(id) = chosen {
+            let _ = self.run_action(id, ui.ctx());
         }
     }
 
@@ -2306,7 +2699,7 @@ impl WaveApp {
                 }
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
                 if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::MarkerNext | ActionId::MarkerPrev) {
-                    self.player.stop();
+                    self.halt_play();
                     let frames = self.doc.as_ref().map_or(0, Document::frames);
                     self.view.reveal(self.selection.start() as f64, self.editor_width, frames);
                 }
@@ -2360,7 +2753,7 @@ impl WaveApp {
             });
         };
         self.selection = Selection::at(frame as usize);
-        self.player.stop();
+        self.halt_play();
         let frames = self.doc.as_ref().map_or(0, Document::frames);
         self.view.reveal(frame as f64, self.editor_width, frames);
         Ok(())
@@ -2429,7 +2822,7 @@ impl WaveApp {
         }
         let width = self.editor_width.max(1.0);
         // Where play is, or the cursor when stopped.
-        let playhead = if self.player.is_playing() && !self.previewing { self.player.position() } else { self.selection.start() };
+        let playhead = if self.playhead_live() && !self.previewing { self.player.position() } else { self.selection.start() };
         match id {
             ActionId::ZoomIn => self.view.zoom_at(f64::from(self.settings.zoom_factor), width * 0.5, width, frames),
             ActionId::ZoomOut => self.view.zoom_at(1.0 / f64::from(self.settings.zoom_factor), width * 0.5, width, frames),
@@ -2450,6 +2843,36 @@ impl WaveApp {
             ActionId::SetOut => {
                 let start = self.selection.start().min(playhead);
                 self.selection = Selection { anchor: start, head: playhead };
+            }
+            ActionId::Play => match self.transport.mode {
+                Mode::Stopped => self.start_play(),
+                Mode::Paused => self.resume_play(),
+                Mode::Playing => {}
+            },
+            ActionId::Pause => self.pause_play(),
+            ActionId::Stop => self.stop_play(),
+            ActionId::ToggleLoop => {
+                self.transport.looping = !self.transport.looping;
+                self.player.set_looping(self.transport.looping);
+            }
+            ActionId::Rewind => self.step_playhead(-1),
+            ActionId::FastForward => self.step_playhead(1),
+            ActionId::ToggleRoll => self.transport.roll = !self.transport.roll,
+            ActionId::ToggleSkipSelection => self.transport.skip_selection = !self.transport.skip_selection,
+            ActionId::ToggleReturnOnStop => self.transport.return_on_stop = !self.transport.return_on_stop,
+            // Auto-scroll is the Playback preference (`autoscroll`): pagewise, centred or off.
+            ActionId::ToggleAutoScroll => {
+                let next = if self.settings.autoscroll == settings::AutoScroll::Off { "pagewise" } else { "off" };
+                let _ = self.pref_set("autoscroll", next);
+                self.transport.auto_scroll = true;
+            }
+            ActionId::FollowPage => {
+                let _ = self.pref_set("autoscroll", "pagewise");
+                self.transport.auto_scroll = true;
+            }
+            ActionId::FollowCenter => {
+                let _ = self.pref_set("autoscroll", "centred");
+                self.transport.auto_scroll = true;
             }
             ActionId::EditTempo => self.tempo_dialog = Some((self.tempo.bpm_text(), self.tempo.meter_text())),
             ActionId::InsertSilence if self.editor.is_some() => {
@@ -2736,7 +3159,7 @@ impl WaveApp {
     fn goto_frame(&mut self, frame: usize) {
         let total = self.doc.as_ref().map_or(0, Document::frames);
         let frame = frame.min(total);
-        self.player.stop();
+        self.halt_play();
         self.selection = Selection::at(frame);
         let width = self.editor_width.max(1.0);
         if (frame as f64) < self.view.start || (frame as f64) > self.view.end(width) {
@@ -2747,7 +3170,7 @@ impl WaveApp {
 
     /// Window › Time panel: the playhead (or, stopped, the cursor) as a large readout.
     fn time_panel(&mut self, ui: &mut egui::Ui) {
-        let frame = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
+        let frame = if self.playhead_live() { self.player.position() } else { self.selection.start() };
         let rate = self.doc.as_ref().map_or(0, Document::sample_rate);
         let text = self.time_format.format_with(frame, rate, &self.tempo);
         let mut jump = None;
@@ -2853,7 +3276,7 @@ impl WaveApp {
             _ => self.view.set_duration(frame, width, frames),
         }
         if name.starts_with("sel") {
-            self.player.stop();
+            self.halt_play();
         }
     }
 
@@ -3105,7 +3528,7 @@ impl WaveApp {
         let channels = wavcraft_core::generate::render(g, &dialog.values, rate, doc.channels().max(1), frames, PREVIEW_SEED);
         let preview = wavcraft_core::AudioBuffer { sample_rate: rate, channels };
         let state = wavcraft_core::Document::from_buffer(preview).map_err(|e| e.to_string())?.state;
-        self.player.set_audio(Some(state));
+        self.set_audio(Some(state));
         self.player.play(0, frames);
         self.previewing = true;
         Ok(frames)
@@ -3115,7 +3538,7 @@ impl WaveApp {
     fn end_preview(&mut self) {
         if self.previewing {
             self.previewing = false;
-            self.player.set_audio(self.doc.as_ref().map(|d| d.state.clone()));
+            self.set_audio(self.doc.as_ref().map(|d| d.state.clone()));
         }
     }
 
@@ -3385,7 +3808,7 @@ impl WaveApp {
             Some(Ask::Cancel) => self.diag.cancel(),
             Some(Ask::Goto(r)) => {
                 self.selection = Selection { anchor: r.start as usize, head: r.end() as usize };
-                self.player.stop();
+                self.halt_play();
                 let frames = self.doc.as_ref().map_or(0, Document::frames);
                 self.view.reveal(r.start as f64, self.editor_width, frames);
             }
@@ -3405,7 +3828,7 @@ impl WaveApp {
         let out = self.markers_ui.panel(ui, editor, &mut self.settings);
         if let Some(span) = out.select {
             self.selection = Selection { anchor: span.start as usize, head: span.end as usize };
-            self.player.stop();
+            self.halt_play();
             let frames = self.doc.as_ref().map_or(0, Document::frames);
             self.view.reveal(span.start as f64, self.editor_width, frames);
         }
@@ -3424,7 +3847,7 @@ impl WaveApp {
         let out = self.playlist_ui.panel(ui, &markers, rate);
         if out.stop {
             self.playlist_ui.cancel();
-            self.player.stop();
+            self.halt_play();
         }
         if out.play
             && let Err(e) = self.play_playlist()
@@ -3568,13 +3991,13 @@ impl WaveApp {
         };
         let _ = std::fs::remove_dir_all(&edit.dir);
         self.mtv.show = true;
-        self.player.stop();
+        self.halt_play();
         // A session playing now holds the old audio (its snapshot), so it stops, as after any change to the session.
         self.mtv.transport.stop();
         match edit.back_to {
             Some(p) => self.open(p, ctx),
             None => {
-                self.player.set_audio(None);
+                self.set_audio(None);
                 self.doc = None;
                 self.editor = None;
                 self.saved = None;
@@ -3596,7 +4019,7 @@ impl WaveApp {
             let _ = tx.send(Document::from_state(path, state));
             ctx.request_repaint();
         });
-        self.player.stop();
+        self.halt_play();
         self.playlist_ui.cancel();
         self.rebuilding = Some(rx);
     }
@@ -3624,7 +4047,7 @@ impl WaveApp {
         let channels = editor.channels.within(base.channel_count());
         let job = jobs::Job::spawn_replace(base, range, channels, label, editor.crossfades, Some(wake), producer);
         self.running = Some(Running { job });
-        self.player.stop();
+        self.halt_play();
         self.error = None;
         self.notice = None;
         Ok(())
@@ -3685,13 +4108,13 @@ impl WaveApp {
         self.rebuilding = None;
         match result {
             Ok(doc) => {
-                self.player.set_audio(Some(doc.state.clone()));
+                self.set_audio(Some(doc.state.clone()));
                 self.doc = Some(doc);
                 self.generation += 1;
                 self.spectrum = None;
             }
             Err(OpenError::Empty) => {
-                self.player.set_audio(None);
+                self.set_audio(None);
                 self.doc = None;
                 self.notice = Some("The file is empty now (Edit › Undo brings the audio back)".to_string());
             }
@@ -3810,7 +4233,7 @@ impl WaveApp {
             let _ = tx.send(done);
             ctx.request_repaint();
         });
-        self.player.stop();
+        self.halt_play();
         self.saving =
             Some(Saving { path, state, ty, format, aiff, container, result: rx, progress, cancel, then_close, doc_id: self.doc_id, copy: None });
         Ok(())
@@ -3862,7 +4285,7 @@ impl WaveApp {
             let _ = tx.send(write_file(&job_state, &job_path, FileKind::Wav(ty), &part, &mut report));
             ctx.request_repaint();
         });
-        self.player.stop();
+        self.halt_play();
         let copy = Some(if selection { "selection" } else { "export" });
         self.saving = Some(Saving {
             path,
@@ -4378,11 +4801,34 @@ impl WaveApp {
                 let unsaved = u8::from(self.unsaved());
                 let width = self.editor_width.max(1.0);
                 let view = format!("tool={} view={:.0}-{:.0}", self.tool.name(), self.view.start, self.view.end(width));
+                self.poll_transport();
+                let t = &self.transport;
+                let playhead = if self.playhead_live() { self.player.position() } else { self.head_scrub.pos.unwrap_or(self.selection.start()) };
+                let speed = if self.player.is_playing() { self.player.speed() } else { 0.0 };
+                let output = if !self.player.has_output() {
+                    "none"
+                } else if self.player.info().test_sink {
+                    "sink"
+                } else {
+                    "device"
+                };
+                let tstate = format!(
+                    "play={} pos={playhead} speed={speed} scrubspeed={} roll={} loop={} skip={} return={} follow={} autoscroll={} wraps={} output={output}",
+                    t.mode.name(),
+                    self.head_scrub.speed,
+                    u8::from(t.roll),
+                    u8::from(t.looping),
+                    u8::from(t.skip_selection),
+                    u8::from(t.return_on_stop),
+                    self.settings.autoscroll.name(),
+                    u8::from(self.follow_mode().is_some()),
+                    self.player.wraps()
+                );
                 match &self.editor {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved} {view} time_display={} tempo={} meter={} selection_text={} snap_frames={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} undo={} redo={} path={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved} {view} {tstate} time_display={} tempo={} meter={} selection_text={} snap_frames={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} undo={} redo={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -4411,7 +4857,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {view} time_display={} tempo={} meter={} selection_text=- snap_frames={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- undo=- redo=- path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {view} {tstate} time_display={} tempo={} meter={} selection_text=- snap_frames={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- undo=- redo=- path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         self.time_format.name(),
@@ -4649,6 +5095,35 @@ impl WaveApp {
                 },
                 Err(e) => format!("ERR {e}"),
             },
+            // JKL shuttle: l, j, k, k+l and k+j (held until `up`).
+            "KEYJKL" => {
+                self.poll_transport();
+                match rest.trim() {
+                    "l" | "j" | "k" => self.shuttle_key(rest.trim().chars().next().unwrap_or('k'), false),
+                    "k+l" | "k+j" => {
+                        self.hold.ctl_nudge = true;
+                        self.shuttle_key(if rest.trim() == "k+l" { 'l' } else { 'j' }, true);
+                    }
+                    "up" => self.release_nudge(),
+                    _ => return "ERR KEYJKL l|j|k|k+l|k+j|up".to_string(),
+                }
+                format!("OK speed={} level={}", transport::speed_label(self.shuttle_speed()), self.transport.shuttle.level)
+            }
+            // Scrub: the playhead is dragged to <frame>; `SCRUB end` lets go.
+            "SCRUB" => {
+                if rest.trim() == "end" {
+                    self.scrub_end();
+                    return "OK".to_string();
+                }
+                match rest.trim().parse::<usize>() {
+                    Ok(frame) if self.doc.is_some() => {
+                        self.head_scrub.dragging = true;
+                        self.scrub_to(frame);
+                        format!("OK pos={} speed={}", self.head_scrub.pos.unwrap_or(0), self.head_scrub.speed)
+                    }
+                    _ => "ERR SCRUB <frame> (with a file open) or SCRUB end".to_string(),
+                }
+            }
             // Minimise or restore the window (scripted checks of hidden-window behaviour).
             "WINDOW" => match rest {
                 "minimize" => {
@@ -5427,9 +5902,12 @@ impl WaveApp {
 
     /// Start the playlist from its first item (panel button or control channel).
     fn play_playlist(&mut self) -> Result<(), String> {
+        if self.editor.is_none() {
+            return Err("no file is open".to_string());
+        }
+        self.halt_play();
         let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
         let doc = editor.history.current();
-        self.player.stop();
         if self.playlist_ui.start(doc.markers(), doc.len_frames()) { Ok(()) } else { Err("the playlist has no range to play".to_string()) }
     }
 
@@ -5805,7 +6283,7 @@ impl WaveApp {
                 }
                 ui.checkbox(&mut self.show_video, "Video panel");
             });
-            let label = if self.player.is_playing() { "■ Stop" } else { "▶ Play" };
+            let label = if self.player.is_playing() { "■ Stop" } else if self.transport.mode == Mode::Paused { "▶ Resume" } else { "▶ Play" };
             if ui.button(label).on_hover_text("Space").clicked() {
                 self.toggle_play();
             }
@@ -5963,6 +6441,10 @@ impl WaveApp {
             if pinch != 1.0 {
                 self.view.zoom_at(f64::from(pinch), x, width, frames);
             }
+            if (shift || scroll.x != 0.0) && self.transport.mode != Mode::Stopped && (scroll.x != 0.0 || scroll.y != 0.0) {
+                // Moving the view by hand during playback turns auto-scroll off for this play.
+                self.transport.auto_scroll = false;
+            }
             if shift {
                 self.view.scroll_by(-(scroll.x + scroll.y), width, frames);
             } else {
@@ -5974,8 +6456,15 @@ impl WaveApp {
                 }
             }
         }
-        // Keep the playhead on screen while playing (not while the pointer is busy in the editor).
-        if self.player.is_playing() && !response.is_pointer_button_down_on() {
+        // Auto-scroll: the view follows the playhead (not while the pointer is busy in the editor).
+        if self.transport.mode == Mode::Playing {
+            if let Some(follow) = self.follow_mode()
+                && !response.is_pointer_button_down_on()
+            {
+                transport::follow_view(follow, &mut self.view, self.player.position() as f64, width, frames);
+            }
+        } else if self.player.is_playing() && !self.previewing && !response.is_pointer_button_down_on() {
+            // Another play (the Playlist): keep the playhead on screen.
             self.view.reveal(self.player.position() as f64, width, frames);
         }
         self.view.clamp(width, frames);
@@ -6033,6 +6522,14 @@ impl WaveApp {
             let grabbed = frame_at(&self.view, origin) as u64;
             self.markers_ui.start_drag(markers, id, grabbed);
         }
+        // A drag that starts on the ruler moves the playhead and is heard (scrubbing, f36).
+        if select
+            && self.markers_ui.drag.is_none()
+            && response.drag_started_by(egui::PointerButton::Primary)
+            && ui.input(|i| i.pointer.press_origin()).is_some_and(|o| ruler_rect.contains(o))
+        {
+            self.head_scrub.dragging = true;
+        }
         if self.markers_ui.drag.is_some() {
             if let Some(pos) = response.interact_pointer_pos() {
                 self.markers_ui.drag_to(frame_at(&self.view, pos) as u64);
@@ -6043,6 +6540,15 @@ impl WaveApp {
                 && let Some(i) = e.history.current().markers().index_of(d.id)
             {
                 self.markers_ui.pick.click(e.history.current().markers(), i, false, false);
+            }
+        } else if self.head_scrub.dragging {
+            if response.dragged()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                self.head_scrub.pending = Some(frame_at(&self.view, pos));
+            }
+            if response.drag_stopped() {
+                self.head_scrub.ended = true;
             }
         } else if select
             && response.drag_started_by(egui::PointerButton::Primary)
@@ -6072,6 +6578,7 @@ impl WaveApp {
             && response.clicked_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
+            self.head_scrub.pos = None;
             if shift {
                 self.selection.extend_to(frame_at(&self.view, pos));
             } else {
@@ -6185,8 +6692,31 @@ impl WaveApp {
             }
         };
         line(self.selection.start(), cursor_colour);
+        let head = if self.previewing {
+            None
+        } else if self.playhead_live() {
+            Some(self.player.position())
+        } else {
+            self.head_scrub.pos
+        };
+        if let Some(at) = head {
+            // The playhead: a heavier line from a marker on the ruler, with its time.
+            let x = rect.left() + self.view.x_of(at as f64);
+            if x >= rect.left() && x <= rect.right() {
+                painter.line_segment([pos2(x, ruler.top()), pos2(x, rect.bottom())], Stroke::new(2.0, playhead_colour));
+                let top = ruler.top();
+                painter.add(egui::Shape::convex_polygon(
+                    vec![pos2(x - 6.0, top), pos2(x + 6.0, top), pos2(x, top + 10.0)],
+                    playhead_colour,
+                    Stroke::NONE,
+                ));
+                let galley = painter.layout_no_wrap(self.fmt_time(at), egui::FontId::monospace(11.0), playhead_colour);
+                let label_at = pos2((x + 9.0).min(rect.right() - galley.size().x - 4.0), top + 1.0);
+                painter.rect_filled(Rect::from_min_size(label_at, galley.size()).expand(2.0), 2.0, ground);
+                painter.galley(label_at, galley, playhead_colour);
+            }
+        }
         if self.player.is_playing() && !self.previewing {
-            line(self.player.position(), playhead_colour);
             ui.ctx().request_repaint();
         }
 
@@ -6247,6 +6777,8 @@ impl eframe::App for WaveApp {
         self.finish_job(ctx);
         self.finish_saving(ctx);
         self.finish_batch();
+        self.poll_transport();
+        self.run_scrub();
         self.diag.poll();
         self.meters.update(self.player.take_levels());
         if self.meters.animating() || self.player.is_playing() {
@@ -6351,6 +6883,36 @@ impl eframe::App for WaveApp {
                 if matches!(command, Command::Save | Command::SaveAs) {
                     self.error = Some(e);
                 }
+            }
+        }
+        // The JKL shuttle (f36): J plays backward, K stops, L plays forward; K held with J or L crawls.
+        if !typing {
+            let (presses, k_down, j_down, l_down) = ctx.input(|i| {
+                let presses: Vec<Key> = i
+                    .events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+                            if matches!(key, Key::J | Key::K | Key::L) && !modifiers.command && !modifiers.alt && !modifiers.shift =>
+                        {
+                            Some(*key)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                (presses, i.key_down(Key::K), i.key_down(Key::J), i.key_down(Key::L))
+            });
+            for key in presses {
+                let c = match key {
+                    Key::J => 'j',
+                    Key::L => 'l',
+                    _ => 'k',
+                };
+                self.shuttle_key(c, k_down && c != 'k');
+            }
+            let nudge = self.transport.shuttle.nudge;
+            if nudge != 0 && !self.hold.ctl_nudge && !(if nudge > 0 { l_down } else { j_down }) {
+                self.release_nudge();
             }
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Comma)) {
