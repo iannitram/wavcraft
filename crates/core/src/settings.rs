@@ -53,6 +53,7 @@ const KEY_TIME_DISPLAY: &str = "time_display";
 const KEY_PANEL_LAYOUT: &str = "panel_layout";
 const KEY_ZONE_SIZES: &str = "zone_sizes";
 const KEY_WORKSPACE: &str = "workspace";
+const KEY_METADATA_FIELDS: &str = "metadata_fields";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +78,9 @@ pub struct Settings {
     pub zone_sizes: String,
     /// The workspace in use (`crate::workspaces`; empty: Default).
     pub workspace: String,
+    /// Ids of the metadata fields file-listing panels show (`crate::panels::MetadataField`);
+    /// `None`: never chosen, use the defaults.
+    pub metadata_fields: Option<Vec<String>>,
 }
 
 impl Default for Settings {
@@ -92,6 +96,7 @@ impl Default for Settings {
             panel_layout: String::new(),
             zone_sizes: String::new(),
             workspace: String::new(),
+            metadata_fields: None,
         }
     }
 }
@@ -131,6 +136,9 @@ impl Settings {
                 KEY_PANEL_LAYOUT => s.panel_layout = value.to_string(),
                 KEY_ZONE_SIZES => s.zone_sizes = value.to_string(),
                 KEY_WORKSPACE => s.workspace = value.to_string(),
+                KEY_METADATA_FIELDS => {
+                    s.metadata_fields = Some(value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect())
+                }
                 // A value that doesn't fit its key leaves the default, as an unknown key is ignored.
                 other => {
                     let _ = s.set(other, value);
@@ -219,6 +227,10 @@ impl Settings {
         }
         if !self.workspace.is_empty() {
             out.push_str(&format!("# workspace: the workspace in use (Window › Workspace; empty: Default).\n{KEY_WORKSPACE} = {}\n", self.workspace));
+        }
+        if let Some(fields) = &self.metadata_fields {
+            out.push_str("# metadata_fields: what file lists show (Metadata Display), comma separated.\n");
+            out.push_str(&format!("{KEY_METADATA_FIELDS} = {}\n", fields.join(",")));
         }
         out
     }

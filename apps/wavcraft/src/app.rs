@@ -12,7 +12,7 @@ use wavcraft_core::io::OpenOptions;
 use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
-use wavcraft_core::panels::{self, DockSide, Layout, PanelSet};
+use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
 use wavcraft_core::save::{FileKind, Part, SampleType, save_wav, write_file};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
@@ -287,6 +287,10 @@ pub struct WaveApp {
     rack: RackPanel,
     /// A clip's source open in the Waveform editor, waiting for Return to session (f116).
     clip_edit: Option<ClipEdit>,
+    /// Which metadata fields file-listing panels show (kept in the settings file).
+    metadata: MetadataDisplay,
+    /// The Metadata Display dialog is up.
+    metadata_dialog: bool,
 }
 
 /// A clip's source open in the Waveform editor (f116).
@@ -309,6 +313,7 @@ impl WaveApp {
         let settings_path = Settings::default_path();
         let reset_note = if reset_preferences { settings_path.as_deref().map(move_settings_aside) } else { None };
         let settings = settings_path.as_deref().map(Settings::load).unwrap_or_default();
+        let metadata = MetadataDisplay::from_ids(settings.metadata_fields.as_deref());
         let env = std::env::var_os(settings::ENV_SESSION_DIR);
         let sessions = settings::resolve_session_folder(session_dir, env, &settings, default_sessions_root(), settings::check_folder);
         // Folders left by runs that ended without closing their store (a crash, a kill, a
@@ -405,6 +410,8 @@ impl WaveApp {
             shift_frames: SHIFT_RESET_FRAMES,
             rack: RackPanel::new(),
             clip_edit: None,
+            metadata,
+            metadata_dialog: false,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -1171,6 +1178,78 @@ impl WaveApp {
         self.time_format.format(frame, self.doc.as_ref().map_or(0, |d| d.sample_rate()))
     }
 
+    /// Run a panel's menu item (A048). Close Panel and Maximize are the window's own commands (the
+    /// tab's right-click menu runs the same ones); a panel's own items run here.
+    fn run_panel_item(&mut self, panel: &str, item: &str) -> Result<(), String> {
+        let maximized = self.layout.maximized(&self.panels) == Some(panel);
+        if !panels::menu(panel, maximized).iter().any(|i| i.id == item) {
+            return Err(if panels::by_id(panel).is_some() {
+                format!("panel {panel:?} has no menu item {item:?}")
+            } else {
+                format!("no panel with the id {panel:?}")
+            });
+        }
+        match item {
+            "close" => {
+                self.close_panel(panel);
+                Ok(())
+            }
+            "maximize" => {
+                self.layout.apply_command(&mut self.panels, &format!("maximize {panel}"))?;
+                self.save_panels();
+                Ok(())
+            }
+            "clear_history" => {
+                if self.editor.as_ref().is_some_and(|e| e.history.steps().len() > 1) {
+                    self.confirm_clear_history = true;
+                    Ok(())
+                } else {
+                    Err("there is no history to clear".into())
+                }
+            }
+            "metadata_display" => {
+                self.metadata_dialog = true;
+                Ok(())
+            }
+            _ => Err(format!("menu item {item:?} is not implemented")),
+        }
+    }
+
+    fn set_metadata_field(&mut self, f: MetadataField, on: bool) {
+        self.metadata.set(f, on);
+        self.settings.metadata_fields = Some(self.metadata.ids());
+        if let Err(e) = self.save_settings() {
+            self.notice = Some(e);
+        }
+    }
+
+    /// The Metadata Display dialog: which fields file-listing panels show.
+    fn metadata_display_dialog(&mut self, ctx: &egui::Context) {
+        if !self.metadata_dialog {
+            return;
+        }
+        let mut changes = Vec::new();
+        let mut done = false;
+        egui::Window::new("Metadata Display").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+            ctx,
+            |ui| {
+                for &f in MetadataField::ALL {
+                    let mut on = self.metadata.shows(f);
+                    if ui.checkbox(&mut on, f.label()).changed() {
+                        changes.push((f, on));
+                    }
+                }
+                done = ui.button("Close").clicked();
+            },
+        );
+        for (f, on) in changes {
+            self.set_metadata_field(f, on);
+        }
+        if done {
+            self.metadata_dialog = false;
+        }
+    }
+
     fn toggle_play(&mut self) {
         let Some(doc) = &self.doc else { return };
         if self.player.is_playing() {
@@ -1519,6 +1598,15 @@ impl WaveApp {
 
     /// Window › History: every step, the current one highlighted; click one to go to it.
     fn history_panel(&mut self, ui: &mut egui::Ui) {
+        // The panel's ≡ menu: a row above its body (the tab strip names the panel).
+        let maximized = self.layout.maximized(&self.panels) == Some("history");
+        let mut chosen = None;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| chosen = panel_menu_button(ui, maximized, "history"));
+        if let Some(item) = chosen
+            && let Err(e) = self.run_panel_item("history", item)
+        {
+            self.notice = Some(e);
+        }
         let Some(editor) = self.editor.as_ref() else {
             ui.label("No file open.");
             return;
@@ -2602,6 +2690,55 @@ impl WaveApp {
                     }
                     Some(Err(e)) => format!("ERR {e}"),
                     None => format!("ERR no action named {rest:?}"),
+                }
+            }
+            // A panel's ≡ menu: `PANELMENU <panel> list` → `OK items=close,maximize,… maximized=<id|none>`;
+            // `PANELMENU <panel> run <item>` → `OK maximized=<id|none> <panels report>`.
+            "PANELMENU" => {
+                let mut it = rest.split_whitespace();
+                let (panel, verb, item) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next());
+                let maximized = |s: &Self| -> String { s.layout.maximized(&s.panels).unwrap_or("none").to_string() };
+                match (verb, item) {
+                    _ if panels::by_id(panel).is_none() => format!("ERR no panel with the id {panel:?}"),
+                    ("list", None) => {
+                        let ids: Vec<&str> = panels::menu(panel, self.layout.maximized(&self.panels) == Some(panel)).iter().map(|i| i.id).collect();
+                        format!("OK items={} maximized={}", ids.join(","), maximized(self))
+                    }
+                    ("run", Some(item)) => match self.run_panel_item(panel, item) {
+                        Ok(()) => format!(
+                            "OK maximized={} confirm_clear_history={} {}",
+                            maximized(self),
+                            u8::from(self.confirm_clear_history),
+                            self.panels.report()
+                        ),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    _ => "ERR PANELMENU <panel> list | PANELMENU <panel> run <item>".to_string(),
+                }
+            }
+            // The Metadata Display dialog: `METADATA` reports the fields shown; `METADATA set a,b`
+            // chooses them; `METADATA open` shows the dialog.
+            "METADATA" => {
+                let (verb, arg) = rest.split_once(char::is_whitespace).map_or((rest.trim(), ""), |(v, a)| (v, a.trim()));
+                match verb {
+                    "" => format!("OK fields={} dialog={}", self.metadata.report(), u8::from(self.metadata_dialog)),
+                    "open" => {
+                        self.metadata_dialog = true;
+                        "OK".to_string()
+                    }
+                    "set" => {
+                        let ids: Vec<&str> = arg.split(',').map(str::trim).filter(|v| !v.is_empty() && *v != "none").collect();
+                        match ids.iter().find(|i| MetadataField::from_id(i).is_none()) {
+                            Some(bad) => format!("ERR no metadata field {bad:?}"),
+                            None => {
+                                for &f in MetadataField::ALL {
+                                    self.set_metadata_field(f, ids.contains(&f.id()));
+                                }
+                                format!("OK fields={}", self.metadata.report())
+                            }
+                        }
+                    }
+                    _ => "ERR METADATA [open | set <field,field,…|none>]".to_string(),
                 }
             }
             // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
@@ -3777,7 +3914,39 @@ impl WaveApp {
             line(self.player.position(), PLAYHEAD);
             ui.ctx().request_repaint();
         }
+
+        // Each editor panel's ≡ menu sits in the top right corner of its area.
+        let mut chosen = None;
+        for (id, area) in [("waveform", wave_area), ("spectral", spectrum_area)] {
+            if let Some(area) = area {
+                let at = Rect::from_min_size(pos2(area.right() - 28.0, area.top() + 2.0), vec2(26.0, 20.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(at), |ui| {
+                    if let Some(item) = panel_menu_button(ui, self.layout.maximized(&self.panels) == Some(id), id) {
+                        chosen = Some((id, item));
+                    }
+                });
+            }
+        }
+        if let Some((id, item)) = chosen
+            && let Err(e) = self.run_panel_item(id, item)
+        {
+            self.notice = Some(e);
+        }
     }
+}
+
+/// The ≡ button of a panel's header and its menu (A048); the id of the item clicked, if any.
+fn panel_menu_button(ui: &mut egui::Ui, maximized: bool, id: &str) -> Option<&'static str> {
+    let mut chosen = None;
+    ui.menu_button("≡", |ui| {
+        for item in panels::menu(id, maximized) {
+            if ui.button(item.label).clicked() {
+                chosen = Some(item.id);
+                ui.close();
+            }
+        }
+    });
+    chosen
 }
 
 impl eframe::App for WaveApp {
@@ -4016,6 +4185,7 @@ impl eframe::App for WaveApp {
         self.rack_ui(&ctx);
         self.diagnostics_ui(&ctx);
         self.clear_history_prompt(&ctx);
+        self.metadata_display_dialog(&ctx);
         self.draw_hud(&ctx);
         {
             let current = self.editor.as_ref().map(|e| e.history.current().clone());
