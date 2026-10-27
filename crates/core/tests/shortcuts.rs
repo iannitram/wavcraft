@@ -34,6 +34,8 @@ shortcuts! {
     redo_ctrl_y: "Ctrl+Y" => A(ActionId::Redo);
     repeat_last_f3: "F3" => A(ActionId::RepeatLast);
     repeat_last_shift_r: "Shift+R" => A(ActionId::RepeatLast);
+    spectral_up_ctrl_shift_up: "Ctrl+Shift+ArrowUp" => A(ActionId::SpectralResolutionUp);
+    spectral_down_ctrl_shift_down: "Ctrl+Shift+ArrowDown" => A(ActionId::SpectralResolutionDown);
     repeat_last_dialog_f2: "F2" => A(ActionId::RepeatLastDialog);
     repeat_last_dialog_ctrl_r: "Ctrl+R" => A(ActionId::RepeatLastDialog);
     cut_ctrl_x: "Ctrl+X" => A(ActionId::Cut);

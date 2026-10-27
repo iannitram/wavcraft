@@ -33,6 +33,8 @@ use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::transport::{self, Follow, Mode, Scrub as DragTracker, Transport};
 use wavcraft_core::view::{self, Band, SpectralSelection, fraction_of_hz, hz_at_fraction, nav_hit};
+
+mod spectral;
 use wavcraft_core::workspaces::{self, Snapshot, Workspaces};
 use wavcraft_core::{
     AmpScale, AmpZoom, ChannelLayout, DocState, Document, GRAB_PX, History, NavPart, OpenError, Selection, SpectrogramParams, TimeFormat,
@@ -347,6 +349,8 @@ impl Tool {
 }
 
 pub struct WaveApp {
+    /// The spectral divider moved or the display toggled and is not saved yet (saved once the pointer is up).
+    spectral_dirty: bool,
     doc: Option<Document>,
     tool: Tool,
     /// Which context menu the last right-click in the editor's rectangle opened (A351).
@@ -668,6 +672,7 @@ impl WaveApp {
                 p
             },
             panels: PanelSet::from_hidden(&settings.hidden_panels),
+            spectral_dirty: false,
             layout: Layout::decode(&settings.panel_layout, &settings.zone_sizes),
             hover: None,
             hover_next: None,
@@ -950,7 +955,7 @@ impl WaveApp {
             "input_device" => {}
             "output_map" => self.player.set_map(self.settings.output_map.clone()),
             "playback_quality" => self.player.set_quality(self.settings.playback_quality),
-            "spec_resolution" | "spec_db_range" => {
+            "spec_resolution" | "spec_db_range" | "spec_window" => {
                 self.settings.apply_to_spectrogram(&mut self.params);
                 self.spectrum = None;
             }
@@ -3390,6 +3395,8 @@ impl WaveApp {
                 self.mic_dialog.get_or_insert(MicDialog { secs: 5.0, result: None });
                 return Ok(false);
             }
+            ActionId::SpectralResolutionUp => self.step_resolution(1),
+            ActionId::SpectralResolutionDown => self.step_resolution(-1),
             _ => {}
         }
         let frames = self.doc.as_ref().map_or(0, Document::frames);
@@ -5693,6 +5700,7 @@ impl WaveApp {
                 let width = self.editor_width.max(1.0);
                 let (vzoom, ampscale, layout) = (self.amp_zoom.get(), self.settings.amp_scale.name(), self.settings.channel_layout.name());
         let zfactor = f64::from(self.settings.zoom_factor);
+                let spectral = self.spectral_state();
                 let view = format!(
                     "tool={} right_click={} view={:.0}-{:.0}",
                     self.tool.name(),
@@ -5727,7 +5735,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} selch={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
+                            "OK frames={} channels={} rate={} selection={} selch={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -5772,7 +5780,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         u8::from(self.player.is_playing()),
@@ -6896,6 +6904,7 @@ impl WaveApp {
                 }
             }
             "BATCH" => self.batch.control(rest, &self.sessions.path, ctx),
+            "SPECTRAL" => self.control_spectral(rest),
             "SAVE" => {
                 // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10] [meta=0|1]`: the options end the line.
                 let meta = match take_meta(rest) {
@@ -7384,6 +7393,7 @@ impl WaveApp {
                 if ui.checkbox(&mut self.params.log_freq, "Logarithmic frequency axis").changed() {
                     self.spectrum = None;
                 }
+                self.spectral_menu(ui);
                 ui.separator();
                 ui.menu_button("Playback Resampling", |ui| {
                     for q in [Quality::High, Quality::Fast] {
@@ -8200,9 +8210,18 @@ impl WaveApp {
             }
         }
 
+        let mut show_spec = self.panels.is_shown("spectral");
+        let mut split_pct = self.settings.spec_split_pct;
+        let divider = spectral::divider(ui, body, self.editor_shows("waveform"), &mut show_spec, &mut split_pct);
+        if show_spec != self.panels.is_shown("spectral") {
+            self.panels.set("spectral", show_spec);
+            self.spectral_dirty = true;
+        }
+        self.settings.spec_split_pct = split_pct;
+        self.spectral_dirty |= divider.changed;
+        let split = divider.y;
         let (wave_area, spectrum_area) = match (self.editor_shows("waveform"), self.editor_shows("spectral")) {
             (true, true) => {
-                let split = body.top() + body.height() * 0.5;
                 (Some(Rect::from_min_max(body.min, pos2(body.right(), split))), Some(Rect::from_min_max(pos2(body.left(), split), body.max)))
             }
             (true, false) => (Some(body), None),
@@ -8381,6 +8400,8 @@ impl WaveApp {
                 clipped.rect_stroke(r, 0.0, Stroke::new(1.0, BAND_OUTLINE), egui::StrokeKind::Inside);
             }
         }
+        divider.draw(&painter, body, self.editor_shows("waveform"));
+
         // Selection, cursor and playhead over everything.
         if !self.selection.is_empty() {
             let (a, b) = (rect.left() + self.view.x_of(self.selection.start() as f64), rect.left() + self.view.x_of(self.selection.end() as f64));
@@ -8847,6 +8868,10 @@ impl eframe::App for WaveApp {
                     self.mtv.ui(ui, self.doc.as_ref());
                 } else {
                     self.editor(ui);
+                    // The divider or the display options changed: save once the pointer is up.
+                    if self.spectral_dirty && !ui.ctx().input(|i| i.pointer.any_down()) {
+                        self.save_spectral_now();
+                    }
                 }
             });
         }

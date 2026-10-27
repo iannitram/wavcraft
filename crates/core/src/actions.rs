@@ -73,6 +73,9 @@ pub enum ActionId {
     ZoomPreset3,
     ZoomPreset4,
     ZoomPreset5,
+    /// Spectral display resolution (FFT length) up or down, a step along the Preferences page's list.
+    SpectralResolutionUp,
+    SpectralResolutionDown,
     ChannelsLayered,
     ChannelsStacked,
     ZeroInward,
@@ -269,6 +272,8 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomPreset3, "view.zoom.preset.3", "Zoom to Time: Slot 3"),
     window(ActionId::ZoomPreset4, "view.zoom.preset.4", "Zoom to Time: Slot 4"),
     window(ActionId::ZoomPreset5, "view.zoom.preset.5", "Zoom to Time: Slot 5"),
+    window(ActionId::SpectralResolutionUp, "view.spectral.resolutionUp", "Spectral Resolution Up"),
+    window(ActionId::SpectralResolutionDown, "view.spectral.resolutionDown", "Spectral Resolution Down"),
     window(ActionId::ChannelsLayered, "view.channels.layered", "Layer Channels"),
     window(ActionId::ChannelsStacked, "view.channels.stacked", "Stack Channels"),
     window(ActionId::MeterInputToggle, "meter.input.toggle", "Meter Input Signal"),
@@ -662,6 +667,7 @@ impl Editor {
             ActionId::ZoomInAtIn | ActionId::ZoomInAtOut => self.len() > 0,
             ActionId::ZoomPreset1 | ActionId::ZoomPreset2 | ActionId::ZoomPreset3 | ActionId::ZoomPreset4 | ActionId::ZoomPreset5 => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom | ActionId::ToolMarquee => true,
+            ActionId::SpectralResolutionUp | ActionId::SpectralResolutionDown => true,
             ActionId::ZoomToSelection => has_sel,
             ActionId::Play
             | ActionId::Pause
@@ -1315,6 +1321,8 @@ impl Editor {
             | ActionId::ZoomPreset3
             | ActionId::ZoomPreset4
             | ActionId::ZoomPreset5
+            | ActionId::SpectralResolutionUp
+            | ActionId::SpectralResolutionDown
             | ActionId::ChannelsLayered
             | ActionId::ChannelsStacked
             // Repeat and the zero-crossing adjusts returned above.

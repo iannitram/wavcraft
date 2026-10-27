@@ -460,3 +460,24 @@ fn f69_zoom_presets_are_saved_and_bad_values_fall_back() {
     assert_eq!(Settings::parse("zoom_presets = 3,4\n").zoom_presets.0[..2], [3.0, 4.0]);
     assert_eq!(Settings::parse("zoom_presets = banana\n").zoom_presets, wavcraft_core::view::ZoomPresets::default());
 }
+
+#[test]
+fn spectral_divider_share_survives_a_save_and_a_load() {
+    use wavcraft_core::settings::{DEFAULT_SPEC_SPLIT_PCT, MAX_SPEC_SPLIT_PCT, MIN_SPEC_SPLIT_PCT};
+    let dir = TempDir::new("spectral-split");
+    let file = dir.0.join("settings.txt");
+    assert_eq!(Settings::default().spec_split_pct, DEFAULT_SPEC_SPLIT_PCT);
+    assert!(!Settings::default().to_text().contains("spec_split_pct"), "the default is not written");
+    let s = Settings { spec_split_pct: 35, ..Settings::default() };
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file), s);
+    // Out of the divider's limits, or not a number: the default stays, the rest of the file reads.
+    for bad in [MIN_SPEC_SPLIT_PCT - 1, MAX_SPEC_SPLIT_PCT + 1] {
+        assert_eq!(Settings::parse(&format!("spec_split_pct = {bad}
+")).spec_split_pct, DEFAULT_SPEC_SPLIT_PCT);
+    }
+    assert_eq!(Settings::parse("spec_split_pct = lots
+spec_db_range = 120
+").spec_db_range, 120);
+    assert!(Settings::default().set("spec_split_pct", "95").is_err());
+}

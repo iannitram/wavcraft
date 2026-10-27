@@ -70,6 +70,7 @@ const KEY_MONITOR_INPUT: &str = "monitor_input";
 const KEY_SPEC_WINDOW: &str = "spec_window";
 const KEY_SPEC_RESOLUTION: &str = "spec_resolution";
 const KEY_SPEC_DB_RANGE: &str = "spec_db_range";
+const KEY_SPEC_SPLIT: &str = "spec_split_pct";
 const KEY_SPEC_PLAY_FREQS: &str = "spec_play_selected_freqs";
 const KEY_LOUDNESS_TARGET: &str = "loudness_target_lufs";
 const KEY_TRUE_PEAK: &str = "true_peak_ceiling_dbtp";
@@ -101,7 +102,7 @@ pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
 /// menu and is not one of them).
-pub const KEYS: [&str; 45] = [
+pub const KEYS: [&str; 46] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
@@ -121,6 +122,7 @@ pub const KEYS: [&str; 45] = [
     KEY_SPEC_WINDOW,
     KEY_SPEC_RESOLUTION,
     KEY_SPEC_DB_RANGE,
+    KEY_SPEC_SPLIT,
     KEY_SPEC_PLAY_FREQS,
     KEY_TIME_DISPLAY,
     KEY_LOUDNESS_TARGET,
@@ -156,6 +158,10 @@ pub const DEFAULT_SPEC_RESOLUTION: u32 = 2048;
 pub const MIN_SPEC_DB_RANGE: u32 = 40;
 pub const MAX_SPEC_DB_RANGE: u32 = 160;
 pub const DEFAULT_SPEC_DB_RANGE: u32 = 100;
+/// The spectral display's share of the height the waveform keeps when both show, in percent: limits and default.
+pub const MIN_SPEC_SPLIT_PCT: u32 = 10;
+pub const MAX_SPEC_SPLIT_PCT: u32 = 90;
+pub const DEFAULT_SPEC_SPLIT_PCT: u32 = 50;
 /// Default loudness target (LUFS) and true-peak ceiling (dBTP), and their limits.
 pub const DEFAULT_LOUDNESS_TARGET_LUFS: f32 = -16.0;
 pub const MIN_LOUDNESS_TARGET_LUFS: f32 = -70.0;
@@ -477,6 +483,8 @@ pub struct Settings {
     pub spec_window: SpecWindow,
     pub spec_resolution: u32,
     pub spec_db_range: u32,
+    /// The share of the height the waveform keeps when the spectral display shows too, in percent (the divider).
+    pub spec_split_pct: u32,
     /// Placeholder: play only the selected frequencies. Stored only.
     pub spec_play_selected_freqs: bool,
     /// Loudness and Diagnostics page: the default target (LUFS) and true-peak ceiling (dBTP).
@@ -557,6 +565,7 @@ impl Default for Settings {
             spec_window: SpecWindow::Hann,
             spec_resolution: DEFAULT_SPEC_RESOLUTION,
             spec_db_range: DEFAULT_SPEC_DB_RANGE,
+            spec_split_pct: DEFAULT_SPEC_SPLIT_PCT,
             spec_play_selected_freqs: false,
             loudness_target_lufs: DEFAULT_LOUDNESS_TARGET_LUFS,
             true_peak_ceiling_dbtp: DEFAULT_TRUE_PEAK_DBTP,
@@ -712,6 +721,8 @@ impl Settings {
     /// `params`. The window function is stored only: the analysis uses Hann.
     pub fn apply_to_spectrogram(&self, params: &mut crate::SpectrogramParams) {
         params.fft_size = self.spec_resolution as usize;
+        params.window = self.spec_window;
+        params.window = self.spec_window;
         params.floor_db = -(self.spec_db_range as f32);
         params.ceil_db = 0.0;
     }
@@ -765,6 +776,7 @@ impl Settings {
             KEY_SPEC_WINDOW => self.spec_window.name().to_string(),
             KEY_SPEC_RESOLUTION => self.spec_resolution.to_string(),
             KEY_SPEC_DB_RANGE => self.spec_db_range.to_string(),
+            KEY_SPEC_SPLIT => self.spec_split_pct.to_string(),
             KEY_SPEC_PLAY_FREQS => self.spec_play_selected_freqs.to_string(),
             KEY_LOUDNESS_TARGET => self.loudness_target_lufs.to_string(),
             KEY_TRUE_PEAK => self.true_peak_ceiling_dbtp.to_string(),
@@ -863,6 +875,12 @@ impl Settings {
                 self.spec_db_range = match value.parse::<u32>() {
                     Ok(n) if (MIN_SPEC_DB_RANGE..=MAX_SPEC_DB_RANGE).contains(&n) => n,
                     _ => return Err(format!("{key} is a whole number of dB, {MIN_SPEC_DB_RANGE} to {MAX_SPEC_DB_RANGE}")),
+                }
+            }
+            KEY_SPEC_SPLIT => {
+                self.spec_split_pct = match value.parse::<u32>() {
+                    Ok(n) if (MIN_SPEC_SPLIT_PCT..=MAX_SPEC_SPLIT_PCT).contains(&n) => n,
+                    _ => return Err(format!("{key} is a whole percent, {MIN_SPEC_SPLIT_PCT} to {MAX_SPEC_SPLIT_PCT}")),
                 }
             }
             KEY_SPEC_PLAY_FREQS => self.spec_play_selected_freqs = parse_bool(key, value)?,

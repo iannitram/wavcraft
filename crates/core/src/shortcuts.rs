@@ -233,6 +233,8 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::SetOut, key("O")),
     act(ActionId::LeftChannel, key("ArrowUp")),
     act(ActionId::RightChannel, key("ArrowDown")),
+    act(ActionId::SpectralResolutionUp, cmd_shift("ArrowUp")),
+    act(ActionId::SpectralResolutionDown, cmd_shift("ArrowDown")),
     // View and the mouse tools.
     act(ActionId::CursorToStart, key("Home")),
     act(ActionId::CursorToEnd, key("End")),
