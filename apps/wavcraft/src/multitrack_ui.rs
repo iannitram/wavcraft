@@ -2,6 +2,7 @@
 //! that draws each track's clips as plain boxes, over `wavcraft_core::multitrack`. Also the
 //! control verbs `SESSION`, `TRACK`, `CLIP`, `CLIPPROP` and `VIEW`, so a script can drive it.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,7 +11,8 @@ use soundcraft_playback::Player as DevicePlayer;
 use wavcraft_core::Document;
 use wavcraft_core::mtplay::{PlaybackSession, SilentPlayer};
 use wavcraft_core::mtrecord::{FAKE_CHANNELS, Recorder};
-use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, ChannelFormat, ClipId, SourceId, TrackId, TrackKind};
+use wavcraft_core::multitrack::automation::parse_param;
+use wavcraft_core::multitrack::soundcraft_model::{AutoParam, BitDepthSetting, ChannelFormat, ClipId, SourceId, TrackId, TrackKind};
 use wavcraft_core::multitrack::{AudioType, ClipProps, MtError, Multitrack, VideoMeta, bit_depth_from_bits, bits_of, parse_track_format};
 use wavcraft_core::session_file;
 
@@ -144,6 +146,10 @@ pub struct MtView {
     ruler_drag: Option<f64>,
     /// Normalize a mixdown to this peak (menu check box).
     pub mix_normalize: bool,
+    /// Tracks whose automation lane is showing, and which parameter (f109).
+    lanes: HashMap<TrackId, AutoParam>,
+    /// The point being dragged: track, parameter, index.
+    dragging: Option<(TrackId, AutoParam, usize)>,
 }
 
 impl Default for MtView {
@@ -169,6 +175,8 @@ impl Default for MtView {
             marker_rename: None,
             ruler_drag: None,
             mix_normalize: false,
+            lanes: HashMap::new(),
+            dragging: None,
         }
     }
 }
@@ -638,6 +646,14 @@ impl MtView {
                     if ui.small_button("Rename").clicked() {
                         self.rename = Some((id, name.clone()));
                     }
+                    let mut shown = self.lanes.contains_key(&id);
+                    if ui.toggle_value(&mut shown, "Auto").on_hover_text("Show the automation lane (volume or pan)").changed() {
+                        if shown {
+                            self.lanes.insert(id, AutoParam::Volume);
+                        } else {
+                            self.lanes.remove(&id);
+                        }
+                    }
                     if ui.small_button("Remove").clicked() {
                         remove = Some(id);
                     }
@@ -715,6 +731,9 @@ impl MtView {
                             ui.close();
                         }
                     });
+                }
+                if self.lanes.contains_key(&id) {
+                    automation_row(ui, mt, id, width, self.px_per_sec, &mut self.lanes, &mut self.dragging, &mut failure);
                 }
             }
             // The master track, always at the bottom: its own fader and mute.
@@ -833,6 +852,59 @@ impl MtView {
         }
     }
 
+    /// One control line for `AUTO`: add / move / delete / thin / show / state (f109).
+    fn auto_control(&mut self, w: &[String]) -> Result<String, MtError> {
+        let word = |i: usize| w.get(i).map(String::as_str).unwrap_or("");
+        let usage = || {
+            Err(MtError(
+                "usage: AUTO add <track> <param> <t> <v> | move <track> <param> <i> <t> <v> | delete <track> <param> <i> | thin <track> <param> <tol> | show <track> <param>|off | state"
+                    .into(),
+            ))
+        };
+        let num = |i: usize, what: &str| word(i).parse::<f64>().map_err(|_| MtError(format!("{what} is a number")));
+        let mt = self.mt.as_mut().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+        let verb = word(0);
+        if verb == "state" && w.len() == 1 {
+            let shown: Vec<(TrackId, AutoParam)> = self.lanes.iter().map(|(i, p)| (*i, p.clone())).collect();
+            return Ok(format!("OK {}", mt.automation_state(&shown)));
+        }
+        if w.len() < 3 {
+            return usage();
+        }
+        let id = mt.find_track(word(1))?;
+        if verb == "show" && w.len() == 3 {
+            if word(2) == "off" {
+                self.lanes.remove(&id);
+            } else {
+                self.lanes.insert(id, parse_param(word(2))?);
+            }
+            self.show = true;
+            return Ok("OK".into());
+        }
+        let param = parse_param(word(2))?;
+        let index = |i: usize| word(i).parse::<usize>().map_err(|_| MtError("<i> is a point number from 0".into()));
+        let count = |mt: &Multitrack| mt.lane(id, &param).map_or(0, |l| l.points.len());
+        match (verb, w.len()) {
+            ("add", 5) => {
+                let i = mt.automation_add(id, &param, num(3, "<t>")?, num(4, "<v>")? as f32)?;
+                Ok(format!("OK index={i} points={}", count(mt)))
+            }
+            ("move", 6) => {
+                let i = mt.automation_move(id, &param, index(3)?, num(4, "<t>")?, num(5, "<v>")? as f32)?;
+                Ok(format!("OK index={i} points={}", count(mt)))
+            }
+            ("delete", 4) => {
+                mt.automation_delete(id, &param, index(3)?)?;
+                Ok(format!("OK points={}", count(mt)))
+            }
+            ("thin", 4) => {
+                let n = mt.automation_thin(id, &param, num(3, "<tol>")? as f32)?;
+                Ok(format!("OK removed={n} points={}", count(mt)))
+            }
+            _ => usage(),
+        }
+    }
+
     /// One control line for `SESSION`, `TRACK`, `CLIP` or `VIEW`; the answer starts `OK` or `ERR`.
     pub fn control(&mut self, cmd: &str, rest: &str, doc: Option<&Document>) -> String {
         let words = match tokens(rest) {
@@ -881,6 +953,7 @@ impl MtView {
         let word = |i: usize| w.get(i).map(String::as_str).unwrap_or("");
         let usage = |u: &str| Err(MtError(format!("usage: {u}")));
         match (cmd, word(0)) {
+            ("AUTO", _) => self.auto_control(w),
             ("VIEW", v @ ("waveform" | "multitrack")) => {
                 self.show = v == "multitrack";
                 Ok(format!("OK view={v}"))
@@ -1219,6 +1292,117 @@ fn toggle(v: &mut Vec<wavcraft_core::multitrack::soundcraft_model::ClipId>, id: 
     }
 }
 
+/// The range a lane is drawn over (volume shows -60 to +12 dB; the model's floor is lower).
+fn display_range(p: &AutoParam) -> (f32, f32) {
+    match p {
+        AutoParam::Volume => (-60.0, 12.0),
+        _ => (-1.0, 1.0),
+    }
+}
+
+/// The automation lane row under a track (f109): a header with the parameter choice and the
+/// lane drawn as a polyline. Click empty lane to add a point, drag a point to move it
+/// (time and value), right-click a point to delete it, Thin removes redundant points.
+#[allow(clippy::too_many_arguments)]
+fn automation_row(
+    ui: &mut egui::Ui,
+    mt: &mut Multitrack,
+    id: TrackId,
+    width: f32,
+    px_per_sec: f32,
+    lanes: &mut HashMap<TrackId, AutoParam>,
+    dragging: &mut Option<(TrackId, AutoParam, usize)>,
+    failure: &mut Option<String>,
+) {
+    let Some(param) = lanes.get(&id).cloned() else { return };
+    let (row, _) = ui.allocate_exact_size(vec2(HEADER_W + width, ROW_H), Sense::hover());
+    let header = Rect::from_min_size(row.min, vec2(HEADER_W - 4.0, ROW_H));
+    let lane = Rect::from_min_size(pos2(row.left() + HEADER_W, row.top()), vec2(width, ROW_H));
+    ui.painter().rect_filled(header, 3.0, Color32::from_rgb(26, 30, 38));
+    ui.painter().rect_filled(lane, 0.0, Color32::from_rgb(14, 16, 20));
+    let mut h = ui.new_child(egui::UiBuilder::new().max_rect(header.shrink2(vec2(8.0, 3.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+    let mut choice = param.clone();
+    h.horizontal(|ui| {
+        ui.weak("Lane");
+        egui::ComboBox::from_id_salt(("auto-param", id.0)).selected_text(param.label()).width(70.0).show_ui(ui, |ui| {
+            ui.selectable_value(&mut choice, AutoParam::Volume, "volume");
+            ui.selectable_value(&mut choice, AutoParam::Pan(0), "pan");
+        });
+    });
+    let n = mt.lane(id, &param).map_or(0, |l| l.points.len());
+    h.horizontal(|ui| {
+        ui.weak(format!("{n} points"));
+        if ui
+            .add_enabled(n > 2, egui::Button::new("Thin").small())
+            .on_hover_text("Remove points that change the curve by under a tolerance")
+            .clicked()
+        {
+            let tol = if param == AutoParam::Volume { 0.25 } else { 0.01 };
+            note(failure, mt.automation_thin(id, &param, tol).map(|_| ()));
+        }
+    });
+    h.weak("click: add · drag: move · right-click: delete");
+    if choice != param {
+        lanes.insert(id, choice);
+        return;
+    }
+    let (lo, hi) = display_range(&param);
+    let rate = f64::from(mt.rate());
+    let to_pos =
+        |t: f64, v: f32| pos2(lane.left() + t as f32 * px_per_sec, lane.bottom() - 4.0 - ((v.clamp(lo, hi) - lo) / (hi - lo)) * (ROW_H - 8.0));
+    let from_pos = |p: egui::Pos2| {
+        let t = f64::from(((p.x - lane.left()) / px_per_sec).max(0.0));
+        let v = lo + ((lane.bottom() - 4.0 - p.y) / (ROW_H - 8.0)).clamp(0.0, 1.0) * (hi - lo);
+        (t, v)
+    };
+    let pts: Vec<egui::Pos2> =
+        mt.lane(id, &param).map(|l| l.points.iter().map(|p| to_pos(p.at as f64 / rate, p.value)).collect()).unwrap_or_default();
+    let resp = ui.interact(lane, ui.id().with(("auto", id.0)), Sense::click_and_drag());
+    let near = |at: egui::Pos2| pts.iter().position(|q| q.distance(at) <= 8.0);
+    if let Some(at) = resp.interact_pointer_pos() {
+        if resp.drag_started() {
+            *dragging = near(at).map(|i| (id, param.clone(), i));
+        }
+        if resp.dragged()
+            && let Some((tid, tp, i)) = dragging.clone().filter(|(t, p, _)| *t == id && *p == param)
+        {
+            let (t, v) = from_pos(at);
+            match mt.automation_move(tid, &tp, i, t, v) {
+                Ok(ni) => *dragging = Some((tid, tp, ni)),
+                Err(e) => *failure = Some(e.to_string()),
+            }
+        }
+        if resp.clicked() && near(at).is_none() {
+            let (t, v) = from_pos(at);
+            note(failure, mt.automation_add(id, &param, t, v).map(|_| ()));
+        }
+        if resp.secondary_clicked()
+            && let Some(i) = near(at)
+        {
+            note(failure, mt.automation_delete(id, &param, i));
+        }
+    }
+    if resp.drag_stopped() {
+        *dragging = None;
+    }
+    let p = ui.painter_at(lane);
+    let (zero_v, zero_label) = if param == AutoParam::Volume { (0.0, "0 dB") } else { (0.0, "centre") };
+    let zy = to_pos(0.0, zero_v).y;
+    p.line_segment([pos2(lane.left(), zy), pos2(lane.right(), zy)], Stroke::new(1.0, Color32::from_gray(60)));
+    p.text(pos2(lane.left() + 3.0, zy - 1.0), egui::Align2::LEFT_BOTTOM, zero_label, egui::FontId::monospace(9.0), Color32::from_gray(110));
+    let line = Color32::from_rgb(240, 190, 70);
+    if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+        let mut path = vec![pos2(lane.left(), first.y)];
+        path.extend(pts.iter().copied());
+        path.push(pos2(lane.right(), last.y));
+        p.add(egui::Shape::line(path, Stroke::new(1.5, line)));
+    }
+    for q in &pts {
+        p.circle_filled(*q, 4.0, line);
+        p.circle_stroke(*q, 4.0, Stroke::new(1.0, Color32::BLACK));
+    }
+}
+
 fn note(failure: &mut Option<String>, r: Result<(), MtError>) {
     if let Err(e) = r {
         *failure = Some(e.to_string());
@@ -1390,5 +1574,25 @@ mod tests {
         assert!(v.control("CLIPPROP", "1", None).starts_with("ERR usage"));
         assert!(v.control("CLIPPROP", "1 x", None).starts_with("ERR <i>"));
         assert!(v.control("CLIPPROP", "nope 0", None).starts_with("ERR no track"));
+    }
+
+    #[test]
+    fn the_auto_verbs_add_move_delete_and_thin_points() {
+        let mut v = MtView::default();
+        assert!(v.control("AUTO", "state", None).starts_with("ERR no session"));
+        v.control("SESSION", "new Demo", None);
+        v.control("TRACK", "add Drums", None);
+        assert_eq!(v.control("AUTO", "add Drums volume 1 0", None), "OK index=0 points=1");
+        assert_eq!(v.control("AUTO", "add 1 vol 2 -3", None), "OK index=1 points=2");
+        assert_eq!(v.control("AUTO", "add 1 volume 3 -6", None), "OK index=2 points=3");
+        assert_eq!(v.control("AUTO", "move Drums volume 0 4 -9", None), "OK index=2 points=3");
+        assert_eq!(v.control("AUTO", "thin Drums volume 0.5", None), "OK removed=1 points=2");
+        assert_eq!(v.control("AUTO", "delete Drums volume 0", None), "OK points=1");
+        assert!(v.control("AUTO", "delete Drums volume 5", None).starts_with("ERR no point 5"));
+        assert!(v.control("AUTO", "add Drums mute 1 1", None).starts_with("ERR automation lanes here"));
+        assert!(v.control("AUTO", "add Drums pan x 1", None).starts_with("ERR"));
+        assert_eq!(v.control("AUTO", "show Drums pan", None), "OK");
+        let st = v.control("AUTO", "state", None);
+        assert!(st.contains(r#""shown":{"Drums":"pan"}"#) && st.contains(r#""volume":[[4.0,-9.0]]"#), "{st}");
     }
 }

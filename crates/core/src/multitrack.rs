@@ -22,6 +22,9 @@ use soundcraft_model::{MAX_NAME_CHARS, MarkerKind, Session, VideoSource};
 
 use crate::Document;
 
+pub mod automation;
+pub mod automation_shape;
+
 pub use soundcraft_model;
 pub mod track_height;
 pub mod marker_export;
@@ -855,7 +858,7 @@ impl Multitrack {
                         j
                     })
                     .collect();
-                json!({"name": t.name, "kind": if t.kind == TrackKind::Video { "video" } else { "audio" }, "format": t.format.label(), "channels": t.channels(), "armed": t.mixer.record_arm, "input": crate::mtrecord::input_label(&t.mixer.input), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "pan": t.mixer.pan.first().copied().unwrap_or(0.0), "clips": clips})
+                json!({"name": t.name, "kind": if t.kind == TrackKind::Video { "video" } else { "audio" }, "format": t.format.label(), "channels": t.channels(), "armed": t.mixer.record_arm, "input": crate::mtrecord::input_label(&t.mixer.input), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "pan": t.mixer.pan.first().copied().unwrap_or(0.0), "clips": clips, "automation": t.automation.iter().map(|l| json!({"param": l.param.label(), "points": l.points.len()})).collect::<Vec<_>>()})
             })
             .collect();
         let master = self

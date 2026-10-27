@@ -74,6 +74,7 @@
 //!   Waveform editor (poll `STATE` until `busy=0`); edit it with the usual verbs. `SESSION return` →
 //!   `OK frames=<new> was=<old> trimmed=<n> removed=<n>`: the edited audio becomes the source, clips on it
 //!   keep their start and are trimmed to its new length, the Multitrack view shows (f116)
+//! - `AUTO add|move|delete|thin <track> <param> …`, `AUTO show <track> <param>|off`, `AUTO state` (automation lanes, f109)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
