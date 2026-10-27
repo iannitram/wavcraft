@@ -240,6 +240,8 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::ZoomIn, key("Equals")),
     act(ActionId::ZoomOut, key("Minus")),
     act(ActionId::ZoomToSelection, shift("S")),
+    // Snapping on or off (f09; Audition's default key S).
+    act(ActionId::SnapToggle, key("S")),
     act(ActionId::ZoomOutFull, cmd("Backslash")),
     act(ActionId::ToolSelect, key("T")),
     act(ActionId::ToggleReturnOnStop, shift("X")),

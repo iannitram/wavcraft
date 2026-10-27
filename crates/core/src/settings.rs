@@ -22,6 +22,7 @@
 
 use crate::appearance::{self, Colors, Preset};
 use crate::chanmap::ChannelMap;
+use crate::snap::SnapSettings;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,11 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_SNAP: &str = "snap";
+const KEY_SNAP_ZERO: &str = "snap_zero_crossings";
+const KEY_SNAP_COARSE: &str = "snap_ruler_coarse";
+const KEY_SNAP_FINE: &str = "snap_ruler_fine";
+const KEY_SNAP_EDGES: &str = "snap_edges";
 const KEY_RIGHT_CLICK: &str = "right_click";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
@@ -507,6 +513,8 @@ pub struct Settings {
     pub output_map: ChannelMap,
     /// Device input channel → record channel (empty: the automatic layout). Kept for recording.
     pub input_map: ChannelMap,
+    /// Which things snapping pulls to, and whether it is on (f49; it lasts from run to run).
+    pub snap: SnapSettings,
 }
 
 impl Default for Settings {
@@ -563,6 +571,7 @@ impl Default for Settings {
             buffer_frames: None,
             output_map: ChannelMap::default(),
             input_map: ChannelMap::default(),
+            snap: SnapSettings::default(),
         }
     }
 }
@@ -610,6 +619,18 @@ impl Settings {
                 KEY_PANEL_LAYOUT => s.panel_layout = value.to_string(),
                 KEY_ZONE_SIZES => s.zone_sizes = value.to_string(),
                 KEY_WORKSPACE => s.workspace = value.to_string(),
+                // The snap switches (f49): a value that is not a switch leaves the default.
+                KEY_SNAP | KEY_SNAP_ZERO | KEY_SNAP_COARSE | KEY_SNAP_FINE | KEY_SNAP_EDGES => {
+                    if let Some(on) = parse_flag(value) {
+                        match key.trim() {
+                            KEY_SNAP => s.snap.enabled = on,
+                            KEY_SNAP_ZERO => s.snap.zero_crossings = on,
+                            KEY_SNAP_COARSE => s.snap.ruler_coarse = on,
+                            KEY_SNAP_FINE => s.snap.ruler_fine = on,
+                            _ => s.snap.edges = on,
+                        }
+                    }
+                }
                 KEY_MARKER_COLUMNS => s.marker_columns = MarkerColumns::from_list(value),
                 KEY_METADATA_FIELDS => {
                     s.metadata_fields = Some(value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect())
@@ -972,6 +993,22 @@ impl Settings {
         if !self.workspace.is_empty() {
             out.push_str(&format!("# workspace: the workspace in use (Window › Workspace; empty: Default).\n{KEY_WORKSPACE} = {}\n", self.workspace));
         }
+        // Written only when a switch differs from its default, so a default file keeps the old format.
+        if self.snap != SnapSettings::default() {
+            out.push_str("# snap_*: what snapping pulls to (1 on, 0 off): all, zero crossings, ruler major ticks, ruler minor ticks, selection edges and cursor.
+");
+            let n = &self.snap;
+            for (key, on) in [
+                (KEY_SNAP, n.enabled),
+                (KEY_SNAP_ZERO, n.zero_crossings),
+                (KEY_SNAP_COARSE, n.ruler_coarse),
+                (KEY_SNAP_FINE, n.ruler_fine),
+                (KEY_SNAP_EDGES, n.edges),
+            ] {
+                out.push_str(&format!("{key} = {}
+", u8::from(on)));
+            }
+        }
         if self.marker_columns != MarkerColumns::default() {
             out.push_str("# marker_columns: the Markers panel's columns (start, end, duration, type, description).
 ");
@@ -1050,6 +1087,11 @@ fn parse_bool(key: &str, v: &str) -> Result<bool, String> {
         "false" => Ok(false),
         _ => Err(format!("{key} is true or false")),
     }
+}
+
+/// A snap switch's value: 1/0, on/off, true/false, yes/no. Anything else is no value (the default stays).
+fn parse_flag(value: &str) -> Option<bool> {
+    parse_on_off("snap", value).ok()
 }
 
 /// An on/off preference: `on`/`off` (also `true`/`false`, `yes`/`no`, `1`/`0`).

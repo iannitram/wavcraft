@@ -28,6 +28,7 @@ use wavcraft_core::save::{
 };
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
+use wavcraft_core::snap::SnapSettings;
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::transport::{self, Follow, Mode, Scrub as DragTracker, Transport};
@@ -467,6 +468,9 @@ pub struct WaveApp {
     custom_fps_dialog: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// Frames a selection drag snaps to besides the ruler: the edges of the selection that was
+    /// there when the gesture began (the cursor is its start).
+    snap_targets: Vec<u64>,
     /// Recording a take (File › New Recording…, the Record button, `RECORD` on the control channel).
     rec: Recording,
     /// A take being brought into the document.
@@ -721,6 +725,7 @@ impl WaveApp {
             mix_paste: None,
             custom_fps_dialog: None,
             confirm_clear_history: false,
+            snap_targets: Vec::new(),
             rec: Recording::default(),
             integrating: None,
             show_metadata: false,
@@ -824,6 +829,36 @@ impl WaveApp {
         if let Some(e) = self.editor.as_mut() {
             e.crossfades = wavcraft_core::doc::edit::Crossfades { cut_join, edge };
         }
+    }
+
+    /// Give the open file's editor the snapping switches the owner left (they last from file to
+    /// file and run to run).
+    fn apply_snap(&mut self) {
+        let snap = self.settings.snap;
+        if let Some(e) = self.editor.as_mut() {
+            e.snap = snap;
+        }
+    }
+
+    /// Snapping's switches changed: remember them for the next file and the next run.
+    fn keep_snap(&mut self, snap: SnapSettings) {
+        if snap == self.settings.snap {
+            return;
+        }
+        self.settings.snap = snap;
+        if let Err(e) = self.save_settings() {
+            log::warn!(target: "wavcraft", "{e}");
+        }
+    }
+
+    /// Flip a snapping switch from a menu or key (works with no file open too).
+    fn toggle_snap_menu(&mut self, id: ActionId) {
+        let mut snap = self.settings.snap;
+        self.notice = actions::toggle_snap(&mut snap, id);
+        if let Some(e) = self.editor.as_mut() {
+            e.snap = snap;
+        }
+        self.keep_snap(snap);
     }
 
     /// Write the settings file (the message says why not, in words).
@@ -1090,6 +1125,7 @@ impl WaveApp {
             self.mtv.take_dir = self.sessions.path.join("takes");
         }
         self.apply_crossfades();
+        self.apply_snap();
         self.player.set_output(OutputChoice::default());
         self.player.set_map(ChannelMap::default());
         self.player.set_quality(self.settings.playback_quality);
@@ -1700,6 +1736,7 @@ impl WaveApp {
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = Some(Editor::new(History::new(doc.state.clone(), cap)));
                 self.apply_crossfades();
+                self.apply_snap();
                 self.saved = if fresh { None } else { self.editor.as_ref().map(|e| e.history.current().clone()) };
                 self.doc_path = doc.path.clone();
                 self.tempo = self.settings.tempo_for(&self.doc_path);
@@ -1876,6 +1913,7 @@ impl WaveApp {
         let history = rec.into_history(cap).ok_or("Could not recover: the journal holds no steps")?;
         self.doc_path = history.current().source().path.clone();
         self.editor = Some(Editor::new(history));
+        self.apply_snap();
         self.saved = None;
         self.doc_id += 1;
         self.doc = None;
@@ -2337,6 +2375,16 @@ impl WaveApp {
         {
             log::warn!(target: "wavcraft", "could not save the time display to {}: {e}", file.display());
         }
+    }
+
+    /// `frame` pulled to the nearest snap target (Snapping; f09, f49): the ruler's ticks in the
+    /// current time display, the listed `targets` and zero crossings, as the switches say.
+    fn snap_at(&self, editor: &Editor, frame: u64, frames_per_px: f64, targets: &[u64]) -> u64 {
+        let rate = editor.history.current().sample_rate();
+        let seconds_per_px = frames_per_px / f64::from(rate.max(1));
+        let major = self.time_format.tick_step_with(seconds_per_px * wavcraft_core::snap::MAJOR_TICK_PX, rate, &self.tempo);
+        let minor = major / f64::from(self.time_format.subdivisions_with(major, rate, &self.tempo).max(1));
+        editor.snap_with(frame, frames_per_px, targets, Some((major, minor)))
     }
 
     /// A frame set from the ruler, snapped to a timecode frame boundary when the display is SMPTE
@@ -3154,6 +3202,11 @@ impl WaveApp {
     /// Run an action from the table on the open file (menu, key or control channel). Returns
     /// whether the document changed.
     fn run_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
+        // The snapping switches are settings: they flip with no file open too.
+        if self.editor.is_none() && actions::snap_flag_value(&self.settings.snap, id).is_some() {
+            self.toggle_snap_menu(id);
+            return Ok(false);
+        }
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
@@ -3176,7 +3229,9 @@ impl WaveApp {
             self.take_system_clipboard();
         }
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
-        match editor.run(id, sel) {
+        let outcome = editor.run(id, sel);
+        let snap = editor.snap;
+        match outcome {
             Ok(mut out) => {
                 if matches!(id, ActionId::Copy | ActionId::Cut)
                     && let Some(clip) = editor.clipboard()
@@ -3185,6 +3240,7 @@ impl WaveApp {
                     log::info!(target: "wavcraft", "not on the system clipboard: {why}");
                     out.message = Some(format!("Copied to clipboard {} only: {why}", editor.current_clipboard + 1));
                 }
+                self.keep_snap(snap);
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
                 if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::MarkerNext | ActionId::MarkerPrev) {
                     self.halt_play();
@@ -3834,7 +3890,10 @@ impl WaveApp {
     fn item_enabled(&self, item: &Item) -> bool {
         let idle = self.saving.is_none() && self.running.is_none();
         match item.cmd {
-            Cmd::Action(id) => idle && self.editor.as_ref().is_some_and(|e| e.enabled(id, &self.selection_range())),
+            Cmd::Action(id) => {
+                idle && (self.editor.as_ref().is_some_and(|e| e.enabled(id, &self.selection_range()))
+                    || actions::snap_flag_value(&self.settings.snap, id).is_some())
+            }
             Cmd::Open => idle,
             Cmd::Save | Cmd::PlayStop => idle && self.editor.is_some(),
             Cmd::Tool(_) => true,
@@ -5581,7 +5640,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -5601,6 +5660,12 @@ impl WaveApp {
                             u8::from(self.player.metronome().on),
                             self.player.metronome().count_in_bars,
                             u8::from(self.snap_frames),
+                            u8::from(e.snap.enabled),
+                            u8::from(e.snap.zero_crossings),
+                            u8::from(e.snap.ruler_coarse),
+                            u8::from(e.snap.ruler_fine),
+                            u8::from(e.snap.edges),
+                            e.enabled_flags(),
                             self.settings.custom_fps,
                             self.selection.start(),
                             self.fmt_time(self.selection.start()),
@@ -5619,7 +5684,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         u8::from(self.player.is_playing()),
@@ -5632,6 +5697,12 @@ impl WaveApp {
                         u8::from(self.player.metronome().on),
                         self.player.metronome().count_in_bars,
                         u8::from(self.snap_frames),
+                        u8::from(self.settings.snap.enabled),
+                        u8::from(self.settings.snap.zero_crossings),
+                        u8::from(self.settings.snap.ruler_coarse),
+                        u8::from(self.settings.snap.ruler_fine),
+                        u8::from(self.settings.snap.edges),
+                        "",
                         self.settings.custom_fps,
                         self.band_text()
                     ),
@@ -5829,6 +5900,20 @@ impl WaveApp {
             // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
             "PANELS" => self.panels_report(),
             "GESTURE" => self.control_gesture(rest),
+            // The snap step a selection gesture calls, for scripted checks: `SNAP <frame> [frames_per_px]`
+            // (the view's zoom when omitted); the selection's edges are the extra targets.
+            "SNAP" => {
+                let mut it = rest.split_whitespace();
+                let frame = it.next().and_then(|f| f.parse::<u64>().ok());
+                let fpp = it.next().map_or(Some(self.view.frames_per_px), |f| f.parse::<f64>().ok());
+                match (frame, fpp, self.editor.as_ref()) {
+                    (Some(frame), Some(fpp), Some(e)) => {
+                        let targets = [self.selection.start() as u64, self.selection.end() as u64];
+                        format!("OK frame={}", self.snap_at(e, frame, fpp, &targets))
+                    }
+                    _ => "ERR SNAP <frame> [frames_per_px], with a file open".to_string(),
+                }
+            }
             // The step a ruler gesture calls, for scripted checks: `SNAP_FRAME <frame>`.
             "SNAP_FRAME" => match rest.trim().parse::<usize>() {
                 Ok(f) => format!("OK frame={}", self.snap_gesture(f)),
@@ -5886,8 +5971,8 @@ impl WaveApp {
                 Some(e) => freq_panel::control(e.history.current(), e.channels, self.selection_range(), rest),
                 None => "ERR no file open".to_string(),
             },
-            "ACTION" => match actions::by_name(rest) {
-                Some(a) => match self.run_action(a.id, ctx) {
+            "ACTION" => match actions::id_by_name(rest) {
+                Some(id) => match self.run_action(id, ctx) {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
                     Err(e) => format!("ERR {e}"),
                 },
@@ -7129,7 +7214,10 @@ impl WaveApp {
                 let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
                 let mut chosen = None;
                 for a in
-                    TABLE.iter().filter(|a| (a.name.starts_with("view.") && !a.name.starts_with("view.time_display.")) || a.name.starts_with("tool."))
+                    TABLE.iter().filter(|a| {
+                        (a.name.starts_with("view.") && !a.name.starts_with("view.time_display.") && !a.name.starts_with("view.snap."))
+                            || a.name.starts_with("tool.")
+                    })
                 {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
                     let keys = self.keymap.menu_text(Command::Action(a.id), mac);
@@ -7139,6 +7227,12 @@ impl WaveApp {
                 }
                 if let Some(id) = chosen {
                     let _ = self.run_action(id, ui.ctx());
+                }
+                // Snapping (f09, f49): one switch per target, shared with the ruler's menu.
+                let mut snap_chosen = None;
+                ui.menu_button("Snapping", |ui| snap_chosen = snap_items(ui, &self.settings.snap));
+                if let Some(id) = snap_chosen {
+                    self.toggle_snap_menu(id);
                 }
                 ui.separator();
                 let mut picked = None;
@@ -7526,6 +7620,10 @@ impl WaveApp {
             let frame = view.frame_at(pos.x - rect.left()).clamp(0.0, frames as f64).round() as usize;
             if snap_on { snap_fmt.snap_to_frame(frame, rate, frames) } else { frame }
         };
+        // Snapping (f09, f49) pulls a placed frame to the ruler, the selection's edges and, when on,
+        // zero crossings, on top of the timecode-frame snap `frame_at` already does.
+        let fpp = self.view.frames_per_px;
+        let snap = |app: &WaveApp, frame: usize, targets: &[u64]| app.editor.as_ref().map_or(frame, |e| app.snap_at(e, frame as u64, fpp, targets) as usize);
         let edge_at = |sel: &Selection, view: &Viewport, pos: Pos2| sel.edge_near(view, pos.x - rect.left(), GRAB_PX);
         if let Some(pos) = response.hover_pos().or(response.interact_pointer_pos())
             && edge_at(&self.selection, &self.view, pos).is_some()
@@ -7620,19 +7718,22 @@ impl WaveApp {
             // A drag is only reported once the pointer has moved a few pixels: anchor the
             // selection where the button went down, not where the pointer has got to.
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
+            self.snap_targets = vec![self.selection.start() as u64, self.selection.end() as u64];
             if let Some(edge) = edge_at(&self.selection, &self.view, origin) {
                 self.selection.grab(edge);
-                self.selection.head = frame_at(&self.view, pos);
+                self.selection.head = snap(self, frame_at(&self.view, pos), &self.snap_targets);
             } else if shift {
-                self.selection.extend_to(frame_at(&self.view, pos));
+                self.selection.extend_to(snap(self, frame_at(&self.view, pos), &self.snap_targets));
             } else {
-                self.selection = Selection { anchor: frame_at(&self.view, origin), head: frame_at(&self.view, pos) };
+                let (anchor, head) =
+                    (snap(self, frame_at(&self.view, origin), &self.snap_targets), snap(self, frame_at(&self.view, pos), &self.snap_targets));
+                self.selection = Selection { anchor, head };
             }
         } else if select
             && response.dragged_by(egui::PointerButton::Primary)
             && let Some(pos) = response.interact_pointer_pos()
         {
-            self.selection.head = frame_at(&self.view, pos);
+            self.selection.head = snap(self, frame_at(&self.view, pos), &self.snap_targets);
         } else if select && response.triple_clicked_by(egui::PointerButton::Primary) {
             self.selection = Selection::all(frames);
         } else if select && response.double_clicked_by(egui::PointerButton::Primary) {
@@ -7642,10 +7743,12 @@ impl WaveApp {
             && let Some(pos) = response.interact_pointer_pos()
         {
             self.head_scrub.pos = None;
+            let targets = [self.selection.start() as u64, self.selection.end() as u64];
+            let at = snap(self, frame_at(&self.view, pos), &targets);
             if shift {
-                self.selection.extend_to(frame_at(&self.view, pos));
+                self.selection.extend_to(at);
             } else {
-                self.selection = Selection::at(frame_at(&self.view, pos));
+                self.selection = Selection::at(at);
             }
         }
 
@@ -7876,11 +7979,19 @@ impl WaveApp {
         // Selection, cursor and playhead over everything.
         if !self.selection.is_empty() {
             let (a, b) = (rect.left() + self.view.x_of(self.selection.start() as f64), rect.left() + self.view.x_of(self.selection.end() as f64));
-            painter.rect_filled(
-                Rect::from_min_max(pos2(a.max(rect.left()), body.top()), pos2(b.min(rect.right()), body.bottom())),
-                0.0,
-                selection_colour,
-            );
+            let (x0, x1) = (a.max(rect.left()), b.min(rect.right()));
+            // A disabled channel takes no part in the selection (A132): fill only the enabled lanes.
+            let enabled = self.editor.as_ref().map_or(wavcraft_core::ChannelMask::ALL, |e| e.channels.within(channels));
+            let areas: Vec<Rect> = [wave_area, spectrum_area].into_iter().flatten().collect();
+            if areas.is_empty() {
+                painter.rect_filled(Rect::from_min_max(pos2(x0, body.top()), pos2(x1, body.bottom())), 0.0, selection_colour);
+            }
+            for area in areas {
+                for ch in (0..channels).filter(|&c| enabled.contains(c)) {
+                    let l = lane(area, ch, channels);
+                    painter.rect_filled(Rect::from_min_max(pos2(x0, l.top()), pos2(x1, l.bottom())), 0.0, selection_colour);
+                }
+            }
         }
         let line = |frame: usize, color: Color32| {
             let x = rect.left() + self.view.x_of(frame as f64);
@@ -8479,8 +8590,13 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap) -> Vec<Command> {
     let mut rows: Vec<(Command, Shortcut)> = keymap.bindings().iter().map(|b| (b.command, b.chord)).collect();
     rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
-        rows.iter()
-            .filter_map(|(command, k)| {
+        // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
+        let mut pressed: Vec<Command> = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
+            .into_iter()
+            .enumerate()
+            .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(n as u8))))
+            .collect();
+        pressed.extend(rows.iter().filter_map(|(command, k)| {
                 let key = Key::from_name(k.key)?;
                 let mut mods = egui::Modifiers::NONE;
                 if k.cmd {
@@ -8496,8 +8612,8 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap) -> Vec<Command> {
                 let fresh = *command != Command::PlayStop
                     || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
                 (i.consume_key(mods, key) && fresh).then_some(*command)
-            })
-            .collect()
+        }));
+        pressed
     })
 }
 
@@ -8554,6 +8670,19 @@ fn pref_check(ui: &mut egui::Ui, label: &str, key: &'static str, on: bool, actio
 fn brighten(c: Color32, b: f32) -> Color32 {
     let m = |v: u8| (f32::from(v) * b).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgba_unmultiplied(m(c.r()), m(c.g()), m(c.b()), c.a())
+}
+
+/// The check items for every snap target, shared by View › Snapping: the action whose item was
+/// clicked.
+fn snap_items(ui: &mut egui::Ui, snap: &SnapSettings) -> Option<ActionId> {
+    let mut chosen = None;
+    for a in TABLE.iter().filter(|a| a.name.starts_with("view.snap.")) {
+        let mut on = actions::snap_flag_value(snap, a.id).unwrap_or(false);
+        if ui.checkbox(&mut on, a.menu).changed() {
+            chosen = Some(a.id);
+        }
+    }
+    chosen
 }
 
 /// The vertical slice of `area` for channel `ch` of `channels`.

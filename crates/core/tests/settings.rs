@@ -406,3 +406,20 @@ fn right_click_setting_round_trips_and_defaults_to_extend() {
     // Unknown values mean the default.
     assert!(!Settings::parse("right_click = banana").right_click_menu);
 }
+
+#[test]
+fn snapping_choices_last_from_run_to_run() {
+    use wavcraft_core::snap::SnapSettings;
+    let dir = TempDir::new("snap");
+    let file = dir.0.join("settings.txt");
+    assert_eq!(Settings::load(&file).snap, SnapSettings::default());
+    let snap = SnapSettings { enabled: false, zero_crossings: true, ruler_coarse: false, ruler_fine: true, edges: false };
+    Settings { snap, ..Settings::default() }.save(&file).unwrap();
+    assert_eq!(Settings::load(&file).snap, snap);
+    // A value that is not a switch leaves the default; a file without the keys is the defaults.
+    let s = Settings::parse("snap_ruler_fine = maybe\nsnap_edges = off\n");
+    assert_eq!((s.snap.ruler_fine, s.snap.edges), (false, false));
+    assert_eq!(Settings::parse("session_folder = /x\n").snap, SnapSettings::default());
+    // A default file keeps the old format: no snap lines are written.
+    assert!(!Settings::default().to_text().contains("snap_"));
+}

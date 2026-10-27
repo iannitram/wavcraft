@@ -96,8 +96,8 @@ impl Menu {
         }
     }
 
-    /// The entries, top to bottom. The ruler has no time-format or snapping entries: neither
-    /// setting exists in the app yet, so there is nothing to put in them (A351, alpha).
+    /// The entries, top to bottom. The ruler has no time-format entries (the View menu's Time
+    /// Display is the place for it); its snapping entries are the View menu's (f49).
     pub fn entries(self) -> Vec<Entry> {
         match self {
             Menu::Editor => vec![
@@ -114,7 +114,18 @@ impl Menu {
                 act(ActionId::ZoomToSelection),
                 act(ActionId::ZoomOutFull),
             ],
-            Menu::Ruler => vec![act(ActionId::ZoomIn), act(ActionId::ZoomOut), act(ActionId::ZoomToSelection), act(ActionId::ZoomOutFull)],
+            Menu::Ruler => vec![
+                act(ActionId::ZoomIn),
+                act(ActionId::ZoomOut),
+                act(ActionId::ZoomToSelection),
+                act(ActionId::ZoomOutFull),
+                Entry::Sep,
+                act(ActionId::SnapToggle),
+                act(ActionId::SnapZeroToggle),
+                act(ActionId::SnapRulerCoarseToggle),
+                act(ActionId::SnapRulerFineToggle),
+                act(ActionId::SnapEdgesToggle),
+            ],
             Menu::History => vec![act(ActionId::Undo), act(ActionId::Redo)],
         }
     }

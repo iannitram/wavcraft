@@ -5,7 +5,7 @@
 //! by `WAVCRAFT_CONTROL_TOKEN_FILE` (made owner-only with a CSPRNG token when missing; an
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
-//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> playing=<0|1> position=<frame> device=<name> reopens=<n> tool=<name> right_click=<menu|extend> view=<a>-<b> time_display=<format> selection_text=<range> snap_frames=<0|1> cursor_frame=<frame> cursor_text=<time in the format> clipboard=<1-5> clip_frames=<n> labels=<a,b,..> active=<0-based,..> undo=<label> redo=<label> band=<lo-hi|none> path=<the document's own path>` (`band=` is after `redo=`, not last: a parser must split on it)`
+//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> playing=<0|1> position=<frame> device=<name> reopens=<n> tool=<name> right_click=<menu|extend> view=<a>-<b> time_display=<format> selection_text=<range> snap_frames=<0|1> snap=<0|1> snapzero=<0|1> snaprc=<0|1> snaprf=<0|1> snapedges=<0|1> enabled=<one 0|1 per channel> cursor_frame=<frame> cursor_text=<time in the format> clipboard=<1-5> clip_frames=<n> labels=<a,b,..> active=<0-based,..> undo=<label> redo=<label> band=<lo-hi|none> path=<the document's own path>` (`band=` is after `redo=`, not last: a parser must split on it)`
 //!   (`path=` is last: it may hold spaces; Save Selection As and Export do not change it)
 //! - `PLAY <from> <to>` (frames) → `OK`; `PLAY` alone plays from the selection (as Space) → `OK playing=<0|1>`; `PLAYBACK` → see below
 //! - `DEVICE_CHANGED` → `OK` (simulate the system's default output device changing: the output is reopened at the same place, `reopens` counts it; f48)
@@ -15,7 +15,7 @@
 //! - `GESTURE marquee <frame0> <frame1> <hz0> <hz1>` / `GESTURE marquee_move <dframes> <dhz>` → `OK selection=<a>-<b> band=<lo-hi>` (the Marquee tool: a time range and a frequency band; a plain selection change clears the band)
 //! - `GESTURE right_click <frame>` → `OK selection=<a>-<b> moved=<0|1>` (Select tool, `right_click = extend`: the nearest edge moves; the menu setting turns it off)
 //! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)
-//! - `ACTION <name>` (an action table name, `edit.delete`, or an effect, `effect.invert`) → `OK selection=<a>-<b> changed=<0|1>`
+//! - `ACTION <name>` (an action table name, `edit.delete`, or an effect, `effect.invert`; the snapping switches `view.snap.toggle`, `view.snap.zero.toggle`, `view.snap.ruler_coarse.toggle`, `view.snap.ruler_fine.toggle`, `view.snap.edges.toggle`; `channel.toggle.<n>` with n from 0) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `PARAM <amplify.db|normalize.db> <number>` → `OK` (the number Effects › Amplify or Normalize uses)
 //! - `KEY <chord>` (`Ctrl+Z`, `Cmd+Shift+Z`, `Space`, `F3`; Ctrl and Cmd mean the same) → `OK command=<name> selection=<a>-<b> changed=<0|1>` (runs what the shortcut table binds the chord to, as the key would; `ERR` when none)
 //! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
@@ -24,6 +24,7 @@
 //! - `PANELMENU <panel> list` → `OK items=close,maximize,… maximized=<id|none>`; `PANELMENU <panel> run <item>` → `OK maximized=<id|none> confirm_clear_history=<0|1> <panel>=<0|1> …` (a panel's ≡ menu)
 //! - `METADATA` → `OK fields=name,duration,… dialog=<0|1>`; `METADATA set <field,…|none>`; `METADATA open` (the Metadata Display dialog)
 //! - `SELECT_TIME <start> <end>` (each in the chosen time format, no spaces inside) → `OK selection=<a>-<b>`; `STATE` also reports `time_display`, `selection_text` and `snap_frames`
+//! - `SNAP <frame> [frames_per_px]` → `OK frame=<snapped>` (the snap step selection gestures call, with the selection's edges as targets and the ruler's ticks of the current time display)
 //! - `SNAP_FRAME <frame>` → `OK frame=<snapped>` (what a ruler click or drag calls: SMPTE display and Snap to Frames on)
 //! - `FREQ [fft=4096] [window=hann|blackman|rectangular] [start end]` → `OK range=<a>-<b> fft=<n> window=<w> ch1=<hz>Hz/<db>dB …` (the peak of each channel; `start end` in frames, else the selection, else the moment at the cursor, `at=<frame>`)
 //! - `OSCLIP` → `OK ours=<0|1> path=<first file on the system clipboard or ->`; `OSCLIP set <path>` puts a file there as another program would

@@ -71,6 +71,7 @@ shortcuts! {
     zoom_in_equals: "=" => A(ActionId::ZoomIn);
     zoom_out_minus: "-" => A(ActionId::ZoomOut);
     zoom_to_selection_shift_s: "Shift+S" => A(ActionId::ZoomToSelection);
+    snapping_s: "S" => A(ActionId::SnapToggle);
     zoom_out_full_ctrl_backslash: "Ctrl+\\" => A(ActionId::ZoomOutFull);
     tool_select_t: "T" => A(ActionId::ToolSelect);
     return_on_stop_shift_x: "Shift+X" => A(ActionId::ToggleReturnOnStop);

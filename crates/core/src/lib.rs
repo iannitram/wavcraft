@@ -22,6 +22,7 @@
 //! - [`smpte`]: SMPTE timecode at 24 to 59.94 fps (drop-frame too) and snapping to frames.
 //! - [`analysis`]: read-only analysis of a document's audio (the Frequency Analysis spectrum).
 //! - [`transport`]: play modes, loop and skip arithmetic, and the view following the playhead.
+//! - [`snap`]: snapping a frame to the ruler, selection edges, the cursor and zero crossings.
 //! - [`view`]: zoom and scroll arithmetic, selections and time formatting.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -85,6 +86,7 @@ pub mod sessions;
 pub mod settings;
 pub mod shortcuts;
 pub mod smpte;
+pub mod snap;
 pub mod space;
 pub mod spectral_dirty;
 pub mod spectrogram;
