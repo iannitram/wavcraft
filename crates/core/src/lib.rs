@@ -30,6 +30,8 @@ pub mod document;
 pub mod dsp;
 pub mod effects;
 pub mod export_chunks;
+mod flac_enc;
+pub mod export_presets;
 pub mod fade_handles;
 pub mod generate;
 pub mod io;

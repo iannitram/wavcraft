@@ -9,18 +9,19 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::appearance;
+use wavcraft_core::export_presets::{ExportChoice, ExportPresets};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
-use wavcraft_core::save::{FileKind, Part, SampleType, save_wav, write_file};
+use wavcraft_core::save::{AiffKind, FileKind, Part, SampleType, SaveFormat, SizeEstimate, estimate_size, save_aiff_kind, write_file};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::workspaces::{self, Snapshot, Workspaces};
-use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport};
+use wavcraft_core::{DocState, Document, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport};
 
 use crate::control;
 use crate::diagnostics_panel::{self, Ask, DiagPanel};
@@ -138,12 +139,17 @@ struct Running {
     job: jobs::Job,
 }
 
+/// What a shown size estimate was worked out for: the choice and the document step.
+type SizeKey = (SaveFormat, SampleType, AiffKind, usize);
+
 /// A save running on a worker thread.
 struct Saving {
     path: PathBuf,
     /// The step being saved: it becomes the saved state when the save succeeds.
     state: Arc<DocState>,
     ty: SampleType,
+    format: SaveFormat,
+    aiff: AiffKind,
     result: Receiver<Result<(), String>>,
     progress: Arc<AtomicU32>,
     /// Close the window once it is saved (Save from the close prompt).
@@ -258,6 +264,25 @@ pub struct WaveApp {
     saving: Option<Saving>,
     /// The background edit in progress, if any (no other edit, undo or save runs meanwhile).
     running: Option<Running>,
+    /// File › Sample Type on Save: the type every save writes, or `None` to keep the file's own.
+    save_type: Option<SampleType>,
+    /// How AIFF files are written (the export dialog, an export preset, or `SAVE … aiff=`).
+    aiff_kind: AiffKind,
+    /// The Save As / Export dialog is up.
+    export_open: bool,
+    /// The control channel's answer to the next file dialog (`None` inside: the dialog was cancelled).
+    scripted_pick: Option<Option<PathBuf>>,
+    /// What the export dialog (and `SAVEOPTS`) has chosen.
+    export_choice: ExportChoice,
+    /// The named choices, and the file they are kept in.
+    export_presets: ExportPresets,
+    export_presets_path: Option<PathBuf>,
+    /// The name typed in the dialog's preset box.
+    export_preset_name: String,
+    /// The estimated size shown, with what it was worked out for.
+    size_cache: Option<(SizeKey, Result<SizeEstimate, String>)>,
+    /// The format the next Save As dialog starts on (from the export dialog).
+    dialog_format: Option<SaveFormat>,
     /// The "save changes before closing?" prompt is up.
     confirm_close: bool,
     /// Closing was confirmed (or nothing was unsaved): let the next close request through.
@@ -435,6 +460,16 @@ impl WaveApp {
             saved: None,
             saving: None,
             running: None,
+            save_type: None,
+            aiff_kind: AiffKind::Aiff,
+            export_open: false,
+            scripted_pick: None,
+            export_choice: ExportChoice::default(),
+            export_presets_path: ExportPresets::default_path(),
+            export_presets: ExportPresets::default_path().as_deref().map(ExportPresets::load).unwrap_or_default(),
+            export_preset_name: String::new(),
+            size_cache: None,
+            dialog_format: None,
             confirm_close: false,
             allow_close: false,
             editor_width: 800.0,
@@ -1725,7 +1760,12 @@ impl WaveApp {
     fn run_command(&mut self, command: Command, ctx: &egui::Context) -> Result<bool, String> {
         match command {
             Command::Action(id) => self.run_action(id, ctx),
-            Command::Save | Command::SaveAs => self.save(ctx, command == Command::SaveAs, None, false).map(|()| false),
+            Command::Save => self.save(ctx, false, None, false).map(|()| false),
+            // Save As opens the export dialog (format, sample type, AIFF kind, size, presets).
+            Command::SaveAs => {
+                self.open_export_dialog();
+                Ok(false)
+            }
             Command::PlayStop => {
                 self.toggle_play();
                 Ok(false)
@@ -2801,9 +2841,24 @@ impl WaveApp {
         }
     }
 
-    /// File › Save: to the file's own path when it is a WAV (the only format written so far),
-    /// else as Save As. `to` skips the dialog (the control channel).
+    /// File › Save: to the file's own path when it is a format a save writes (WAV, AIFF, FLAC),
+    /// else as Save As. `to` skips the dialog (the control channel); the format follows its
+    /// extension.
     fn save(&mut self, ctx: &egui::Context, save_as: bool, to: Option<PathBuf>, then_close: bool) -> Result<(), String> {
+        self.save_with(ctx, save_as, to, then_close, self.save_type, false)
+    }
+
+    /// [`WaveApp::save`] with the sample type given (`explicit`: asked for by name, so a format
+    /// that can't hold it refuses instead of using the nearest type).
+    fn save_with(
+        &mut self,
+        ctx: &egui::Context,
+        save_as: bool,
+        to: Option<PathBuf>,
+        then_close: bool,
+        ty: Option<SampleType>,
+        explicit: bool,
+    ) -> Result<(), String> {
         if self.saving.is_some() {
             return Err("a save is already running".to_string());
         }
@@ -2812,36 +2867,61 @@ impl WaveApp {
         }
         let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
         let state = editor.history.current().clone();
-        let own = !self.doc_path.as_os_str().is_empty() && state.source().format == FileFormat::Wav;
+        let own_format = SaveFormat::from_path(&self.doc_path).filter(|f| SaveFormat::from_file_format(state.source().format) == Some(*f));
         let path = match to {
             Some(p) => p,
-            None if own && !save_as => self.doc_path.clone(),
+            None if own_format.is_some() && !save_as => self.doc_path.clone(),
             None => {
                 let stem = self.doc_path.file_stem().map_or_else(|| "Untitled".to_string(), |s| s.to_string_lossy().into_owned());
-                let mut dialog = rfd::FileDialog::new().add_filter("WAV", &["wav"]).set_file_name(format!("{stem}.wav"));
+                let first = self.dialog_format.take().or(own_format).unwrap_or(SaveFormat::Wav);
+                let mut dialog = rfd::FileDialog::new().set_file_name(format!("{stem}.{}", first.extension()));
+                for f in [first, SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac].iter().fold(Vec::new(), |mut v, f| {
+                    if !v.contains(f) {
+                        v.push(*f);
+                    }
+                    v
+                }) {
+                    let exts: &[&str] = if f == SaveFormat::Aiff { &["aiff", "aif"] } else { &[f.extension()] };
+                    dialog = dialog.add_filter(f.name(), exts);
+                }
                 if let Some(dir) = self.doc_path.parent().filter(|d| !d.as_os_str().is_empty()) {
                     dialog = dialog.set_directory(dir);
                 }
-                match dialog.save_file() {
+                let picked = match self.scripted_pick.take() {
+                    Some(answer) => answer,
+                    None => dialog.save_file(),
+                };
+                match picked {
                     Some(p) => p,
                     None => return Ok(()),
                 }
             }
         };
-        let ty = SampleType::for_source(state.source());
+        // The extension picks the format; a name without one is a WAV.
+        let (path, format) = match SaveFormat::from_path(&path) {
+            Some(f) => (path, f),
+            None if path.extension().is_none() => (path.with_extension("wav"), SaveFormat::Wav),
+            None => return Err(format!("{} is not a format WavCraft saves: use .wav, .aiff or .flac", path.display())),
+        };
+        let wanted = ty.unwrap_or_else(|| SampleType::for_source(state.source()));
+        if !format.accepts(wanted) && (explicit || ty.is_some()) {
+            return Err(format!("{} cannot hold {} samples: use 16 or 24 bit", format.name(), wanted.describe()));
+        }
+        let ty = format.fit(wanted);
         let (tx, rx) = channel();
         let progress = Arc::new(AtomicU32::new(0));
+        let aiff = self.aiff_kind;
         let (job_state, job_path, job_progress, ctx) = (state.clone(), path.clone(), progress.clone(), ctx.clone());
         std::thread::spawn(move || {
             let mut report = |p: f64| {
                 job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
                 ctx.request_repaint();
             };
-            let _ = tx.send(save_wav(&job_state, &job_path, ty, &mut report).map_err(|e| e.to_string()));
+            let _ = tx.send(save_aiff_kind(&job_state, &job_path, format, ty, aiff, &mut report).map_err(|e| e.to_string()));
             ctx.request_repaint();
         });
         self.player.stop();
-        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close, doc_id: self.doc_id, copy: None });
+        self.saving = Some(Saving { path, state, ty, format, aiff, result: rx, progress, then_close, doc_id: self.doc_id, copy: None });
         Ok(())
     }
 
@@ -2893,7 +2973,7 @@ impl WaveApp {
         });
         self.player.stop();
         let copy = Some(if selection { "selection" } else { "export" });
-        self.saving = Some(Saving { path, state, ty, result: rx, progress, then_close: false, doc_id: self.doc_id, copy });
+        self.saving = Some(Saving { path, state, ty, format: SaveFormat::Wav, aiff: AiffKind::Aiff, result: rx, progress, then_close: false, doc_id: self.doc_id, copy });
         Ok(())
     }
 
@@ -2904,7 +2984,7 @@ impl WaveApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err("the save stopped unexpectedly".to_string()),
         };
-        let Some(Saving { path, state, ty, then_close, doc_id, copy, .. }) = self.saving.take() else { return };
+        let Some(Saving { path, state, ty, format, aiff, then_close, doc_id, copy, .. }) = self.saving.take() else { return };
         if let Some(what) = copy {
             match result {
                 Ok(()) => {
@@ -2922,7 +3002,8 @@ impl WaveApp {
             // close request stay as they are.
             Ok(()) if doc_id != self.doc_id => {
                 log::info!(target: "wavcraft", "a save of an earlier file finished after another was opened: {}", path.display());
-                self.notice = Some(format!("Saved {} ({} WAV), the file open before this one", path.display(), ty.describe()));
+                self.notice =
+                    Some(format!("Saved {} ({} {}), the file open before this one", path.display(), ty.describe(), format_label(format, aiff)));
             }
             Ok(()) => {
                 self.saved = Some(state);
@@ -2931,7 +3012,7 @@ impl WaveApp {
                     doc.path = path.clone();
                 }
                 self.error = None;
-                self.notice = Some(format!("Saved {} ({} WAV)", path.display(), ty.describe()));
+                self.notice = Some(format!("Saved {} ({} {})", path.display(), ty.describe(), format_label(format, aiff)));
                 if then_close {
                     self.allow_close = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2940,6 +3021,245 @@ impl WaveApp {
             Err(e) => {
                 self.error = Some(format!("Not saved: {e}. {} is unchanged.", path.display()));
             }
+        }
+    }
+
+    /// Save As…: the export dialog first (format, sample type, AIFF kind, estimated size,
+    /// presets); its button then runs the file dialog.
+    fn open_export_dialog(&mut self) {
+        if self.editor.is_none() || self.saving.is_some() {
+            return;
+        }
+        if !self.export_open {
+            let state = self.editor.as_ref().map(|e| e.history.current().clone());
+            let own = state.as_ref().and_then(|st| SaveFormat::from_file_format(st.source().format));
+            let ty = self.save_type.or_else(|| state.as_ref().map(|st| SampleType::for_source(st.source()))).unwrap_or(SampleType::Int24);
+            self.export_choice = ExportChoice { format: own.unwrap_or(self.export_choice.format), ty, aiff: self.aiff_kind }.fitted();
+        }
+        self.export_open = true;
+    }
+
+    /// The dialog's Save As button: save once with the choice. The dialog edits a copy
+    /// (`export_choice`); the document's own save type is not touched, so cancelling the file
+    /// dialog (or any failure) leaves later plain saves as they were.
+    fn export_go(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        let choice = self.export_choice;
+        self.dialog_format = Some(choice.format);
+        let kept = self.aiff_kind;
+        self.aiff_kind = choice.aiff;
+        let r = self.save_with(ctx, true, None, false, Some(choice.ty), false);
+        self.aiff_kind = kept;
+        r
+    }
+
+    /// Make the export choice the one saves use (the type and AIFF kind; the format follows the
+    /// file name). Only the control channel's `SAVEOPTS set` and preset loads do this.
+    fn apply_export_choice(&mut self) {
+        self.save_type = Some(self.export_choice.ty);
+        self.aiff_kind = self.export_choice.aiff;
+    }
+
+    /// The estimated size of saving the open document with the export choice.
+    fn export_estimate(&mut self) -> Option<Result<SizeEstimate, String>> {
+        let state = self.editor.as_ref()?.history.current().clone();
+        let c = self.export_choice;
+        let key = (c.format, c.ty, c.aiff, Arc::as_ptr(&state) as usize);
+        if self.size_cache.as_ref().is_none_or(|(k, _)| *k != key) {
+            let est = estimate_size(&state, c.format, c.ty, c.aiff).map_err(|e| e.to_string());
+            self.size_cache = Some((key, est));
+        }
+        self.size_cache.as_ref().map(|(_, e)| e.clone())
+    }
+
+    /// Keep the presets in their file; the message if that failed.
+    fn store_presets(&self) -> Result<(), String> {
+        match &self.export_presets_path {
+            Some(file) => self.export_presets.save(file).map_err(|e| format!("could not save the presets to {}: {e}", file.display())),
+            None => Err("this system has no settings folder, so presets last until WavCraft closes".to_string()),
+        }
+    }
+
+    fn export_window(&mut self, ctx: &egui::Context) {
+        if !self.export_open {
+            return;
+        }
+        let est = self.export_estimate();
+        let mut open = true;
+        let (mut go, mut choice) = (false, self.export_choice);
+        let mut save_preset = false;
+        let mut delete = None;
+        let mut load = None;
+        egui::Window::new("Save As / Export")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Format:");
+                    for f in [SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac] {
+                        ui.radio_value(&mut choice.format, f, f.name());
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Sample type:");
+                    for ty in [SampleType::Int16, SampleType::Int24, SampleType::Int32, SampleType::Float32] {
+                        ui.add_enabled_ui(choice.format.accepts(ty), |ui| ui.radio_value(&mut choice.ty, ty, ty.describe()));
+                    }
+                });
+                if choice.format == SaveFormat::Aiff {
+                    ui.horizontal(|ui| {
+                        ui.label("AIFF:");
+                        for k in AiffKind::ALL {
+                            ui.radio_value(&mut choice.aiff, k, k.describe());
+                        }
+                    });
+                    if choice.ty == SampleType::Float32 {
+                        ui.weak("32-bit float is always AIFF-C fl32, big-endian.");
+                    }
+                }
+                match &est {
+                    Some(Ok(e)) => ui.label(format_size_label(e)),
+                    Some(Err(why)) => ui.colored_label(Color32::from_rgb(235, 120, 90), why),
+                    None => ui.label(""),
+                };
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Preset:");
+                    egui::ComboBox::from_id_salt("export_preset").selected_text("Choose…").show_ui(ui, |ui| {
+                        for p in &self.export_presets.presets {
+                            if ui.selectable_label(false, &p.name).clicked() {
+                                load = Some(p.name.clone());
+                            }
+                        }
+                    });
+                    ui.add(egui::TextEdit::singleline(&mut self.export_preset_name).hint_text("name").desired_width(120.0));
+                    if ui.button("Save preset").clicked() {
+                        save_preset = true;
+                    }
+                    if ui.button("Delete").clicked() {
+                        delete = Some(self.export_preset_name.clone());
+                    }
+                });
+                ui.separator();
+                if ui.button("Save As…").clicked() {
+                    go = true;
+                }
+            });
+        self.export_choice = choice.fitted();
+        if let Some(name) = load
+            && let Some(c) = self.export_presets.get(&name)
+        {
+            self.export_choice = c;
+            self.export_preset_name = name;
+        }
+        if save_preset {
+            let r = self.export_presets.set(&self.export_preset_name, self.export_choice).and_then(|()| self.store_presets());
+            match r {
+                Ok(()) => self.notice = Some(format!("Saved the export preset {}", self.export_preset_name.trim())),
+                Err(e) => self.error = Some(e),
+            }
+        }
+        if let Some(name) = delete {
+            if self.export_presets.remove(&name) {
+                match self.store_presets() {
+                    Ok(()) => self.notice = Some(format!("Deleted the export preset {}", name.trim())),
+                    Err(e) => self.error = Some(e),
+                }
+            } else {
+                self.error = Some(format!("No export preset named {}", name.trim()));
+            }
+        }
+        if go || !open {
+            self.export_open = false;
+        }
+        if go && let Err(e) = self.export_go(ctx) {
+            self.error = Some(e);
+        }
+    }
+
+    /// `SAVEOPTS estimate|set <fmt> <bits> [aiff=<kind>]` and `SAVEOPTS show` (control channel).
+    fn control_saveopts(&mut self, ctx: &egui::Context, rest: &str) -> String {
+        let mut words = rest.split_whitespace();
+        let verb = words.next().unwrap_or("");
+        if verb == "show" {
+            return format!("OK {}", self.export_choice.describe());
+        }
+        let (Some(f), Some(t)) = (words.next(), words.next()) else {
+            return "ERR SAVEOPTS estimate|set <wav|aiff|flac> <16|24|32|float> [aiff=aiff|aifc|sowt]".to_string();
+        };
+        let (Some(format), Some(ty)) = (SaveFormat::parse(f), SampleType::parse(t)) else {
+            return format!("ERR no format or sample type {f} {t}: wav|aiff|flac, 16|24|32|float");
+        };
+        let mut aiff = self.export_choice.aiff;
+        let mut tail: Vec<&str> = words.collect();
+        let words_last = if verb == "dialog" { tail.pop() } else { None };
+        for w in tail {
+            match w.strip_prefix("aiff=").and_then(AiffKind::parse) {
+                Some(k) => aiff = k,
+                None => return format!("ERR aiff=<aiff|aifc|sowt>, not {w}"),
+            }
+        }
+        let choice = ExportChoice { format, ty, aiff };
+        match verb {
+            "set" if !format.accepts(ty) => format!("ERR {} cannot hold {} samples", format.name(), ty.describe()),
+            "set" => {
+                self.export_choice = choice;
+                self.apply_export_choice();
+                format!("OK {}", choice.describe())
+            }
+            // `SAVEOPTS dialog <fmt> <bits> [aiff=] cancel|<path>`: the Save As button with this
+            // choice, the file dialog answered with the path or cancelled. Changes no saved option.
+            "dialog" => {
+                let Some(answer) = words_last else { return "ERR SAVEOPTS dialog <fmt> <bits> cancel|<path>".to_string() };
+                self.export_choice = choice.fitted();
+                self.scripted_pick = Some((answer != "cancel").then(|| PathBuf::from(answer)));
+                let r = self.export_go(ctx);
+                self.scripted_pick = None;
+                match r {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+            "estimate" => {
+                let Some(editor) = &self.editor else { return "ERR no file is open".to_string() };
+                match estimate_size(editor.history.current(), format, ty, aiff) {
+                    Ok(e) => format!("OK bytes={} exact={}", e.bytes, u8::from(e.exact)),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+            _ => "ERR SAVEOPTS estimate|set|show".to_string(),
+        }
+    }
+
+    /// `EXPORTPRESET save|load|delete <name>` and `EXPORTPRESET list` (control channel).
+    fn control_export_preset(&mut self, rest: &str) -> String {
+        let (verb, name) = rest.split_once(' ').unwrap_or((rest, ""));
+        match verb {
+            "list" => format!("OK {}", self.export_presets.presets.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("|")),
+            "save" => match self.export_presets.set(name, self.export_choice).and_then(|()| self.store_presets()) {
+                Ok(()) => format!("OK {}", self.export_choice.describe()),
+                Err(e) => format!("ERR {e}"),
+            },
+            "load" => match self.export_presets.get(name) {
+                Some(c) => {
+                    self.export_choice = c;
+                    self.apply_export_choice();
+                    self.export_preset_name = name.trim().to_string();
+                    format!("OK {}", c.describe())
+                }
+                None => format!("ERR no export preset named {:?}", name.trim()),
+            },
+            "delete" => {
+                if !self.export_presets.remove(name) {
+                    return format!("ERR no export preset named {:?}", name.trim());
+                }
+                match self.store_presets() {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+            _ => "ERR EXPORTPRESET save|load|delete <name>, or list".to_string(),
         }
     }
 
@@ -3849,10 +4169,21 @@ impl WaveApp {
                 }
             }
             "SAVE" => {
-                let to = (!rest.is_empty()).then(|| PathBuf::from(rest));
-                match self.save(ctx, to.is_some(), to, false) {
-                    Ok(()) => "OK".to_string(),
+                // `SAVE <path> [bits=16|24|32] [float=0|1]`: the options end the line.
+                match parse_save_args(rest) {
                     Err(e) => format!("ERR {e}"),
+                    Ok((path, ty, aiff)) => {
+                        let to = (!path.is_empty()).then(|| PathBuf::from(path));
+                        // `aiff=` is for this save only.
+                        let kept = self.aiff_kind;
+                        self.aiff_kind = aiff.unwrap_or(kept);
+                        let r = self.save_with(ctx, to.is_some(), to, false, ty.or(self.save_type), ty.is_some());
+                        self.aiff_kind = kept;
+                        match r {
+                            Ok(()) => "OK".to_string(),
+                            Err(e) => format!("ERR {e}"),
+                        }
+                    }
                 }
             }
             "SAVE_SELECTION" | "EXPORT" if !rest.is_empty() => match self.save_copy(ctx, cmd == "SAVE_SELECTION", Some(PathBuf::from(rest))) {
@@ -3860,6 +4191,8 @@ impl WaveApp {
                 Err(e) => format!("ERR {e}"),
             },
             "SAVE_SELECTION" | "EXPORT" => format!("ERR {cmd} <path>"),
+            "SAVEOPTS" => self.control_saveopts(ctx, rest),
+            "EXPORTPRESET" => self.control_export_preset(rest),
             // A plain QUIT refuses with unsaved changes; `QUIT discard` closes anyway.
             "QUIT" if self.unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
             "QUIT" => {
@@ -3964,11 +4297,17 @@ impl WaveApp {
                 {
                     self.error = Some(e);
                 }
-                if ui.add_enabled(has_doc, egui::Button::new("Save As…").shortcut_text(save_as)).clicked()
-                    && let Err(e) = self.save(ui.ctx(), true, None, false)
-                {
-                    self.error = Some(e);
+                if ui.add_enabled(has_doc, egui::Button::new("Save As…").shortcut_text(save_as)).clicked() {
+                    self.open_export_dialog();
+                    ui.close();
                 }
+                ui.menu_button("Sample Type on Save", |ui| {
+                    ui.radio_value(&mut self.save_type, None, "Keep the file's own");
+                    for ty in [SampleType::Int16, SampleType::Int24, SampleType::Int32, SampleType::Float32] {
+                        ui.radio_value(&mut self.save_type, Some(ty), ty.describe());
+                    }
+                    ui.label("FLAC takes 16 or 24 bit; it uses 24 bit for the others.");
+                });
                 let has_sel = has_doc && self.selection.start() < self.selection.end();
                 if ui.add_enabled(has_sel, egui::Button::new("Save Selection As…")).clicked()
                     && let Err(e) = self.save_copy(ui.ctx(), true, None)
@@ -4557,6 +4896,7 @@ impl eframe::App for WaveApp {
         let ctx = ui.ctx().clone();
         self.apply_look(&ctx);
         self.close_prompt(&ctx);
+        self.export_window(&ctx);
         self.selection_keys(&ctx);
         // Up and Down belong to the History panel while one of its rows has focus (before the
         // action table gets them: there they pick the left or right channel).
@@ -5009,6 +5349,53 @@ fn shortcut_help_content(_ui: &mut egui::Ui, _mac: bool) {
     unimplemented!()
 }
 
+/// "AIFF-C, little-endian (sowt)" for an AIFF save, else the format's name.
+fn format_label(format: SaveFormat, aiff: AiffKind) -> &'static str {
+    if format == SaveFormat::Aiff { aiff.describe() } else { format.name() }
+}
+
+/// The estimated size line of the export dialog.
+fn format_size_label(e: &SizeEstimate) -> String {
+    let human = wavcraft_core::space::format_bytes(e.bytes);
+    if e.exact {
+        format!("File size: {human} ({} bytes)", e.bytes)
+    } else {
+        format!("File size: about {human} (estimate: FLAC depends on the audio)")
+    }
+}
+
+/// `SAVE`'s arguments: a path (may hold spaces) then `bits=<16|24|32>` and `float=<0|1>` in any
+/// order. Returns the path and the sample type they name, if any.
+fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffKind>), String> {
+    let (mut path, mut bits, mut float, mut aiff) = (rest.trim(), None, None, None);
+    while let Some((head, last)) = path.rsplit_once(char::is_whitespace).or(if path.contains('=') { Some(("", path)) } else { None }) {
+        if let Some(v) = last.strip_prefix("bits=") {
+            bits = Some(v.parse::<u32>().map_err(|_| format!("bits=<16|24|32>, not {v}"))?);
+        } else if let Some(v) = last.strip_prefix("aiff=") {
+            aiff = Some(AiffKind::parse(v).ok_or_else(|| format!("aiff=<aiff|aifc|sowt>, not {v}"))?);
+        } else if let Some(v) = last.strip_prefix("float=") {
+            float = Some(match v {
+                "0" => false,
+                "1" => true,
+                _ => return Err(format!("float=<0|1>, not {v}")),
+            });
+        } else {
+            break;
+        }
+        path = head.trim();
+    }
+    let ty = match (bits, float) {
+        (None, None) => None,
+        (Some(16), None | Some(false)) => Some(SampleType::Int16),
+        (Some(24), None | Some(false)) => Some(SampleType::Int24),
+        (Some(32), None | Some(false)) => Some(SampleType::Int32),
+        (None | Some(32), Some(true)) => Some(SampleType::Float32),
+        (None, Some(false)) => None,
+        (b, f) => return Err(format!("no sample type for bits={b:?} float={f:?}: 16, 24, 32 bit integer or float=1 (32 bit)")),
+    };
+    Ok((path, ty, aiff))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -5166,6 +5553,22 @@ mod tests {
         assert_eq!((seed, rest.as_str()), (Ok(7), "freq=440 dur=2"));
         assert!(split_seed("seed=x").0.is_err());
         assert!(split_seed("dur=2").0.is_ok());
+    }
+
+    #[test]
+    fn save_arguments_name_the_path_and_the_sample_type() {
+        assert_eq!(parse_save_args("/a b/c.wav"), Ok(("/a b/c.wav", None, None)));
+        assert_eq!(parse_save_args("/a b/c.wav bits=24 float=0"), Ok(("/a b/c.wav", Some(SampleType::Int24), None)));
+        assert_eq!(parse_save_args("x.aiff float=1"), Ok(("x.aiff", Some(SampleType::Float32), None)));
+        assert_eq!(parse_save_args("x.aiff bits=32 float=1"), Ok(("x.aiff", Some(SampleType::Float32), None)));
+        assert_eq!(parse_save_args("x.flac bits=16"), Ok(("x.flac", Some(SampleType::Int16), None)));
+        assert_eq!(parse_save_args(""), Ok(("", None, None)));
+        assert_eq!(parse_save_args("/a b/c.aiff aiff=sowt"), Ok(("/a b/c.aiff", None, Some(AiffKind::AifcSowt))));
+        assert_eq!(parse_save_args("x.aiff bits=24 aiff=aifc"), Ok(("x.aiff", Some(SampleType::Int24), Some(AiffKind::Aifc))));
+        assert!(parse_save_args("x.aiff aiff=big").is_err());
+        assert!(parse_save_args("x.wav bits=20").is_err());
+        assert!(parse_save_args("x.wav bits=24 float=1").is_err());
+        assert!(parse_save_args("x.wav float=2").is_err());
     }
 }
 

@@ -51,7 +51,14 @@
 //! - `MIXER set <track|master> vol=<db> pan=<p> mute=0|1 solo=0|1` → the same line, after the change
 //! - `AUTOSAVE` → `OK offered=<n> written=<n> failed=<n> pending=<0|1> scanned=<0|1> recoverable=<n>` (Auto Save's journal writer for the open file, and the sessions a crashed run left; poll until `scanned=1`)
 //! - `RECOVER [index]` → `OK` (recover that crashed session, 0 by default; poll `STATE` until `busy=0`); `DISCARD_RECOVERY [index]` → `OK`
-//! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
+//! - `SAVE [path] [bits=16|24|32] [float=0|1] [aiff=aiff|aifc|sowt]` → `OK` (Save, or Save As to `path`, the format from
+//!   its extension: .wav, .aiff/.aif, .flac; `bits`/`float=1` choose the sample type; `aiff=` the AIFF kind
+//!   for this save (`sowt`: AIFF-C little-endian); poll `STATE` until `busy=0`)
+//! - `SAVEOPTS estimate <wav|aiff|flac> <16|24|32|float> [aiff=<kind>]` → `OK bytes=<n> exact=<0|1>` (the file size a save
+//!   would make; exact for WAV/AIFF, an estimate for FLAC); `SAVEOPTS set …` chooses the export options (the Save As
+//!   dialog's choice) and `SAVEOPTS show` prints them
+//! - `EXPORTPRESET save|load|delete <name>` → `OK format=… type=… aiff=…` (`save` keeps the chosen options under the
+//!   name in the config folder, `load` makes a preset the chosen options); `EXPORTPRESET list`
 //! - `SAVE_SELECTION <path>` → `OK` (File › Save Selection As: only the selected range of the enabled
 //!   channels, to a new WAV; the open document keeps its own path and unsaved mark)
 //! - `EXPORT <path>` → `OK` (File › Export › File: the whole document to another WAV, same promise)
