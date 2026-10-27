@@ -1,4 +1,4 @@
-//! Save (task 06): WAV, AIFF, FLAC and Ogg Vorbis (f93). The document is streamed out 64 K frames at a time with
+//! Save (task 06): WAV, AIFF, FLAC and Ogg Vorbis (f93), and Sony Wave64, Apple CAF and Sun/NeXT AU (f91). The document is streamed out 64 K frames at a time with
 //! [`DocState::read`], never flattened, so a three-hour file saves on an 8 GB machine. Integer
 //! samples are `round(x · 2^(bits−1))`, clamped, with no dither: the exact inverse of how they
 //! are read, so untouched audio saves bit for bit. Above 4 GiB a WAV is RF64; AIFF (32-bit sizes)
@@ -40,6 +40,8 @@ pub enum SampleType {
     Int24,
     Int32,
     Float32,
+    /// 64-bit float (raw, W64, CAF and AU; the samples are held as `f32`, so it is exact).
+    Float64,
 }
 
 impl SampleType {
@@ -48,7 +50,12 @@ impl SampleType {
             SampleType::Int16 => 2,
             SampleType::Int24 => 3,
             SampleType::Int32 | SampleType::Float32 => 4,
+            SampleType::Float64 => 8,
         }
+    }
+
+    fn is_float(self) -> bool {
+        matches!(self, SampleType::Float32 | SampleType::Float64)
     }
 
     /// The short name used in presets and the control channel: `16`, `24`, `32`, `float`.
@@ -58,6 +65,7 @@ impl SampleType {
             SampleType::Int24 => "24",
             SampleType::Int32 => "32",
             SampleType::Float32 => "float",
+            SampleType::Float64 => "float64",
         }
     }
 
@@ -68,6 +76,7 @@ impl SampleType {
             "24" => Some(SampleType::Int24),
             "32" => Some(SampleType::Int32),
             "float" | "f32" | "32f" => Some(SampleType::Float32),
+            "float64" | "f64" | "64f" => Some(SampleType::Float64),
             _ => None,
         }
     }
@@ -79,6 +88,7 @@ impl SampleType {
             SampleType::Int24 => "24-bit",
             SampleType::Int32 => "32-bit integer",
             SampleType::Float32 => "32-bit float",
+            SampleType::Float64 => "64-bit float",
         }
     }
 
@@ -203,6 +213,42 @@ pub fn remove_leftover_temps(target: &Path) -> usize {
     removed
 }
 
+/// The file layouts a save can write besides the formats above (item f91): Sony Wave64, Apple
+/// CAF (big-endian) and Sun/NeXT AU (big-endian), PCM and float only. `Wav` is the WAV writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Container {
+    Wav,
+    W64,
+    Caf,
+    Au,
+}
+
+impl Container {
+    /// The container for a file name's extension (`None` for one we do not write).
+    pub fn from_path(path: &Path) -> Option<Container> {
+        match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+            "wav" | "wave" | "bwf" => Some(Container::Wav),
+            "w64" => Some(Container::W64),
+            "caf" => Some(Container::Caf),
+            "au" | "snd" => Some(Container::Au),
+            _ => None,
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Container::Wav => "WAV",
+            Container::W64 => "Wave64",
+            Container::Caf => "CAF",
+            Container::Au => "AU",
+        }
+    }
+
+    fn big_endian(self) -> bool {
+        matches!(self, Container::Caf | Container::Au)
+    }
+}
+
 /// The file formats a save can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveFormat {
@@ -278,7 +324,8 @@ impl SaveFormat {
     /// Whether this format can hold `ty` samples.
     pub fn accepts(self, ty: SampleType) -> bool {
         match self {
-            SaveFormat::Wav | SaveFormat::Aiff | SaveFormat::Vorbis => true,
+            SaveFormat::Wav | SaveFormat::Vorbis => true,
+            SaveFormat::Aiff => ty != SampleType::Float64,
             SaveFormat::Flac => matches!(ty, SampleType::Int16 | SampleType::Int24),
         }
     }
@@ -344,10 +391,12 @@ struct Hooks {
     aiff: AiffKind,
     relocate: bool,
     quality: f32,
+    /// The Wave64, CAF or AU layout to write instead of `format` (`None`: `format` as it is).
+    plain: Option<Container>,
 }
 
 const NO_HOOKS: Hooks =
-    Hooks { fail_after: None, rf64_over: u32::MAX as u64, aiff: AiffKind::Aiff, relocate: true, quality: VORBIS_DEFAULT_QUALITY };
+    Hooks { fail_after: None, rf64_over: u32::MAX as u64, aiff: AiffKind::Aiff, relocate: true, quality: VORBIS_DEFAULT_QUALITY, plain: None };
 
 /// A frame range and channel subset to write from a document.
 #[derive(Debug, Clone)]
@@ -376,6 +425,15 @@ pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dy
 /// any kind removes this save's temporary file and leaves `target` as it was.
 pub fn save(doc: &DocState, target: &Path, format: SaveFormat, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
     save_inner(doc, target, format, ty, &Part::whole(doc), progress, NO_HOOKS)
+}
+
+/// [`save_wav`] for any [`Container`]: the same atomic temporary-file-and-rename, the same streaming.
+pub fn save_as(doc: &DocState, target: &Path, container: Container, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
+    let hooks = match container {
+        Container::Wav => NO_HOOKS,
+        plain => Hooks { plain: Some(plain), relocate: false, ..NO_HOOKS },
+    };
+    save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, hooks)
 }
 
 /// Save `doc` to `target` as Ogg Vorbis at VBR `quality` (-1 to 10; outside that is refused),
@@ -492,7 +550,7 @@ fn save_inner(
     if hooks.relocate && format == SaveFormat::Wav {
         doc.source().relocated.set(target.to_path_buf(), written);
     }
-    log::info!(target: "wavcraft_core::save", "saved {} frames as {} {} to {}", frames, ty.describe(), format.name(), target.display());
+    log::info!(target: "wavcraft_core::save", "saved {} frames as {} {} to {}", frames, ty.describe(), hooks.plain.map_or(format.name(), Container::describe), target.display());
     Ok(())
 }
 
@@ -638,6 +696,10 @@ fn write_stream(
     if format == SaveFormat::Vorbis {
         return write_vorbis_stream(doc, file, part, progress, hooks).map(|file| (file, Vec::new()));
     }
+    if let Some(container) = hooks.plain {
+        // Wave64, CAF and AU have no RIFF chunk table: nothing is recorded for a later copy.
+        return write_plain(doc, file, container, ty, part, progress, hooks).map(|file| (file, Vec::new()));
+    }
     let frames = part.frames.end - part.frames.start;
     let channels = part.channels.len();
     let mut out = BufWriter::with_capacity(1 << 20, file);
@@ -724,6 +786,31 @@ fn write_stream(
     Ok((file, table))
 }
 
+/// Wave64, CAF or AU: the header, then the samples of `part` (big-endian for CAF and AU), padded
+/// as the container asks, durable before it returns.
+fn write_plain(doc: &DocState, file: File, container: Container, ty: SampleType, part: &Part, progress: &mut dyn FnMut(f64), hooks: Hooks) -> io::Result<File> {
+    let frames = part.frames.end - part.frames.start;
+    let channels = u16::try_from(part.channels.len()).map_err(|_| invalid("too many channels"))?;
+    let rate = doc.sample_rate();
+    let mut out = BufWriter::with_capacity(1 << 20, file);
+    let data_len = match container {
+        Container::W64 => write_w64_header(&mut out, channels, rate, ty, frames)?,
+        Container::Caf => write_caf_header(&mut out, channels, rate, ty, frames)?,
+        Container::Au => write_au_header(&mut out, channels, rate, ty, frames)?,
+        Container::Wav => return Err(invalid("WAV has its own writer")),
+    };
+    write_pcm(&mut out, doc, ty, part, progress, hooks, container.big_endian())?;
+    // Wave64 pads its data to a multiple of 8 bytes; CAF and AU do not pad.
+    let pad = match container {
+        Container::W64 => (8 - data_len % 8) % 8,
+        _ => 0,
+    };
+    out.write_all(&[0u8; 8][..pad as usize])?;
+    let file = out.into_inner().map_err(|e| e.into_error())?;
+    file.sync_all()?;
+    Ok(file)
+}
+
 /// The Ogg Vorbis writer: the encoder owns the buffered file while it runs and hands it back at
 /// the end; blocks of 64 K frames go in as they are read from the document.
 fn write_vorbis_stream(doc: &DocState, file: File, part: &Part, progress: &mut dyn FnMut(f64), hooks: Hooks) -> io::Result<File> {
@@ -807,6 +894,8 @@ fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool) {
         (SampleType::Int32, true) => bytes.extend_from_slice(&quantize(x, 32).to_be_bytes()),
         (SampleType::Float32, false) => bytes.extend_from_slice(&x.to_le_bytes()),
         (SampleType::Float32, true) => bytes.extend_from_slice(&x.to_be_bytes()),
+        (SampleType::Float64, false) => bytes.extend_from_slice(&f64::from(x).to_le_bytes()),
+        (SampleType::Float64, true) => bytes.extend_from_slice(&f64::from(x).to_be_bytes()),
     }
 }
 
@@ -886,7 +975,7 @@ fn write_header(
 ) -> io::Result<(u64, u64)> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(u64::from(channels)).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("WAV too long"))?;
-    let float = ty == SampleType::Float32;
+    let float = ty.is_float();
     let fmt_len: u32 = if float { 18 } else { 16 };
     let fact = if float { 12 } else { 0 };
     let riff_len = 4 + (8 + u64::from(fmt_len)) + fact + 8 + data_len + (data_len & 1) + extra;
@@ -1052,4 +1141,93 @@ fn invalid(msg: &str) -> io::Error {
 
 fn invalid_err(e: impl fmt::Display) -> io::Error {
     io::Error::other(format!("Vorbis encoder: {e}"))
+}
+
+/// Data size in bytes.
+fn data_bytes(channels: u16, ty: SampleType, frames: u64) -> io::Result<u64> {
+    frames.checked_mul(u64::from(channels)).and_then(|s| s.checked_mul(ty.bytes() as u64)).ok_or_else(|| invalid("file too long"))
+}
+
+/// Sony Wave64 header: the `riff` and `wave` GUIDs, a `fmt ` chunk (16 or 18 bytes of
+/// WAVEFORMATEX) and the `data` chunk's header. Chunk sizes are 64-bit and include the chunk's
+/// own 24-byte header; chunks are padded to 8 bytes (the padding is not in the size).
+fn write_w64_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
+    let data_len = data_bytes(channels, ty, frames)?;
+    let float = ty.is_float();
+    let fmt_body: u64 = if float { 18 } else { 16 };
+    let fmt_size = 24 + fmt_body;
+    let fmt_padded = fmt_size.div_ceil(8) * 8;
+    let data_size = 24 + data_len;
+    let total = 40 + fmt_padded + data_size.div_ceil(8) * 8;
+    out.write_all(&W64_RIFF)?;
+    out.write_all(&total.to_le_bytes())?;
+    out.write_all(&W64_WAVE)?;
+    out.write_all(&W64_FMT)?;
+    out.write_all(&fmt_size.to_le_bytes())?;
+    let bytes = ty.bytes() as u16;
+    let block_align = channels.checked_mul(bytes).ok_or_else(|| invalid("too many channels"))?;
+    out.write_all(&(if float { 3u16 } else { 1u16 }).to_le_bytes())?;
+    out.write_all(&channels.to_le_bytes())?;
+    out.write_all(&sample_rate.to_le_bytes())?;
+    let byte_rate = sample_rate.checked_mul(u32::from(block_align)).ok_or_else(|| invalid("sample rate too high"))?;
+    out.write_all(&byte_rate.to_le_bytes())?;
+    out.write_all(&block_align.to_le_bytes())?;
+    out.write_all(&(bytes * 8).to_le_bytes())?;
+    if float {
+        out.write_all(&0u16.to_le_bytes())?;
+    }
+    out.write_all(&vec![0u8; (fmt_padded - fmt_size) as usize])?;
+    out.write_all(&W64_DATA)?;
+    out.write_all(&data_size.to_le_bytes())?;
+    Ok(data_len)
+}
+
+pub(crate) const W64_RIFF: [u8; 16] = [0x72, 0x69, 0x66, 0x66, 0x2E, 0x91, 0xCF, 0x11, 0xA5, 0xD6, 0x28, 0xDB, 0x04, 0xC1, 0x00, 0x00];
+pub(crate) const W64_WAVE: [u8; 16] = [0x77, 0x61, 0x76, 0x65, 0xF3, 0xAC, 0xD3, 0x11, 0x8C, 0xD1, 0x00, 0xC0, 0x4F, 0x8E, 0xDB, 0x8A];
+pub(crate) const W64_FMT: [u8; 16] = [0x66, 0x6D, 0x74, 0x20, 0xF3, 0xAC, 0xD3, 0x11, 0x8C, 0xD1, 0x00, 0xC0, 0x4F, 0x8E, 0xDB, 0x8A];
+pub(crate) const W64_DATA: [u8; 16] = [0x64, 0x61, 0x74, 0x61, 0xF3, 0xAC, 0xD3, 0x11, 0x8C, 0xD1, 0x00, 0xC0, 0x4F, 0x8E, 0xDB, 0x8A];
+
+/// Apple CAF header: `caff`, a `desc` chunk (linear PCM, big-endian, packed) and the `data`
+/// chunk's header with its 4-byte edit count. Sizes are signed 64-bit big-endian.
+fn write_caf_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
+    let data_len = data_bytes(channels, ty, frames)?;
+    let bytes = ty.bytes() as u32;
+    out.write_all(b"caff")?;
+    out.write_all(&1u16.to_be_bytes())?;
+    out.write_all(&0u16.to_be_bytes())?;
+    out.write_all(b"desc")?;
+    out.write_all(&32i64.to_be_bytes())?;
+    out.write_all(&f64::from(sample_rate).to_be_bytes())?;
+    out.write_all(b"lpcm")?;
+    // Flags: bit 0 float, bit 1 little-endian (not set: big-endian samples).
+    out.write_all(&u32::from(ty.is_float()).to_be_bytes())?;
+    out.write_all(&(bytes * u32::from(channels)).to_be_bytes())?;
+    out.write_all(&1u32.to_be_bytes())?;
+    out.write_all(&u32::from(channels).to_be_bytes())?;
+    out.write_all(&(bytes * 8).to_be_bytes())?;
+    out.write_all(b"data")?;
+    let size = i64::try_from(data_len + 4).map_err(|_| invalid("file too long"))?;
+    out.write_all(&size.to_be_bytes())?;
+    out.write_all(&0u32.to_be_bytes())?;
+    Ok(data_len)
+}
+
+/// Sun/NeXT AU header (24 bytes, big-endian). The data size is 32-bit: longer is refused.
+fn write_au_header(out: &mut impl Write, channels: u16, sample_rate: u32, ty: SampleType, frames: u64) -> io::Result<u64> {
+    let data_len = data_bytes(channels, ty, frames)?;
+    let size = u32::try_from(data_len).ok().filter(|&n| n != u32::MAX).ok_or_else(|| invalid("too long for an AU file (4 GiB at most)"))?;
+    let encoding: u32 = match ty {
+        SampleType::Int16 => 3,
+        SampleType::Int24 => 4,
+        SampleType::Int32 => 5,
+        SampleType::Float32 => 6,
+        SampleType::Float64 => 7,
+    };
+    out.write_all(b".snd")?;
+    out.write_all(&24u32.to_be_bytes())?;
+    out.write_all(&size.to_be_bytes())?;
+    out.write_all(&encoding.to_be_bytes())?;
+    out.write_all(&sample_rate.to_be_bytes())?;
+    out.write_all(&u32::from(channels).to_be_bytes())?;
+    Ok(data_len)
 }

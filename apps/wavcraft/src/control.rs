@@ -46,13 +46,14 @@
 //! - `HISTORY_DELETE <step>` → `OK removed=<n>` (the step and every later one go; 0 can't)
 //! - `HISTORY_CLEAR` → `OK` (Clear History, no confirmation; the current state stays)
 //! - `HISTORY_KEY up|down` → `OK cursor=<i>` (the panel's arrow keys)
+//! - `IMPORT_RAW <path> rate=<hz> ch=<n> fmt=<u8|s8|s16|s24|s32|f32|f64><le|be> [offset=<bytes>]` → `OK` (File › Import › Raw Data; poll `STATE`)
 //! - `MIXER state` → `OK tracks=<n> any_solo=<0|1> | master vol=<db> pan= mute= solo= audible= peak=<db> | t1 ...` (the Mixer panel, over the multitrack session; `ERR` before `SESSION new`)
 //! - `MIXER show|hide` → `OK` (the panel's window checkbox)
 //! - `MIXER set <track|master> vol=<db> pan=<p> mute=0|1 solo=0|1` → the same line, after the change
 //! - `AUTOSAVE` → `OK offered=<n> written=<n> failed=<n> pending=<0|1> scanned=<0|1> recoverable=<n>` (Auto Save's journal writer for the open file, and the sessions a crashed run left; poll until `scanned=1`)
 //! - `RECOVER [index]` → `OK` (recover that crashed session, 0 by default; poll `STATE` until `busy=0`); `DISCARD_RECOVERY [index]` → `OK`
 //! - `SAVE [path] [bits=16|24|32] [float=0|1] [aiff=aiff|aifc|sowt] [quality=-1..10]` → `OK` (Save, or Save As to `path`, the format from
-//!   its extension: .wav, .aiff/.aif, .flac, .ogg; `bits`/`float=1` choose the sample type; `aiff=` the AIFF kind
+//!   its extension: .wav, .w64, .caf, .au, .aiff/.aif, .flac, .ogg; `bits`/`float=1` choose the sample type; `aiff=` the AIFF kind
 //!   for this save (`sowt`: AIFF-C little-endian); `quality` is the Ogg Vorbis VBR quality (5 until given; it stays for later saves); poll `STATE` until `busy=0`)
 //! - `SAVEOPTS estimate <wav|aiff|flac> <16|24|32|float> [aiff=<kind>]` → `OK bytes=<n> exact=<0|1>` (the file size a save
 //!   would make; exact for WAV/AIFF, an estimate for FLAC); `SAVEOPTS set …` chooses the export options (the Save As

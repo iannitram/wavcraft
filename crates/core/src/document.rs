@@ -52,6 +52,18 @@ impl Document {
         Document::from_state(path.to_path_buf(), state)
     }
 
+    /// File > Import > Raw Data: [`open_in`](Self::open_in) for a headerless file described by `spec`.
+    pub fn open_raw_in(
+        path: &Path,
+        spec: &crate::io::RawSpec,
+        opts: &OpenOptions,
+        progress: &mut dyn FnMut(f64),
+        cancel: &AtomicBool,
+    ) -> Result<Document, OpenError> {
+        let state = crate::io::open_raw(path, spec, opts, progress, cancel)?;
+        Document::from_state(path.to_path_buf(), state)
+    }
+
     /// The document for `state` (after an edit, or an undo), read back whole for the views and
     /// the player (see the module notes): the same adapter `open` uses, until task 05.
     pub fn from_state(path: PathBuf, state: DocState) -> Result<Document, OpenError> {

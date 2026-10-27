@@ -10,12 +10,12 @@ use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOption
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::appearance;
 use wavcraft_core::export_presets::{ExportChoice, ExportPresets};
-use wavcraft_core::io::OpenOptions;
+use wavcraft_core::io::{OpenOptions, RawEncoding, RawSpec};
 use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
-use wavcraft_core::save::{AiffKind, FileKind, Part, SampleType, SaveFormat, SizeEstimate, VORBIS_DEFAULT_QUALITY, estimate_size, save_aiff_kind, save_vorbis, write_file};
+use wavcraft_core::save::{AiffKind, Container, FileKind, Part, SampleType, SaveFormat, SizeEstimate, VORBIS_DEFAULT_QUALITY, estimate_size, save_aiff_kind, save_as as save_container, save_vorbis, write_file};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
@@ -150,6 +150,8 @@ struct Saving {
     ty: SampleType,
     format: SaveFormat,
     aiff: AiffKind,
+    /// Wave64, CAF or AU (f91) when the file is one of those: `format` is then WAV and unused.
+    container: Option<Container>,
     result: Receiver<Result<(), String>>,
     progress: Arc<AtomicU32>,
     /// Close the window once it is saved (Save from the close prompt).
@@ -297,6 +299,8 @@ pub struct WaveApp {
     mixer: MixerModel,
     /// Insert › Silence…: the length being typed, in seconds, while the dialog is up.
     insert_silence: Option<String>,
+    /// File › Import › Raw Data…: the settings being typed while the dialog is up.
+    raw_import: Option<RawDialog>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
     /// Window › Metadata.
@@ -484,6 +488,7 @@ impl WaveApp {
             panel_edit: None,
             insert_silence: None,
             stats: StatsPanel::default(),
+            raw_import: None,
             confirm_clear_history: false,
             show_metadata: false,
             meta_draft: Vec::new(),
@@ -1045,6 +1050,11 @@ impl WaveApp {
     /// Stream `path` into a session store on a worker thread; the window stays responsive for
     /// long files. A file still opening is cancelled first.
     fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
+        self.open_as(path, None, ctx);
+    }
+
+    /// [`open`](Self::open), or with `raw` the headerless import (File › Import › Raw Data).
+    fn open_as(&mut self, path: PathBuf, raw: Option<RawSpec>, ctx: &egui::Context) {
         if let Some(old) = self.opening.take() {
             old.cancel.store(true, Ordering::Relaxed);
         }
@@ -1066,7 +1076,11 @@ impl WaveApp {
                     ctx.request_repaint();
                 }
             };
-            let result = Document::open_in(&job_path, &opts, &mut report, &job_cancel).map_err(|e| e.to_string());
+            let result = match &raw {
+                Some(spec) => Document::open_raw_in(&job_path, spec, &opts, &mut report, &job_cancel),
+                None => Document::open_in(&job_path, &opts, &mut report, &job_cancel),
+            }
+            .map_err(|e| e.to_string());
             let _ = tx.send(result);
             ctx.request_repaint();
         });
@@ -1136,7 +1150,7 @@ impl WaveApp {
 
     fn pick_file(&mut self, ctx: &egui::Context) {
         let picked = rfd::FileDialog::new()
-            .add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "mp4", "mov", "caf"])
+            .add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "mp4", "mov", "caf", "w64", "au", "snd"])
             .pick_file();
         if let Some(path) = picked {
             self.open(path, ctx);
@@ -1934,6 +1948,62 @@ impl WaveApp {
             _ => return Err(format!("{} is not available now", actions::action(id).menu)),
         }
         Ok(false)
+    }
+
+    /// File › Import › Raw Data…: rate, channels, sample format, byte order and start offset.
+    fn raw_import_dialog(&mut self, ctx: &egui::Context) {
+        let Some(d) = self.raw_import.as_mut() else { return };
+        let mut choice = None;
+        egui::Window::new("Import Raw Data").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+            ctx,
+            |ui| {
+                ui.label(d.path.display().to_string());
+                egui::Grid::new("raw_import").num_columns(2).show(ui, |ui| {
+                    ui.label("Sample rate (Hz):");
+                    ui.text_edit_singleline(&mut d.rate);
+                    ui.end_row();
+                    ui.label("Channels (1-32):");
+                    ui.text_edit_singleline(&mut d.channels);
+                    ui.end_row();
+                    ui.label("Sample format:");
+                    egui::ComboBox::from_id_salt("raw_enc").selected_text(RAW_CHOICES[d.encoding].0).show_ui(ui, |ui| {
+                        for (i, (name, _)) in RAW_CHOICES.iter().enumerate() {
+                            ui.selectable_value(&mut d.encoding, i, *name);
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Byte order:");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut d.big_endian, false, "Little-endian");
+                        ui.radio_value(&mut d.big_endian, true, "Big-endian");
+                    });
+                    ui.end_row();
+                    ui.label("Start offset (bytes):");
+                    ui.text_edit_singleline(&mut d.offset);
+                    ui.end_row();
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(false);
+                    }
+                });
+            },
+        );
+        match choice {
+            Some(true) => match d.spec() {
+                Ok(spec) => {
+                    let path = d.path.clone();
+                    self.raw_import = None;
+                    self.open_as(path, Some(spec), ctx);
+                }
+                Err(e) => self.error = Some(format!("Import Raw Data: {e}")),
+            },
+            Some(false) => self.raw_import = None,
+            None => {}
+        }
     }
 
     /// Insert › Silence…: a length in seconds, inserted at the cursor on every channel.
@@ -2887,6 +2957,7 @@ impl WaveApp {
                     let exts: &[&str] = if f == SaveFormat::Aiff { &["aiff", "aif"] } else { &[f.extension()] };
                     dialog = dialog.add_filter(f.name(), exts);
                 }
+                dialog = dialog.add_filter("Sony Wave64", &["w64"]).add_filter("Apple CAF", &["caf"]).add_filter("Sun/NeXT AU", &["au"]);
                 if let Some(dir) = self.doc_path.parent().filter(|d| !d.as_os_str().is_empty()) {
                     dialog = dialog.set_directory(dir);
                 }
@@ -2901,10 +2972,15 @@ impl WaveApp {
             }
         };
         // The extension picks the format; a name without one is a WAV.
-        let (path, format) = match SaveFormat::from_path(&path) {
-            Some(f) => (path, f),
-            None if path.extension().is_none() => (path.with_extension("wav"), SaveFormat::Wav),
-            None => return Err(format!("{} is not a format WavCraft saves: use .wav, .aiff, .flac or .ogg", path.display())),
+        // Wave64, CAF and AU (f91) are a container of their own: `format` is WAV there and unused.
+        let (path, format, container) = if let Some(f) = SaveFormat::from_path(&path) {
+            (path, f, None)
+        } else if let Some(c) = Container::from_path(&path).filter(|c| *c != Container::Wav) {
+            (path, SaveFormat::Wav, Some(c))
+        } else if path.extension().is_none() {
+            (path.with_extension("wav"), SaveFormat::Wav, None)
+        } else {
+            return Err(format!("{} is not a format WavCraft saves: use .wav, .w64, .caf, .au, .aiff, .flac or .ogg", path.display()));
         };
         let wanted = ty.unwrap_or_else(|| SampleType::for_source(state.source()));
         if !format.accepts(wanted) && (explicit || ty.is_some()) {
@@ -2921,16 +2997,16 @@ impl WaveApp {
                 job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
                 ctx.request_repaint();
             };
-            let done = if format == SaveFormat::Vorbis {
-                save_vorbis(&job_state, &job_path, quality, &mut report)
-            } else {
-                save_aiff_kind(&job_state, &job_path, format, ty, aiff, &mut report)
+            let done = match container {
+                Some(c) => save_container(&job_state, &job_path, c, ty, &mut report),
+                None if format == SaveFormat::Vorbis => save_vorbis(&job_state, &job_path, quality, &mut report),
+                None => save_aiff_kind(&job_state, &job_path, format, ty, aiff, &mut report),
             };
             let _ = tx.send(done.map_err(|e| e.to_string()));
             ctx.request_repaint();
         });
         self.player.stop();
-        self.saving = Some(Saving { path, state, ty, format, aiff, result: rx, progress, then_close, doc_id: self.doc_id, copy: None });
+        self.saving = Some(Saving { path, state, ty, format, aiff, container, result: rx, progress, then_close, doc_id: self.doc_id, copy: None });
         Ok(())
     }
 
@@ -2982,7 +3058,7 @@ impl WaveApp {
         });
         self.player.stop();
         let copy = Some(if selection { "selection" } else { "export" });
-        self.saving = Some(Saving { path, state, ty, format: SaveFormat::Wav, aiff: AiffKind::Aiff, result: rx, progress, then_close: false, doc_id: self.doc_id, copy });
+        self.saving = Some(Saving { path, state, ty, format: SaveFormat::Wav, aiff: AiffKind::Aiff, container: None, result: rx, progress, then_close: false, doc_id: self.doc_id, copy });
         Ok(())
     }
 
@@ -2993,7 +3069,8 @@ impl WaveApp {
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err("the save stopped unexpectedly".to_string()),
         };
-        let Some(Saving { path, state, ty, format, aiff, then_close, doc_id, copy, .. }) = self.saving.take() else { return };
+        let Some(Saving { path, state, ty, format, aiff, container, then_close, doc_id, copy, .. }) = self.saving.take() else { return };
+        let label = container.map_or_else(|| format_label(format, aiff).to_string(), |c| c.describe().to_string());
         if let Some(what) = copy {
             match result {
                 Ok(()) => {
@@ -3012,7 +3089,7 @@ impl WaveApp {
             Ok(()) if doc_id != self.doc_id => {
                 log::info!(target: "wavcraft", "a save of an earlier file finished after another was opened: {}", path.display());
                 self.notice =
-                    Some(format!("Saved {} ({} {}), the file open before this one", path.display(), ty.describe(), format_label(format, aiff)));
+                    Some(format!("Saved {} ({} {}), the file open before this one", path.display(), ty.describe(), label));
             }
             Ok(()) => {
                 self.saved = Some(state);
@@ -3021,7 +3098,7 @@ impl WaveApp {
                     doc.path = path.clone();
                 }
                 self.error = None;
-                self.notice = Some(format!("Saved {} ({} {})", path.display(), ty.describe(), format_label(format, aiff)));
+                self.notice = Some(format!("Saved {} ({} {})", path.display(), ty.describe(), label));
                 if then_close {
                     self.allow_close = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -3448,6 +3525,14 @@ impl WaveApp {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
             }
+            // IMPORT_RAW <path> rate=<hz> ch=<n> fmt=<s16le|s24be|f32le|u8|...> [offset=<bytes>]
+            "IMPORT_RAW" => match parse_import_raw(rest) {
+                Ok((path, spec)) => {
+                    self.open_as(path, Some(spec), ctx);
+                    "OK".to_string()
+                }
+                Err(e) => format!("ERR {e}"),
+            },
             "SELECT" => {
                 let mut it = rest.split_whitespace().map(str::parse::<usize>);
                 match (it.next(), it.next()) {
@@ -4330,6 +4415,14 @@ impl WaveApp {
                 {
                     self.error = Some(e);
                 }
+                ui.menu_button("Import", |ui| {
+                    if ui.button("Raw Data…").on_hover_text("Open a file with no header: say its rate, channels and sample format").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                            self.raw_import = Some(RawDialog::new(path));
+                        }
+                        ui.close();
+                    }
+                });
                 ui.menu_button("Export", |ui| {
                     if ui.add_enabled(has_doc, egui::Button::new("File…")).clicked()
                         && let Err(e) = self.save_copy(ui.ctx(), false, None)
@@ -5089,6 +5182,7 @@ impl eframe::App for WaveApp {
         }
         self.rack_ui(&ctx);
         self.diagnostics_ui(&ctx);
+        self.raw_import_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         self.metadata_display_dialog(&ctx);
         self.draw_hud(&ctx);
@@ -5128,6 +5222,72 @@ fn move_settings_aside(path: &std::path::Path) -> String {
             format!("Could not move the old settings file aside ({e}); using the defaults, which replace it at the next change")
         }
     }
+}
+
+/// The sample formats the Raw Data dialog offers.
+const RAW_CHOICES: [(&str, RawEncoding); 7] = [
+    ("8-bit unsigned", RawEncoding::U8),
+    ("8-bit signed", RawEncoding::S8),
+    ("16-bit integer", RawEncoding::S16),
+    ("24-bit integer", RawEncoding::S24),
+    ("32-bit integer", RawEncoding::S32),
+    ("32-bit float", RawEncoding::F32),
+    ("64-bit float", RawEncoding::F64),
+];
+
+/// The Raw Data dialog's fields, as typed.
+struct RawDialog {
+    path: PathBuf,
+    rate: String,
+    channels: String,
+    encoding: usize,
+    big_endian: bool,
+    offset: String,
+}
+
+impl RawDialog {
+    fn new(path: PathBuf) -> RawDialog {
+        RawDialog { path, rate: "44100".into(), channels: "2".into(), encoding: 2, big_endian: false, offset: "0".into() }
+    }
+
+    fn spec(&self) -> Result<RawSpec, String> {
+        let rate = self.rate.trim().parse::<u32>().ok().filter(|r| (1..=wavcraft_core::io::RAW_MAX_RATE_HZ).contains(r));
+        let channels = self.channels.trim().parse::<u16>().ok().filter(|c| (1..=wavcraft_core::io::RAW_MAX_CHANNELS).contains(c));
+        let offset = self.offset.trim().parse::<u64>().ok();
+        match (rate, channels, offset) {
+            (Some(sample_rate), Some(channels), Some(offset)) => {
+                Ok(RawSpec { sample_rate, channels, encoding: RAW_CHOICES[self.encoding].1, big_endian: self.big_endian, offset })
+            }
+            (None, ..) => Err(format!("the sample rate must be 1 to {} Hz", wavcraft_core::io::RAW_MAX_RATE_HZ)),
+            (_, None, _) => Err(format!("channels must be 1 to {}", wavcraft_core::io::RAW_MAX_CHANNELS)),
+            _ => Err("the start offset must be a whole number of bytes".to_string()),
+        }
+    }
+}
+
+/// `IMPORT_RAW <path> rate=<hz> ch=<n> fmt=<s16le|...> [offset=<bytes>]`: the path is everything
+/// before the first ` key=` word, so it may hold spaces.
+fn parse_import_raw(rest: &str) -> Result<(PathBuf, RawSpec), String> {
+    const USAGE: &str = "IMPORT_RAW <path> rate=<hz> ch=<n> fmt=<u8|s8|s16|s24|s32|f32|f64><le|be> [offset=<bytes>]";
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    let first_key = words.iter().position(|w| w.contains('=')).ok_or(USAGE)?;
+    let path = words[..first_key].join(" ");
+    if path.is_empty() {
+        return Err(USAGE.to_string());
+    }
+    let (mut rate, mut ch, mut fmt, mut offset) = (None, None, None, 0u64);
+    for w in &words[first_key..] {
+        let (k, v) = w.split_once('=').ok_or(USAGE)?;
+        match k {
+            "rate" => rate = v.parse::<u32>().ok(),
+            "ch" => ch = v.parse::<u16>().ok(),
+            "fmt" => fmt = RawEncoding::parse(v),
+            "offset" => offset = v.parse::<u64>().map_err(|_| "offset must be a whole number of bytes".to_string())?,
+            _ => return Err(format!("unknown field {k:?}; {USAGE}")),
+        }
+    }
+    let (Some(sample_rate), Some(channels), Some((encoding, order))) = (rate, ch, fmt) else { return Err(USAGE.to_string()) };
+    Ok((PathBuf::from(path), RawSpec { sample_rate, channels, encoding, big_endian: order.unwrap_or(false), offset }))
 }
 
 /// The History step an Up or Down key moves to from `cursor` among `len` steps (none at an end).
