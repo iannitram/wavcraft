@@ -391,3 +391,18 @@ fn the_monitor_preference_round_trips_and_defaults_off() {
     let s = Settings { monitor_input: true, ..Settings::default() };
     assert!(Settings::parse(&s.to_text()).monitor_input);
 }
+
+#[test]
+fn right_click_setting_round_trips_and_defaults_to_extend() {
+    assert!(!Settings::default().right_click_menu);
+    assert!(!Settings::parse("").right_click_menu);
+    let menu = Settings { right_click_menu: true, ..Settings::default() };
+    assert!(menu.to_text().contains("right_click = menu"));
+    assert!(Settings::parse(&menu.to_text()).right_click_menu);
+    // The default is not written, so a file without the key extends.
+    let extend = Settings::default();
+    assert!(!extend.to_text().contains("right_click"));
+    assert!(!Settings::parse(&extend.to_text()).right_click_menu);
+    // Unknown values mean the default.
+    assert!(!Settings::parse("right_click = banana").right_click_menu);
+}

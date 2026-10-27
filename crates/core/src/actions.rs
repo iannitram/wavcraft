@@ -55,6 +55,8 @@ pub enum ActionId {
     ToolSelect,
     ToolHand,
     ToolZoom,
+    /// The Marquee tool (B135): drags a time x frequency rectangle on the spectral display.
+    ToolMarquee,
     ZeroInward,
     ZeroOutward,
     ZeroLeftToLeft,
@@ -229,6 +231,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ToolSelect, "tool.select", "Time Selection Tool"),
     window(ActionId::ToolHand, "tool.hand", "Hand Tool"),
     window(ActionId::ToolZoom, "tool.zoom", "Zoom Tool"),
+    window(ActionId::ToolMarquee, "tool.marquee", "Marquee Selection Tool"),
     window(ActionId::StatsShow, "stats.show", "Sample Statistics"),
     window(ActionId::StatsGotoPeak, "stats.goto_peak", "Go to Peak"),
     window(ActionId::StatsNextClip, "stats.next_clip", "Next Possibly Clipped Run"),
@@ -523,7 +526,7 @@ impl Editor {
             ActionId::ExtractChannels => self.channel_count() >= 2 && self.len() > 0,
             ActionId::ExportRanges => !crate::export::exportable_ranges(self.history.current(), None).is_empty(),
             ActionId::GotoTime | ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
-            ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom => true,
+            ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom | ActionId::ToolMarquee => true,
             ActionId::ZoomToSelection => has_sel,
             ActionId::Play
             | ActionId::Pause
@@ -1075,6 +1078,7 @@ impl Editor {
             | ActionId::ToolSelect
             | ActionId::ToolHand
             | ActionId::ToolZoom
+            | ActionId::ToolMarquee
             | ActionId::TimeDecimal
             | ActionId::TimeCompact
             | ActionId::TimeSamples

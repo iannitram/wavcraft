@@ -36,6 +36,7 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_RIGHT_CLICK: &str = "right_click";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 const KEY_CUT_JOIN: &str = "crossfade_cut_join_ms";
@@ -413,6 +414,9 @@ impl Default for MarkerColumns {
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// Right-click in the waveform opens a context menu instead of moving the nearest selection
+    /// edge to the click (Audition's preference; off is its default).
+    pub right_click_menu: bool,
     /// Ids of the panels the person hid (`crate::panels`); a panel not listed is shown.
     pub hidden_panels: Vec<String>,
     /// Crossfade where Delete or Cut closes a gap, in ms (0: none).
@@ -509,6 +513,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             session_folder: None,
+            right_click_menu: false,
             hidden_panels: Vec::new(),
             cut_join_ms: DEFAULT_CUT_JOIN_MS,
             edge_ms: DEFAULT_EDGE_MS,
@@ -824,6 +829,7 @@ impl Settings {
             }
             KEY_TRUE_PEAK => self.true_peak_ceiling_dbtp = parse_range(key, value, MIN_TRUE_PEAK_DBTP, MAX_TRUE_PEAK_DBTP, "dBTP")?,
             KEY_ZOOM_FACTOR => self.zoom_factor = parse_range(key, value, MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR, "times")?,
+            KEY_RIGHT_CLICK => self.right_click_menu = value.eq_ignore_ascii_case("menu"),
             KEY_EXTEND_SELECTION => self.extend_selection = choose(key, value, ExtendSelection::from_name, ExtendSelection::NAMES)?,
             KEY_CONTEXT_CHANNELS => self.context_channel_editing = parse_bool(key, value)?,
             KEY_THEME => self.theme = choose(key, value, Theme::from_name, Theme::NAMES)?,
@@ -911,6 +917,10 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        if self.right_click_menu {
+            out.push_str("# right_click: `menu` opens a context menu on right-click; left out (the default), a right-click moves the nearest selection edge to the click.\n");
+            out.push_str(&format!("{KEY_RIGHT_CLICK} = menu\n"));
+        }
         if !self.hidden_panels.is_empty() {
             out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).
 ");

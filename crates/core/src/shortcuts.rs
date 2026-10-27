@@ -245,6 +245,8 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::ToggleReturnOnStop, shift("X")),
     act(ActionId::ToolHand, key("H")),
     act(ActionId::ToolZoom, key("Z")),
+    // The Marquee tool (B135); E is free in the table.
+    act(ActionId::ToolMarquee, key("E")),
 ];
 
 /// Chords bound to more than one command in `bindings`, as `(chord, first, second)`.

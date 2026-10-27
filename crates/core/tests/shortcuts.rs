@@ -76,6 +76,7 @@ shortcuts! {
     return_on_stop_shift_x: "Shift+X" => A(ActionId::ToggleReturnOnStop);
     tool_hand_h: "H" => A(ActionId::ToolHand);
     tool_zoom_z: "Z" => A(ActionId::ToolZoom);
+    tool_marquee_e: "E" => A(ActionId::ToolMarquee);
 }
 
 #[test]

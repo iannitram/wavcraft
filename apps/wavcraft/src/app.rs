@@ -31,6 +31,7 @@ use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::transport::{self, Follow, Mode, Scrub as DragTracker, Transport};
+use wavcraft_core::view::{Band, SpectralSelection, fraction_of_hz, hz_at_fraction};
 use wavcraft_core::workspaces::{self, Snapshot, Workspaces};
 use wavcraft_core::{DocState, Document, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport, tempo::Tempo};
 
@@ -64,6 +65,17 @@ const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
 const ACCENT: Color32 = Color32::from_rgb(90, 140, 230);
 const RULER_HEIGHT: f32 = 22.0;
+const BAND_FILL: Color32 = Color32::from_rgba_premultiplied(60, 70, 20, 60);
+const BAND_OUTLINE: Color32 = Color32::from_rgb(240, 220, 90);
+/// What the waveform's right-click menu offers (only with the "context menu" setting).
+const MENU_ACTIONS: [ActionId; 5] = [ActionId::Cut, ActionId::Copy, ActionId::Paste, ActionId::Delete, ActionId::SelectAll];
+
+/// A Marquee drag in progress: drawing a new rectangle, or moving the one the drag began inside.
+#[derive(Clone, Copy)]
+enum MarqueeDrag {
+    Draw { frame0: usize, hz0: f32, ch: usize },
+    Move { from: SpectralSelection, frame0: usize, hz0: f32, ch: usize },
+}
 
 /// Longest silence Insert Silence accepts, in seconds (24 hours).
 const MAX_SILENCE_SECS: f64 = 86_400.0;
@@ -304,6 +316,8 @@ enum Tool {
     Hand,
     /// Click zooms in at the point (Alt: out), drag zooms to the range.
     Zoom,
+    /// Drag draws a time x frequency rectangle on the spectral display (B135).
+    Marquee,
 }
 
 #[derive(Default)]
@@ -321,6 +335,7 @@ impl Tool {
             Tool::Select => "select",
             Tool::Hand => "hand",
             Tool::Zoom => "zoom",
+            Tool::Marquee => "marquee",
         }
     }
 }
@@ -328,6 +343,14 @@ impl Tool {
 pub struct WaveApp {
     doc: Option<Document>,
     tool: Tool,
+    /// The spectral selection's band, with the time range it was made on: it is live only while
+    /// the selection is still that range (any other change of the selection drops it).
+    band: Option<(Band, Selection)>,
+    /// The Marquee tool's feather (Hz, ms): a new or changed band takes it.
+    feather_hz: f32,
+    feather_ms: f32,
+    /// The Marquee drag in progress.
+    marquee: Option<MarqueeDrag>,
     /// Where the current drag began (set when a drag starts, for the Zoom tool and the ruler).
     drag_origin: Option<Pos2>,
     /// Bumped on every open, so cached pictures of the previous file are dropped.
@@ -609,6 +632,10 @@ impl WaveApp {
             generation: 0,
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
             tool: Tool::default(),
+            band: None,
+            feather_hz: 0.0,
+            feather_ms: 0.0,
+            marquee: None,
             drag_origin: None,
             selection: Selection::default(),
             player: Player::new(output_choice(&settings), settings.output_map.clone(), settings.playback_quality),
@@ -3304,6 +3331,7 @@ impl WaveApp {
             ActionId::ToolSelect => self.tool = Tool::Select,
             ActionId::ToolHand => self.tool = Tool::Hand,
             ActionId::ToolZoom => self.tool = Tool::Zoom,
+            ActionId::ToolMarquee => self.tool = Tool::Marquee,
             ActionId::ZoomToSelection if !self.selection.is_empty() => {
                 let (a, b) = (self.selection.start() as f64, self.selection.end() as f64);
                 self.view.frames_per_px = ((b - a) / f64::from(width)).max(1.0 / 64.0);
@@ -5168,6 +5196,9 @@ impl WaveApp {
     /// (`hand_drag <dx_px>`, `zoom_click <frame> [out]`, `ruler_rdrag <start> <end>`), through
     /// the same code the pointer uses.
     fn control_gesture(&mut self, rest: &str) -> String {
+        if let Some(answer) = self.pointer_gesture(rest) {
+            return answer;
+        }
         let frames = self.doc.as_ref().map_or(0, Document::frames);
         let mut it = rest.split_whitespace();
         let name = it.next().unwrap_or("");
@@ -5344,7 +5375,13 @@ impl WaveApp {
                 let unsaved = u8::from(self.unsaved());
                 let rec_state = self.rec.state_fields();
                 let width = self.editor_width.max(1.0);
-                let view = format!("tool={} view={:.0}-{:.0}", self.tool.name(), self.view.start, self.view.end(width));
+                let view = format!(
+                    "tool={} right_click={} view={:.0}-{:.0}",
+                    self.tool.name(),
+                    if self.settings.right_click_menu { "menu" } else { "extend" },
+                    self.view.start,
+                    self.view.end(width)
+                );
                 self.poll_transport();
                 let t = &self.transport;
                 let playhead = if self.playhead_live() { self.player.position() } else { self.head_scrub.pos.unwrap_or(self.selection.start()) };
@@ -5372,7 +5409,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} path={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -5405,11 +5442,12 @@ impl WaveApp {
                             e.channels.active(doc.channel_count()).iter().map(usize::to_string).collect::<Vec<_>>().join(","),
                             e.history.undo_label().unwrap_or("-"),
                             e.history.redo_label().unwrap_or("-"),
+                            self.band_text(),
                             self.doc_path.display()
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         u8::from(self.player.is_playing()),
@@ -5422,7 +5460,8 @@ impl WaveApp {
                         u8::from(self.player.metronome().on),
                         self.player.metronome().count_in_bars,
                         u8::from(self.snap_frames),
-                        self.settings.custom_fps
+                        self.settings.custom_fps,
+                        self.band_text()
                     ),
                 }
             }
@@ -7080,6 +7119,135 @@ impl WaveApp {
         }
     }
 
+    /// Right-click in the waveform (the Select tool, menu setting off): the edge nearest `frame`
+    /// moves there (Audition's default), so the selection grows or shrinks to the click. Returns
+    /// whether the selection moved.
+    fn right_click_at(&mut self, frame: usize, total: usize) -> bool {
+        if self.settings.right_click_menu || self.tool != Tool::Select {
+            return false;
+        }
+        self.selection = self.selection.extend_nearest_to(frame, total);
+        true
+    }
+
+    /// The band, while the time range it was made on is still the selection.
+    fn live_band(&self) -> Option<Band> {
+        self.band.filter(|(_, at)| *at == self.selection).map(|(band, _)| band)
+    }
+
+    /// The spectral selection now: the time selection with the band, if there is a live one.
+    fn spectral(&self) -> Option<SpectralSelection> {
+        let rate = self.doc.as_ref()?.sample_rate();
+        self.live_band().map(|band| SpectralSelection { time: self.selection, band, rate })
+    }
+
+    /// Set the band on the current time range, or clear it.
+    fn set_band(&mut self, band: Option<Band>) {
+        self.band = band.map(|b| (b, self.selection));
+    }
+
+    /// `lo-hi` in Hz, or `none`, for STATE and the control channel.
+    fn band_text(&self) -> String {
+        self.live_band().map_or_else(|| "none".to_string(), |b| b.to_string())
+    }
+
+    /// The control channel's pointer gestures without a pointer: `marquee <frame0> <frame1> <hz0>
+    /// <hz1>`, `marquee_move <dframes> <dhz>` and `right_click <frame>`. `None` for any other gesture.
+    fn pointer_gesture(&mut self, rest: &str) -> Option<String> {
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let (total, rate) = self.doc.as_ref().map_or((0, 0), |d| (d.frames(), d.sample_rate()));
+        let nyquist = rate as f32 / 2.0;
+        let answer = |s: &Self| format!("OK selection={}-{} band={}", s.selection.start(), s.selection.end(), s.band_text());
+        match words.as_slice() {
+            ["marquee", f0, f1, h0, h1] => {
+                let usage = "ERR GESTURE marquee <frame0> <frame1> <hz0> <hz1>".to_string();
+                if self.editor.is_none() {
+                    return Some("ERR no file is open".to_string());
+                }
+                let (Ok(f0), Ok(f1), Ok(h0), Ok(h1)) = (f0.parse::<usize>(), f1.parse::<usize>(), h0.parse::<f32>(), h1.parse::<f32>()) else {
+                    return Some(usage);
+                };
+                if !h0.is_finite() || !h1.is_finite() {
+                    return Some(usage);
+                }
+                self.tool = Tool::Marquee;
+                self.selection = Selection { anchor: f0.min(total), head: f1.min(total) };
+                let band = Band { feather_hz: self.feather_hz, feather_ms: self.feather_ms, ..Band::new(h0, h1, nyquist) };
+                self.set_band(Some(band));
+                Some(answer(self))
+            }
+            ["marquee_move", df, dh] => {
+                let (Ok(df), Ok(dh)) = (df.parse::<i64>(), dh.parse::<f32>()) else {
+                    return Some("ERR GESTURE marquee_move <dframes> <dhz>".to_string());
+                };
+                let Some(spectral) = self.spectral() else {
+                    return Some("ERR no spectral selection to move".to_string());
+                };
+                let moved = spectral.moved(df, dh, total, nyquist);
+                self.selection = moved.time;
+                self.set_band(Some(moved.band));
+                Some(answer(self))
+            }
+            ["right_click", frame] => {
+                let Ok(frame) = frame.parse::<usize>() else {
+                    return Some("ERR GESTURE right_click <frame>".to_string());
+                };
+                if self.editor.is_none() {
+                    return Some("ERR no file is open".to_string());
+                }
+                let moved = self.right_click_at(frame, total);
+                Some(format!("{} moved={}", answer(self), u8::from(moved)))
+            }
+            ["marquee" | "marquee_move" | "right_click", ..] => {
+                Some("ERR GESTURE right_click <frame> | marquee <frame0> <frame1> <hz0> <hz1> | marquee_move <dframes> <dhz>".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// The tools bar above the editor: the pointer's tools with the current one marked, and the
+    /// current tool's options (the Marquee's feather; the Select tool's right-click setting).
+    fn tools_bar(&mut self, ui: &mut egui::Ui) {
+        let tools = [(Tool::Select, "Time Selection (V)"), (Tool::Hand, "Hand (H)"), (Tool::Zoom, "Zoom (Z)"), (Tool::Marquee, "Marquee (E)")];
+        ui.horizontal(|ui| {
+            for (tool, label) in tools {
+                if ui.selectable_label(self.tool == tool, label).clicked() {
+                    self.tool = tool;
+                }
+            }
+            ui.separator();
+            if self.tool == Tool::Marquee {
+                let (mut hz, mut ms) = (self.feather_hz, self.feather_ms);
+                let a = ui
+                    .add(egui::DragValue::new(&mut hz).range(0.0..=12_000.0).suffix(" Hz"))
+                    .on_hover_text("Feather: soft edge above and below the band");
+                let b = ui
+                    .add(egui::DragValue::new(&mut ms).range(0.0..=5_000.0).suffix(" ms"))
+                    .on_hover_text("Feather: soft edge before and after the time range");
+                if a.changed() || b.changed() {
+                    (self.feather_hz, self.feather_ms) = (hz, ms);
+                    if let Some((band, _)) = self.band.as_mut() {
+                        (band.feather_hz, band.feather_ms) = (hz, ms);
+                    }
+                }
+            }
+            if self.tool == Tool::Select {
+                let mut menu = self.settings.right_click_menu;
+                if ui
+                    .checkbox(&mut menu, "Right-click opens a menu")
+                    .on_hover_text("Off: right-click moves the nearest selection edge to the click")
+                    .changed()
+                {
+                    self.settings.right_click_menu = menu;
+                    match self.save_settings() {
+                        Ok(()) => self.notice = None,
+                        Err(e) => self.notice = Some(e),
+                    }
+                }
+            }
+        });
+    }
+
     fn draw_hud(&mut self, ctx: &egui::Context) {
         if !actions::hud_visible(self.hud.hidden, self.hud.only_for_selection, !self.selection.is_empty()) {
             return;
@@ -7133,8 +7301,7 @@ impl WaveApp {
             rgb(c.cursor, CURSOR),
             rgb(c.playhead, PLAYHEAD),
         );
-        let Some(doc) = &self.doc else { return };
-        let (frames, rate, channels) = (doc.frames(), doc.sample_rate(), doc.channels().max(1));
+        let Some((frames, rate, channels)) = self.doc.as_ref().map(|d| (d.frames(), d.sample_rate(), d.channels().max(1))) else { return };
         let chnames: Vec<String> = self.editor.as_ref().map(|e| e.history.current().source().meta.chnames.clone()).unwrap_or_default();
         let width = rect.width().max(1.0);
         self.editor_width = width;
@@ -7218,8 +7385,21 @@ impl WaveApp {
             self.view.zoom_click(self.view.frame_at(pos.x - rect.left()), out, width, frames);
         }
 
-        // Selection gestures belong to the Select tool, primary button only.
-        let select = self.tool == Tool::Select;
+        // The Marquee tool (B135) takes a drag that starts on the spectral display; every other
+        // gesture is the Select tool's, as before.
+        let body = Rect::from_min_max(pos2(rect.left(), ruler_rect.bottom()), rect.max);
+        let spectrum_hit = match (self.editor_shows("waveform"), self.editor_shows("spectral")) {
+            (true, true) => Some(Rect::from_min_max(pos2(body.left(), body.top() + body.height() * 0.5), body.max)),
+            (false, true) => Some(body),
+            _ => None,
+        };
+        let marquee_tool = self.tool == Tool::Marquee;
+        let marquee_hit = spectrum_hit.filter(|_| marquee_tool);
+        let marquee_starts = marquee_hit.is_some_and(|a| {
+            response.drag_started_by(egui::PointerButton::Primary) && ui.input(|i| i.pointer.press_origin()).is_some_and(|o| a.contains(o))
+        });
+        // Selection gestures: the Select tool's, and the Marquee tool's outside a marquee drag.
+        let select = self.tool == Tool::Select || (marquee_tool && self.marquee.is_none() && !marquee_starts);
         let shift = ui.input(|i| i.modifiers.shift);
         if response.drag_started()
             && let Some(e) = &self.editor
@@ -7295,6 +7475,94 @@ impl WaveApp {
             }
         }
 
+        // The Marquee tool (B135): a drag on the spectral display draws a time x frequency
+        // rectangle, or moves the one the drag began inside.
+        if let Some(area) = marquee_hit {
+            let (axis_lo, axis_hi) = self.params.range_hz(rate);
+            let log = self.params.log_freq;
+            let nyquist = rate as f32 / 2.0;
+            let lane_of = |pos: Pos2| -> usize {
+                let h = area.height() / channels as f32;
+                (((pos.y - area.top()) / h.max(1.0)).floor().max(0.0) as usize).min(channels - 1)
+            };
+            // The frequency at `pos` on lane `ch` (a drag keeps the lane it began in).
+            let hz_at = |pos: Pos2, ch: usize| -> f32 {
+                let l = lane(area, ch, channels).shrink2(vec2(0.0, 1.0));
+                hz_at_fraction(axis_lo, axis_hi, log, 1.0 - (pos.y - l.top()) / l.height().max(1.0))
+            };
+            if marquee_starts
+                && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+            {
+                let (ch, frame0) = (lane_of(origin), frame_at(&self.view, origin));
+                let hz0 = hz_at(origin, ch);
+                let inside = self
+                    .spectral()
+                    .filter(|s| (s.time.start()..=s.time.end()).contains(&frame0) && (s.band.lo_hz..=s.band.hi_hz).contains(&hz0));
+                self.marquee = Some(match inside {
+                    Some(from) => MarqueeDrag::Move { from, frame0, hz0, ch },
+                    None => MarqueeDrag::Draw { frame0, hz0, ch },
+                });
+            }
+            if let Some(drag) = self.marquee {
+                if response.dragged_by(egui::PointerButton::Primary)
+                    && let Some(pos) = response.interact_pointer_pos()
+                {
+                    let frame = frame_at(&self.view, pos);
+                    match drag {
+                        MarqueeDrag::Draw { frame0, hz0, ch } => {
+                            let hz = hz_at(pos, ch);
+                            self.selection = Selection { anchor: frame0, head: frame };
+                            let band = Band { feather_hz: self.feather_hz, feather_ms: self.feather_ms, ..Band::new(hz0, hz, nyquist) };
+                            self.set_band(Some(band));
+                        }
+                        MarqueeDrag::Move { from, frame0, hz0, ch } => {
+                            let hz = hz_at(pos, ch);
+                            let moved = from.moved(frame as i64 - frame0 as i64, hz - hz0, frames, nyquist);
+                            self.selection = moved.time;
+                            self.set_band(Some(moved.band));
+                        }
+                    }
+                }
+                if response.drag_stopped() {
+                    self.marquee = None;
+                }
+            }
+        }
+        // Escape drops the band and any marquee in progress (not while a text field has focus).
+        if ui.input(|i| i.key_pressed(Key::Escape)) && !ui.ctx().text_edit_focused() {
+            self.set_band(None);
+            self.marquee = None;
+        }
+        // Right-click: with the menu setting off, the nearest edge moves to the click (the Select
+        // tool, off the ruler); with it on, the context menu opens.
+        if self.tool == Tool::Select
+            && response.secondary_clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+            && !ruler_rect.contains(pos)
+        {
+            self.right_click_at(frame_at(&self.view, pos), frames);
+        }
+        if self.settings.right_click_menu {
+            let sel = self.selection_range();
+            let on: Vec<(ActionId, bool)> = MENU_ACTIONS
+                .iter()
+                .map(|&id| (id, self.saving.is_none() && self.editor.as_ref().is_some_and(|e| e.enabled(id, &sel))))
+                .collect();
+            let mut picked = None;
+            response.context_menu(|ui| {
+                for (id, enabled) in on {
+                    if ui.add_enabled(enabled, egui::Button::new(actions::action(id).menu)).clicked() {
+                        picked = Some(id);
+                        ui.close();
+                    }
+                }
+            });
+            if let Some(id) = picked {
+                let _ = self.run_action(id, ui.ctx());
+            }
+        }
+
+        let Some(doc) = &self.doc else { return };
         let (start, end) = (self.view.start, self.view.end(width));
         let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
@@ -7421,6 +7689,19 @@ impl WaveApp {
             }
         }
 
+        // The spectral band of a marquee, on each lane of the spectral display.
+        if let (Some(spectral), Some(area)) = (self.spectral(), spectrum_area) {
+            let (x0, x1) = (rect.left() + self.view.x_of(spectral.time.start() as f64), rect.left() + self.view.x_of(spectral.time.end() as f64));
+            let (lo, hi) = self.params.range_hz(rate);
+            for ch in 0..channels {
+                let l = lane(area, ch, channels).shrink2(vec2(0.0, 1.0));
+                let y = |hz: f32| l.bottom() - fraction_of_hz(lo, hi, self.params.log_freq, hz) * l.height();
+                let r = Rect::from_min_max(pos2(x0, y(spectral.band.hi_hz)), pos2(x1, y(spectral.band.lo_hz)));
+                let clipped = painter.with_clip_rect(l.intersect(rect));
+                clipped.rect_filled(r, 0.0, BAND_FILL);
+                clipped.rect_stroke(r, 0.0, Stroke::new(1.0, BAND_OUTLINE), egui::StrokeKind::Inside);
+            }
+        }
         // Selection, cursor and playhead over everything.
         if !self.selection.is_empty() {
             let (a, b) = (rect.left() + self.view.x_of(self.selection.start() as f64), rect.left() + self.view.x_of(self.selection.end() as f64));
@@ -7763,6 +8044,7 @@ impl eframe::App for WaveApp {
         }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
+        egui::Panel::top("tools").show(ui, |ui| self.tools_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.meters.show_levels {
             egui::Panel::bottom("levels").show(ui, |ui| {

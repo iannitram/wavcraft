@@ -5,13 +5,15 @@
 //! by `WAVCRAFT_CONTROL_TOKEN_FILE` (made owner-only with a CSPRNG token when missing; an
 //! existing one must be owner-only, not a link, 64+ hex digits; see `token`). Then:
 //!
-//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> playing=<0|1> position=<frame> device=<name> reopens=<n> tool=<name> view=<a>-<b> time_display=<format> selection_text=<range> snap_frames=<0|1> cursor_frame=<frame> cursor_text=<time in the format> clipboard=<1-5> clip_frames=<n> labels=<a,b,..> active=<0-based,..> undo=<label> redo=<label> path=<the document's own path>`
+//! - `STATE` → `OK frames=<n> channels=<n> rate=<hz> selection=<a>-<b> steps=<n> cursor=<i> busy=<0|1> progress=<0-100> unsaved=<0|1> playing=<0|1> position=<frame> device=<name> reopens=<n> tool=<name> right_click=<menu|extend> view=<a>-<b> time_display=<format> selection_text=<range> snap_frames=<0|1> cursor_frame=<frame> cursor_text=<time in the format> clipboard=<1-5> clip_frames=<n> labels=<a,b,..> active=<0-based,..> undo=<label> redo=<label> band=<lo-hi|none> path=<the document's own path>` (`band=` is after `redo=`, not last: a parser must split on it)`
 //!   (`path=` is last: it may hold spaces; Save Selection As and Export do not change it)
 //! - `PLAY <from> <to>` (frames) → `OK`; `PLAY` alone plays from the selection (as Space) → `OK playing=<0|1>`; `PLAYBACK` → see below
 //! - `DEVICE_CHANGED` → `OK` (simulate the system's default output device changing: the output is reopened at the same place, `reopens` counts it; f48)
 //! - `CHANNELS all|<0-based channel>,..` → `OK` (which channels edits act on; `ERR` for none or out of range)
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
+//! - `GESTURE marquee <frame0> <frame1> <hz0> <hz1>` / `GESTURE marquee_move <dframes> <dhz>` → `OK selection=<a>-<b> band=<lo-hi>` (the Marquee tool: a time range and a frequency band; a plain selection change clears the band)
+//! - `GESTURE right_click <frame>` → `OK selection=<a>-<b> moved=<0|1>` (Select tool, `right_click = extend`: the nearest edge moves; the menu setting turns it off)
 //! - `GESTURE shift_click <frame> | double_click | triple_click | edge_drag <from> <to> | shift_left|shift_right [frames] | shift_home | shift_end` → `OK selection=<a>-<b>` (the editor's selection gestures)
 //! - `ACTION <name>` (an action table name, `edit.delete`, or an effect, `effect.invert`) → `OK selection=<a>-<b> changed=<0|1>`
 //! - `PARAM <amplify.db|normalize.db> <number>` → `OK` (the number Effects › Amplify or Normalize uses)
