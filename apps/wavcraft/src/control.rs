@@ -14,7 +14,8 @@
 //! - `PARAM <amplify.db|normalize.db> <number>` → `OK` (the number Effects › Amplify or Normalize uses)
 //! - `KEY <chord>` (`Ctrl+Z`, `Cmd+Shift+Z`, `Space`, `F3`; Ctrl and Cmd mean the same) → `OK command=<name> selection=<a>-<b> changed=<0|1>` (runs what the shortcut table binds the chord to, as the key would; `ERR` when none)
 //! - `ACTION window.toggle.<panel>` (also `window.show.<panel>`, `window.hide.<panel>`; ids in `wavcraft_core::panels::REGISTRY`) → `OK selection=<a>-<b> changed=0 <panel>=<0|1> …`
-//! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1>` (which panels are shown)
+//! - `PANELS` → `OK waveform=<0|1> spectral=<0|1> history=<0|1> selection=<0|1> zone.left=<ids|-> zone.right=… zone.bottom=… zone.center=… front.left=<id|-> front.right=… front.bottom=… maximized=<id|->` (which panels are shown, then the shown tabs of each dock zone in order, the front tab of each, and the maximised panel)
+//! - `PANEL move <id> <left|right|bottom>` | `PANEL maximize <id>` (again restores) | `PANEL close <id>` | `PANEL activate <id>` → the same line as `PANELS`; the layout is saved in the settings file
 //! - `SELECT_TIME <start> <end>` (each in the chosen time format, no spaces inside) → `OK selection=<a>-<b>`; `STATE` also reports `time_display`, `selection_text` and `snap_frames`
 //! - `SNAP_FRAME <frame>` → `OK frame=<snapped>` (what a ruler click or drag calls: SMPTE display and Snap to Frames on)
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
@@ -34,6 +35,8 @@
 //! - `STATS [<start> <end>]` (frames; the selection or the whole file without them) → `OK range=<a>-<b> ...` then, per channel, `ch<i> peak=.. peak_db=.. peak_frame=.. min=.. max=.. dc_pct=.. rms_*_db=.. dyn_db=.. clip_runs=.. clip_samples=.. bits=..`.
 //!   Runs the scan at once and keeps it for `ACTION stats.goto_peak|stats.next_clip|stats.prev_clip` (the cursor moves; `ERR` when there is nowhere to go)
 //! - `JOB testslow <ms>` → `OK` (a test-only background job over the selection, `<ms>` per 64K-frame chunk; `busy=1` and `progress` while it runs; `JOB cancel` stops it)
+//! - `WORKSPACES` → `OK current=<name> modified=<0|1> workspaces=<a>|<b>…` (spaces in names shown as `_`; `Default` is built in; `modified` is 1 when the layout differs from the saved state of the workspace in use)
+//! - `WORKSPACE save <name>` (keeps the layout under the name and makes it the one in use) | `switch <name>` | `reset [name]` (back to the saved layout) | `delete <name>` (not Default, not the one in use) → the same line as `WORKSPACES`; the one in use is kept in the settings file
 //! - `HISTORY <step>` → `OK` (the History panel's click; 0 is Open)
 //! - `META get [field]` / `META set <field> <value>` → `OK <value>` / `OK changed=<0|1>` (one undo step "Edit Metadata" per set; `\r` and `\n` in a value are line breaks)
 //! - `CHNAME get` / `CHNAME set <ch from 1> <name>` → `OK <names>` / `OK changed=<0|1>` (channel names; one undo step "Edit Metadata"); `META set INFO.INAM <v>` (or any `INFO.XXXX`) sets a RIFF INFO tag

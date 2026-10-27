@@ -11,12 +11,14 @@ use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::io::OpenOptions;
 use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
-use wavcraft_core::panels::{self, PanelSet};
+use wavcraft_core::monitors::{self, Monitor};
+use wavcraft_core::panels::{self, DockSide, Layout, PanelSet};
 use wavcraft_core::save::{FileKind, Part, SampleType, save_wav, write_file};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
 use wavcraft_core::store::default_sessions_root;
+use wavcraft_core::workspaces::{self, Snapshot, Workspaces};
 use wavcraft_core::{DocState, Document, FileFormat, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport};
 
 use crate::control;
@@ -37,6 +39,7 @@ const WAVE: Color32 = Color32::from_rgb(64, 200, 140);
 const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
 const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
 const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
+const ACCENT: Color32 = Color32::from_rgb(90, 140, 230);
 const RULER_HEIGHT: f32 = 22.0;
 
 /// Longest silence Insert Silence accepts, in seconds (24 hours).
@@ -166,6 +169,27 @@ pub struct WaveApp {
     params: SpectrogramParams,
     /// Which registered panels are shown (Window menu; kept in the settings file).
     panels: PanelSet,
+    /// Where the panels are docked (kept in the settings file).
+    layout: Layout,
+    /// The panel under the pointer last frame, for the maximise and close keys.
+    hover: Option<&'static str>,
+    hover_next: Option<&'static str>,
+    /// Where the docked tabs and zones were drawn this frame, for dropping a dragged tab.
+    tab_rects: Vec<(String, Rect)>,
+    zone_rects: Vec<(DockSide, Rect)>,
+    /// The layout changed while the pointer was down (a zone being resized): save it on release.
+    layout_dirty: bool,
+    /// How the last floating window was made: "os" (own operating-system window) or "embedded"
+    /// (an egui window inside the main one); reported by `PANELS`.
+    float_kind: Option<&'static str>,
+    /// The monitors, when they are faked (`MONITORS simulate`, `WAVCRAFT_MONITORS`); `None` means
+    /// the real ones, which this build cannot list (egui reports only the size of the one
+    /// monitor), so floating windows are then neither tagged nor moved.
+    monitors: Option<Vec<Monitor>>,
+    /// Saved workspaces (layout snapshots) and the one in use.
+    workspaces: Workspaces,
+    /// The name being typed in Window › Workspace › Save as New Workspace.
+    workspace_name: String,
     spectrum: Option<SpectrumCache>,
     renderer: Renderer,
     opening: Option<Opening>,
@@ -255,9 +279,8 @@ pub struct WaveApp {
     /// the ruler land on frame boundaries. (PR #95 adds the general snapping switch; once both
     /// are merged this is "snapping is on" there, and `TimeFormat::snap_to_frame` is the call.)
     snap_frames: bool,
-    /// View › Time panel / Selection/View panel.
+    /// View › Time panel.
     show_time_panel: bool,
-    show_sel_view_panel: bool,
     /// The Selection/View box being typed in: its name and its text.
     panel_edit: Option<(&'static str, String)>,
     /// The Effects Rack panel and its settings (f31).
@@ -315,6 +338,22 @@ impl WaveApp {
             player: Player::new(settings.output_device.clone()),
             params: SpectrogramParams::default(),
             panels: PanelSet::from_hidden(&settings.hidden_panels),
+            layout: Layout::decode(&settings.panel_layout, &settings.zone_sizes),
+            hover: None,
+            hover_next: None,
+            tab_rects: Vec::new(),
+            zone_rects: Vec::new(),
+            layout_dirty: false,
+            float_kind: None,
+            monitors: std::env::var("WAVCRAFT_MONITORS").ok().and_then(|t| match monitors::parse(&t) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    log::warn!(target: "wavcraft", "WAVCRAFT_MONITORS ignored: {e}");
+                    None
+                }
+            }),
+            workspaces: Workspaces::new(settings_path.as_deref().and_then(|p| p.parent()).map(|d| d.join("workspaces")), &settings.workspace),
+            workspace_name: String::new(),
             spectrum: None,
             renderer: Renderer::new(&cc.egui_ctx, palette()),
             opening: None,
@@ -341,7 +380,6 @@ impl WaveApp {
             mixer: MixerModel::new(),
             snap_frames: true,
             show_time_panel: true,
-            show_sel_view_panel: true,
             panel_edit: None,
             insert_silence: None,
             stats: StatsPanel::default(),
@@ -373,6 +411,9 @@ impl WaveApp {
             },
         };
         app.mtv.take_dir = app.sessions.path.join("takes");
+        if app.reconcile_floats() {
+            app.save_panels();
+        }
         if let Some(path) = file {
             app.open(path, &cc.egui_ctx);
         }
@@ -744,11 +785,363 @@ impl WaveApp {
         if !self.panels.set(id, shown) {
             return;
         }
+        self.save_panels();
+    }
+
+    /// Keep which panels are shown and where they are docked in the settings file.
+    fn save_panels(&mut self) {
+        if let Some(m) = &self.monitors {
+            self.layout.tag_monitors(m);
+        }
         self.settings.hidden_panels = self.panels.hidden_ids();
+        (self.settings.panel_layout, self.settings.zone_sizes) = self.layout.encode();
+        self.settings.workspace = self.workspaces.current().to_string();
+        self.layout_dirty = false;
         if let Some(file) = &self.settings_path
             && let Err(e) = self.settings.save(file)
         {
-            log::warn!(target: "wavcraft", "could not save the panel choice to {}: {e}", file.display());
+            log::warn!(target: "wavcraft", "could not save the panel layout to {}: {e}", file.display());
+        }
+    }
+
+    /// Move floating windows whose monitor is gone onto the primary one and keep every window
+    /// inside its monitor (only when the monitors are known: see `monitors`). True when any moved.
+    fn reconcile_floats(&mut self) -> bool {
+        let Some(m) = &self.monitors else { return false };
+        let n = self.layout.reconcile_monitors(m);
+        if n > 0 {
+            log::info!(target: "wavcraft", "{n} floating window(s) moved onto a monitor that is there");
+        }
+        n > 0
+    }
+
+    /// The answer to `MONITORS` and `MONITORS simulate|real`.
+    fn monitors_report(&self) -> String {
+        match &self.monitors {
+            None => "OK monitors=real".to_string(),
+            Some(m) => {
+                let list: Vec<String> = m.iter().map(|m| format!("{}@{},{},{},{}", m.name, m.pos[0], m.pos[1], m.size[0], m.size[1])).collect();
+                format!("OK monitors=simulated:{}", list.join("|"))
+            }
+        }
+    }
+
+    /// The layout as a workspace would keep it.
+    fn snapshot(&self) -> Snapshot {
+        Snapshot::capture(&self.panels, &self.layout)
+    }
+
+    /// Put a workspace's panels and layout on screen and keep them in the settings file.
+    fn apply_snapshot(&mut self, snap: &Snapshot) {
+        (self.panels, self.layout) = snap.restore();
+        self.reconcile_floats();
+        self.save_panels();
+    }
+
+    /// `WORKSPACE save|switch|reset|delete <name>` (also the Window › Workspace menu). Returns
+    /// the reason it was refused.
+    fn workspace_command(&mut self, text: &str) -> Result<(), String> {
+        let (verb, name) = text.trim().split_once(char::is_whitespace).map_or((text.trim(), ""), |(v, n)| (v, n.trim()));
+        match verb {
+            "save" => {
+                let snap = self.snapshot();
+                self.workspaces.save(name, &snap)?;
+                self.save_panels();
+            }
+            "switch" => {
+                let snap = self.workspaces.switch(name)?;
+                self.apply_snapshot(&snap);
+            }
+            "reset" => {
+                let snap = self.workspaces.reset(Some(name))?;
+                self.apply_snapshot(&snap);
+            }
+            "delete" => self.workspaces.delete(name)?,
+            _ => return Err("WORKSPACE save <name> | switch <name> | reset [name] | delete <name>".into()),
+        }
+        Ok(())
+    }
+
+    /// The answer to `WORKSPACES` and `WORKSPACE …`.
+    fn workspaces_report(&self) -> String {
+        format!("OK {}", self.workspaces.report(&self.snapshot()))
+    }
+
+    /// Close a panel (hide it in the registry; the Window menu brings it back).
+    fn close_panel(&mut self, id: &str) {
+        self.layout.apply_command(&mut self.panels, &format!("close {id}")).ok();
+        self.save_panels();
+    }
+
+    /// The answer to `PANELS` and `PANEL …`: which panels are shown, then the zones.
+    fn panels_report(&self) -> String {
+        let kind = self.float_kind.map_or(String::new(), |k| format!(" float_window={k}"));
+        format!("OK {} {}{kind}", self.panels.report(), self.layout.report(&self.panels))
+    }
+
+    /// The body of a docked panel.
+    fn panel_body(&mut self, id: &str, ui: &mut egui::Ui) {
+        match id {
+            "history" => self.history_panel(ui),
+            "selection" => self.selection_view_panel(ui),
+            _ => {}
+        }
+    }
+
+    /// One docked zone: a tab strip (drag a tab to move it, wheel to change tab, right-click for
+    /// the menu) over the front tab's body. Nothing is drawn for a zone with no shown panel.
+    fn dock_zone(&mut self, ui: &mut egui::Ui, zone: DockSide) {
+        let tabs: Vec<&'static str> = self.layout.visible(zone, &self.panels).into_iter().filter_map(|id| panels::by_id(id).map(|p| p.id)).collect();
+        let Some(front) = self.layout.active_in(zone, &self.panels).and_then(panels::by_id).map(|p| p.id) else { return };
+        let size = self.layout.size(zone).unwrap_or(220.0);
+        let panel = match zone {
+            DockSide::Left => egui::Panel::left("zone-left"),
+            DockSide::Bottom => egui::Panel::bottom("zone-bottom"),
+            _ => egui::Panel::right("zone-right"),
+        };
+        let shown = panel.default_size(size).size_range(panels::ZONE_SIZE_RANGE.0..=panels::ZONE_SIZE_RANGE.1).show(ui, |ui| {
+            let mut wheel = 0.0f32;
+            let strip = egui::ScrollArea::horizontal().id_salt(("tabs", zone.name())).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for id in &tabs {
+                        let title = panels::by_id(id).map_or(*id, |p| p.title);
+                        let label = ui.selectable_label(*id == front, title);
+                        let r = ui.interact(label.rect, label.id.with("tab"), Sense::click_and_drag());
+                        self.tab_rects.push((id.to_string(), label.rect));
+                        if r.clicked() {
+                            self.layout.activate(id);
+                            self.layout_dirty = true;
+                        }
+                        if r.drag_started() {
+                            egui::DragAndDrop::set_payload(ui.ctx(), id.to_string());
+                        }
+                        r.context_menu(|ui| self.panel_menu(ui, id));
+                    }
+                });
+            });
+            if ui.rect_contains_pointer(strip.inner_rect) {
+                wheel =
+                    ui.input(|i| i.events.iter().map(|e| if let egui::Event::MouseWheel { delta, .. } = e { delta.x + delta.y } else { 0.0 }).sum());
+            }
+            if wheel != 0.0 {
+                self.layout.cycle(zone, &self.panels, if wheel < 0.0 { 1 } else { -1 });
+                self.layout_dirty = true;
+            }
+            ui.separator();
+            self.panel_body(front, ui);
+        });
+        let rect = shown.response.rect;
+        self.zone_rects.push((zone, rect));
+        if shown.response.contains_pointer() {
+            self.hover_next = Some(front);
+        }
+        let now = if zone == DockSide::Bottom { rect.height() } else { rect.width() };
+        if self.layout.set_size(zone, now) {
+            self.layout_dirty = true;
+        }
+    }
+
+    /// Every floating panel in a window of its own: an operating-system window where the backend
+    /// has more than one (the viewport), else egui's in-window floating window (the same call
+    /// falls back by itself). Closing the window docks the panel back where it came from.
+    fn floating_windows(&mut self, ctx: &egui::Context) {
+        let floats: Vec<panels::Float> = self.layout.floats(&self.panels).into_iter().cloned().collect();
+        let mut dock_back: Vec<String> = Vec::new();
+        for f in floats {
+            let title = panels::by_id(&f.id).map_or("Panel", |p| p.title);
+            let vid = egui::ViewportId::from_hash_of(("float", f.id.as_str()));
+            let builder = egui::ViewportBuilder::default()
+                .with_title(format!("WavCraft: {title}"))
+                .with_position(egui::pos2(f.pos[0], f.pos[1]))
+                .with_inner_size(vec2(f.size[0], f.size[1]))
+                .with_min_inner_size(vec2(160.0, 100.0));
+            let mut dock = false;
+            let mut kind = "os";
+            let mut rect: Option<([f32; 2], [f32; 2])> = None;
+            ctx.show_viewport_immediate(vid, builder, |ui, class| {
+                let mut body = |ui: &mut egui::Ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("Dock").on_hover_text("Put the panel back in a zone").clicked() {
+                            dock = true;
+                        }
+                    });
+                    ui.separator();
+                    self.panel_body(&f.id, ui);
+                };
+                if class == egui::ViewportClass::EmbeddedWindow {
+                    kind = "embedded";
+                    body(ui);
+                    // Embedded: the window is an egui area; its rect is in the main window.
+                    let area = ui.ctx().memory(|m| m.area_rect(egui::Id::new(vid)));
+                    rect = area.map(|r| ([r.min.x, r.min.y], [r.width(), r.height()]));
+                } else {
+                    egui::CentralPanel::default().show(ui, |ui| body(ui));
+                    let (outer, inner, close) =
+                        ui.ctx().input(|i| (i.viewport().outer_rect, i.viewport().inner_rect, i.viewport().close_requested()));
+                    if close {
+                        dock = true;
+                    }
+                    if let (Some(o), Some(i)) = (outer, inner) {
+                        rect = Some(([o.min.x, o.min.y], [i.width(), i.height()]));
+                    }
+                }
+            });
+            self.float_kind = Some(kind);
+            if dock {
+                dock_back.push(f.id.clone());
+            } else if let Some((pos, size)) = rect
+                && self.monitors.is_none()
+                && self.layout.set_float_rect(&f.id, pos, size)
+            {
+                self.layout_dirty = true;
+            }
+        }
+        if self.layout.floats(&self.panels).is_empty() {
+            self.float_kind = None;
+        }
+        for id in dock_back {
+            self.layout.dock(&id, None).ok();
+            self.save_panels();
+        }
+    }
+
+    /// Window › Workspace: switch, save as new, reset to the saved layout, delete.
+    fn workspace_menu(&mut self, ui: &mut egui::Ui) {
+        let current = self.workspaces.current().to_string();
+        let modified = self.workspaces.is_modified(&self.snapshot());
+        let mut result: Result<(), String> = Ok(());
+        let mut done = false;
+        for name in self.workspaces.names() {
+            let label = if name == current && modified { format!("{name} (changed)") } else { name.clone() };
+            if ui.radio(name == current, label).clicked() && name != current {
+                result = self.workspace_command(&format!("switch {name}"));
+                done = true;
+            }
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            let edit = ui.add(egui::TextEdit::singleline(&mut self.workspace_name).hint_text("Name").desired_width(120.0));
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.button("Save as New Workspace").clicked() || enter) && !self.workspace_name.trim().is_empty() {
+                result = self.workspace_command(&format!("save {}", self.workspace_name));
+                if result.is_ok() {
+                    self.workspace_name.clear();
+                }
+                done = true;
+            }
+        });
+        if ui.add_enabled(modified, egui::Button::new("Reset to Saved Layout")).clicked() {
+            result = self.workspace_command(&format!("reset {current}"));
+            done = true;
+        }
+        ui.menu_button("Delete Workspace", |ui| {
+            let others: Vec<String> = self.workspaces.names().into_iter().filter(|n| *n != current && n != workspaces::DEFAULT).collect();
+            if others.is_empty() {
+                ui.add_enabled(false, egui::Label::new("No other saved workspaces"));
+            }
+            for name in others {
+                if ui.button(&name).clicked() {
+                    result = self.workspace_command(&format!("delete {name}"));
+                    done = true;
+                    ui.close();
+                }
+            }
+        });
+        if let Err(e) = result {
+            self.error = Some(e);
+        }
+        if done {
+            ui.close();
+        }
+    }
+
+    /// Float a panel, or with `group` every tab of its zone, near the top left of the main window.
+    fn float_panel(&mut self, ctx: &egui::Context, id: &str, group: bool) {
+        let origin = ctx.input(|i| i.viewport().outer_rect).map_or([120.0, 120.0], |r| [r.min.x + 80.0, r.min.y + 100.0]);
+        let ids: Vec<String> = match (group, self.layout.zone_of(id)) {
+            (true, Some(z)) => self.layout.visible(z, &self.panels).into_iter().map(String::from).collect(),
+            _ => vec![id.to_string()],
+        };
+        for (n, id) in ids.iter().enumerate() {
+            let off = n as f32 * 28.0;
+            self.layout.float(id, Some(([origin[0] + off, origin[1] + off], [320.0, 260.0]))).ok();
+        }
+        self.save_panels();
+    }
+
+    /// The right-click menu of a docked panel's tab.
+    fn panel_menu(&mut self, ui: &mut egui::Ui, id: &str) {
+        let here = self.layout.zone_of(id);
+        for zone in panels::ZONES {
+            if Some(zone) != here && ui.button(format!("Move to {}", zone.name())).clicked() {
+                self.layout.move_to(id, zone, None).ok();
+                self.save_panels();
+                ui.close();
+            }
+        }
+        if self.layout.is_floating(id) {
+            if ui.button("Dock").clicked() {
+                self.layout.dock(id, None).ok();
+                self.save_panels();
+                ui.close();
+            }
+        } else {
+            if ui.button("Undock Panel (float)").clicked() {
+                self.float_panel(ui.ctx(), id, false);
+                ui.close();
+            }
+            if ui.button("Undock Frame (float all tabs)").clicked() {
+                self.float_panel(ui.ctx(), id, true);
+                ui.close();
+            }
+        }
+        if ui.button("Maximize (`)").clicked() {
+            self.layout.toggle_maximize(id);
+            ui.close();
+        }
+        if ui.button("Close (Ctrl+W)").clicked() {
+            self.close_panel(id);
+            ui.close();
+        }
+    }
+
+    /// While a tab is dragged: where it would land (a tab, a zone, or an edge of the window),
+    /// shown as a highlight; letting go moves it there.
+    fn dock_drag(&mut self, ctx: &egui::Context) {
+        let Some(payload) = egui::DragAndDrop::payload::<String>(ctx) else { return };
+        let id: String = (*payload).clone();
+        let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else { return };
+        let window = ctx.content_rect();
+        let edge = |zone: DockSide| match zone {
+            DockSide::Left => Rect::from_min_max(window.min, pos2(window.left() + window.width() * 0.2, window.bottom())),
+            DockSide::Right => Rect::from_min_max(pos2(window.right() - window.width() * 0.2, window.top()), window.max),
+            _ => Rect::from_min_max(pos2(window.left(), window.bottom() - window.height() * 0.25), window.max),
+        };
+        let mut target: Option<(DockSide, Option<usize>, Rect)> = None;
+        if let Some((tab, rect)) = self.tab_rects.iter().find(|(_, r)| r.contains(pos))
+            && let Some((zone, index)) = self.layout.position(tab)
+        {
+            target = Some((zone, Some(index), *rect));
+        } else if let Some((zone, rect)) = self.zone_rects.iter().find(|(_, r)| r.contains(pos)) {
+            target = Some((*zone, None, *rect));
+        } else if let Some(zone) = [DockSide::Left, DockSide::Right, DockSide::Bottom].into_iter().find(|z| edge(*z).contains(pos)) {
+            target = Some((zone, None, edge(zone)));
+        }
+        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+        if let Some((_, _, rect)) = target {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dock-drop")));
+            painter.rect_filled(rect, 2.0, ACCENT.gamma_multiply(0.35));
+            painter.rect_stroke(rect, 2.0, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+        }
+        if ctx.input(|i| i.pointer.any_released()) {
+            egui::DragAndDrop::clear_payload(ctx);
+            if let Some((zone, index, _)) = target
+                && self.layout.move_to(&id, zone, index).is_ok()
+            {
+                self.save_panels();
+            }
+        } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            egui::DragAndDrop::clear_payload(ctx);
         }
     }
 
@@ -1126,7 +1519,6 @@ impl WaveApp {
 
     /// Window › History: every step, the current one highlighted; click one to go to it.
     fn history_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("History");
         let Some(editor) = self.editor.as_ref() else {
             ui.label("No file open.");
             return;
@@ -2213,7 +2605,7 @@ impl WaveApp {
                 }
             }
             // Which panels are shown: `OK waveform=1 spectral=1 history=0`.
-            "PANELS" => format!("OK {}", self.panels.report()),
+            "PANELS" => self.panels_report(),
             "GESTURE" => self.control_gesture(rest),
             // The step a ruler gesture calls, for scripted checks: `SNAP_FRAME <frame>`.
             "SNAP_FRAME" => match rest.trim().parse::<usize>() {
@@ -2233,6 +2625,40 @@ impl WaveApp {
                     _ => format!("ERR SELECT_TIME <start> <end>, each written as {} (no spaces inside a time)", self.time_format.menu()),
                 }
             }
+            // `MONITORS` | `MONITORS simulate <name>:<x>,<y>,<w>,<h>[;…]` (the first is the primary;
+            // floating windows on a monitor that is not listed move onto the primary) | `MONITORS real`.
+            "MONITORS" => match rest.split_once(char::is_whitespace).map_or((rest, ""), |(v, a)| (v, a.trim())) {
+                ("", _) => self.monitors_report(),
+                ("simulate", list) => match monitors::parse(list) {
+                    Ok(m) => {
+                        self.monitors = Some(m);
+                        self.reconcile_floats();
+                        self.save_panels();
+                        self.monitors_report()
+                    }
+                    Err(e) => format!("ERR {e}"),
+                },
+                ("real", _) => {
+                    self.monitors = None;
+                    self.monitors_report()
+                }
+                _ => "ERR MONITORS | MONITORS simulate <name>:<x>,<y>,<w>,<h>[;…] | MONITORS real".to_string(),
+            },
+            // `WORKSPACES` lists them; `WORKSPACE save|switch|reset|delete <name>`.
+            "WORKSPACES" => self.workspaces_report(),
+            "WORKSPACE" => match self.workspace_command(rest) {
+                Ok(()) => self.workspaces_report(),
+                Err(e) => format!("ERR {e}"),
+            },
+            // `PANEL move <id> <left|right|bottom>`, `PANEL maximize <id>` (again to restore),
+            // `PANEL close <id>`, `PANEL activate <id>`.
+            "PANEL" => match self.layout.apply_command(&mut self.panels, rest) {
+                Ok(()) => {
+                    self.save_panels();
+                    self.panels_report()
+                }
+                Err(e) => format!("ERR {e}"),
+            },
             "ACTION" => match actions::by_name(rest) {
                 Some(a) => match self.run_action(a.id, ctx) {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
@@ -2971,6 +3397,13 @@ impl WaveApp {
                 ui.checkbox(&mut self.meters.show_levels, "Levels");
                 ui.checkbox(&mut self.meters.show_stats, "Amplitude/Loudness Statistics");
                 ui.add_enabled_ui(self.editor.is_some(), |ui| ui.checkbox(&mut self.stats.show, "Sample Statistics (RMS, clipping)"));
+                ui.separator();
+                ui.menu_button("Workspace", |ui| self.workspace_menu(ui));
+                if ui.button("Reset Panel Layout").clicked() {
+                    self.layout = Layout::default();
+                    self.save_panels();
+                    ui.close();
+                }
             });
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
             ui.menu_button("Generate", |ui| self.generate_menu(ui));
@@ -3012,7 +3445,6 @@ impl WaveApp {
                     self.set_time_format(f);
                 }
                 ui.checkbox(&mut self.show_time_panel, "Time panel");
-                ui.checkbox(&mut self.show_sel_view_panel, "Selection/View panel");
                 ui.checkbox(&mut self.show_metadata, "Metadata panel");
             });
             ui.menu_button("Video", |ui| {
@@ -3123,6 +3555,16 @@ impl WaveApp {
                 ui.checkbox(&mut self.hud.only_for_selection, "Show only for selections");
             });
         });
+    }
+
+    /// Whether an editor display (waveform, spectral) is drawn: shown, and not hidden by another
+    /// panel being maximised.
+    fn editor_shows(&self, id: &str) -> bool {
+        match self.layout.maximized(&self.panels) {
+            Some(m) if !panels::is_movable(m) => m == id,
+            Some(_) => false,
+            None => self.panels.is_shown(id),
+        }
     }
 
     fn editor(&mut self, ui: &mut egui::Ui) {
@@ -3246,7 +3688,7 @@ impl WaveApp {
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate, self.time_format);
 
-        let (wave_area, spectrum_area) = match (self.panels.is_shown("waveform"), self.panels.is_shown("spectral")) {
+        let (wave_area, spectrum_area) = match (self.editor_shows("waveform"), self.editor_shows("spectral")) {
             (true, true) => {
                 let split = body.top() + body.height() * 0.5;
                 (Some(Rect::from_min_max(body.min, pos2(body.right(), split))), Some(Rect::from_min_max(pos2(body.left(), split), body.max)))
@@ -3255,6 +3697,14 @@ impl WaveApp {
             (false, true) => (None, Some(body)),
             (false, false) => (None, None),
         };
+
+        if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+            if wave_area.is_some_and(|a| a.contains(pos)) {
+                self.hover_next = Some("waveform");
+            } else if spectrum_area.is_some_and(|a| a.contains(pos)) {
+                self.hover_next = Some("spectral");
+            }
+        }
 
         if let Some(area) = wave_area {
             let cols = area.width().round().max(1.0) as usize;
@@ -3412,6 +3862,20 @@ impl eframe::App for WaveApp {
                 self.history_refocus = Some(to);
             }
         }
+        // ` maximises the panel under the pointer (and restores); Ctrl+W closes it.
+        let typing = ctx.egui_wants_keyboard_input();
+        let (grave, close) =
+            ctx.input_mut(|i| (!typing && i.consume_key(egui::Modifiers::NONE, Key::Backtick), i.consume_key(egui::Modifiers::COMMAND, Key::W)));
+        if grave {
+            if self.layout.maximized(&self.panels).is_some() {
+                self.layout.restore();
+            } else if let Some(id) = self.hover {
+                self.layout.toggle_maximize(id);
+            }
+        }
+        if close && let Some(id) = self.hover {
+            self.close_panel(id);
+        }
         for command in pressed_commands(&ctx, &self.keymap) {
             if let Err(e) = self.run_command(command, &ctx) {
                 // A key that can't act now (no file open, a save running) is not an error to show,
@@ -3482,14 +3946,8 @@ impl eframe::App for WaveApp {
                 egui::Panel::right("video").default_size(360.0).show(ui, |ui| v.ui(ui));
             }
         }
-        if self.show_sel_view_panel {
-            egui::Panel::bottom("selection_view").show(ui, |ui| self.selection_view_panel(ui));
-        }
         if self.show_time_panel {
             egui::Panel::bottom("time_panel").show(ui, |ui| self.time_panel(ui));
-        }
-        if self.panels.is_shown("history") {
-            egui::Panel::right("history").default_size(220.0).show(ui, |ui| self.history_panel(ui));
         }
         if self.show_metadata {
             egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));
@@ -3500,12 +3958,6 @@ impl eframe::App for WaveApp {
                 .default_size(260.0)
                 .show(ui, |ui| self.mixer.show(ui, self.mtv.mt.as_mut().map(|m| &mut m.session)));
         }
-        self.insert_silence_dialog(&ctx);
-        self.effect_dialog_ui(&ctx);
-        self.preferences_dialog(&ctx);
-        self.rack_ui(&ctx);
-        self.diagnostics_ui(&ctx);
-        self.clear_history_prompt(&ctx);
         self.mtv.dialog_ui(&ctx);
         self.mtv.props_ui(&ctx);
         if let Some((track, i)) = self.mtv.edit_request.take() {
@@ -3524,13 +3976,46 @@ impl eframe::App for WaveApp {
                 });
             });
         }
-        if self.mtv.show {
-            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-                self.mtv.ui(ui, self.doc.as_ref());
+        self.tab_rects.clear();
+        self.zone_rects.clear();
+        self.hover_next = None;
+        let maximized = self.layout.maximized(&self.panels).filter(|id| panels::is_movable(id)).map(String::from);
+        if let Some(id) = maximized {
+            // One docked panel fills the window; the tab strips are not drawn.
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong(panels::by_id(&id).map_or("", |p| p.title));
+                    if ui.small_button("Restore (`)").clicked() {
+                        self.layout.restore();
+                    }
+                });
+                ui.separator();
+                self.panel_body(&id, ui);
+                if ui.rect_contains_pointer(ui.max_rect()) {
+                    self.hover_next = panels::by_id(&id).map(|p| p.id);
+                }
             });
         } else {
-            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.editor(ui));
+            if self.layout.maximized(&self.panels).is_none() {
+                self.dock_zone(ui, DockSide::Left);
+                self.dock_zone(ui, DockSide::Right);
+                self.dock_zone(ui, DockSide::Bottom);
+            }
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                if self.mtv.show {
+                    self.mtv.ui(ui, self.doc.as_ref());
+                } else {
+                    self.editor(ui);
+                }
+            });
         }
+        self.floating_windows(&ctx);
+        self.insert_silence_dialog(&ctx);
+        self.effect_dialog_ui(&ctx);
+        self.preferences_dialog(&ctx);
+        self.rack_ui(&ctx);
+        self.diagnostics_ui(&ctx);
+        self.clear_history_prompt(&ctx);
         self.draw_hud(&ctx);
         {
             let current = self.editor.as_ref().map(|e| e.history.current().clone());
@@ -3545,6 +4030,11 @@ impl eframe::App for WaveApp {
                     Err(e) => self.error = Some(format!("Sample Statistics: {e}")),
                 }
             }
+        }
+        self.dock_drag(&ctx);
+        self.hover = self.hover_next;
+        if self.layout_dirty && !ctx.input(|i| i.pointer.any_down()) {
+            self.save_panels();
         }
     }
 }

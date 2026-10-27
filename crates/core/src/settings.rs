@@ -3,7 +3,7 @@
 //! Settings live in a small text file, `settings.txt` in the system's config folder under
 //! `wavcraft` (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on a
 //! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. Today it
-//! holds `session_folder`, `hidden_panels` and the preferences of the Preferences dialog (see
+//! holds `session_folder`, `hidden_panels`, `panel_layout`, `zone_sizes` and `workspace`, and the preferences of the Preferences dialog (see
 //! [`KEYS`]; `input_device` is one of them); a file from an older build, with fewer keys, loads
 //! with the defaults for the rest, and an older build reading a newer file ignores the keys it
 //! doesn't know.
@@ -50,6 +50,9 @@ pub const MAX_CROSSFADE_MS: u32 = 1000;
 
 pub mod video;
 const KEY_TIME_DISPLAY: &str = "time_display";
+const KEY_PANEL_LAYOUT: &str = "panel_layout";
+const KEY_ZONE_SIZES: &str = "zone_sizes";
+const KEY_WORKSPACE: &str = "workspace";
 
 /// What the settings file holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +71,12 @@ pub struct Settings {
     pub input_device: Option<String>,
     /// View › Time Display.
     pub time_display: crate::view::TimeFormat,
+    /// Where the panels are docked, as `crate::panels::Layout::encode` writes it (empty: default).
+    pub panel_layout: String,
+    /// The dock zones' sizes, as `Layout::encode` writes them (empty: default).
+    pub zone_sizes: String,
+    /// The workspace in use (`crate::workspaces`; empty: Default).
+    pub workspace: String,
 }
 
 impl Default for Settings {
@@ -80,6 +89,9 @@ impl Default for Settings {
             output_device: None,
             input_device: None,
             time_display: crate::view::TimeFormat::default(),
+            panel_layout: String::new(),
+            zone_sizes: String::new(),
+            workspace: String::new(),
         }
     }
 }
@@ -116,6 +128,9 @@ impl Settings {
             let value = value.trim();
             match key.trim() {
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
+                KEY_PANEL_LAYOUT => s.panel_layout = value.to_string(),
+                KEY_ZONE_SIZES => s.zone_sizes = value.to_string(),
+                KEY_WORKSPACE => s.workspace = value.to_string(),
                 // A value that doesn't fit its key leaves the default, as an unknown key is ignored.
                 other => {
                     let _ = s.set(other, value);
@@ -197,6 +212,13 @@ impl Settings {
 ");
             out.push_str(&format!("{KEY_TIME_DISPLAY} = {}
 ", self.time_display.name()));
+        }
+        if !self.panel_layout.is_empty() || !self.zone_sizes.is_empty() {
+            out.push_str("# panel_layout: dock zones and tab order, `zone:id,id;zone:id` (a * marks the front tab); zone_sizes: points.\n");
+            out.push_str(&format!("{KEY_PANEL_LAYOUT} = {}\n{KEY_ZONE_SIZES} = {}\n", self.panel_layout, self.zone_sizes));
+        }
+        if !self.workspace.is_empty() {
+            out.push_str(&format!("# workspace: the workspace in use (Window › Workspace; empty: Default).\n{KEY_WORKSPACE} = {}\n", self.workspace));
         }
         out
     }
