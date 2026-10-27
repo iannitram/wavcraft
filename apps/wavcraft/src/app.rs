@@ -2641,7 +2641,7 @@ impl WaveApp {
                 Ok(s) => s,
                 Err(e) => format!("ERR {e}"),
             },
-            "SESSION" | "TRACK" | "CLIP" | "CLIPPROP" | "VIEW" | "SMARKER" | "SPLAY" | "SSTOP" | "SREC" | "PUNCH" | "MASTER" => {
+            "SESSION" | "TRACK" | "CLIP" | "CLIPTYPE" | "CLIPPROP" | "VIEW" | "SMARKER" | "SPLAY" | "SSTOP" | "SREC" | "PUNCH" | "MASTER" => {
                 self.mtv.control(cmd, rest, self.doc.as_ref())
             }
             "MIXER" if matches!(rest.trim(), "show" | "hide") => {

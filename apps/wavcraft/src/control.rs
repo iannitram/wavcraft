@@ -55,6 +55,7 @@
 //!   `CLIP add <track> <path> <at_seconds>`, `CLIP adddoc <track> <at_seconds>`, `VIEW waveform|multitrack`
 //!   `SESSION save <path>` / `SESSION open <path>` (the session file, f117; `OK offline=<n>`)
 //!   `CLIPPROP <track> <i> tempo=<bpm> beats=<n> key=<text> name=<s> gain=<db>` (clip properties, f119)
+//!   `CLIPTYPE <track> <i[,j..]|all> dialogue|music|sfx|ambience|none`, `CLIPTYPE filter <type>|all` (audio types, f123; clip numbers are 1-based)
 //!   (multitrack basics, f103; see `multitrack_ui.rs`; `SESSION state` answers `OK view=… <json>`)
 //!   `SMARKER add <t> [end]|rename <i> <name>|delete <i>|next|prev|playhead <t>|select <a> <b>|addhere|addsel|state`
 //!   `SPLAY [seconds]`, `SSTOP` (play the session, f114; `SESSION state` adds `playing`, `position` in seconds and `underruns`)

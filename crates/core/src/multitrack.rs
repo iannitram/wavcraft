@@ -10,6 +10,7 @@
 //! disk-backed source trait being added to the fork (issue #302).
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -130,6 +131,63 @@ pub struct SourceChange {
     pub removed: usize,
 }
 
+/// What a clip is, for the Essential Sound tools (f123, roadmap C215). A clip has at most one
+/// type; none is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AudioType {
+    Dialogue,
+    Music,
+    Sfx,
+    Ambience,
+}
+
+impl AudioType {
+    pub const ALL: [AudioType; 4] = [AudioType::Dialogue, AudioType::Music, AudioType::Sfx, AudioType::Ambience];
+
+    /// The word used on the control channel and in the state line.
+    pub fn key(self) -> &'static str {
+        match self {
+            AudioType::Dialogue => "dialogue",
+            AudioType::Music => "music",
+            AudioType::Sfx => "sfx",
+            AudioType::Ambience => "ambience",
+        }
+    }
+
+    /// The name shown in the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            AudioType::Dialogue => "Dialogue",
+            AudioType::Music => "Music",
+            AudioType::Sfx => "SFX",
+            AudioType::Ambience => "Ambience",
+        }
+    }
+
+    /// The tag colour (our own palette, RGB).
+    pub fn colour(self) -> [u8; 3] {
+        match self {
+            AudioType::Dialogue => [64, 156, 255],
+            AudioType::Music => [176, 112, 255],
+            AudioType::Sfx => [255, 160, 48],
+            AudioType::Ambience => [72, 200, 140],
+        }
+    }
+
+    /// A type from its word (any case); `none` is `Ok(None)`.
+    pub fn parse(word: &str) -> Result<Option<AudioType>, MtError> {
+        let w = word.to_ascii_lowercase();
+        if w == "none" {
+            return Ok(None);
+        }
+        AudioType::ALL
+            .into_iter()
+            .find(|t| t.key() == w)
+            .map(Some)
+            .ok_or_else(|| MtError(format!("no audio type {word:?}: dialogue, music, sfx, ambience or none")))
+    }
+}
+
 /// A multitrack session being edited.
 pub struct Multitrack {
     pub session: Session,
@@ -142,6 +200,12 @@ pub struct Multitrack {
     /// Tempo / beat metadata per clip (f119). The pinned model's `Clip` has no such field, so it
     /// lives beside the session until the fork adds one; see [`ClipTempo`].
     pub tempo_meta: BTreeMap<ClipId, ClipTempo>,
+    /// Audio types by clip (f123). The model's `Clip` has no type field, so this is a side map: it is
+    /// not part of the model's session JSON and is not saved yet (it waits for a model field or
+    /// the session-file work). Entries die with their clip. `pub(crate)` so the session file can build the struct.
+    pub(crate) clip_types: HashMap<ClipId, AudioType>,
+    /// Show only clips of this type in the Multitrack view (`None` shows all).
+    pub type_filter: Option<AudioType>,
 }
 
 /// A clip's tempo and beat metadata (roadmap C204): the tempo it was recorded at, how many
@@ -191,7 +255,7 @@ impl Multitrack {
         if let Some(o) = session.outputs.first_mut() {
             o.format = master;
         }
-        Ok(Multitrack { session, takes: Vec::new(), punch, tempo_meta: BTreeMap::new(), file: None })
+        Ok(Multitrack { session, takes: Vec::new(), punch, tempo_meta: BTreeMap::new(), file: None, clip_types: HashMap::new(), type_filter: None })
     }
 
     /// The master's format (stereo or 5.1).
@@ -297,6 +361,15 @@ impl Multitrack {
         }
     }
 
+    /// A clip by 1-based position on a track (the numbering `CLIPTYPE` uses; [`Multitrack::clip_source`] is 1-based too).
+    pub fn clip_at(&self, track: TrackId, position: usize) -> Result<ClipId, MtError> {
+        let Some(t) = self.session.track(track) else { return err("no such track") };
+        match position.checked_sub(1).and_then(|i| self.clip_at_index(track, i).ok()) {
+            Some(id) => Ok(id),
+            None => err(format!("no clip {position} on {}", t.name)),
+        }
+    }
+
     /// A clip's tempo metadata (empty if none was set).
     pub fn clip_tempo(&self, id: ClipId) -> ClipTempo {
         self.tempo_meta.get(&id).cloned().unwrap_or_default()
@@ -345,6 +418,29 @@ impl Multitrack {
         Ok(())
     }
 
+    /// The type of a clip (`None`: not assigned).
+    pub fn clip_type(&self, clip: ClipId) -> Option<AudioType> {
+        self.clip_types.get(&clip).copied()
+    }
+
+    /// Give every clip in `clips` this type (`None` clears it). All must exist, or nothing changes.
+    pub fn set_clip_type(&mut self, clips: &[ClipId], t: Option<AudioType>) -> Result<(), MtError> {
+        if clips.is_empty() {
+            return err("no clips to assign");
+        }
+        let exists = |id: ClipId| self.session.tracks.iter().any(|tr| tr.clips().iter().any(|c| c.id == id));
+        if let Some(bad) = clips.iter().find(|c| !exists(**c)) {
+            return err(format!("no clip {bad}"));
+        }
+        for c in clips {
+            match t {
+                Some(t) => self.clip_types.insert(*c, t),
+                None => self.clip_types.remove(c),
+            };
+        }
+        Ok(())
+    }
+
     /// The factor that would make the clip follow the session's tempo (session BPM over the
     /// clip's), or `None` with no clip tempo. Reported only; applying it is C206.
     pub fn follow_ratio(&self, clip: ClipId) -> Option<f64> {
@@ -352,11 +448,29 @@ impl Multitrack {
         Some(self.tempo_bpm() / bpm)
     }
 
+    /// The clips of one type, as (track, clip): the hook the one-click repairs per type
+    /// (Essential Sound panel, C214) will use to find what to act on.
+    pub fn clips_of_type(&self, t: AudioType) -> Vec<(TrackId, ClipId)> {
+        let mut out = Vec::new();
+        for tr in self.session.tracks.iter().filter(|tr| tr.kind == TrackKind::Audio) {
+            out.extend(tr.clips().iter().filter(|c| self.clip_type(c.id) == Some(t)).map(|c| (tr.id, c.id)));
+        }
+        out
+    }
+
+    /// Whether the Multitrack view shows this clip under the current type filter.
+    pub fn clip_visible(&self, clip: ClipId) -> bool {
+        self.type_filter.is_none_or(|f| self.clip_type(clip) == Some(f))
+    }
+
     /// Remove a track with its clips; sources no clip uses any more are dropped with it.
     pub fn remove_track(&mut self, id: TrackId) -> Result<(), MtError> {
         let Some(i) = self.session.track_index(id) else { return err("no such track") };
         let used: Vec<SourceId> = self.session.tracks[i].playlists.iter().flat_map(|p| p.clips.iter().filter_map(Clip::source)).collect();
         let gone: Vec<ClipId> = self.session.tracks[i].playlists.iter().flat_map(|p| p.clips.iter().map(|c| c.id)).collect();
+        for c in &gone {
+            self.clip_types.remove(c);
+        }
         self.session.tracks.remove(i);
         self.takes.retain(|k| k.track != id);
         for c in gone {
@@ -630,8 +744,12 @@ impl Multitrack {
                     .iter()
                     .map(|c| {
                         let m = self.clip_tempo(c.id);
-                        json!({"name": c.name, "start": rate.seconds(c.start), "length": rate.seconds(c.length), "channels": c.source().and_then(|s| self.session.source(s)).map_or(0, |s| s.channels), "gain_db": c.gain_db, "offline": self.clip_offline(c),
-                            "tempo": m.bpm, "beats": m.beats, "key": m.key, "follow_ratio": self.follow_ratio(c.id)})
+                        let mut j = json!({"name": c.name, "start": rate.seconds(c.start), "length": rate.seconds(c.length), "channels": c.source().and_then(|s| self.session.source(s)).map_or(0, |s| s.channels), "gain_db": c.gain_db, "offline": self.clip_offline(c),
+                            "tempo": m.bpm, "beats": m.beats, "key": m.key, "follow_ratio": self.follow_ratio(c.id)});
+                        if let Some(t) = self.clip_type(c.id) {
+                            j["type"] = json!(t.key());
+                        }
+                        j
                     })
                     .collect();
                 json!({"name": t.name, "format": t.format.label(), "channels": t.channels(), "armed": t.mixer.record_arm, "input": crate::mtrecord::input_label(&t.mixer.input), "mute": t.mixer.mute, "solo": t.mixer.solo, "volume_db": t.mixer.volume_db, "pan": t.mixer.pan.first().copied().unwrap_or(0.0), "clips": clips})
@@ -649,7 +767,7 @@ impl Multitrack {
                 json!({"track": track, "take": k.number, "start": rate.seconds(k.start), "length": rate.seconds(k.length), "file": k.path.file_name().and_then(|n| n.to_str()).unwrap_or(""), "playlist": k.playlist, "on_top": self.session.track(k.track).is_some_and(|t| t.active_playlist == k.playlist)})
             })
             .collect();
-        json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "playhead": self.playhead_seconds(), "selection": self.selection_seconds(), "markers": self.markers_json(), "master": master, "tracks": tracks, "takes": takes, "punch": self.punch.to_json(rate)})
+        json!({"name": self.session.name, "rate": rate.hz(), "bits": bits_of(self.session.bit_depth), "end": self.end_seconds(), "playhead": self.playhead_seconds(), "selection": self.selection_seconds(), "markers": self.markers_json(), "master": master, "tracks": tracks, "takes": takes, "punch": self.punch.to_json(rate), "filter": self.type_filter.map_or("all", AudioType::key)})
     }
 
     // ---- session markers and ranges (f110, roadmap C084) ----------------------------------
@@ -1207,6 +1325,57 @@ mod tests {
         let (_, back) = soundcraft_audio_io::decode(&bytes, Some("wav")).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(Some(&back), m.session.pool.get(src).map(|a| &a.buffer));
         assert_eq!(m.source_name(src), "Tone");
+    }
+
+    #[test]
+    fn a_clip_is_given_a_type_and_it_can_be_cleared() {
+        let (mut m, a, _) = two_tracks();
+        let c = m.add_clip_buffer(a, "V", "v.wav", tone(48_000, 0.1, 1), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.clip_type(c), None);
+        m.set_clip_type(&[c], Some(AudioType::Dialogue)).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.clip_type(c), Some(AudioType::Dialogue));
+        m.set_clip_type(&[c], Some(AudioType::Music)).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.clip_type(c), Some(AudioType::Music), "types are exclusive: the last one wins");
+        let v: serde_json::Value = serde_json::from_str(&m.state_json()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(v["tracks"][0]["clips"][0]["type"].as_str(), Some("music"));
+        m.set_clip_type(&[c], None).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.clip_type(c), None);
+        assert!(m.set_clip_type(&[ClipId(9999)], Some(AudioType::Sfx)).is_err());
+        assert!(m.set_clip_type(&[], Some(AudioType::Sfx)).is_err());
+        assert_eq!(AudioType::parse("SFX"), Ok(Some(AudioType::Sfx)));
+        assert_eq!(AudioType::parse("none"), Ok(None));
+        assert!(AudioType::parse("foley").is_err());
+    }
+
+    #[test]
+    fn several_clips_are_assigned_at_once_and_a_bad_id_changes_nothing() {
+        let (mut m, a, b) = two_tracks();
+        let c1 = m.add_clip_buffer(a, "1", "1.wav", tone(48_000, 0.1, 1), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        let c2 = m.add_clip_buffer(a, "2", "2.wav", tone(48_000, 0.1, 1), 1.0).unwrap_or_else(|e| panic!("{e}"));
+        let c3 = m.add_clip_buffer(b, "3", "3.wav", tone(48_000, 0.1, 1), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.clip_at(a, 2), Ok(c2));
+        assert!(m.clip_at(a, 0).is_err() && m.clip_at(a, 3).is_err());
+        assert!(m.set_clip_type(&[c1, ClipId(9999)], Some(AudioType::Sfx)).is_err());
+        assert_eq!(m.clip_type(c1), None, "all or nothing");
+        m.set_clip_type(&[c1, c3], Some(AudioType::Ambience)).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((m.clip_type(c1), m.clip_type(c2), m.clip_type(c3)), (Some(AudioType::Ambience), None, Some(AudioType::Ambience)));
+        assert_eq!(m.clips_of_type(AudioType::Ambience), vec![(a, c1), (b, c3)]);
+    }
+
+    #[test]
+    fn the_type_filter_shows_only_that_type_and_removed_tracks_forget_types() {
+        let (mut m, a, b) = two_tracks();
+        let c1 = m.add_clip_buffer(a, "1", "1.wav", tone(48_000, 0.1, 1), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        let c2 = m.add_clip_buffer(b, "2", "2.wav", tone(48_000, 0.1, 1), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        m.set_clip_type(&[c1], Some(AudioType::Dialogue)).unwrap_or_else(|e| panic!("{e}"));
+        assert!(m.clip_visible(c1) && m.clip_visible(c2), "no filter shows everything");
+        m.type_filter = Some(AudioType::Dialogue);
+        assert!(m.clip_visible(c1) && !m.clip_visible(c2));
+        m.type_filter = Some(AudioType::Music);
+        assert!(!m.clip_visible(c1));
+        assert!(m.state_json().contains(r#""filter":"music""#));
+        m.remove_track(a).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(m.clip_type(c1), None);
     }
 
     trait ErrText {
