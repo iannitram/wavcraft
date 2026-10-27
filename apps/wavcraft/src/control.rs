@@ -67,6 +67,10 @@
 //! - `LOUDNESS [<start> <end>]` → `OK scope=<file|selection|range> frames=<n> integrated=<LUFS> range=<LU>
 //!   true_peak=<dBTP> sample_peak=<dBFS> max_momentary=<LUFS>` (`-inf` for nothing to measure; runs on the
 //!   window's thread, so a long file waits)
+//! - `CLIP edit <track> <i>` (clip number from 1) → `OK`: the clip's source opens as the document in the
+//!   Waveform editor (poll `STATE` until `busy=0`); edit it with the usual verbs. `SESSION return` →
+//!   `OK frames=<new> was=<old> trimmed=<n> removed=<n>`: the edited audio becomes the source, clips on it
+//!   keep their start and are trimmed to its new length, the Multitrack view shows (f116)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

@@ -10,7 +10,7 @@ use soundcraft_playback::Player as DevicePlayer;
 use wavcraft_core::Document;
 use wavcraft_core::mtplay::{PlaybackSession, SilentPlayer};
 use wavcraft_core::mtrecord::{FAKE_CHANNELS, Recorder};
-use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, ChannelFormat, TrackId};
+use wavcraft_core::multitrack::soundcraft_model::{BitDepthSetting, ChannelFormat, SourceId, TrackId};
 use wavcraft_core::multitrack::{MtError, Multitrack, bit_depth_from_bits, bits_of, parse_track_format};
 use wavcraft_core::session_file;
 
@@ -115,6 +115,9 @@ pub struct MtView {
     pub take_dir: PathBuf,
     recorder: Option<Recorder>,
     arm_input: usize,
+    /// A clip the user asked to edit in the Waveform editor (track, 1-based position); the app
+    /// takes it each frame (f116).
+    pub edit_request: Option<(TrackId, usize)>,
     px_per_sec: f32,
     import_at: f64,
     sessions_made: u32,
@@ -137,6 +140,7 @@ impl Default for MtView {
             take_dir: std::env::temp_dir().join("wavcraft-takes"),
             recorder: None,
             arm_input: 1,
+            edit_request: None,
             px_per_sec: 60.0,
             import_at: 0.0,
             sessions_made: 0,
@@ -566,7 +570,7 @@ impl MtView {
                     let x = lane.left() + (self.transport.position() as f64 / rate) as f32 * self.px_per_sec;
                     p.line_segment([pos2(x, lane.top()), pos2(x, lane.bottom())], Stroke::new(1.5, Color32::from_rgb(255, 200, 60)));
                 }
-                for c in &clips {
+                for (ci, c) in clips.iter().enumerate() {
                     let x0 = lane.left() + (c.start as f64 / rate) as f32 * self.px_per_sec;
                     let w = ((c.length as f64 / rate) as f32 * self.px_per_sec).max(2.0);
                     let cr = Rect::from_min_size(pos2(x0, lane.top() + 4.0), vec2(w, ROW_H - 8.0));
@@ -574,6 +578,20 @@ impl MtView {
                     p.rect_filled(cr, 3.0, fill);
                     p.rect_stroke(cr, 3.0, Stroke::new(1.0, colour), StrokeKind::Inside);
                     p.text(cr.left_top() + vec2(4.0, 3.0), egui::Align2::LEFT_TOP, &c.name, egui::FontId::proportional(12.0), Color32::WHITE);
+                    let cresp = ui.interact(cr, ui.id().with(("clip", id.0, c.id.0)), Sense::click());
+                    if cresp.clicked() {
+                        // A click on a clip selects its track, as a click on the lane does.
+                        self.selected = Some(id);
+                    }
+                    if cresp.double_clicked() {
+                        self.edit_request = Some((id, ci + 1));
+                    }
+                    cresp.context_menu(|ui| {
+                        if ui.button("Edit in Waveform editor").clicked() {
+                            self.edit_request = Some((id, ci + 1));
+                            ui.close();
+                        }
+                    });
                 }
             }
             // The master track, always at the bottom: its own fader and mute.
@@ -608,6 +626,28 @@ impl MtView {
         if failure.is_some() {
             self.message = failure;
         }
+    }
+
+    /// The source of clip `i` (1-based) on the track `key` names, its name and its audio as a
+    /// float WAV's bytes: what the app needs to open it in the Waveform editor (f116).
+    pub fn clip_source_wav(&self, track: TrackId, i: usize) -> Result<(SourceId, String, Vec<u8>), MtError> {
+        let mt = self.mt.as_ref().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?;
+        let (_, src) = mt.clip_source(track, i)?;
+        Ok((src, mt.source_name(src), mt.source_wav(src)?))
+    }
+
+    /// Put edited audio back as `source` (see `Multitrack::replace_source_audio`).
+    pub fn replace_source(
+        &mut self,
+        source: SourceId,
+        audio: wavcraft_core::multitrack::ModelBuffer,
+    ) -> Result<wavcraft_core::multitrack::SourceChange, MtError> {
+        self.mt.as_mut().ok_or_else(|| MtError("no session".into()))?.replace_source_audio(source, audio)
+    }
+
+    /// The track a control word names (name or position).
+    pub fn find_track(&self, key: &str) -> Result<TrackId, MtError> {
+        self.mt.as_ref().ok_or_else(|| MtError("no session: SESSION new <name> first".into()))?.find_track(key)
     }
 
     /// One control line for `SESSION`, `TRACK`, `CLIP` or `VIEW`; the answer starts `OK` or `ERR`.
@@ -922,7 +962,7 @@ fn ruler_step(min: f32) -> f64 {
 }
 
 /// Split a control line into words; double quotes keep spaces inside one word.
-fn tokens(line: &str) -> Result<Vec<String>, String> {
+pub fn tokens(line: &str) -> Result<Vec<String>, String> {
     let (mut out, mut cur, mut quoted, mut has) = (Vec::new(), String::new(), false, false);
     for ch in line.chars() {
         match ch {

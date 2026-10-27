@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::json;
-use soundcraft_audio_io::AudioBuffer as ModelBuffer;
+pub use soundcraft_audio_io::AudioBuffer as ModelBuffer;
 use soundcraft_model::time::SampleRate;
 use soundcraft_model::{BitDepthSetting, ChannelFormat, Clip, Source, SourceAudio, SourceId, TrackId, TrackKind, truncate_chars};
 use soundcraft_model::{MAX_NAME_CHARS, MarkerKind, Session};
@@ -116,6 +116,17 @@ pub fn fit_channels(audio: ModelBuffer, track: ChannelFormat) -> Result<ModelBuf
             track.label()
         )),
     }
+}
+
+/// What [`Multitrack::replace_source_audio`] did to the clips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceChange {
+    pub old_frames: u64,
+    pub new_frames: u64,
+    /// Clips shortened to the new source end.
+    pub trimmed: usize,
+    /// Clips removed because the source no longer reaches their offset.
+    pub removed: usize,
 }
 
 /// A multitrack session being edited.
@@ -419,6 +430,88 @@ impl Multitrack {
         let buf = ModelBuffer { sample_rate: doc.sample_rate(), channels: doc.audio.channels.clone() };
         let name = doc.name();
         self.add_clip_buffer(track, &name, &name, buf, at_seconds)
+    }
+
+    /// The clip at 1-based position `i` on `track` (its start order), and the source it plays.
+    pub fn clip_source(&self, track: TrackId, i: usize) -> Result<(soundcraft_model::ClipId, SourceId), MtError> {
+        let Some(t) = self.session.track(track) else { return err("no such track") };
+        let Some(c) = i.checked_sub(1).and_then(|k| t.clips().get(k)) else {
+            return err(format!("track {:?} has {} clip(s), not {i}", t.name, t.clips().len()));
+        };
+        match c.source() {
+            Some(s) => Ok((c.id, s)),
+            None => err("that clip has no audio source"),
+        }
+    }
+
+    /// A source's audio as a plain buffer (a copy), for opening it in the Waveform editor.
+    pub fn source_buffer(&self, source: SourceId) -> Result<ModelBuffer, MtError> {
+        match self.session.pool.get(source) {
+            Some(a) => Ok(a.buffer.clone()),
+            None => err("the source's audio is not loaded"),
+        }
+    }
+
+    /// The source as a 32-bit float WAV file's bytes (exact, no quantizing).
+    pub fn source_wav(&self, source: SourceId) -> Result<Vec<u8>, MtError> {
+        let buf = self.source_buffer(source)?;
+        let opts = soundcraft_audio_io::EncodeOptions { bit_depth: soundcraft_audio_io::BitDepth::Float32, ..Default::default() };
+        soundcraft_audio_io::encode(&buf, &opts).map_err(|e| MtError(format!("cannot write the source: {e}")))
+    }
+
+    /// The source's name (the clip's file stem when it was imported).
+    pub fn source_name(&self, source: SourceId) -> String {
+        self.session.source(source).map_or_else(|| "source".to_string(), |s| s.name.clone())
+    }
+
+    /// Swap the audio of `source` for `audio` (the Waveform editor's result) and fix the clips
+    /// that play it. **Trimming rule:** every clip on the source keeps its start and its offset
+    /// into the source. A clip that would now run past the new end is shortened to end where the
+    /// source ends; a clip whose offset is at or past the new end has nothing left to play and is
+    /// removed. A clip that fitted before is never lengthened, even if the source grew. The new
+    /// audio must have the session's rate and the source's channel count.
+    pub fn replace_source_audio(&mut self, source: SourceId, audio: ModelBuffer) -> Result<SourceChange, MtError> {
+        let Some(old) = self.session.source(source) else { return err("no such source") };
+        if audio.sample_rate != self.rate() {
+            return err(format!("the edited audio is {} Hz and the session {} Hz", audio.sample_rate, self.rate()));
+        }
+        if audio.num_channels() != usize::from(old.channels) {
+            return err(format!("the edited audio has {} channel(s), the source {}", audio.num_channels(), old.channels));
+        }
+        let frames = audio.frames() as i64;
+        if frames == 0 {
+            return err("the edited audio is empty");
+        }
+        let mut change = SourceChange { old_frames: old.frames, new_frames: frames as u64, trimmed: 0, removed: 0 };
+        for t in &mut self.session.tracks {
+            for pl in &mut t.playlists {
+                pl.clips.retain_mut(|c| {
+                    let soundcraft_model::ClipContent::Audio { source: s, offset } = c.content else { return true };
+                    if s != source {
+                        return true;
+                    }
+                    let room = frames - offset;
+                    if room <= 0 {
+                        change.removed += 1;
+                        return false;
+                    }
+                    if c.length > room {
+                        c.length = room;
+                        change.trimmed += 1;
+                    }
+                    true
+                });
+            }
+        }
+        if let Some(src) = self.session.sources.iter_mut().find(|x| x.id == source) {
+            src.frames = frames as u64;
+            // The file on disk no longer holds this audio. A name that is not a file makes save write
+            // the audio itself, as split_to_mono's in-memory sources do (see multitrack/split.rs).
+            src.path = format!("{}.wav", src.name);
+            src.unsaved = true;
+        }
+        self.session.pool.insert(source, Arc::new(SourceAudio::new(audio)));
+        Ok(change)
     }
 
     /// One line of JSON for the control channel and the tests: the session and every audio track
@@ -902,6 +995,62 @@ mod tests {
         let r = crate::mtplay::render(&five, 0, 10);
         assert_eq!(r.len(), 6, "a 5.1 master");
         assert!((r[2][5] - 1.0).abs() < 1e-6 && r[0][5].abs() < 1e-6, "the centre stays on the centre channel");
+    }
+
+    #[test]
+    fn replacing_a_source_keeps_clip_starts_and_trims_to_the_new_length() {
+        let (mut m, a, b) = two_tracks();
+        let c1 = m.add_clip_buffer(a, "Tone", "tone.wav", tone(48_000, 2.0, 2), 1.5).unwrap_or_else(|e| panic!("{e}"));
+        m.add_clip_buffer(b, "Other", "o.wav", tone(48_000, 1.0, 1), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        let (id, src) = m.clip_source(a, 1).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(id, c1);
+        assert!(m.clip_source(a, 2).is_err() && m.clip_source(a, 0).is_err());
+        let mut audio = m.source_buffer(src).unwrap_or_else(|e| panic!("{e}"));
+        for ch in &mut audio.channels {
+            ch.drain(0..48_000);
+        }
+        audio.channels[0][0] = 0.75;
+        let ch = m.replace_source_audio(src, audio).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((ch.old_frames, ch.new_frames, ch.trimmed, ch.removed), (96_000, 48_000, 1, 0));
+        let c = &m.session.track(a).unwrap_or_else(|| panic!("track")).clips()[0];
+        assert_eq!((c.start, c.length), (72_000, 48_000), "the start stays, the length is cut to the new source");
+        assert_eq!(m.session.source(src).map(|s| s.frames), Some(48_000));
+        assert_eq!(m.source_buffer(src).map(|b| (b.frames(), b.channels[0][0])), Ok((48_000, 0.75)));
+        assert_eq!(m.clip_count(), 2, "the other source is untouched");
+        let mut longer = m.source_buffer(src).unwrap_or_else(|e| panic!("{e}"));
+        for ch in &mut longer.channels {
+            ch.extend(std::iter::repeat_n(0.0, 96_000));
+        }
+        let ch = m.replace_source_audio(src, longer).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((ch.trimmed, ch.removed), (0, 0));
+        assert_eq!(m.session.track(a).map(|t| t.clips()[0].length), Some(48_000), "growing never lengthens a clip");
+    }
+
+    #[test]
+    fn a_clip_whose_offset_is_past_the_new_end_is_removed_and_bad_audio_is_refused() {
+        let (mut m, a, _) = two_tracks();
+        m.add_clip_buffer(a, "Tone", "tone.wav", tone(48_000, 1.0, 2), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        let (_, src) = m.clip_source(a, 1).unwrap_or_else(|e| panic!("{e}"));
+        if let Some(c) = m.session.track_mut(a).and_then(|t| t.playlist_mut()).and_then(|p| p.clips.first_mut()) {
+            c.content = soundcraft_model::ClipContent::Audio { source: src, offset: 24_000 };
+            c.length = 24_000;
+        }
+        assert!(m.replace_source_audio(src, tone(44_100, 0.2, 2)).is_err(), "wrong rate");
+        assert!(m.replace_source_audio(src, tone(48_000, 0.2, 1)).is_err(), "wrong channel count");
+        assert!(m.replace_source_audio(src, ModelBuffer { sample_rate: 48_000, channels: vec![vec![], vec![]] }).is_err(), "empty");
+        let ch = m.replace_source_audio(src, tone(48_000, 0.25, 2)).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((ch.removed, m.clip_count()), (1, 0));
+    }
+
+    #[test]
+    fn the_source_wav_is_float_exact() {
+        let (mut m, a, _) = two_tracks();
+        m.add_clip_buffer(a, "Tone", "tone.wav", tone(48_000, 0.1, 2), 0.0).unwrap_or_else(|e| panic!("{e}"));
+        let (_, src) = m.clip_source(a, 1).unwrap_or_else(|e| panic!("{e}"));
+        let bytes = m.source_wav(src).unwrap_or_else(|e| panic!("{e}"));
+        let (_, back) = soundcraft_audio_io::decode(&bytes, Some("wav")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(Some(&back), m.session.pool.get(src).map(|a| &a.buffer));
+        assert_eq!(m.source_name(src), "Tone");
     }
 
     trait ErrText {

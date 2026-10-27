@@ -365,4 +365,28 @@ mod tests {
         assert_eq!(relative_path(Path::new("/a/b/c/d/e"), Path::new("/x.wav")), None);
         assert_eq!(resolve_path(Path::new("/a/b"), "../x/d.wav"), PathBuf::from("/a/x/d.wav"));
     }
+
+    #[test]
+    fn an_edited_file_source_is_saved_with_its_new_audio_not_the_old_file() {
+        let root = scratch("edit");
+        let mut m = build(&root);
+        let a = m.track_ids()[0];
+        let (_, src) = m.clip_source(a, 1).unwrap_or_else(|e| panic!("{e}"));
+        let mut audio = m.source_buffer(src).unwrap_or_else(|e| panic!("{e}"));
+        for ch in &mut audio.channels {
+            ch.truncate(24_000);
+        }
+        audio.channels[0][0] = 0.75;
+        m.replace_source_audio(src, audio).unwrap_or_else(|e| panic!("{e}"));
+        let r = m.save_to(&root.join("edit.wcsession")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((r.exported, r.offline), (2, 0), "the edited file and the buffer clip are both written");
+        let (back, msgs) = Multitrack::open_from(&r.path).unwrap_or_else(|e| panic!("{e}"));
+        assert!(msgs.is_empty() && back.offline_sources().is_empty(), "{msgs:?}");
+        let (_, back_src) = back.clip_source(a, 1).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back_src, src);
+        assert_eq!(back.session.source(src).map(|s| s.frames), Some(24_000));
+        assert_eq!(back.session.track(a).map(|t| t.clips()[0].length), Some(24_000), "the clip is trimmed to the new audio");
+        assert_eq!(back.source_buffer(src).map(|b| (b.frames(), b.channels[0][0])), Ok((24_000, 0.75)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
