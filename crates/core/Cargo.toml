@@ -18,6 +18,7 @@ serde_json.workspace = true
 rustfft.workspace = true
 rayon.workspace = true
 symphonia.workspace = true
+vorbis_rs.workspace = true
 bytemuck.workspace = true
 dirs.workspace = true
 sysinfo.workspace = true

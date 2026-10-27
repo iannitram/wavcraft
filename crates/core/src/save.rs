@@ -1,4 +1,4 @@
-//! Save (task 06): WAV, AIFF and FLAC. The document is streamed out 64 K frames at a time with
+//! Save (task 06): WAV, AIFF, FLAC and Ogg Vorbis (f93). The document is streamed out 64 K frames at a time with
 //! [`DocState::read`], never flattened, so a three-hour file saves on an 8 GB machine. Integer
 //! samples are `round(x · 2^(bits−1))`, clamped, with no dither: the exact inverse of how they
 //! are read, so untouched audio saves bit for bit. Above 4 GiB a WAV is RF64; AIFF (32-bit sizes)
@@ -15,8 +15,8 @@
 //! is removed by the next save of the same file; one whose save is still running stays.
 //!
 //! **WAV keeps the source's chunks** (Roadmap A272, A265, A256): only a whole-document WAV save
-//! copies the source's chunks through and records where they landed. AIFF and FLAC are written
-//! from the samples alone.
+//! copies the source's chunks through and records where they landed. AIFF, FLAC and Ogg Vorbis are
+//! written from the samples alone (Vorbis is lossy: the sample type is ignored there).
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -211,7 +211,14 @@ pub enum SaveFormat {
     Aiff,
     /// 16 or 24 bit only.
     Flac,
+    /// Lossy, VBR by quality (-1 to 10); the sample type is ignored (f93).
+    Vorbis,
 }
+
+/// Lowest and highest Vorbis VBR quality (the libvorbis scale: -1 smallest, 10 best).
+pub const VORBIS_QUALITY_RANGE: (f32, f32) = (-1.0, 10.0);
+/// The quality a Vorbis save uses when none is given.
+pub const VORBIS_DEFAULT_QUALITY: f32 = 5.0;
 
 impl SaveFormat {
     /// The format a file name's extension asks for (`wav`, `aif`, `aiff`, `flac`; any case).
@@ -220,6 +227,7 @@ impl SaveFormat {
             "wav" => Some(SaveFormat::Wav),
             "aif" | "aiff" => Some(SaveFormat::Aiff),
             "flac" => Some(SaveFormat::Flac),
+            "ogg" | "oga" => Some(SaveFormat::Vorbis),
             _ => None,
         }
     }
@@ -254,6 +262,7 @@ impl SaveFormat {
             SaveFormat::Wav => "WAV",
             SaveFormat::Aiff => "AIFF",
             SaveFormat::Flac => "FLAC",
+            SaveFormat::Vorbis => "Ogg Vorbis",
         }
     }
 
@@ -262,13 +271,14 @@ impl SaveFormat {
             SaveFormat::Wav => "wav",
             SaveFormat::Aiff => "aiff",
             SaveFormat::Flac => "flac",
+            SaveFormat::Vorbis => "ogg",
         }
     }
 
     /// Whether this format can hold `ty` samples.
     pub fn accepts(self, ty: SampleType) -> bool {
         match self {
-            SaveFormat::Wav | SaveFormat::Aiff => true,
+            SaveFormat::Wav | SaveFormat::Aiff | SaveFormat::Vorbis => true,
             SaveFormat::Flac => matches!(ty, SampleType::Int16 | SampleType::Int24),
         }
     }
@@ -325,16 +335,19 @@ impl AiffKind {
 /// How one save runs. `fail_after` stops with an I/O error after some frames (tests: a save that
 /// dies halfway must leave the target whole); `rf64_over` is the RIFF size above which a WAV
 /// becomes RF64 (4 GiB; tests lower it); `aiff` is the AIFF kind; `relocate` records where the
-/// source's chunks landed, which only a whole-document WAV save may do.
+/// source's chunks landed, which only a whole-document WAV save may do; `quality` is the Ogg
+/// Vorbis VBR quality (-1 to 10).
 #[derive(Clone, Copy)]
 struct Hooks {
     fail_after: Option<u64>,
     rf64_over: u64,
     aiff: AiffKind,
     relocate: bool,
+    quality: f32,
 }
 
-const NO_HOOKS: Hooks = Hooks { fail_after: None, rf64_over: u32::MAX as u64, aiff: AiffKind::Aiff, relocate: true };
+const NO_HOOKS: Hooks =
+    Hooks { fail_after: None, rf64_over: u32::MAX as u64, aiff: AiffKind::Aiff, relocate: true, quality: VORBIS_DEFAULT_QUALITY };
 
 /// A frame range and channel subset to write from a document.
 #[derive(Debug, Clone)]
@@ -363,6 +376,16 @@ pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dy
 /// any kind removes this save's temporary file and leaves `target` as it was.
 pub fn save(doc: &DocState, target: &Path, format: SaveFormat, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
     save_inner(doc, target, format, ty, &Part::whole(doc), progress, NO_HOOKS)
+}
+
+/// Save `doc` to `target` as Ogg Vorbis at VBR `quality` (-1 to 10; outside that is refused),
+/// streamed and replaced atomically like every save.
+pub fn save_vorbis(doc: &DocState, target: &Path, quality: f32, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
+    let (lo, hi) = VORBIS_QUALITY_RANGE;
+    if !(lo..=hi).contains(&quality) {
+        return Err(SaveError::Unsupported(format!("Vorbis quality is {lo} to {hi}, not {quality}")));
+    }
+    save_inner(doc, target, SaveFormat::Vorbis, SampleType::Float32, &Part::whole(doc), progress, Hooks { quality, ..NO_HOOKS })
 }
 
 /// [`save`] with the AIFF kind chosen (ignored for WAV and FLAC).
@@ -602,7 +625,7 @@ fn is_list(f: &mut File, c: &ChunkInfo, form: &[u8; 4]) -> bool {
 }
 
 /// Stream the document into `file` in `format`; durable (synced) before it returns. Returns the
-/// file and, for a WAV, the chunk table it now holds (empty for AIFF and FLAC).
+/// file and, for a WAV, the chunk table it now holds (empty for AIFF, FLAC and Vorbis).
 fn write_stream(
     doc: &DocState,
     file: File,
@@ -612,6 +635,9 @@ fn write_stream(
     progress: &mut dyn FnMut(f64),
     hooks: Hooks,
 ) -> io::Result<(File, Vec<ChunkInfo>)> {
+    if format == SaveFormat::Vorbis {
+        return write_vorbis_stream(doc, file, part, progress, hooks).map(|file| (file, Vec::new()));
+    }
     let frames = part.frames.end - part.frames.start;
     let channels = part.channels.len();
     let mut out = BufWriter::with_capacity(1 << 20, file);
@@ -691,10 +717,31 @@ fn write_stream(
                 Ok(())
             })?;
         }
+        SaveFormat::Vorbis => return Err(invalid("Vorbis has its own writer")),
     }
     let file = out.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
     Ok((file, table))
+}
+
+/// The Ogg Vorbis writer: the encoder owns the buffered file while it runs and hands it back at
+/// the end; blocks of 64 K frames go in as they are read from the document.
+fn write_vorbis_stream(doc: &DocState, file: File, part: &Part, progress: &mut dyn FnMut(f64), hooks: Hooks) -> io::Result<File> {
+    let channels = part.channels.len();
+    let rate = std::num::NonZeroU32::new(doc.sample_rate()).ok_or_else(|| invalid("sample rate 0"))?;
+    let ch8 = u8::try_from(channels).ok().and_then(std::num::NonZeroU8::new).ok_or_else(|| invalid("too many channels for Vorbis (255 at most)"))?;
+    let out = BufWriter::with_capacity(1 << 20, file);
+    let mut builder = vorbis_rs::VorbisEncoderBuilder::new(rate, ch8, out).map_err(invalid_err)?;
+    builder.bitrate_management_strategy(vorbis_rs::VorbisBitrateManagementStrategy::QualityVbr { target_quality: hooks.quality / 10.0 });
+    let mut enc = builder.build().map_err(invalid_err)?;
+    stream_samples(doc, part, progress, hooks.fail_after, |bufs, n| {
+        let block: Vec<&[f32]> = bufs.iter().map(|b| &b[..n]).collect();
+        enc.encode_audio_block(&block).map_err(invalid_err)
+    })?;
+    let out = enc.finish().map_err(invalid_err)?;
+    let file = out.into_inner().map_err(|e| e.into_error())?;
+    file.sync_all()?;
+    Ok(file)
 }
 
 /// The PCM samples of `part` in `ty`, written to `out` (`big`: big-endian).
@@ -919,7 +966,7 @@ fn pcm_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) 
             let data = write_aiff_header(&mut c, ch16, rate, ty, frames, kind)?;
             Ok(c.0 + data + (data & 1))
         }
-        SaveFormat::Flac => Err(invalid("not PCM")),
+        SaveFormat::Flac | SaveFormat::Vorbis => Err(invalid("not PCM")),
     }
 }
 
@@ -930,6 +977,9 @@ pub fn estimate_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: A
     let (frames, channels, rate) = (doc.len_frames(), doc.channel_count(), doc.sample_rate());
     if !format.accepts(ty) {
         return Err(invalid(&format!("{} cannot hold {} samples", format.name(), ty.describe())));
+    }
+    if format == SaveFormat::Vorbis {
+        return Err(invalid("an Ogg Vorbis size is not known until it is encoded"));
     }
     if format != SaveFormat::Flac {
         return Ok(SizeEstimate { bytes: pcm_size(doc, format, ty, kind)?, exact: true });
@@ -998,4 +1048,8 @@ pub fn quantize(x: f32, bits: u32) -> i32 {
 
 fn invalid(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg.to_string())
+}
+
+fn invalid_err(e: impl fmt::Display) -> io::Error {
+    io::Error::other(format!("Vorbis encoder: {e}"))
 }

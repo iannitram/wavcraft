@@ -15,7 +15,7 @@ use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
-use wavcraft_core::save::{AiffKind, FileKind, Part, SampleType, SaveFormat, SizeEstimate, estimate_size, save_aiff_kind, write_file};
+use wavcraft_core::save::{AiffKind, FileKind, Part, SampleType, SaveFormat, SizeEstimate, VORBIS_DEFAULT_QUALITY, estimate_size, save_aiff_kind, save_vorbis, write_file};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
@@ -266,6 +266,8 @@ pub struct WaveApp {
     running: Option<Running>,
     /// File › Sample Type on Save: the type every save writes, or `None` to keep the file's own.
     save_type: Option<SampleType>,
+    /// Ogg Vorbis VBR quality, -1 to 10 (`SAVE ... quality=`; sticky once given).
+    vorbis_quality: f32,
     /// How AIFF files are written (the export dialog, an export preset, or `SAVE … aiff=`).
     aiff_kind: AiffKind,
     /// The Save As / Export dialog is up.
@@ -461,6 +463,7 @@ impl WaveApp {
             saving: None,
             running: None,
             save_type: None,
+            vorbis_quality: VORBIS_DEFAULT_QUALITY,
             aiff_kind: AiffKind::Aiff,
             export_open: false,
             scripted_pick: None,
@@ -2875,7 +2878,7 @@ impl WaveApp {
                 let stem = self.doc_path.file_stem().map_or_else(|| "Untitled".to_string(), |s| s.to_string_lossy().into_owned());
                 let first = self.dialog_format.take().or(own_format).unwrap_or(SaveFormat::Wav);
                 let mut dialog = rfd::FileDialog::new().set_file_name(format!("{stem}.{}", first.extension()));
-                for f in [first, SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac].iter().fold(Vec::new(), |mut v, f| {
+                for f in [first, SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac, SaveFormat::Vorbis].iter().fold(Vec::new(), |mut v, f| {
                     if !v.contains(f) {
                         v.push(*f);
                     }
@@ -2901,7 +2904,7 @@ impl WaveApp {
         let (path, format) = match SaveFormat::from_path(&path) {
             Some(f) => (path, f),
             None if path.extension().is_none() => (path.with_extension("wav"), SaveFormat::Wav),
-            None => return Err(format!("{} is not a format WavCraft saves: use .wav, .aiff or .flac", path.display())),
+            None => return Err(format!("{} is not a format WavCraft saves: use .wav, .aiff, .flac or .ogg", path.display())),
         };
         let wanted = ty.unwrap_or_else(|| SampleType::for_source(state.source()));
         if !format.accepts(wanted) && (explicit || ty.is_some()) {
@@ -2911,13 +2914,19 @@ impl WaveApp {
         let (tx, rx) = channel();
         let progress = Arc::new(AtomicU32::new(0));
         let aiff = self.aiff_kind;
+        let quality = self.vorbis_quality;
         let (job_state, job_path, job_progress, ctx) = (state.clone(), path.clone(), progress.clone(), ctx.clone());
         std::thread::spawn(move || {
             let mut report = |p: f64| {
                 job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
                 ctx.request_repaint();
             };
-            let _ = tx.send(save_aiff_kind(&job_state, &job_path, format, ty, aiff, &mut report).map_err(|e| e.to_string()));
+            let done = if format == SaveFormat::Vorbis {
+                save_vorbis(&job_state, &job_path, quality, &mut report)
+            } else {
+                save_aiff_kind(&job_state, &job_path, format, ty, aiff, &mut report)
+            };
+            let _ = tx.send(done.map_err(|e| e.to_string()));
             ctx.request_repaint();
         });
         self.player.stop();
@@ -4169,10 +4178,17 @@ impl WaveApp {
                 }
             }
             "SAVE" => {
-                // `SAVE <path> [bits=16|24|32] [float=0|1]`: the options end the line.
+                // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10]`: the options end the line.
+                let quality = match take_quality(rest) {
+                    Ok(q) => q,
+                    Err(e) => return format!("ERR {e}"),
+                };
                 match parse_save_args(rest) {
                     Err(e) => format!("ERR {e}"),
                     Ok((path, ty, aiff)) => {
+                        if let Some(q) = quality {
+                            self.vorbis_quality = q;
+                        }
                         let to = (!path.is_empty()).then(|| PathBuf::from(path));
                         // `aiff=` is for this save only.
                         let kept = self.aiff_kind;
@@ -5364,6 +5380,19 @@ fn format_size_label(e: &SizeEstimate) -> String {
     }
 }
 
+/// Reads the `quality=<-1..10>` option (Ogg Vorbis VBR) out of `SAVE`'s arguments, if given.
+/// `parse_save_args` skips that token.
+fn take_quality(rest: &str) -> Result<Option<f32>, String> {
+    let mut quality = None;
+    for tok in rest.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("quality=") {
+            let q: f32 = v.parse().ok().filter(|q: &f32| (-1.0..=10.0).contains(q)).ok_or_else(|| format!("quality=<-1..10>, not {v}"))?;
+            quality = Some(q);
+        }
+    }
+    Ok(quality)
+}
+
 /// `SAVE`'s arguments: a path (may hold spaces) then `bits=<16|24|32>` and `float=<0|1>` in any
 /// order. Returns the path and the sample type they name, if any.
 fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffKind>), String> {
@@ -5379,6 +5408,8 @@ fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffK
                 "1" => true,
                 _ => return Err(format!("float=<0|1>, not {v}")),
             });
+        } else if last.starts_with("quality=") {
+            // Read by `take_quality`.
         } else {
             break;
         }
@@ -5566,6 +5597,10 @@ mod tests {
         assert_eq!(parse_save_args("/a b/c.aiff aiff=sowt"), Ok(("/a b/c.aiff", None, Some(AiffKind::AifcSowt))));
         assert_eq!(parse_save_args("x.aiff bits=24 aiff=aifc"), Ok(("x.aiff", Some(SampleType::Int24), Some(AiffKind::Aifc))));
         assert!(parse_save_args("x.aiff aiff=big").is_err());
+        assert_eq!(parse_save_args("a b.ogg quality=7.5 bits=16"), Ok(("a b.ogg", Some(SampleType::Int16), None)));
+        assert_eq!(take_quality("a b.ogg quality=7.5 bits=16"), Ok(Some(7.5)));
+        assert_eq!(take_quality("x.ogg"), Ok(None));
+        assert!(take_quality("x.ogg quality=11").is_err() && take_quality("x.ogg quality=loud").is_err());
         assert!(parse_save_args("x.wav bits=20").is_err());
         assert!(parse_save_args("x.wav bits=24 float=1").is_err());
         assert!(parse_save_args("x.wav float=2").is_err());
