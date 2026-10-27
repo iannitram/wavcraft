@@ -31,6 +31,7 @@ use crate::mixer::MixerModel;
 use crate::meters_ui::{self, MetersUi};
 use crate::player::{Devices, Player};
 use crate::rack_panel::{RackPanel, Request};
+use crate::recovery::{self, Choice, Recovery};
 use crate::spectrum::{Job, Renderer};
 use crate::video::{VideoPanel, Waiters};
 use crate::statspanel::{Nav, StatsPanel};
@@ -60,6 +61,8 @@ fn silence_frames(secs: f64, rate: u32) -> Result<u64, String> {
 enum PrefPage {
     General,
     Data,
+    AutoSave,
+    MediaCache,
     MarkersMetadata,
     PlaybackRecording,
     AudioHardware,
@@ -70,10 +73,12 @@ enum PrefPage {
 }
 
 impl PrefPage {
-    const ALL: [PrefPage; 9] = [
+    const ALL: [PrefPage; 11] = [
         PrefPage::General,
         PrefPage::Appearance,
         PrefPage::Data,
+        PrefPage::AutoSave,
+        PrefPage::MediaCache,
         PrefPage::MarkersMetadata,
         PrefPage::PlaybackRecording,
         PrefPage::SpectralDisplays,
@@ -86,6 +91,8 @@ impl PrefPage {
         match self {
             PrefPage::General => "General",
             PrefPage::Data => "Data",
+            PrefPage::AutoSave => "Auto Save",
+            PrefPage::MediaCache => "Media and Disk Cache",
             PrefPage::MarkersMetadata => "Markers and Metadata",
             PrefPage::PlaybackRecording => "Playback and Recording",
             PrefPage::AudioHardware => "Audio Hardware",
@@ -104,6 +111,10 @@ enum PrefAction {
     Preset(&'static str, String),
     RefreshDevices,
     ResetAll,
+    AskCleanup,
+    CancelCleanup,
+    CleanUp(u32),
+    RefreshUsage,
 }
 
 /// Frames at the start in which a held Shift means "reset the preferences".
@@ -292,6 +303,13 @@ pub struct WaveApp {
     meters: MetersUi,
     /// Edit › Preferences…: the page showing while the dialog is up.
     prefs: Option<PrefPage>,
+    /// Auto Save: the journal writer, and the offer to recover a crashed run's work.
+    recovery: Recovery,
+    /// The disk figures the Preferences pages show (Auto Save, Media and Disk Cache), made when
+    /// one of them opens and refreshed after a change.
+    prefs_usage: Option<wavcraft_core::sessions::Usage>,
+    /// "Clean up old sessions" asked for and waiting for a yes.
+    prefs_confirm_cleanup: bool,
     /// The look last given to egui: (dark, brightness in thousandths); `None` until the first frame.
     applied_look: Option<(bool, i32, i32)>,
     /// The spectrogram palette in use (name, brightness, contrast, as thousandths).
@@ -355,18 +373,13 @@ impl WaveApp {
         let env = std::env::var_os(settings::ENV_SESSION_DIR);
         let sessions = settings::resolve_session_folder(session_dir, env, &settings, default_sessions_root(), settings::check_folder);
         // Folders left by runs that ended without closing their store (a crash, a kill, a
-        // signal) are removed in the background; this run's own store is never touched.
-        let roots: Vec<PathBuf> = [sessions.path.clone(), default_sessions_root()].into_iter().fold(Vec::new(), |mut v, p| {
-            if !v.contains(&p) {
-                v.push(p);
-            }
-            v
-        });
-        let _ = std::thread::Builder::new().name("session sweep".into()).spawn(move || {
-            for root in roots {
-                wavcraft_core::store::sweep_stale_sessions(Some(&root));
-            }
-        });
+        // signal) are offered for recovery or swept in the background; this run's own store is
+        // never touched.
+        let roots = recovery::roots(&sessions.path, &default_sessions_root());
+        let recovery = {
+            let ctx = cc.egui_ctx.clone();
+            Recovery::new(roots, move || ctx.request_repaint())
+        };
         let keymap = Keymap::new();
         if let Err(e) = keymap.check() {
             log::error!(target: "wavcraft", "keyboard shortcuts conflict: {e}");
@@ -450,6 +463,9 @@ impl WaveApp {
             mtv: MtView::default(),
             meters: MetersUi::new(),
             prefs: None,
+            recovery,
+            prefs_usage: None,
+            prefs_confirm_cleanup: false,
             applied_look: None,
             applied_palette: Some(initial_palette),
             dark: true,
@@ -589,6 +605,8 @@ impl WaveApp {
     fn open_preferences(&mut self) {
         self.devices_rx = Some(crate::player::list_devices_in_background());
         self.prefs.get_or_insert(PrefPage::General);
+        self.prefs_usage = None;
+        self.prefs_confirm_cleanup = false;
     }
 
     /// The Preferences dialog: a page list on the left, the page on the right.
@@ -603,6 +621,9 @@ impl WaveApp {
                 Err(TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
                 Err(TryRecvError::Disconnected) => self.devices_rx = None,
             }
+        }
+        if matches!(page, PrefPage::AutoSave | PrefPage::MediaCache) && self.prefs_usage.is_none() {
+            self.prefs_usage = Some(self.session_usage());
         }
         let mut open = true;
         let mut action: Option<PrefAction> = None;
@@ -640,6 +661,88 @@ impl WaveApp {
                             ui.add_space(12.0);
                             if ui.button("Reset all preferences").on_hover_text("The settings file is kept aside, not deleted").clicked() {
                                 action = Some(PrefAction::ResetAll);
+                            }
+                        }
+                        PrefPage::AutoSave => {
+                            ui.label("Auto Save writes a recovery journal into the session folder while the document has unsaved work.");
+                            ui.label("After a crash, the next start offers to recover that work.");
+                            pref_check(ui, "Save recovery data while I work", "autosave_enabled", self.settings.autosave_enabled, &mut action);
+                            ui.add_enabled_ui(self.settings.autosave_enabled, |ui| {
+                                let mut secs = self.settings.autosave_interval_secs;
+                                ui.horizontal(|ui| {
+                                    ui.label("Write it at most every");
+                                    if ui.add(egui::DragValue::new(&mut secs).range(settings::INTERVAL_RANGE).suffix(" s")).changed() {
+                                        action = Some(PrefAction::Set("autosave_interval_secs", secs.to_string()));
+                                    }
+                                });
+                            });
+                            let mut days = self.settings.autosave_keep_days;
+                            ui.horizontal(|ui| {
+                                ui.label("Keep old sessions for");
+                                if ui.add(egui::DragValue::new(&mut days).range(settings::KEEP_DAYS_RANGE).suffix(" days")).changed() {
+                                    action = Some(PrefAction::Set("autosave_keep_days", days.to_string()));
+                                }
+                            });
+                            ui.label("\"Clean up old sessions\" on the Media and Disk Cache page removes only sessions this old.");
+                        }
+                        PrefPage::MediaCache => {
+                            ui.label("Session folder: where an opened file's session store is kept while you work on it.");
+                            ui.monospace(self.sessions.path.display().to_string());
+                            ui.label(format!("({})", self.sessions.source.describe()));
+                            ui.horizontal(|ui| {
+                                if ui.button("Choose…").clicked() {
+                                    action = Some(PrefAction::ChooseSessionFolder);
+                                }
+                                if ui.button("Use the default").clicked() {
+                                    action = Some(PrefAction::Set("session_folder", String::new()));
+                                }
+                            });
+                            ui.add_space(8.0);
+                            let mut custom = self.settings.cache_mb.is_some();
+                            let current = self.settings.cache_mb.unwrap_or(self.settings.cache_bytes() >> 20);
+                            ui.horizontal(|ui| {
+                                if ui.checkbox(&mut custom, "Block cache (RAM)").changed() {
+                                    let value = if custom { current.to_string() } else { "default".to_string() };
+                                    action = Some(PrefAction::Set("cache_mb", value));
+                                }
+                                if custom {
+                                    let mut mb = current;
+                                    if ui.add(egui::DragValue::new(&mut mb).range(settings::CACHE_MB_RANGE).suffix(" MB")).changed() {
+                                        action = Some(PrefAction::Set("cache_mb", mb.to_string()));
+                                    }
+                                } else {
+                                    ui.label(format!("{current} MB (default)"));
+                                }
+                            });
+                            ui.label("A new cache size applies from the next file opened.");
+                            if let Some(u) = &self.prefs_usage {
+                                ui.add_space(8.0);
+                                ui.label(format!(
+                                    "Sessions on disk: {} using {}. {} can be recovered (never removed here); {} old enough to clean up ({}).",
+                                    u.sessions,
+                                    wavcraft_core::space::format_bytes(u.bytes),
+                                    u.recoverable,
+                                    u.removable,
+                                    wavcraft_core::space::format_bytes(u.removable_bytes)
+                                ));
+                                ui.horizontal(|ui| {
+                                    if self.prefs_confirm_cleanup {
+                                        ui.label(format!("Delete {} session(s) of closed runs, idle {}+ days?", u.removable, self.settings.autosave_keep_days));
+                                        if ui.button("Delete").clicked() {
+                                            action = Some(PrefAction::CleanUp(self.settings.autosave_keep_days));
+                                        }
+                                        if ui.button("Cancel").clicked() {
+                                            action = Some(PrefAction::CancelCleanup);
+                                        }
+                                    } else {
+                                        if ui.add_enabled(u.removable > 0, egui::Button::new("Clean up old sessions…")).clicked() {
+                                            action = Some(PrefAction::AskCleanup);
+                                        }
+                                        if ui.button("Refresh").clicked() {
+                                            action = Some(PrefAction::RefreshUsage);
+                                        }
+                                    }
+                                });
                             }
                         }
                         PrefPage::Data => {
@@ -854,8 +957,16 @@ impl WaveApp {
             });
         });
         self.prefs = open.then_some(page);
+        if !open {
+            self.prefs_usage = None;
+            self.prefs_confirm_cleanup = false;
+        }
         let result = match action {
-            Some(PrefAction::Set(key, value)) => self.pref_set(key, &value),
+            Some(PrefAction::Set(key, value)) => {
+                let r = self.pref_set(key, &value);
+                self.prefs_usage = None;
+                r
+            }
             Some(PrefAction::ChooseSessionFolder) => rfd::FileDialog::new()
                 .set_directory(&self.sessions.path)
                 .pick_folder()
@@ -867,6 +978,23 @@ impl WaveApp {
             }
             Some(PrefAction::ResetAll) => {
                 self.reset_preferences();
+                Ok(())
+            }
+            Some(PrefAction::AskCleanup) => {
+                self.prefs_confirm_cleanup = true;
+                Ok(())
+            }
+            Some(PrefAction::CancelCleanup) => {
+                self.prefs_confirm_cleanup = false;
+                Ok(())
+            }
+            Some(PrefAction::CleanUp(days)) => {
+                self.prefs_confirm_cleanup = false;
+                self.cleanup_sessions(days);
+                Ok(())
+            }
+            Some(PrefAction::RefreshUsage) => {
+                self.prefs_usage = None;
                 Ok(())
             }
             None => Ok(()),
@@ -888,7 +1016,8 @@ impl WaveApp {
         let (tx, rx) = channel();
         let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
         let (ctx, job_path, job_cancel, job_progress) = (ctx.clone(), path.clone(), cancel.clone(), progress.clone());
-        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), ..OpenOptions::default() };
+        let store = wavcraft_core::store::StoreOptions { cache_bytes: self.settings.cache_bytes(), ..Default::default() };
+        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), store, ..OpenOptions::default() };
         std::thread::spawn(move || {
             let mut last = 0;
             let mut report = |p: f64| {
@@ -1015,6 +1144,60 @@ impl WaveApp {
         let rate = self.editor.as_ref()?.history.current().sample_rate();
         let frame = if self.player.is_playing() { self.player.position() } else { self.selection.start() };
         (rate > 0).then(|| frame as f64 / f64::from(rate))
+    }
+
+    /// Recover the `index`th session a crashed run left (Auto Save): its document and undo
+    /// history come back as they were at the last journal. Refused while another file has
+    /// unsaved changes, or one is opening.
+    fn recover_session(&mut self, index: usize, ctx: &egui::Context) -> Result<(), String> {
+        if self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() {
+            return Err("Wait for the current job to finish before recovering".to_string());
+        }
+        if self.unsaved() {
+            return Err("Save or close the open file before recovering".to_string());
+        }
+        let dir = self.recovery.offers.get(index).map(|o| o.dir.clone()).ok_or_else(|| format!("no recoverable session {index}"))?;
+        let store = wavcraft_core::store::StoreOptions { cache_bytes: self.settings.cache_bytes(), ..Default::default() };
+        let rec = wavcraft_core::autosave::recover(&dir, store).map_err(|e| format!("Could not recover: {e}"))?;
+        let cap = History::default_cap(&self.sessions.path);
+        let history = rec.into_history(cap).ok_or("Could not recover: the journal holds no steps")?;
+        self.doc_path = history.current().source().path.clone();
+        self.editor = Some(Editor::new(history));
+        self.saved = None;
+        self.doc_id += 1;
+        self.doc = None;
+        self.player.set_audio(None);
+        self.selection = Selection::default();
+        self.spectrum = None;
+        self.fit_on_next_frame = true;
+        self.recovery.remove(index);
+        self.notice = Some("Recovered the unsaved work (File › Save keeps it)".to_string());
+        log::info!(target: "wavcraft", "recovery: restored the session in {}", dir.display());
+        self.rebuild(ctx);
+        Ok(())
+    }
+
+    /// Remove a crashed run's session folder the owner chose to discard.
+    fn discard_recovery(&mut self, index: usize) -> Result<(), String> {
+        let dir = self.recovery.offers.get(index).map(|o| o.dir.clone()).ok_or_else(|| format!("no recoverable session {index}"))?;
+        wavcraft_core::autosave::discard(&dir).map_err(|e| format!("Could not discard: {e}"))?;
+        log::info!(target: "wavcraft", "recovery: discarded the session in {} at the owner's request", dir.display());
+        self.recovery.remove(index);
+        Ok(())
+    }
+
+    /// The disk figures the Preferences pages and `CACHE info` show.
+    fn session_usage(&self) -> wavcraft_core::sessions::Usage {
+        wavcraft_core::sessions::usage(&self.sessions.path, self.settings.autosave_keep_days, std::time::SystemTime::now())
+    }
+
+    /// Clean up old sessions: only those of dead runs, idle for `days`, with nothing to recover
+    /// (`wavcraft_core::sessions` has the rules). Returns what was removed.
+    fn cleanup_sessions(&mut self, days: u32) -> wavcraft_core::sessions::Cleanup {
+        let done = wavcraft_core::sessions::cleanup(&self.sessions.path, days, std::time::SystemTime::now());
+        self.prefs_usage = Some(self.session_usage());
+        self.notice = Some(format!("Cleaned up {} old session(s), {}", done.removed, wavcraft_core::space::format_bytes(done.freed)));
+        done
     }
 
     fn pick_session_folder(&mut self) {
@@ -3407,6 +3590,51 @@ impl WaveApp {
                     Err(e) => format!("ERR {e}"),
                 }
             }
+            // Auto Save: the journal writer's progress, and the sessions a crashed run left.
+            "AUTOSAVE" => {
+                let (offered, written, failed, pending) = self.recovery.stats();
+                format!(
+                    "OK offered={offered} written={written} failed={failed} pending={} scanned={} recoverable={}",
+                    u8::from(pending),
+                    u8::from(self.recovery.scanned),
+                    self.recovery.offers.len()
+                )
+            }
+            "RECOVER" | "DISCARD_RECOVERY" => match rest.trim().parse::<usize>().or_else(|_| if rest.trim().is_empty() { Ok(0) } else { Err(()) }) {
+                Ok(i) => {
+                    let r = if cmd == "RECOVER" { self.recover_session(i, ctx) } else { self.discard_recovery(i) };
+                    r.map_or_else(|e| format!("ERR {e}"), |()| "OK".to_string())
+                }
+                Err(()) => format!("ERR {cmd} [index]"),
+            },
+            // Media and Disk Cache: `CACHE info`, `CACHE cleanup <days>` (the owner's confirmation
+            // is the dialog's; a script asking is the confirmation).
+            "CACHE" => {
+                let mut it = rest.split_whitespace();
+                match (it.next(), it.next().map(str::parse::<u32>)) {
+                    (Some("info"), None) => {
+                        let u = self.session_usage();
+                        format!(
+                            "OK sessions={} bytes={} recoverable={} stale={} removable={} removable_bytes={} keep_days={} cache_mb={} cache_default_mb={} folder={}",
+                            u.sessions,
+                            u.bytes,
+                            u.recoverable,
+                            u.stale,
+                            u.removable,
+                            u.removable_bytes,
+                            self.settings.autosave_keep_days,
+                            self.settings.cache_bytes() >> 20,
+                            wavcraft_core::store::default_cache_bytes() >> 20,
+                            self.sessions.path.display()
+                        )
+                    }
+                    (Some("cleanup"), Some(Ok(days))) => {
+                        let done = self.cleanup_sessions(days);
+                        format!("OK removed={} freed={}", done.removed, done.freed)
+                    }
+                    _ => "ERR CACHE info | CACHE cleanup <days>".to_string(),
+                }
+            }
             // The History panel's click: go to step <index> (0 is Open).
             "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
                 (Ok(i), true) if self.saving.is_none() && self.running.is_none() => {
@@ -4268,6 +4496,10 @@ impl eframe::App for WaveApp {
             ctx.request_repaint();
         }
         self.stats.poll();
+        self.recovery.poll();
+        let unsaved = self.unsaved();
+        self.recovery.configure(self.settings.autosave_enabled, self.settings.autosave_interval_secs);
+        self.recovery.track(self.editor.as_ref(), unsaved, ctx);
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             // `VIDEO frame` is answered when the worker has the picture, not before. With a
             // multitrack session holding video clips the time is a session time (f129): the
@@ -4486,6 +4718,19 @@ impl eframe::App for WaveApp {
         self.insert_silence_dialog(&ctx);
         self.effect_dialog_ui(&ctx);
         self.preferences_dialog(&ctx);
+        match self.recovery.show(&ctx) {
+            Some(Choice::Recover(i)) => {
+                if let Err(e) = self.recover_session(i, &ctx) {
+                    self.error = Some(e);
+                }
+            }
+            Some(Choice::Discard(i)) => {
+                if let Err(e) = self.discard_recovery(i) {
+                    self.error = Some(e);
+                }
+            }
+            None => {}
+        }
         self.rack_ui(&ctx);
         self.diagnostics_ui(&ctx);
         self.clear_history_prompt(&ctx);

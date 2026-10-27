@@ -13,6 +13,12 @@
 //! [`ENV_SESSION_DIR`] environment variable, the settings file, the default
 //! ([`default_sessions_root`](crate::store::default_sessions_root)). A folder that can't be made
 //! or written falls back to the default, with a message saying why.
+//!
+//! Preferences (A278, A281; older files without these keys keep working, each key missing gives
+//! its default): `autosave_enabled` (default on), `autosave_interval_secs` (how often the journal
+//! may be written, default 2), `autosave_keep_days` (how many days "Clean up old sessions" keeps
+//! a session, default 30), and `cache_mb` (the block cache's RAM budget; empty: the default,
+//! [`default_cache_bytes`](crate::store::default_cache_bytes)).
 
 use crate::appearance::{self, Colors, Preset};
 use std::ffi::OsString;
@@ -62,10 +68,25 @@ const KEY_SPEC_PALETTE: &str = "spec_palette";
 const KEY_CONTRAST: &str = "ui_contrast";
 /// The settings-file key that holds one appearance preset per line.
 const KEY_PRESET: &str = "appearance_preset";
+const KEY_AUTOSAVE: &str = "autosave_enabled";
+const KEY_INTERVAL: &str = "autosave_interval_secs";
+const KEY_KEEP_DAYS: &str = "autosave_keep_days";
+const KEY_CACHE_MB: &str = "cache_mb";
+
+/// The journal is written at most this often by default (seconds).
+pub const DEFAULT_INTERVAL_SECS: u64 = 2;
+/// Allowed journal intervals, seconds.
+pub const INTERVAL_RANGE: std::ops::RangeInclusive<u64> = 1..=3600;
+/// The default age, in days, at which "Clean up old sessions" may remove a session.
+pub const DEFAULT_KEEP_DAYS: u32 = 30;
+/// Allowed values for the keep-days setting.
+pub const KEEP_DAYS_RANGE: std::ops::RangeInclusive<u32> = 1..=3650;
+/// Allowed block cache budgets, megabytes.
+pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
 /// menu and is not one of them).
-pub const KEYS: [&str; 34] = [
+pub const KEYS: [&str; 38] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
@@ -100,6 +121,10 @@ pub const KEYS: [&str; 34] = [
     "color.background",
     KEY_SPEC_PALETTE,
     KEY_CONTRAST,
+    KEY_AUTOSAVE,
+    KEY_INTERVAL,
+    KEY_KEEP_DAYS,
+    KEY_CACHE_MB,
 ];
 
 /// Spectral display resolutions (FFT lengths in frames) the page offers, and the default.
@@ -375,6 +400,14 @@ pub struct Settings {
     pub spec_palette: SpecPalette,
     pub ui_contrast: f32,
     pub presets: Vec<Preset>,
+    /// Auto Save writes a journal while the document has unsaved work.
+    pub autosave_enabled: bool,
+    /// The most often a journal is written, in seconds.
+    pub autosave_interval_secs: u64,
+    /// "Clean up old sessions" removes a session only when it is older than this many days.
+    pub autosave_keep_days: u32,
+    /// The block cache's RAM budget in megabytes (`None`: the default).
+    pub cache_mb: Option<u64>,
 }
 
 impl Default for Settings {
@@ -416,6 +449,10 @@ impl Default for Settings {
             spec_palette: SpecPalette::Ember,
             ui_contrast: DEFAULT_CONTRAST,
             presets: Vec::new(),
+            autosave_enabled: true,
+            autosave_interval_secs: DEFAULT_INTERVAL_SECS,
+            autosave_keep_days: DEFAULT_KEEP_DAYS,
+            cache_mb: None,
         }
     }
 }
@@ -473,6 +510,11 @@ impl Settings {
             }
         }
         s
+    }
+
+    /// The block cache budget in bytes: the setting, else the default.
+    pub fn cache_bytes(&self) -> u64 {
+        self.cache_mb.map_or_else(crate::store::default_cache_bytes, |mb| mb << 20)
     }
 
     /// The crossfade lengths as durations: `(cut_join, edge)`.
@@ -557,6 +599,10 @@ impl Settings {
             KEY_BRIGHTNESS => self.ui_brightness.to_string(),
             KEY_SPEC_PALETTE => self.spec_palette.name().to_string(),
             KEY_CONTRAST => self.ui_contrast.to_string(),
+            KEY_AUTOSAVE => (if self.autosave_enabled { "on" } else { "off" }).to_string(),
+            KEY_INTERVAL => self.autosave_interval_secs.to_string(),
+            KEY_KEEP_DAYS => self.autosave_keep_days.to_string(),
+            KEY_CACHE_MB => self.cache_mb.map_or_else(|| "default".to_string(), |m| m.to_string()),
             _ if key.starts_with("color.") => match self.colors.get(&key[6..]) {
                 Some(c) => appearance::colour_text(c),
                 None => return Err(unknown_key(key)),
@@ -630,6 +676,12 @@ impl Settings {
             KEY_BRIGHTNESS => self.ui_brightness = parse_range(key, value, MIN_BRIGHTNESS, MAX_BRIGHTNESS, "(1 is normal)")?,
             KEY_SPEC_PALETTE => self.spec_palette = choose(key, value, SpecPalette::from_name, SpecPalette::NAMES)?,
             KEY_CONTRAST => self.ui_contrast = parse_range(key, value, MIN_CONTRAST, MAX_CONTRAST, "(1 is normal)")?,
+            KEY_AUTOSAVE => self.autosave_enabled = parse_on_off(key, value)?,
+            KEY_INTERVAL => self.autosave_interval_secs = parse_in(key, value, &INTERVAL_RANGE)?,
+            KEY_KEEP_DAYS => self.autosave_keep_days = parse_in(key, value, &KEEP_DAYS_RANGE)?,
+            KEY_CACHE_MB => {
+                self.cache_mb = if value.is_empty() || value == "default" { None } else { Some(parse_in(key, value, &CACHE_MB_RANGE)?) };
+            }
             _ if key.starts_with("color.") => {
                 let colour = appearance::parse_colour(key, value)?;
                 match self.colors.slot(&key[6..]) {
@@ -799,6 +851,21 @@ fn parse_bool(key: &str, v: &str) -> Result<bool, String> {
         "false" => Ok(false),
         _ => Err(format!("{key} is true or false")),
     }
+}
+
+/// An on/off preference: `on`/`off` (also `true`/`false`, `yes`/`no`, `1`/`0`).
+fn parse_on_off(key: &str, v: &str) -> Result<bool, String> {
+    match v.to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" => Ok(true),
+        "0" | "false" | "off" | "no" => Ok(false),
+        _ => Err(format!("{key} is on or off, not {v:?}")),
+    }
+}
+
+/// A whole number in `range`, or an error saying what is allowed.
+fn parse_in<T: std::str::FromStr + PartialOrd + std::fmt::Display + Copy>(key: &str, v: &str, range: &std::ops::RangeInclusive<T>) -> Result<T, String> {
+    let n: T = v.parse().map_err(|_| format!("{key} wants a whole number, not {v:?}"))?;
+    if range.contains(&n) { Ok(n) } else { Err(format!("{key} must be from {} to {}", range.start(), range.end())) }
 }
 
 fn choose<T>(key: &str, v: &str, from: fn(&str) -> Option<T>, names: &str) -> Result<T, String> {

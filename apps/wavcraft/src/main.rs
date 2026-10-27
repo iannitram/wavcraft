@@ -21,6 +21,7 @@ mod player;
 #[allow(dead_code)]
 mod reveal;
 mod rack_panel;
+mod recovery;
 mod selflog;
 mod spectrum;
 mod video;

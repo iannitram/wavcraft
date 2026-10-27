@@ -265,3 +265,61 @@ fn the_spectral_preferences_set_the_displays_fft_length_and_floor() {
     s.apply_to_spectrogram(&mut p);
     assert_eq!((p.fft_size, p.floor_db, p.ceil_db), (512, -80.0, 0.0));
 }
+
+// ---- A278 / A281 (f70): Auto Save and cache preferences
+
+#[test]
+fn the_preferences_default_to_the_old_behaviour() {
+    let s = Settings::default();
+    assert!(s.autosave_enabled, "Auto Save is on by default");
+    assert_eq!((s.autosave_interval_secs, s.autosave_keep_days, s.cache_mb), (2, 30, None));
+    assert_eq!(s.cache_bytes(), wavcraft_core::store::default_cache_bytes(), "the cache budget is unchanged until set");
+}
+
+#[test]
+fn the_preferences_round_trip_through_the_file() {
+    let dir = TempDir::new("prefs");
+    let file = dir.0.join("settings.txt");
+    let mut s = Settings::default();
+    s.set("autosave_enabled", "off").unwrap();
+    s.set("autosave_interval_secs", "15").unwrap();
+    s.set("autosave_keep_days", "7").unwrap();
+    s.set("cache_mb", "512").unwrap();
+    s.save(&file).unwrap();
+    let back = Settings::load(&file);
+    assert_eq!(back, s);
+    assert_eq!((back.autosave_enabled, back.autosave_interval_secs, back.autosave_keep_days, back.cache_mb), (false, 15, 7, Some(512)));
+    assert_eq!(back.cache_bytes(), 512 << 20);
+    s.set("cache_mb", "default").unwrap();
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file).cache_mb, None, "an unset cache size stays unset");
+}
+
+#[test]
+fn a_file_from_before_the_preferences_still_loads_with_the_defaults() {
+    let s = Settings::parse("# old file\nsession_folder = /Volumes/Big/ws\n");
+    assert_eq!(s, Settings { session_folder: Some(PathBuf::from("/Volumes/Big/ws")), ..Settings::default() });
+}
+
+#[test]
+fn bad_preference_values_are_refused_and_change_nothing() {
+    let mut s = Settings::default();
+    for (k, v) in [
+        ("autosave_enabled", "maybe"),
+        ("autosave_interval_secs", "0"),
+        ("autosave_interval_secs", "x"),
+        ("autosave_keep_days", "0"),
+        ("cache_mb", "1"),
+        ("cache_mb", "-5"),
+        ("nope", "1"),
+    ] {
+        assert!(s.set(k, v).is_err(), "{k}={v}");
+    }
+    assert_eq!(s, Settings::default());
+    // The same values in a hand-edited file are ignored, the rest still read.
+    let p = Settings::parse("autosave_interval_secs = 99999\nautosave_keep_days = 10\ncache_mb = abc\n");
+    assert_eq!((p.autosave_interval_secs, p.autosave_keep_days, p.cache_mb), (2, 10, None));
+    assert_eq!(s.get("autosave_enabled").unwrap(), "on");
+    assert_eq!(s.get("cache_mb").unwrap(), "default");
+    assert!(s.get("zzz").is_err());
+}

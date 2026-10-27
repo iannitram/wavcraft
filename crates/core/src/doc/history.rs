@@ -132,7 +132,8 @@ impl History {
     }
 
     /// A history rebuilt from steps (label and state, oldest first) with the cursor on `cursor`:
-    /// what crash recovery restores. `None` for no steps or a cursor past them.
+    /// what crash recovery restores. `None` for no steps or a cursor past them. The first step
+    /// is kept as it is (it is "Open" unless the oldest steps were dropped by the cap).
     pub fn restore(steps: Vec<(String, DocState)>, cursor: usize, cap_disk_bytes: u64) -> Option<History> {
         if cursor >= steps.len() {
             return None;

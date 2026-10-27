@@ -49,6 +49,8 @@
 //! - `MIXER state` → `OK tracks=<n> any_solo=<0|1> | master vol=<db> pan= mute= solo= audible= peak=<db> | t1 ...` (the Mixer panel, over the multitrack session; `ERR` before `SESSION new`)
 //! - `MIXER show|hide` → `OK` (the panel's window checkbox)
 //! - `MIXER set <track|master> vol=<db> pan=<p> mute=0|1 solo=0|1` → the same line, after the change
+//! - `AUTOSAVE` → `OK offered=<n> written=<n> failed=<n> pending=<0|1> scanned=<0|1> recoverable=<n>` (Auto Save's journal writer for the open file, and the sessions a crashed run left; poll until `scanned=1`)
+//! - `RECOVER [index]` → `OK` (recover that crashed session, 0 by default; poll `STATE` until `busy=0`); `DISCARD_RECOVERY [index]` → `OK`
 //! - `SAVE [path]` → `OK` (Save, or Save As to `path`; poll `STATE` until `busy=0`)
 //! - `SAVE_SELECTION <path>` → `OK` (File › Save Selection As: only the selected range of the enabled
 //!   channels, to a new WAV; the open document keeps its own path and unsaved mark)

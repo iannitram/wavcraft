@@ -280,6 +280,12 @@ pub fn machine_id() -> String {
 /// - it holds no autosave journal ([`has_journal`]): a journaled session may hold work to
 ///   recover.
 pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
+    stale_candidates(root).into_iter().filter(|(_, journaled)| !journaled).map(|(s, _)| s).collect()
+}
+
+/// Every stale session folder under `root` (the checks of [`stale_sessions`]), and for each
+/// whether it holds a journal, so it is not for sweeping but for recovery.
+pub(crate) fn stale_candidates(root: &Path) -> Vec<(StaleSession, bool)> {
     let machine = machine_id();
     if machine.is_empty() {
         return Vec::new();
@@ -304,10 +310,8 @@ pub fn stale_sessions(root: &Path) -> Vec<StaleSession> {
         }
         drop(held);
         let bytes = std::fs::read_dir(&dir).map_or(0, |d| d.flatten().filter_map(|f| f.metadata().ok()).map(|m| m.len()).sum());
-        if has_journal(&dir) {
-            continue;
-        }
-        out.push(StaleSession { dir, pid, bytes });
+        let journaled = has_journal(&dir);
+        out.push((StaleSession { dir, pid, bytes }, journaled));
     }
     out
 }
@@ -393,6 +397,9 @@ struct Inner {
     max_bytes: Option<u64>,
     /// Bytes appended since the store was made (never goes down).
     written: AtomicU64,
+    /// An adopted session until its recovery is complete: no pack file is deleted and the folder
+    /// is kept if the store is dropped (a failed recovery must leave every file as it found it).
+    frozen: AtomicBool,
 }
 
 struct Writer {
@@ -439,14 +446,7 @@ impl Store {
         }
         held.try_lock().map_err(|e| io::Error::other(format!("could not lock the session: {e}")))?;
         let mut lock_file = OpenOptions::new().write(true).create_new(true).open(dir.join(LOCK_FILE))?;
-        writeln!(
-            lock_file,
-            "pid={}\nhost={}\nmachine={}\napp=wavcraft {}",
-            std::process::id(),
-            this_host(),
-            machine_id(),
-            env!("CARGO_PKG_VERSION")
-        )?;
+        lock_file.write_all(Store::lock_text().as_bytes())?;
         Ok(Store {
             inner: Arc::new(Inner {
                 dir: dir.to_path_buf(),
@@ -461,8 +461,98 @@ impl Store {
                 live_bytes: AtomicU64::new(0),
                 max_bytes: opts.max_bytes,
                 written: AtomicU64::new(0),
+                frozen: AtomicBool::new(false),
             }),
         })
+    }
+
+    /// The text of a lock file for this run.
+    fn lock_text() -> String {
+        format!("pid={}\nhost={}\nmachine={}\napp=wavcraft {}\n", std::process::id(), this_host(), machine_id(), env!("CARGO_PKG_VERSION"))
+    }
+
+    /// Take over the session folder `dir` that a run left behind (recovery, see `autosave`).
+    /// `held` is its [`HELD_FILE`], already locked by the caller (so no running program has it).
+    /// The lock file is replaced (write-new-then-rename) by one naming this run, the pack files
+    /// found are adopted as sealed packs with no live blocks, and new blocks go to a pack after
+    /// the last one, so nothing a journal points at is ever overwritten. The store is **frozen**
+    /// (deletes nothing, keeps the folder) until [`Store::thaw`]; block ids continue from `next_id`.
+    pub(crate) fn adopt(dir: &Path, held: File, opts: StoreOptions, next_id: u64) -> io::Result<Store> {
+        let tmp = dir.join("session.lock.tmp");
+        std::fs::write(&tmp, Store::lock_text())?;
+        std::fs::rename(&tmp, dir.join(LOCK_FILE))?;
+        let mut packs = HashMap::new();
+        for e in std::fs::read_dir(dir)?.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let number = name.strip_prefix("pack-").and_then(|n| n.strip_suffix(".f32")).and_then(|n| n.parse::<u32>().ok());
+            if let Some(n) = number.filter(|n| *n > 0) {
+                let len = e.metadata()?.len();
+                packs.insert(n, Pack { live: 0, sealed: true, len, file: None });
+            }
+        }
+        let last = packs.keys().copied().max().unwrap_or(0);
+        Ok(Store {
+            inner: Arc::new(Inner {
+                dir: dir.to_path_buf(),
+                held: Mutex::new(Some(held)),
+                keep: AtomicBool::new(opts.keep),
+                pack_bytes: opts.pack_bytes.max(BLOCK_FRAMES as u64 * BYTES_PER_SAMPLE),
+                next_id: AtomicU64::new(next_id.max(1)),
+                writing_pack: AtomicU32::new(0),
+                writer: Mutex::new(Writer { pack: last, out: None, len: 0, flushed: 0 }),
+                packs: Mutex::new(packs),
+                cache: Mutex::new(Cache::new(opts.cache_bytes)),
+                live_bytes: AtomicU64::new(0),
+                max_bytes: opts.max_bytes,
+                written: AtomicU64::new(0),
+                frozen: AtomicBool::new(true),
+            }),
+        })
+    }
+
+    /// A handle to a block of an adopted session, checked against the pack file it points into.
+    pub(crate) fn adopt_block(&self, block: BlockRef) -> io::Result<Arc<BlockHandle>> {
+        let bad = |why: &str| io::Error::new(io::ErrorKind::InvalidData, format!("block {} {why}", block.id.0));
+        if block.is_zero() || block.frames == 0 || block.frames as usize > BLOCK_FRAMES {
+            return Err(bad("has an impossible size"));
+        }
+        if block.id.0 >= self.inner.next_id.load(Ordering::Relaxed) {
+            return Err(bad("is newer than the journal says the store ever made"));
+        }
+        let mut packs = lock(&self.inner.packs);
+        let p = packs.get_mut(&block.pack).ok_or_else(|| bad(&format!("is in pack {}, which is gone", block.pack)))?;
+        if block.byte_offset.checked_add(block.disk_bytes()).is_none_or(|end| end > p.len) {
+            return Err(bad(&format!("runs past the end of pack {}", block.pack)));
+        }
+        p.live += 1;
+        drop(packs);
+        self.inner.live_bytes.fetch_add(block.disk_bytes(), Ordering::Relaxed);
+        Ok(Arc::new(BlockHandle { block, store: Some(self.clone()) }))
+    }
+
+    /// End the frozen state of an adopted store: it now deletes packs that empty, and removes its
+    /// folder when dropped, like any store.
+    pub(crate) fn thaw(&self) {
+        self.inner.frozen.store(false, Ordering::SeqCst);
+    }
+
+    /// The id the next block will get (the journal records it).
+    pub fn next_block_id(&self) -> u64 {
+        self.inner.next_id.load(Ordering::Relaxed)
+    }
+
+    /// Push everything written so far to the disk itself (flush, then fsync the pack being
+    /// written; a pack that is sealed was synced when it was sealed). After this returns, a
+    /// block whose [`Store::append`] has returned survives a crash or a power cut.
+    pub fn sync(&self) -> io::Result<()> {
+        let mut w = lock(&self.inner.writer);
+        let len = w.len;
+        if let Some(out) = w.out.as_mut() {
+            out.flush()?;
+            out.get_ref().sync_data()?;
+            w.flushed = len;
+        }
+        Ok(())
     }
 
     /// A store in a new session folder with a random name under `root` (the system cache
@@ -573,7 +663,7 @@ impl Store {
     fn roll_over(&self, w: &mut Writer) -> io::Result<()> {
         if let Some(mut out) = w.out.take() {
             // Flush errors are reported, but the pack is sealed either way.
-            let flushed = out.flush();
+            let flushed = out.flush().and_then(|()| out.get_ref().sync_data());
             w.flushed = w.len;
             drop(out);
             self.seal(w.pack);
@@ -612,6 +702,10 @@ impl Store {
     }
 
     fn delete_pack(&self, pack: u32) {
+        // A kept store acts as a run that ended abruptly: it deletes nothing.
+        if self.inner.frozen.load(Ordering::SeqCst) || self.inner.keep.load(Ordering::Relaxed) {
+            return;
+        }
         if let Err(e) = std::fs::remove_file(self.pack_path(pack)) {
             log::warn!("could not delete {}: {e}", self.pack_path(pack).display());
         }
@@ -771,6 +865,7 @@ impl Drop for Inner {
             *h = None;
         }
         if !self.keep.load(Ordering::Relaxed)
+            && !self.frozen.load(Ordering::SeqCst)
             && let Err(e) = std::fs::remove_dir_all(&self.dir)
         {
             log::warn!("could not remove the session folder {}: {e}", self.dir.display());
