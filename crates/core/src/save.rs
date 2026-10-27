@@ -18,6 +18,7 @@
 //! copies the source's chunks through and records where they landed. AIFF, FLAC and Ogg Vorbis are
 //! written from the samples alone (Vorbis is lossy: the sample type is ignored there).
 
+use std::cell::RefCell;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
@@ -383,6 +384,18 @@ impl AiffKind {
     }
 }
 
+/// A per-chunk change applied while a file is written (the batch runner's operations): the saved
+/// file has `channels` channels, and `apply` fills `out` (that many buffers, each at least `n`
+/// long) from the `n` frames of the document's channels in `input`. An error stops the save and
+/// removes its temporary file (the batch runner's cancel).
+pub type ApplyFn<'a> = &'a mut dyn FnMut(&[Vec<f32>], usize, &mut [Vec<f32>]) -> io::Result<()>;
+
+/// The per-chunk change a [`save_wav_transformed`] applies.
+pub struct Transform<'a> {
+    pub channels: usize,
+    pub apply: ApplyFn<'a>,
+}
+
 /// How one save runs. `fail_after` stops with an I/O error after some frames (tests: a save that
 /// dies halfway must leave the target whole); `rf64_over` is the RIFF size above which a WAV
 /// becomes RF64 (4 GiB; tests lower it); `aiff` is the AIFF kind; `relocate` records where the
@@ -406,20 +419,26 @@ struct Hooks<'a> {
     cancel: Option<&'a AtomicBool>,
     /// Test only: wait this long after each 64 K-frame block.
     block_delay: Duration,
+    /// The batch runner's per-chunk change (`None` for every other save): the samples written are
+    /// the transform's `channels`, not the document's.
+    transform: Option<&'a RefCell<Transform<'a>>>,
 }
 
-const NO_HOOKS: Hooks<'static> = Hooks {
-    fail_after: None,
-    rf64_over: u32::MAX as u64,
-    aiff: AiffKind::Aiff,
-    relocate: true,
-    quality: VORBIS_DEFAULT_QUALITY,
-    plain: None,
-    metadata: true,
-    extra: &[],
-    cancel: None,
-    block_delay: Duration::ZERO,
-};
+fn no_hooks<'a>() -> Hooks<'a> {
+    Hooks {
+        fail_after: None,
+        rf64_over: u32::MAX as u64,
+        aiff: AiffKind::Aiff,
+        relocate: true,
+        quality: VORBIS_DEFAULT_QUALITY,
+        plain: None,
+        metadata: true,
+        extra: &[],
+        cancel: None,
+        block_delay: Duration::ZERO,
+        transform: None,
+    }
+}
 
 /// A frame range and channel subset to write from a document.
 #[derive(Debug, Clone)]
@@ -477,7 +496,7 @@ pub fn save_wav_with(doc: &DocState, target: &Path, ty: SampleType, opts: &SaveO
         extra: &opts.extra_chunks,
         cancel: opts.cancel,
         block_delay: opts.block_delay,
-        ..NO_HOOKS
+        ..no_hooks()
     };
     save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, hooks)
 }
@@ -485,20 +504,37 @@ pub fn save_wav_with(doc: &DocState, target: &Path, ty: SampleType, opts: &SaveO
 /// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically.
 /// `progress` gets 0 to 1 as the samples go out.
 pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
-    save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, NO_HOOKS)
+    save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, no_hooks())
+}
+
+/// [`save_wav`] with a [`Transform`] applied to every chunk as it goes out; still streamed, so the
+/// document is never held whole. No metadata is written: the transform changes the channels, so
+/// the source's chunks would not describe the file.
+pub fn save_wav_transformed(
+    doc: &DocState,
+    target: &Path,
+    ty: SampleType,
+    transform: Transform<'_>,
+    progress: &mut dyn FnMut(f64),
+) -> Result<(), SaveError> {
+    // The callback is reborrowed for this save alone: its object lifetime is then the save's own.
+    let Transform { channels, apply } = transform;
+    let cell = RefCell::new(Transform { channels, apply: &mut *apply });
+    let hooks = Hooks { metadata: false, transform: Some(&cell), ..no_hooks() };
+    save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, hooks)
 }
 
 /// Save `doc` to `target` in `format` with `ty` samples, replacing it atomically. A failure of
 /// any kind removes this save's temporary file and leaves `target` as it was.
 pub fn save(doc: &DocState, target: &Path, format: SaveFormat, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
-    save_inner(doc, target, format, ty, &Part::whole(doc), progress, NO_HOOKS)
+    save_inner(doc, target, format, ty, &Part::whole(doc), progress, no_hooks())
 }
 
 /// [`save_wav`] for any [`Container`]: the same atomic temporary-file-and-rename, the same streaming.
 pub fn save_as(doc: &DocState, target: &Path, container: Container, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
     let hooks = match container {
-        Container::Wav => NO_HOOKS,
-        plain => Hooks { plain: Some(plain), relocate: false, ..NO_HOOKS },
+        Container::Wav => no_hooks(),
+        plain => Hooks { plain: Some(plain), relocate: false, ..no_hooks() },
     };
     save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, hooks)
 }
@@ -510,7 +546,7 @@ pub fn save_vorbis(doc: &DocState, target: &Path, quality: f32, progress: &mut d
     if !(lo..=hi).contains(&quality) {
         return Err(SaveError::Unsupported(format!("Vorbis quality is {lo} to {hi}, not {quality}")));
     }
-    save_inner(doc, target, SaveFormat::Vorbis, SampleType::Float32, &Part::whole(doc), progress, Hooks { quality, ..NO_HOOKS })
+    save_inner(doc, target, SaveFormat::Vorbis, SampleType::Float32, &Part::whole(doc), progress, Hooks { quality, ..no_hooks() })
 }
 
 /// [`save`] with the AIFF kind chosen (ignored for WAV and FLAC).
@@ -522,7 +558,7 @@ pub fn save_aiff_kind(
     aiff: AiffKind,
     progress: &mut dyn FnMut(f64),
 ) -> Result<(), SaveError> {
-    save_inner(doc, target, format, ty, &Part::whole(doc), progress, Hooks { aiff, ..NO_HOOKS })
+    save_inner(doc, target, format, ty, &Part::whole(doc), progress, Hooks { aiff, ..no_hooks() })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,13 +576,13 @@ impl FileKind {
 /// Write a document part without changing the open document's save path.
 pub fn write_file(doc: &DocState, target: &Path, kind: FileKind, part: &Part, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
     match kind {
-        FileKind::Wav(ty) => save_inner(doc, target, SaveFormat::Wav, ty, part, progress, Hooks { relocate: false, ..NO_HOOKS }),
+        FileKind::Wav(ty) => save_inner(doc, target, SaveFormat::Wav, ty, part, progress, Hooks { relocate: false, ..no_hooks() }),
     }
 }
 
 #[doc(hidden)]
 pub fn write_failing_after(doc: &DocState, target: &Path, ty: SampleType, part: &Part, fail_after: u64) -> Result<(), SaveError> {
-    save_inner(doc, target, SaveFormat::Wav, ty, part, &mut |_| {}, Hooks { fail_after: Some(fail_after), relocate: false, ..NO_HOOKS })
+    save_inner(doc, target, SaveFormat::Wav, ty, part, &mut |_| {}, Hooks { fail_after: Some(fail_after), relocate: false, ..no_hooks() })
 }
 
 /// [`save_wav`] that fails with an I/O error once `fail_after` frames are out (tests: a save
@@ -559,14 +595,14 @@ pub fn save_wav_failing_after(doc: &DocState, target: &Path, ty: SampleType, fai
 /// [`save`] that fails with an I/O error once `fail_after` frames are out.
 #[doc(hidden)]
 pub fn save_failing_after(doc: &DocState, target: &Path, format: SaveFormat, ty: SampleType, fail_after: u64) -> Result<(), SaveError> {
-    save_inner(doc, target, format, ty, &Part::whole(doc), &mut |_| {}, Hooks { fail_after: Some(fail_after), relocate: false, ..NO_HOOKS })
+    save_inner(doc, target, format, ty, &Part::whole(doc), &mut |_| {}, Hooks { fail_after: Some(fail_after), relocate: false, ..no_hooks() })
 }
 
 /// [`save_wav`] with the RIFF size above which the file is written as RF64 set to `threshold`
 /// bytes instead of 4 GiB (tests: the RF64 writer without an 8 GB file).
 #[doc(hidden)]
 pub fn save_wav_rf64_over(doc: &DocState, target: &Path, ty: SampleType, threshold: u64) -> Result<(), SaveError> {
-    save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), &mut |_| {}, Hooks { rf64_over: threshold, ..NO_HOOKS })
+    save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), &mut |_| {}, Hooks { rf64_over: threshold, ..no_hooks() })
 }
 
 fn save_inner(
@@ -781,7 +817,8 @@ fn write_stream(
     let mut table = Vec::new();
     match format {
         SaveFormat::Wav => {
-            let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
+            let out_channels = hooks.transform.map_or(channels, |c| c.borrow().channels);
+            let ch16 = u16::try_from(out_channels).map_err(|_| invalid("too many channels for WAV"))?;
             let whole = part.frames.start == 0
                 && part.frames.end == doc.len_frames()
                 && part.channels.iter().copied().eq(0..doc.channel_count());
@@ -920,8 +957,18 @@ fn write_pcm(
     hooks: Hooks,
     big: bool,
 ) -> io::Result<()> {
-    let mut bytes = Vec::with_capacity(BLOCK_FRAMES * part.channels.len() * ty.bytes());
+    let mut xf = hooks.transform.map(|c| c.borrow_mut());
+    let out_channels = xf.as_ref().map_or(part.channels.len(), |t| t.channels);
+    let mut tbufs = vec![vec![0f32; BLOCK_FRAMES]; if xf.is_some() { out_channels } else { 0 }];
+    let mut bytes = Vec::with_capacity(BLOCK_FRAMES * out_channels * ty.bytes());
     stream_samples(doc, part, progress, hooks, |bufs, n| {
+        let bufs: &[Vec<f32>] = match xf.as_mut() {
+            Some(t) => {
+                (t.apply)(bufs, n, &mut tbufs)?;
+                &tbufs
+            }
+            None => bufs,
+        };
         bytes.clear();
         for i in 0..n {
             for buf in bufs {
@@ -1141,7 +1188,7 @@ fn pcm_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) 
             // The size the save writes with metadata on (the default; the caller's extra chunks are not counted).
             let (plan, _source) = plan_chunks(doc, ty, true);
             let extra = plan_extra(&plan);
-            let (data_len, _) = write_header(&mut c, ch16, rate, ty, frames, extra, NO_HOOKS.rf64_over)?;
+            let (data_len, _) = write_header(&mut c, ch16, rate, ty, frames, extra, no_hooks().rf64_over)?;
             Ok(c.0 + 8 + data_len + (data_len & 1) + extra)
         }
         SaveFormat::Aiff => {

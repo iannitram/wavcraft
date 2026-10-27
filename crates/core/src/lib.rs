@@ -6,6 +6,7 @@
 //! - [`doc`]: the piece table ([`DocState`]) and its one read path; [`doc::edit`], the edits
 //!   (pure functions from one state to the next), and [`doc::history`], undo with a disk cap.
 //! - [`autosave`]: the journal of the piece table and history, and crash recovery from it.
+//! - [`batch`]: the Batch Process runner (a list of files through a chain of operations to WAV).
 //! - [`io`]: streamed open into the store.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`settings`]: the settings file and where the session folder is.
@@ -23,6 +24,8 @@ pub mod analysis;
 pub mod appearance;
 pub mod atomic;
 pub mod autosave;
+pub mod batch;
+pub mod batch_cli;
 pub mod cd;
 pub mod diagnostics;
 pub mod doc;

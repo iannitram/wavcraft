@@ -93,6 +93,8 @@
 //!   `OK frames=<new> was=<old> trimmed=<n> removed=<n>`: the edited audio becomes the source, clips on it
 //!   keep their start and are trimmed to its new length, the Multitrack view shows (f116)
 //! - `AUTO add|move|delete|thin <track> <param> …`, `AUTO show <track> <param>|off`, `AUTO state` (automation lanes, f109)
+//! - `BATCH add <path>|op <step>|out <folder> [pattern=<p>]|overwrite on|off|clear|run|cancel|status` → the
+//!   Batch Process panel (`status` lists `running= files= done= ok= failed= … results=`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.

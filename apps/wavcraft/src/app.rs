@@ -26,6 +26,7 @@ use wavcraft_core::store::default_sessions_root;
 use wavcraft_core::workspaces::{self, Snapshot, Workspaces};
 use wavcraft_core::{DocState, Document, GRAB_PX, History, OpenError, Selection, SpectrogramParams, TimeFormat, Viewport};
 
+use crate::batch_panel::BatchPanel;
 use crate::control;
 use crate::diagnostics_panel::{self, Ask, DiagPanel};
 use crate::effect_dialog::{Answer, EffectDialog};
@@ -387,6 +388,8 @@ pub struct WaveApp {
     metadata: MetadataDisplay,
     /// The Metadata Display dialog is up.
     metadata_dialog: bool,
+    /// File › Batch Process…
+    batch: BatchPanel,
 }
 
 /// A clip's source open in the Waveform editor (f116).
@@ -496,6 +499,7 @@ impl WaveApp {
             snap_frames: true,
             show_time_panel: true,
             panel_edit: None,
+            batch: BatchPanel::default(),
             insert_silence: None,
             stats: StatsPanel::default(),
             raw_import: None,
@@ -4305,6 +4309,7 @@ impl WaveApp {
                 Some(_) => "ERR this save cannot be cancelled (only a WAV save of the whole file can)".to_string(),
                 None => "ERR no save is running".to_string(),
             },
+            "BATCH" => self.batch.control(rest, &self.sessions.path, ctx),
             "SAVE" => {
                 // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10] [meta=0|1]`: the options end the line.
                 let meta = match take_meta(rest) {
@@ -4506,6 +4511,10 @@ impl WaveApp {
                 if ui.button("Open Session…").clicked() {
                     self.mtv.open_session_dialog();
                     ui.close();
+                }
+                ui.separator();
+                if ui.button("Batch Process…").clicked() {
+                    self.batch.open = true;
                 }
                 ui.separator();
                 let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
@@ -5011,6 +5020,7 @@ impl eframe::App for WaveApp {
         let unsaved = self.unsaved();
         self.recovery.configure(self.settings.autosave_enabled, self.settings.autosave_interval_secs);
         self.recovery.track(self.editor.as_ref(), unsaved, ctx);
+        self.batch.poll();
         while let Some(req) = self.control.as_ref().and_then(|rx| rx.try_recv().ok()) {
             // `VIDEO frame` is answered when the worker has the picture, not before. With a
             // multitrack session holding video clips the time is a session time (f129): the
@@ -5248,6 +5258,7 @@ impl eframe::App for WaveApp {
         self.raw_import_dialog(&ctx);
         self.clear_history_prompt(&ctx);
         self.metadata_display_dialog(&ctx);
+        self.batch.ui(&ctx);
         self.draw_hud(&ctx);
         {
             let current = self.editor.as_ref().map(|e| e.history.current().clone());
