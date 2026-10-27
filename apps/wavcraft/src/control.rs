@@ -52,9 +52,11 @@
 //! - `MIXER set <track|master> vol=<db> pan=<p> mute=0|1 solo=0|1` → the same line, after the change
 //! - `AUTOSAVE` → `OK offered=<n> written=<n> failed=<n> pending=<0|1> scanned=<0|1> recoverable=<n>` (Auto Save's journal writer for the open file, and the sessions a crashed run left; poll until `scanned=1`)
 //! - `RECOVER [index]` → `OK` (recover that crashed session, 0 by default; poll `STATE` until `busy=0`); `DISCARD_RECOVERY [index]` → `OK`
-//! - `SAVE [path] [bits=16|24|32] [float=0|1] [aiff=aiff|aifc|sowt] [quality=-1..10]` → `OK` (Save, or Save As to `path`, the format from
+//! - `SAVE [path] [bits=16|24|32] [float=0|1] [aiff=aiff|aifc|sowt] [quality=-1..10] [meta=0|1]` → `OK` (Save, or Save As to `path`, the format from
 //!   its extension: .wav, .w64, .caf, .au, .aiff/.aif, .flac, .ogg; `bits`/`float=1` choose the sample type; `aiff=` the AIFF kind
-//!   for this save (`sowt`: AIFF-C little-endian); `quality` is the Ogg Vorbis VBR quality (5 until given; it stays for later saves); poll `STATE` until `busy=0`)
+//!   for this save (`sowt`: AIFF-C little-endian); `quality` is the Ogg Vorbis VBR quality (5 until given; it stays for later saves);
+//!   `meta` sets "Include markers and other metadata" for this document first (A262); poll `STATE` until `busy=0`)
+//! - `SAVE_CANCEL` → `OK` (stops the running save: temp file removed, target untouched, still unsaved)
 //! - `SAVEOPTS estimate <wav|aiff|flac> <16|24|32|float> [aiff=<kind>]` → `OK bytes=<n> exact=<0|1>` (the file size a save
 //!   would make; exact for WAV/AIFF, an estimate for FLAC); `SAVEOPTS set …` chooses the export options (the Save As
 //!   dialog's choice) and `SAVEOPTS show` prints them

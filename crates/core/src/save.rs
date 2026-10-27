@@ -23,6 +23,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use soundcraft_audio_io::SampleFormat;
@@ -111,6 +112,8 @@ pub enum SaveError {
     Empty,
     /// The format cannot hold what was asked (FLAC and 32-bit samples).
     Unsupported(String),
+    /// The save was cancelled: the temporary file is gone and the target is as it was (A263).
+    Cancelled,
 }
 
 impl fmt::Display for SaveError {
@@ -119,6 +122,7 @@ impl fmt::Display for SaveError {
             SaveError::Io(e) => write!(f, "{e}"),
             SaveError::Empty => write!(f, "the file has no audio to save"),
             SaveError::Unsupported(why) => write!(f, "{why}"),
+            SaveError::Cancelled => write!(f, "the save was cancelled"),
         }
     }
 }
@@ -385,7 +389,7 @@ impl AiffKind {
 /// source's chunks landed, which only a whole-document WAV save may do; `quality` is the Ogg
 /// Vorbis VBR quality (-1 to 10).
 #[derive(Clone, Copy)]
-struct Hooks {
+struct Hooks<'a> {
     fail_after: Option<u64>,
     rf64_over: u64,
     aiff: AiffKind,
@@ -393,10 +397,29 @@ struct Hooks {
     quality: f32,
     /// The Wave64, CAF or AU layout to write instead of `format` (`None`: `format` as it is).
     plain: Option<Container>,
+    /// Whether the save writes the metadata (A262): off, the file holds only the format chunks and `data`,
+    /// and no chunk of the source is copied.
+    metadata: bool,
+    /// The chunks written after `data` when `metadata` is set.
+    extra: &'a [ExtraChunk],
+    /// Set from another thread to stop the save (A263).
+    cancel: Option<&'a AtomicBool>,
+    /// Test only: wait this long after each 64 K-frame block.
+    block_delay: Duration,
 }
 
-const NO_HOOKS: Hooks =
-    Hooks { fail_after: None, rf64_over: u32::MAX as u64, aiff: AiffKind::Aiff, relocate: true, quality: VORBIS_DEFAULT_QUALITY, plain: None };
+const NO_HOOKS: Hooks<'static> = Hooks {
+    fail_after: None,
+    rf64_over: u32::MAX as u64,
+    aiff: AiffKind::Aiff,
+    relocate: true,
+    quality: VORBIS_DEFAULT_QUALITY,
+    plain: None,
+    metadata: true,
+    extra: &[],
+    cancel: None,
+    block_delay: Duration::ZERO,
+};
 
 /// A frame range and channel subset to write from a document.
 #[derive(Debug, Clone)]
@@ -413,6 +436,50 @@ impl Part {
         let end = frames.end.min(doc.len_frames());
         Part { frames: frames.start.min(end)..end, channels: mask.active(doc.channel_count()) }
     }
+}
+
+/// An extra RIFF chunk written after the `data` chunk (markers, metadata). Other features
+/// fill [`SaveOptions::extra_chunks`] with theirs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtraChunk {
+    pub id: [u8; 4],
+    pub data: Vec<u8>,
+}
+
+/// What a WAV save writes besides the format and data chunks, and how it can be stopped (A262, A263).
+#[derive(Debug)]
+pub struct SaveOptions<'a> {
+    /// "Include markers and other metadata" (A262): when false, the file holds only the format
+    /// chunks (`fmt `, and `fact` where the sample type needs it) and `data`, and no chunk of
+    /// the source file is copied.
+    pub include_metadata: bool,
+    /// The chunks that "metadata" means for this document, written after `data` only when
+    /// `include_metadata` is set.
+    pub extra_chunks: Vec<ExtraChunk>,
+    /// Set from another thread to stop the save (A263): the temporary file is removed, the
+    /// target untouched, and the save returns [`SaveError::Cancelled`].
+    pub cancel: Option<&'a AtomicBool>,
+    /// Test only: wait this long after each 64 K-frame block, so a cancel can be tested.
+    pub block_delay: Duration,
+}
+
+impl Default for SaveOptions<'_> {
+    /// Metadata on, no extra chunks, no cancel, no delay: the same file [`save_wav`] writes.
+    fn default() -> Self {
+        SaveOptions { include_metadata: true, extra_chunks: Vec::new(), cancel: None, block_delay: Duration::ZERO }
+    }
+}
+
+/// [`save_wav`] with options: metadata on or off, cancel, and the test delay.
+pub fn save_wav_with(doc: &DocState, target: &Path, ty: SampleType, opts: &SaveOptions, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
+    let hooks = Hooks {
+        metadata: opts.include_metadata,
+        extra: &opts.extra_chunks,
+        cancel: opts.cancel,
+        block_delay: opts.block_delay,
+        ..NO_HOOKS
+    };
+    save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, hooks)
 }
 
 /// Save `doc` to `target` as a WAV file of `ty` samples, replacing it atomically.
@@ -532,6 +599,10 @@ fn save_inner(
         Ok(done) => done,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
+            if e.kind() == io::ErrorKind::Interrupted && cancelled(hooks) {
+                log::info!(target: "wavcraft_core::save", "save to {} cancelled, the file is unchanged", target.display());
+                return Err(SaveError::Cancelled);
+            }
             log::warn!(target: "wavcraft_core::save", "save to {} failed, the file is unchanged: {e}", target.display());
             return Err(SaveError::Io(e));
         }
@@ -547,7 +618,8 @@ fn save_inner(
     drop(file);
     // The file on disk now holds the chunks at new places: later saves copy from there. Only a
     // WAV has a RIFF chunk table to copy from; an AIFF or FLAC file must not be recorded.
-    if hooks.relocate && format == SaveFormat::Wav {
+    // A save without metadata holds none of the source's chunks, so it must not be recorded either.
+    if hooks.relocate && hooks.metadata && format == SaveFormat::Wav {
         doc.source().relocated.set(target.to_path_buf(), written);
     }
     log::info!(target: "wavcraft_core::save", "saved {} frames as {} {} to {}", frames, ty.describe(), hooks.plain.map_or(format.name(), Container::describe), target.display());
@@ -593,7 +665,10 @@ fn source_chunk_is_intact(f: &mut File, len: u64, c: &ChunkInfo) -> bool {
 /// The chunks after `fmt `/`fact` (Roadmap A272, A265, A256): the source's chunks in their
 /// original order, the app's own (`data`, `bext`, an edited `LIST`/`INFO`) written fresh in
 /// their place, and the source file itself kept open to stream the rest from.
-fn plan_chunks(doc: &DocState, ty: SampleType) -> (Vec<Item>, Option<File>) {
+fn plan_chunks(doc: &DocState, ty: SampleType, metadata: bool) -> (Vec<Item>, Option<File>) {
+    if !metadata {
+        return (vec![Item::Data], None);
+    }
     let src = doc.source();
     let meta = &src.meta;
     let (path, chunks) = src.relocated.get().unwrap_or_else(|| (src.path.clone(), src.chunks.clone()));
@@ -710,7 +785,11 @@ fn write_stream(
             let whole = part.frames.start == 0
                 && part.frames.end == doc.len_frames()
                 && part.channels.iter().copied().eq(0..doc.channel_count());
-            let (plan, mut source) = if whole { plan_chunks(doc, ty) } else { (vec![Item::Data], None) };
+            let (mut plan, mut source) = if whole { plan_chunks(doc, ty, hooks.metadata) } else { (vec![Item::Data], None) };
+            if hooks.metadata {
+                // A262: the caller's chunks go last, so the RIFF size and the relocation table cover them.
+                plan.extend(hooks.extra.iter().map(|c| Item::Fresh { id: c.id, body: c.data.clone() }));
+            }
             let (data_len, mut pos) = write_header(&mut out, ch16, doc.sample_rate(), ty, frames, plan_extra(&plan), hooks.rf64_over)?;
             for item in &plan {
                 match item {
@@ -769,7 +848,7 @@ fn write_stream(
         SaveFormat::Flac => {
             let bits = if ty == SampleType::Int16 { 16 } else { 24 };
             let mut enc = Encoder::new(&mut out, channels, doc.sample_rate(), bits, frames)?;
-            stream_samples(doc, part, progress, hooks.fail_after, |bufs, n| {
+            stream_samples(doc, part, progress, hooks, |bufs, n| {
                 for start in (0..n).step_by(BLOCK_SIZE) {
                     let end = (start + BLOCK_SIZE).min(n);
                     let block: Vec<Vec<i64>> =
@@ -821,7 +900,7 @@ fn write_vorbis_stream(doc: &DocState, file: File, part: &Part, progress: &mut d
     let mut builder = vorbis_rs::VorbisEncoderBuilder::new(rate, ch8, out).map_err(invalid_err)?;
     builder.bitrate_management_strategy(vorbis_rs::VorbisBitrateManagementStrategy::QualityVbr { target_quality: hooks.quality / 10.0 });
     let mut enc = builder.build().map_err(invalid_err)?;
-    stream_samples(doc, part, progress, hooks.fail_after, |bufs, n| {
+    stream_samples(doc, part, progress, hooks, |bufs, n| {
         let block: Vec<&[f32]> = bufs.iter().map(|b| &b[..n]).collect();
         enc.encode_audio_block(&block).map_err(invalid_err)
     })?;
@@ -842,7 +921,7 @@ fn write_pcm(
     big: bool,
 ) -> io::Result<()> {
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * part.channels.len() * ty.bytes());
-    stream_samples(doc, part, progress, hooks.fail_after, |bufs, n| {
+    stream_samples(doc, part, progress, hooks, |bufs, n| {
         bytes.clear();
         for i in 0..n {
             for buf in bufs {
@@ -859,13 +938,16 @@ fn stream_samples(
     doc: &DocState,
     part: &Part,
     progress: &mut dyn FnMut(f64),
-    fail_after: Option<u64>,
+    hooks: Hooks,
     mut emit: impl FnMut(&[Vec<f32>], usize) -> io::Result<()>,
 ) -> io::Result<()> {
     let frames = part.frames.end - part.frames.start;
     let mut bufs = vec![vec![0f32; BLOCK_FRAMES]; part.channels.len()];
     let mut at = 0u64;
     while at < frames {
+        if cancelled(hooks) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
         let n = (frames - at).min(BLOCK_FRAMES as u64) as usize;
         for (&ch, buf) in part.channels.iter().zip(bufs.iter_mut()) {
             let got = doc.read(ch, part.frames.start + at, &mut buf[..n])?;
@@ -875,12 +957,23 @@ fn stream_samples(
         }
         emit(&bufs, n)?;
         at += n as u64;
-        if fail_after.is_some_and(|f| at >= f && at < frames) {
+        if hooks.fail_after.is_some_and(|f| at >= f && at < frames) {
             return Err(io::Error::other("test: the disk went away"));
         }
         progress(at as f64 / frames as f64);
+        if !hooks.block_delay.is_zero() {
+            std::thread::sleep(hooks.block_delay);
+        }
+    }
+    if cancelled(hooks) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
     }
     Ok(())
+}
+
+/// Whether the save has been asked to stop (A263).
+fn cancelled(hooks: Hooks) -> bool {
+    hooks.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
 }
 
 /// One sample as bytes: little-endian unless `big`.
@@ -1045,7 +1138,8 @@ fn pcm_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) 
     match format {
         SaveFormat::Wav => {
             let ch16 = u16::try_from(channels).map_err(|_| invalid("too many channels for WAV"))?;
-            let (plan, _source) = plan_chunks(doc, ty);
+            // The size the save writes with metadata on (the default; the caller's extra chunks are not counted).
+            let (plan, _source) = plan_chunks(doc, ty, true);
             let extra = plan_extra(&plan);
             let (data_len, _) = write_header(&mut c, ch16, rate, ty, frames, extra, NO_HOOKS.rf64_over)?;
             Ok(c.0 + 8 + data_len + (data_len & 1) + extra)

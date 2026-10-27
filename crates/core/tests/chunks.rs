@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use wavcraft_core::actions::{ActionId, Editor};
 use wavcraft_core::doc::history::History;
 use wavcraft_core::io::{OpenOptions, open};
-use wavcraft_core::save::{SampleType, save_wav};
+use wavcraft_core::save::{SampleType, SaveOptions, save_wav, save_wav_with};
 
 struct TempDir(PathBuf);
 
@@ -150,6 +150,24 @@ fn unknown_chunks_and_bext_survive_a_save_in_order() {
     let hist = String::from_utf8_lossy(&bb[602..]).into_owned();
     assert!(hist.starts_with("A=PCM,F=48000,W=16,M=stereo,T=Recorder\r\n"), "{hist:?}");
     assert!(hist.ends_with("A=PCM,F=48000,W=16,M=stereo,T=WavCraft\r\n"), "{hist:?}");
+}
+
+#[test]
+fn metadata_off_drops_the_chunks_and_a_later_save_with_them_on_still_keeps_them() {
+    let t = TempDir::new("meta-off");
+    let src = t.0.join("in.wav");
+    std::fs::write(&src, rich_file(70_000)).unwrap();
+    let doc = open_doc(&src, &t.0.join("s"));
+    let all = ["fmt ", "bext", "iXML", "junk", "LIST", "data", "tail"];
+    let off = t.0.join("off.wav");
+    let opts = SaveOptions { include_metadata: false, ..SaveOptions::default() };
+    save_wav_with(&doc, &off, SampleType::Int16, &opts, &mut |_| {}).unwrap();
+    assert_eq!(ids(&std::fs::read(&off).unwrap()), ["fmt ", "data"], "off: only the format and the audio");
+    // Off is not recorded as the file's chunk table, so the next save still copies the source's.
+    let on = t.0.join("on.wav");
+    save_wav(&doc, &on, SampleType::Int16, &mut |_| {}).unwrap();
+    assert_eq!(ids(&std::fs::read(&on).unwrap()), all, "on: the chunks of the source come back");
+    assert_eq!(body(&std::fs::read(&on).unwrap(), b"data"), body(&std::fs::read(&src).unwrap(), b"data"), "audio bit for bit");
 }
 
 #[test]

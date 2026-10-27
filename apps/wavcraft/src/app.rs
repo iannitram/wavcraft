@@ -15,7 +15,10 @@ use wavcraft_core::jobs::{self, JobPoll};
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
-use wavcraft_core::save::{AiffKind, Container, FileKind, Part, SampleType, SaveFormat, SizeEstimate, VORBIS_DEFAULT_QUALITY, estimate_size, save_aiff_kind, save_as as save_container, save_vorbis, write_file};
+use wavcraft_core::save::{
+    AiffKind, Container, ExtraChunk, FileKind, Part, SampleType, SaveError, SaveFormat, SaveOptions, SizeEstimate, VORBIS_DEFAULT_QUALITY, estimate_size,
+    save_aiff_kind, save_as as save_container, save_vorbis, save_wav_with, write_file,
+};
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::spectrogram::Columns;
@@ -152,8 +155,11 @@ struct Saving {
     aiff: AiffKind,
     /// Wave64, CAF or AU (f91) when the file is one of those: `format` is then WAV and unused.
     container: Option<Container>,
-    result: Receiver<Result<(), String>>,
+    result: Receiver<Result<(), SaveError>>,
     progress: Arc<AtomicU32>,
+    /// Set by Cancel (status bar, `SAVE_CANCEL`) to stop a WAV save of the whole file: the temporary
+    /// file is removed and the target stays as it was. `None` for the other formats and copies.
+    cancel: Option<Arc<AtomicBool>>,
     /// Close the window once it is saved (Save from the close prompt).
     then_close: bool,
     /// Which open document it saves ([`WaveApp::doc_id`] when it started): a save that finishes
@@ -256,6 +262,9 @@ pub struct WaveApp {
     doc_path: PathBuf,
     /// Counts the files opened in this window: names the document a save belongs to.
     doc_id: u64,
+    /// "Include markers and other metadata" for the open document (A262): starts as the setting,
+    /// changed from File > Save As or `SAVE <path> meta=0|1`.
+    include_meta: bool,
     /// The views' copy of the document, being read back after an edit (newest request only).
     rebuilding: Option<Receiver<Result<Document, OpenError>>>,
     /// Requests from the control channel, when `WAVCRAFT_CONTROL_PORT` turned it on.
@@ -462,6 +471,7 @@ impl WaveApp {
             editor: None,
             doc_path: PathBuf::new(),
             doc_id: 0,
+            include_meta: true,
             rebuilding: None,
             saved: None,
             saving: None,
@@ -1133,6 +1143,7 @@ impl WaveApp {
                 self.saved = if fresh { None } else { self.editor.as_ref().map(|e| e.history.current().clone()) };
                 self.doc_path = doc.path.clone();
                 self.doc_id += 1;
+                self.include_meta = self.settings.save_include_metadata;
                 self.stats.forget();
                 self.rebuilding = None;
                 self.doc = Some(doc);
@@ -2991,6 +3002,10 @@ impl WaveApp {
         let progress = Arc::new(AtomicU32::new(0));
         let aiff = self.aiff_kind;
         let quality = self.vorbis_quality;
+        // Cancel and the metadata switch (A262, A263) are for a WAV save of the whole file.
+        let cancel = (format == SaveFormat::Wav && container.is_none()).then(|| Arc::new(AtomicBool::new(false)));
+        let job_cancel = cancel.clone();
+        let (include_metadata, extra_chunks, block_delay) = (self.include_meta, metadata_chunks(), test_block_delay());
         let (job_state, job_path, job_progress, ctx) = (state.clone(), path.clone(), progress.clone(), ctx.clone());
         std::thread::spawn(move || {
             let mut report = |p: f64| {
@@ -3000,13 +3015,17 @@ impl WaveApp {
             let done = match container {
                 Some(c) => save_container(&job_state, &job_path, c, ty, &mut report),
                 None if format == SaveFormat::Vorbis => save_vorbis(&job_state, &job_path, quality, &mut report),
+                None if format == SaveFormat::Wav => {
+                    let opts = SaveOptions { include_metadata, extra_chunks, cancel: job_cancel.as_deref(), block_delay };
+                    save_wav_with(&job_state, &job_path, ty, &opts, &mut report)
+                }
                 None => save_aiff_kind(&job_state, &job_path, format, ty, aiff, &mut report),
             };
-            let _ = tx.send(done.map_err(|e| e.to_string()));
+            let _ = tx.send(done);
             ctx.request_repaint();
         });
         self.player.stop();
-        self.saving = Some(Saving { path, state, ty, format, aiff, container, result: rx, progress, then_close, doc_id: self.doc_id, copy: None });
+        self.saving = Some(Saving { path, state, ty, format, aiff, container, result: rx, progress, cancel, then_close, doc_id: self.doc_id, copy: None });
         Ok(())
     }
 
@@ -3053,13 +3072,23 @@ impl WaveApp {
                 job_progress.store((p.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
                 ctx.request_repaint();
             };
-            let _ = tx.send(write_file(&job_state, &job_path, FileKind::Wav(ty), &part, &mut report).map_err(|e| e.to_string()));
+            let _ = tx.send(write_file(&job_state, &job_path, FileKind::Wav(ty), &part, &mut report));
             ctx.request_repaint();
         });
         self.player.stop();
         let copy = Some(if selection { "selection" } else { "export" });
-        self.saving = Some(Saving { path, state, ty, format: SaveFormat::Wav, aiff: AiffKind::Aiff, container: None, result: rx, progress, then_close: false, doc_id: self.doc_id, copy });
+        self.saving = Some(Saving { path, state, ty, format: SaveFormat::Wav, aiff: AiffKind::Aiff, container: None, result: rx, progress, cancel: None, then_close: false, doc_id: self.doc_id, copy });
         Ok(())
+    }
+
+    /// Set "Include markers and other metadata" for the open document, and keep it as the default
+    /// for the files opened next (A262).
+    fn set_include_meta(&mut self, on: bool) {
+        self.include_meta = on;
+        self.settings.save_include_metadata = on;
+        if let Err(e) = self.save_settings() {
+            log::warn!(target: "wavcraft", "could not keep the save option: {e}");
+        }
     }
 
     fn finish_saving(&mut self, ctx: &egui::Context) {
@@ -3067,7 +3096,7 @@ impl WaveApp {
         let result = match saving.result.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("the save stopped unexpectedly".to_string()),
+            Err(TryRecvError::Disconnected) => Err(SaveError::Io(std::io::Error::other("the save stopped unexpectedly"))),
         };
         let Some(Saving { path, state, ty, format, aiff, container, then_close, doc_id, copy, .. }) = self.saving.take() else { return };
         let label = container.map_or_else(|| format_label(format, aiff).to_string(), |c| c.describe().to_string());
@@ -3103,6 +3132,10 @@ impl WaveApp {
                     self.allow_close = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+            }
+            Err(SaveError::Cancelled) => {
+                self.error = None;
+                self.notice = Some(format!("Save cancelled. {} is unchanged and the file is still unsaved.", path.display()));
             }
             Err(e) => {
                 self.error = Some(format!("Not saved: {e}. {} is unchanged.", path.display()));
@@ -3497,7 +3530,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} progress={progress} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} undo={} redo={} path={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved} {view} time_display={} selection_text={} snap_frames={} undo={} redo={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -3505,6 +3538,7 @@ impl WaveApp {
                             e.history.steps().len(),
                             e.history.cursor(),
                             u8::from(busy),
+                            u8::from(self.include_meta),
                             self.time_format.name(),
                             self.selection_text(),
                             u8::from(self.snap_frames),
@@ -3514,8 +3548,9 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} progress={progress} unsaved=0 {view} time_display={} selection_text=- snap_frames={} undo=- redo=- path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {view} time_display={} selection_text=- snap_frames={} undo=- redo=- path=",
                         u8::from(busy),
+                        u8::from(self.include_meta),
                         self.time_format.name(),
                         u8::from(self.snap_frames)
                     ),
@@ -4262,8 +4297,20 @@ impl WaveApp {
                     Err(e) => format!("ERR {e}"),
                 }
             }
+            "SAVE_CANCEL" => match &self.saving {
+                Some(Saving { cancel: Some(cancel), .. }) => {
+                    cancel.store(true, Ordering::Relaxed);
+                    "OK".to_string()
+                }
+                Some(_) => "ERR this save cannot be cancelled (only a WAV save of the whole file can)".to_string(),
+                None => "ERR no save is running".to_string(),
+            },
             "SAVE" => {
-                // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10]`: the options end the line.
+                // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10] [meta=0|1]`: the options end the line.
+                let meta = match take_meta(rest) {
+                    Ok(m) => m,
+                    Err(e) => return format!("ERR {e}"),
+                };
                 let quality = match take_quality(rest) {
                     Ok(q) => q,
                     Err(e) => return format!("ERR {e}"),
@@ -4273,6 +4320,9 @@ impl WaveApp {
                     Ok((path, ty, aiff)) => {
                         if let Some(q) = quality {
                             self.vorbis_quality = q;
+                        }
+                        if let Some(m) = meta {
+                            self.include_meta = m;
                         }
                         let to = (!path.is_empty()).then(|| PathBuf::from(path));
                         // `aiff=` is for this save only.
@@ -4409,6 +4459,14 @@ impl WaveApp {
                     }
                     ui.label("FLAC takes 16 or 24 bit; it uses 24 bit for the others.");
                 });
+                let mut meta = self.include_meta;
+                if ui
+                    .add_enabled(has_doc, egui::Checkbox::new(&mut meta, "Include markers and other metadata"))
+                    .on_hover_text("Applies to Save and Save As for this file (WAV); off writes only the audio")
+                    .changed()
+                {
+                    self.set_include_meta(meta);
+                }
                 let has_sel = has_doc && self.selection.start() < self.selection.end();
                 if ui.add_enabled(has_sel, egui::Button::new("Save Selection As…")).clicked()
                     && let Err(e) = self.save_copy(ui.ctx(), true, None)
@@ -4578,6 +4636,11 @@ impl WaveApp {
             } else if let Some(s) = &self.saving {
                 ui.spinner();
                 ui.label(format!("Saving {}… {}%", s.path.display(), s.progress.load(Ordering::Relaxed) / 10));
+                if let Some(cancel) = &s.cancel
+                    && ui.button("Cancel").on_hover_text("Stop saving: the file on disk stays as it was").clicked()
+                {
+                    cancel.store(true, Ordering::Relaxed);
+                }
             } else if self.rebuilding.is_some() {
                 ui.spinner();
                 ui.label("Updating the view…");
@@ -5553,6 +5616,38 @@ fn take_quality(rest: &str) -> Result<Option<f32>, String> {
     Ok(quality)
 }
 
+/// `SAVE`'s `meta=0|1` (A262): "Include markers and other metadata" for this document, if given.
+fn take_meta(rest: &str) -> Result<Option<bool>, String> {
+    let mut meta = None;
+    for tok in rest.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("meta=") {
+            meta = Some(match v {
+                "0" => false,
+                "1" => true,
+                _ => return Err(format!("meta=<0|1>, not {v}")),
+            });
+        }
+    }
+    Ok(meta)
+}
+
+/// The extra chunks a save writes when "Include markers and other metadata" is on. This is
+/// the one place the marker and metadata features add theirs. Test only: with
+/// `WAVCRAFT_TEST_SAVE_CHUNK` set, a `TEST` chunk, so the switch can be checked on a file.
+fn metadata_chunks() -> Vec<ExtraChunk> {
+    let mut chunks = Vec::new();
+    if std::env::var_os("WAVCRAFT_TEST_SAVE_CHUNK").is_some() {
+        chunks.push(ExtraChunk { id: *b"TEST", data: b"wavcraft test chunk".to_vec() });
+    }
+    chunks
+}
+
+/// Test only: `WAVCRAFT_TEST_SAVE_DELAY_MS` slows a save down per 64 K-frame block.
+fn test_block_delay() -> std::time::Duration {
+    let ms = std::env::var("WAVCRAFT_TEST_SAVE_DELAY_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    std::time::Duration::from_millis(ms)
+}
+
 /// `SAVE`'s arguments: a path (may hold spaces) then `bits=<16|24|32>` and `float=<0|1>` in any
 /// order. Returns the path and the sample type they name, if any.
 fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffKind>), String> {
@@ -5570,6 +5665,8 @@ fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffK
             });
         } else if last.starts_with("quality=") {
             // Read by `take_quality`.
+        } else if last.starts_with("meta=") {
+            // Read by `take_meta`.
         } else {
             break;
         }

@@ -323,3 +323,11 @@ fn bad_preference_values_are_refused_and_change_nothing() {
     assert_eq!(s.get("cache_mb").unwrap(), "default");
     assert!(s.get("zzz").is_err());
 }
+
+#[test]
+fn a262_include_metadata_defaults_on_and_round_trips() {
+    assert!(Settings::parse("").save_include_metadata);
+    let off = Settings { save_include_metadata: false, ..Settings::default() };
+    assert!(!Settings::parse(&off.to_text()).save_include_metadata);
+    assert!(Settings::parse(&Settings::default().to_text()).save_include_metadata);
+}

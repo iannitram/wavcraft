@@ -45,6 +45,7 @@ const KEY_INPUT: &str = "input_device";
 const KEY_SRC_QUALITY: &str = "src_quality";
 const KEY_SAVE_MARKERS: &str = "save_markers";
 const KEY_SAVE_METADATA: &str = "save_metadata";
+const KEY_SAVE_META: &str = "save_include_metadata";
 const KEY_MARKER_PATTERN: &str = "marker_name_pattern";
 const KEY_AUTOSCROLL: &str = "autoscroll";
 const KEY_JKL_STEPS: &str = "jkl_speed_steps";
@@ -86,7 +87,7 @@ pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
 /// menu and is not one of them).
-pub const KEYS: [&str; 38] = [
+pub const KEYS: [&str; 39] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
@@ -95,6 +96,7 @@ pub const KEYS: [&str; 38] = [
     KEY_SRC_QUALITY,
     KEY_SAVE_MARKERS,
     KEY_SAVE_METADATA,
+    KEY_SAVE_META,
     KEY_MARKER_PATTERN,
     KEY_AUTOSCROLL,
     KEY_JKL_STEPS,
@@ -366,6 +368,9 @@ pub struct Settings {
     pub save_markers: bool,
     /// Write the metadata into a saved file by default.
     pub save_metadata: bool,
+    /// "Include markers and other metadata" when saving (A262): the default for each opened file.
+    /// Off drops the markers and the INFO/BWF metadata, like Audition; only `fmt ` and `data` remain.
+    pub save_include_metadata: bool,
     /// The name a new marker gets (`{n}`: its number).
     pub marker_name_pattern: String,
     /// How the view follows the playhead.
@@ -427,6 +432,7 @@ impl Default for Settings {
             src_quality: SrcQuality::High,
             save_markers: true,
             save_metadata: true,
+            save_include_metadata: true,
             marker_name_pattern: DEFAULT_MARKER_PATTERN.to_string(),
             autoscroll: AutoScroll::Pagewise,
             jkl_steps: DEFAULT_JKL_STEPS.to_vec(),
@@ -579,6 +585,7 @@ impl Settings {
             KEY_SRC_QUALITY => self.src_quality.name().to_string(),
             KEY_SAVE_MARKERS => self.save_markers.to_string(),
             KEY_SAVE_METADATA => self.save_metadata.to_string(),
+            KEY_SAVE_META => self.save_include_metadata.to_string(),
             KEY_MARKER_PATTERN => self.marker_name_pattern.clone(),
             KEY_AUTOSCROLL => self.autoscroll.name().to_string(),
             KEY_JKL_STEPS => self.jkl_steps.iter().map(f32::to_string).collect::<Vec<_>>().join(","),
@@ -631,6 +638,7 @@ impl Settings {
             }
             KEY_SAVE_MARKERS => self.save_markers = parse_bool(key, value)?,
             KEY_SAVE_METADATA => self.save_metadata = parse_bool(key, value)?,
+            KEY_SAVE_META => self.save_include_metadata = parse_on_off(key, value)?,
             KEY_MARKER_PATTERN => {
                 let n = value.chars().count();
                 if n == 0 || n > MAX_MARKER_PATTERN_CHARS || value.chars().any(char::is_control) {
@@ -757,6 +765,10 @@ impl Settings {
             out.push_str(&format!("{KEY_CUT_JOIN} = {}
 {KEY_EDGE} = {}
 ", self.cut_join_ms, self.edge_ms));
+        }
+        if !self.save_include_metadata {
+            out.push_str("# save_include_metadata: 0 saves only the audio (no markers or metadata); 1, the default, includes them.\n");
+            out.push_str(&format!("{KEY_SAVE_META} = 0\n"));
         }
         if let Some(output_device) = &self.output_device {
             out.push_str(&format!("{KEY_OUTPUT} = {output_device}
