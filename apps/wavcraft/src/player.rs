@@ -58,6 +58,23 @@ const PRIME_FRAMES: u64 = 16_384;
 /// is not used, see [`rebuild_resampler`]).
 const RING_MARGIN: u64 = 1024;
 
+/// The stereo fold-down of the playing file (A134), a fixed table so the callback never
+/// allocates. `gains[c]` is file channel `c`'s `[left, right]` gain; see `core::channels`.
+#[derive(Clone, Copy)]
+struct Downmix {
+    gains: [[f32; 2]; wavcraft_core::channels::MAX_CHANNELS],
+}
+
+impl Downmix {
+    fn for_file(mask: Option<u32>, channels: usize) -> Downmix {
+        let mut gains = [[0.0; 2]; wavcraft_core::channels::MAX_CHANNELS];
+        for (slot, g) in gains.iter_mut().zip(wavcraft_core::channels::stereo_downmix(mask, channels)) {
+            *slot = g;
+        }
+        Downmix { gains }
+    }
+}
+
 #[derive(Copy, Clone)]
 struct Playback {
     /// Bumped by every play/stop; a render pass started under an older value must not write back.
@@ -143,6 +160,8 @@ struct Shared {
     /// Document channel -> device output channel (empty: the automatic layout). Changing it needs
     /// no new stream; the callback `try_lock`s it like the rest.
     map: Mutex<ChannelMap>,
+    /// How files of more than two channels fold to a stereo (or mono) device (A134).
+    downmix: Mutex<Downmix>,
     /// The system's default output device changed (set by the watcher thread, or by the control
     /// channel's `DEVICE_CHANGED`): the next `maintain` reopens the output.
     device_changed: AtomicBool,
@@ -170,6 +189,7 @@ impl Shared {
             rack_mailbox: Mutex::new(None),
             rack_new: AtomicBool::new(false),
             map: Mutex::new(ChannelMap::default()),
+            downmix: Mutex::new(Downmix::for_file(None, 2)),
             device_changed: AtomicBool::new(false),
             follow_default: AtomicBool::new(false),
         }
@@ -382,6 +402,14 @@ impl Player {
     pub fn set_map(&self, map: ChannelMap) {
         if let Ok(mut slot) = self.shared.map.lock() {
             *slot = map;
+        }
+    }
+
+    /// Say how the audio handed over by [`set_audio`](Self::set_audio) folds down to the device:
+    /// its speaker mask (`None` when unlabelled). Files of one or two channels need no layout.
+    pub fn set_layout(&self, mask: Option<u32>, channels: usize) {
+        if let Ok(mut slot) = self.shared.downmix.lock() {
+            *slot = Downmix::for_file(mask, channels);
         }
     }
 
@@ -1077,6 +1105,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
         return;
     }
     let Ok(map) = shared.map.try_lock() else { return };
+    let Ok(downmix) = shared.downmix.try_lock().map(|d| *d) else { return };
     let step = f64::from(rate) / device_rate * playback.speed;
     let end = playback.end;
     let last = end.ceil().max(0.0) as u64;
@@ -1140,6 +1169,27 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
             for (c, slot) in frame.iter_mut().enumerate() {
                 let sum: f32 = map.sources(c).filter(|src| *src < file_channels).map(|src| interp(src)).sum();
                 *slot = T::from_sample(sum);
+            }
+        } else if file_channels > 2 {
+            // Many channels fold to left and right by the layout's table (core::channels): 5.1 and
+            // 7.1 properly, anything else its first two channels. The ring holds at most
+            // RING_CHANNELS channels (`file_channels` is capped to it), so those are what fold.
+            let (mut left, mut right) = (0.0f32, 0.0f32);
+            for (c, g) in downmix.gains.iter().enumerate().take(file_channels) {
+                if g[0] != 0.0 || g[1] != 0.0 {
+                    let v = interp(c);
+                    left += v * g[0];
+                    right += v * g[1];
+                }
+            }
+            if channels == 1 {
+                if let Some(slot) = frame.first_mut() {
+                    *slot = T::from_sample((left + right) * 0.5);
+                }
+            } else {
+                for (c, slot) in frame.iter_mut().take(2).enumerate() {
+                    *slot = T::from_sample(if c == 0 { left } else { right });
+                }
             }
         } else if channels == 1 && file_channels > 1 {
             // A one-channel device gets the average of the file's channels, not just the left
@@ -1509,6 +1559,41 @@ mod tests {
         let mut out = vec![9.0f32; 16];
         render(&shared, &mut out, 1, 48_000.0);
         assert!(out.iter().all(|v| *v == 0.25), "left silent, right at 0.5: {out:?}");
+    }
+
+    /// A134: a 5.1 file folds to stereo by the documented table; an unlabelled many-channel
+    /// file plays its first two channels.
+    #[test]
+    fn many_channels_fold_down_to_two() {
+        // Channel c holds the constant (c + 1) / 100.
+        let file = |n: usize| doc_of(AudioBuffer { sample_rate: 48_000, channels: (0..n).map(|c| vec![(c + 1) as f32 / 100.0; 64]).collect() });
+        let state = file(6);
+        let shared = shared_with(&state);
+        *shared.downmix.lock().unwrap() = Downmix::for_file(Some(0x3F), 6);
+        play(&shared, &state, 0.0, 64.0);
+        let mut out = vec![0.0f32; 8];
+        render(&shared, &mut out, 2, 48_000.0);
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let left = (0.01 + s * 0.03 + s * 0.05) / (1.0 + 2.0 * s);
+        let right = (0.02 + s * 0.03 + s * 0.06) / (1.0 + 2.0 * s);
+        assert!((out[0] - left).abs() < 1e-6 && (out[1] - right).abs() < 1e-6, "{out:?} vs {left} {right}");
+        // Mono device: the mean of the two sides. A 4-channel device keeps 2 and 3 silent.
+        play(&shared, &state, 0.0, 64.0);
+        let mut mono = vec![0.0f32; 4];
+        render(&shared, &mut mono, 1, 48_000.0);
+        assert!((mono[0] - (left + right) * 0.5).abs() < 1e-6);
+        play(&shared, &state, 0.0, 64.0);
+        let mut four = vec![9.0f32; 8];
+        render(&shared, &mut four, 4, 48_000.0);
+        assert_eq!(four[2..4], [0.0, 0.0]);
+        // 32 unlabelled channels: the first two.
+        let state = file(32);
+        let shared = shared_with(&state);
+        *shared.downmix.lock().unwrap() = Downmix::for_file(None, 32);
+        play(&shared, &state, 0.0, 64.0);
+        let mut out = vec![0.0f32; 8];
+        render(&shared, &mut out, 2, 48_000.0);
+        assert!((out[0] - 0.01).abs() < 1e-6 && (out[1] - 0.02).abs() < 1e-6, "{out:?}");
     }
 
     /// f26: what the callback sends is what the Levels panel gets, per channel, without a lock.

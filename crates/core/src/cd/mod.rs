@@ -310,7 +310,7 @@ impl CdLayout {
         crate::atomic::write_atomic(&wav_path, |file| {
             let mut out = BufWriter::with_capacity(1 << 20, &mut *file);
             // write_header writes RIFF and fmt only; the data chunk header is ours to write.
-            let (data_len, _) = write_header(&mut out, 2, CD_RATE, SampleType::Int16, total * SAMPLES_PER_FRAME, 0, u64::from(u32::MAX))?;
+            let (data_len, _) = write_header(&mut out, 2, CD_RATE, SampleType::Int16, total * SAMPLES_PER_FRAME, 0, None, u64::from(u32::MAX))?;
             out.write_all(b"data")?;
             out.write_all(&u32::try_from(data_len).unwrap_or(u32::MAX).to_le_bytes())?;
             let mut done = 0u64;

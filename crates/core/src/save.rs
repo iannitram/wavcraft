@@ -874,7 +874,12 @@ fn write_stream(
                 // A262: the caller's chunks go last, so the RIFF size and the relocation table cover them.
                 plan.extend(hooks.extra.iter().map(|c| Item::Fresh { id: c.id, body: c.data.clone() }));
             }
-            let (data_len, mut pos) = write_header(&mut out, ch16, doc.sample_rate(), ty, frames, plan_extra(&plan), hooks.rf64_over)?;
+            // More than two channels, or a speaker mask the file came with, is written as
+            // WAVE_FORMAT_EXTENSIBLE with that mask (0 for an unlabelled file), so the count and
+            // the labels survive a save (A134). The mask only applies when its speakers are these channels.
+            let mask = crate::channels::usable_mask(doc.source().channel_mask, out_channels);
+            let extensible = (out_channels > 2 || mask.is_some()).then(|| mask.unwrap_or(0));
+            let (data_len, mut pos) = write_header(&mut out, ch16, doc.sample_rate(), ty, frames, plan_extra(&plan), extensible, hooks.rf64_over)?;
             for item in &plan {
                 match item {
                     Item::Data => {
@@ -1158,12 +1163,19 @@ pub(crate) fn write_header(
     ty: SampleType,
     frames: u64,
     extra: u64,
+    extensible: Option<u32>,
     rf64_over: u64,
 ) -> io::Result<(u64, u64)> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(u64::from(channels)).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("WAV too long"))?;
     let float = ty.is_float();
-    let fmt_len: u32 = if float { 18 } else { 16 };
+    let fmt_len: u32 = if extensible.is_some() {
+        40
+    } else if float {
+        18
+    } else {
+        16
+    };
     let fact = if float { 12 } else { 0 };
     let riff_len = 4 + (8 + u64::from(fmt_len)) + fact + 8 + data_len + (data_len & 1) + extra;
     let rf64 = riff_len > rf64_over;
@@ -1185,15 +1197,26 @@ pub(crate) fn write_header(
         out.write_all(b"WAVEfmt ")?;
     }
     out.write_all(&fmt_len.to_le_bytes())?;
-    out.write_all(&(if float { 3u16 } else { 1u16 }).to_le_bytes())?;
+    let format_tag: u16 = if float { 3 } else { 1 };
+    out.write_all(&(if extensible.is_some() { 0xFFFEu16 } else { format_tag }).to_le_bytes())?;
     out.write_all(&channels.to_le_bytes())?;
     out.write_all(&sample_rate.to_le_bytes())?;
     let byte_rate = sample_rate.checked_mul(u32::from(block_align)).ok_or_else(|| invalid("sample rate too high"))?;
     out.write_all(&byte_rate.to_le_bytes())?;
     out.write_all(&block_align.to_le_bytes())?;
     out.write_all(&(bytes as u16 * 8).to_le_bytes())?;
-    if float {
+    if let Some(mask) = extensible {
+        // cbSize 22: valid bits, speaker mask, and the sub-format GUID (the format tag, then
+        // the fixed tail of the KSDATAFORMAT_SUBTYPE GUIDs).
+        out.write_all(&22u16.to_le_bytes())?;
+        out.write_all(&(bytes as u16 * 8).to_le_bytes())?;
+        out.write_all(&mask.to_le_bytes())?;
+        out.write_all(&format_tag.to_le_bytes())?;
+        out.write_all(&[0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71])?;
+    } else if float {
         out.write_all(&0u16.to_le_bytes())?;
+    }
+    if float {
         out.write_all(b"fact")?;
         out.write_all(&4u32.to_le_bytes())?;
         out.write_all(&u32::try_from(frames).unwrap_or(u32::MAX).to_le_bytes())?;
@@ -1235,7 +1258,9 @@ fn pcm_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) 
             // The size the save writes with metadata on (the default; the caller's extra chunks are not counted).
             let (plan, _source) = plan_chunks(doc, ty, true);
             let extra = plan_extra(&plan);
-            let (data_len, _) = write_header(&mut c, ch16, rate, ty, frames, extra, no_hooks().rf64_over)?;
+            let mask = crate::channels::usable_mask(doc.source().channel_mask, channels);
+            let extensible = (channels > 2 || mask.is_some()).then(|| mask.unwrap_or(0));
+            let (data_len, _) = write_header(&mut c, ch16, rate, ty, frames, extra, extensible, no_hooks().rf64_over)?;
             Ok(c.0 + 8 + data_len + (data_len & 1) + extra)
         }
         SaveFormat::Aiff => {

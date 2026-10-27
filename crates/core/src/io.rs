@@ -605,10 +605,10 @@ struct Fmt {
     sample_rate: u32,
     bits: u16,
     valid_bits: u16,
+    /// `dwChannelMask` of a `WAVE_FORMAT_EXTENSIBLE` header (0 or absent: unlabelled).
+    channel_mask: u32,
     /// Bytes a frame takes, as the header says (checked against the format before use).
     block_align: u16,
-    /// `dwChannelMask` of a `WAVE_FORMAT_EXTENSIBLE` header, else 0.
-    channel_mask: u32,
 }
 
 fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
@@ -619,8 +619,8 @@ fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
         sample_rate: le_u32(c, 4).ok_or_else(short)?,
         bits: le_u16(c, 14).unwrap_or(0),
         valid_bits: 0,
-        block_align: le_u16(c, 12).ok_or_else(short)?,
         channel_mask: 0,
+        block_align: le_u16(c, 12).ok_or_else(short)?,
     };
     fmt.valid_bits = fmt.bits;
     if fmt.tag == WAVE_FORMAT_EXTENSIBLE {
@@ -733,6 +733,20 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
             if !n.is_empty() {
                 *slot = n;
             }
+        }
+    }
+    if channels > crate::channels::MAX_CHANNELS {
+        return Err(unsupported(format!("WAV with {channels} channels (at most {} are supported)", crate::channels::MAX_CHANNELS)));
+    }
+    if fmt.channel_mask != 0 {
+        if crate::channels::usable_mask(Some(fmt.channel_mask), channels).is_some() {
+            src.channel_mask = Some(fmt.channel_mask);
+        } else {
+            src.warnings.push(format!(
+                "the channel mask {:#x} names {} speakers but the file has {channels} channels: the channels are numbered 1 to {channels}",
+                fmt.channel_mask,
+                fmt.channel_mask.count_ones()
+            ));
         }
     }
     let (kind, sample_format) = match (fmt.tag, fmt.bits) {

@@ -34,6 +34,7 @@ pub mod batch;
 pub mod batch_cli;
 pub mod cd;
 pub mod chanmap;
+pub mod channels;
 pub mod diagnostics;
 pub mod clipboard;
 pub mod doc;
