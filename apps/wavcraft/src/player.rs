@@ -22,15 +22,23 @@
 //!
 //! `WAVCRAFT_NO_AUDIO=1` swaps the sound card for a silent real-time sink (stereo, 48 kHz unless
 //! `WAVCRAFT_NO_AUDIO_RATE`), so the whole path can be driven without a device.
+//!
+//! Edit while playing (f48): [`Player::replace_audio`] hands over an edited document and moves the
+//! play's position, end and skipped part across the edit (an [`EditSpan`]), under a new generation,
+//! so the play goes on from the same place in the music. A watcher thread looks at the system's
+//! default output device once a second; when the output follows the default (none was named, or the
+//! one named is not there), [`Player::maintain`] reopens it on the device now in use and the play
+//! carries on from the same frame. The same goes for a stream that reported an error while playing.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use cpal::Sample as _;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::DocState;
+use wavcraft_core::doc::span::EditSpan;
 use wavcraft_core::levels::LevelTap;
 use wavcraft_core::rack::{MAX_BLOCK, RackConfig, RackProcessor};
 use wavcraft_core::chanmap::{ChannelMap, choose_buffer};
@@ -135,6 +143,12 @@ struct Shared {
     /// Document channel -> device output channel (empty: the automatic layout). Changing it needs
     /// no new stream; the callback `try_lock`s it like the rest.
     map: Mutex<ChannelMap>,
+    /// The system's default output device changed (set by the watcher thread, or by the control
+    /// channel's `DEVICE_CHANGED`): the next `maintain` reopens the output.
+    device_changed: AtomicBool,
+    /// The output follows the system's default device (none was named, or the one named is not
+    /// there): only then does the watcher flag a change.
+    follow_default: AtomicBool,
 }
 
 impl Shared {
@@ -156,6 +170,8 @@ impl Shared {
             rack_mailbox: Mutex::new(None),
             rack_new: AtomicBool::new(false),
             map: Mutex::new(ChannelMap::default()),
+            device_changed: AtomicBool::new(false),
+            follow_default: AtomicBool::new(false),
         }
     }
 
@@ -286,6 +302,9 @@ pub struct Player {
     held: Mutex<Option<Held>>,
     /// Loop passes of the plays this one replaced (a seek or a speed change starts a new play).
     wraps_base: AtomicU32,
+    /// Output reopens that followed a change of the default device (`maintain`), for the control
+    /// channel's `STATE`.
+    reopens: AtomicU32,
 }
 
 /// A paused play: what Resume starts again.
@@ -342,8 +361,12 @@ impl Player {
             out_rate: 48_000,
             held: Mutex::new(None),
             wraps_base: AtomicU32::new(0),
+            reopens: AtomicU32::new(0),
         };
         player.reopen();
+        if !no_audio() {
+            watch_default_device(&player.shared);
+        }
         player
     }
 
@@ -367,6 +390,8 @@ impl Player {
         self.stream = None;
         self.sink = None;
         self.shared.failed.store(false, Ordering::Relaxed);
+        self.shared.device_changed.store(false, Ordering::Relaxed);
+        self.shared.follow_default.store(self.wanted.device.is_none(), Ordering::Relaxed);
         if no_audio() {
             let sink = Sink::start(&self.shared);
             self.device = "test sink (no audio)".to_string();
@@ -380,6 +405,7 @@ impl Player {
         } else {
             match open_stream(&self.shared, &self.wanted) {
                 Ok(o) => {
+                    self.shared.follow_default.store(o.follows_default, Ordering::Relaxed);
                     self.stream = Some(o.stream);
                     self.device = o.device;
                     self.host = o.host;
@@ -446,6 +472,77 @@ impl Player {
     pub fn set_audio(&self, doc: Option<DocState>) {
         self.stop();
         let _ = self.commands.send(Command::Document(doc));
+    }
+
+    /// Hand over an edited document while it plays (f48). `span` says what the edit replaced (see
+    /// [`EditSpan::between`]): the play's position, its end and its skipped part move across it,
+    /// and a play that is running goes on from the same place in the music. A paused play keeps
+    /// its place the same way. The restart takes a new generation, so a callback that began before
+    /// the edit cannot write the old position back (#376).
+    pub fn replace_audio(&mut self, doc: Option<DocState>, span: &EditSpan) {
+        let Some(doc) = doc else {
+            self.set_audio(None);
+            return;
+        };
+        let paused = {
+            let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+            match held.as_mut() {
+                Some(h) => {
+                    h.plan = map_plan(h.plan, span);
+                    h.pos = map_frame(h.pos, span);
+                    true
+                }
+                None => false,
+            }
+        };
+        if paused {
+            let _ = self.commands.send(Command::Document(Some(doc)));
+            return;
+        }
+        let now = self.shared.snapshot();
+        if !now.playing {
+            self.stop();
+            let _ = self.commands.send(Command::Document(Some(doc)));
+            return;
+        }
+        // The new audio goes to the read-ahead thread before the restart's `Play`, so the ring is
+        // primed from it.
+        let _ = self.commands.send(Command::Document(Some(doc)));
+        let from = map_frame(now.file_position(), span);
+        if !self.restart(map_plan(now.plan, span), from, now.rev, now.speed, now.grain) {
+            self.shared.halt();
+        }
+    }
+
+    /// Follow the system: reopen the output when the default device changed (while the output
+    /// follows the default) or when the stream failed during a play, keeping the place. Called
+    /// every frame by the app. Returns whether it reopened.
+    pub fn maintain(&mut self) -> bool {
+        let changed = self.shared.device_changed.load(Ordering::Acquire);
+        let failed_while_playing = self.failed() && self.is_playing();
+        if !changed && !failed_while_playing {
+            return false;
+        }
+        self.reopen();
+        self.reopens.fetch_add(1, Ordering::Relaxed);
+        if self.has_output() {
+            log::info!(target: "wavcraft", "audio output reopened on {:?}", self.device);
+        } else {
+            log::warn!(target: "wavcraft", "audio output lost; playback stops");
+            self.shared.halt();
+        }
+        true
+    }
+
+    /// How many times `maintain` has reopened the output since start-up.
+    pub fn reopens(&self) -> u32 {
+        self.reopens.load(Ordering::Relaxed)
+    }
+
+    /// Simulate the system's default output device changing (the control channel's
+    /// `DEVICE_CHANGED`): the next `maintain` reopens the output.
+    pub fn simulate_device_change(&self) {
+        self.shared.device_changed.store(true, Ordering::Release);
     }
 
     /// Play `[from, to)` in file frames. Without a working output (none at start-up, or one that
@@ -627,6 +724,50 @@ impl Player {
     }
 }
 
+/// A file frame moved across an edit (non-finite values stay as they are).
+fn map_frame(frame: f64, span: &EditSpan) -> f64 {
+    if frame.is_finite() { span.map_position(frame) } else { frame }
+}
+
+/// The plan with its end, skipped part and start moved across an edit.
+fn map_plan(plan: Plan, span: &EditSpan) -> Plan {
+    Plan {
+        start: map_frame(plan.start, span),
+        end: map_frame(plan.end, span),
+        skip_start: map_frame(plan.skip_start, span),
+        skip_end: map_frame(plan.skip_end, span),
+        ..plan
+    }
+}
+
+/// The name of the system's default output device, if there is one.
+fn default_device_name() -> Option<String> {
+    cpal::default_host().default_output_device().and_then(|d| d.name().ok())
+}
+
+/// Look at the system's default output device once a second and flag a change to the player (which
+/// reopens the output when it follows the default). Ends when the player is dropped.
+fn watch_default_device(shared: &Arc<Shared>) {
+    let weak: Weak<Shared> = Arc::downgrade(shared);
+    let spawned = std::thread::Builder::new().name("wavcraft-device-watch".to_string()).spawn(move || {
+        let mut last = default_device_name();
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let Some(shared) = weak.upgrade() else { break };
+            let now = default_device_name();
+            if now != last {
+                last = now;
+                if shared.follow_default.load(Ordering::Relaxed) {
+                    shared.device_changed.store(true, Ordering::Release);
+                }
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!(target: "wavcraft", "could not start the default-device watcher: {e}");
+    }
+}
+
 /// The slowest play speed (a crawl); anything below is raised to it.
 const MIN_SPEED: f64 = 0.05;
 
@@ -769,6 +910,8 @@ struct Opened {
     range: Option<(u32, u32)>,
     channels: usize,
     rate: u32,
+    /// No device was named, or the one named is not there: the system's default is in use.
+    follows_default: bool,
 }
 
 fn open_stream(shared: &Arc<Shared>, wanted: &OutputChoice) -> Result<Opened, String> {
@@ -784,6 +927,7 @@ fn open_stream(shared: &Arc<Shared>, wanted: &OutputChoice) -> Result<Opened, St
         }
         found
     });
+    let follows_default = chosen.is_none();
     let device = match chosen {
         Some(d) => d,
         None => host.default_output_device().ok_or("no audio output device")?,
@@ -826,7 +970,7 @@ fn open_stream(shared: &Arc<Shared>, wanted: &OutputChoice) -> Result<Opened, St
     };
     stream.play().map_err(|e| e.to_string())?;
     log::info!("audio output: host {host_name}, device {name:?}, {channels} channels, buffer {buffer:?}");
-    Ok(Opened { stream, device: name, host: host_name, buffer, range, channels, rate })
+    Ok(Opened { stream, device: name, host: host_name, buffer, range, channels, rate, follows_default })
 }
 
 fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, shared: &Arc<Shared>) -> Result<cpal::Stream, String>
@@ -845,8 +989,8 @@ where
             move |out: &mut [T], _: &cpal::OutputCallbackInfo| device_callback(&shared, out, channels, device_rate, &mut rack),
             move |err| {
                 log::warn!("audio output: {err}");
+                // The play is kept: `maintain` reopens the output and it goes on (f48).
                 on_error.failed.store(true, Ordering::Relaxed);
-                on_error.state.lock().unwrap_or_else(|e| e.into_inner()).playing = false;
             },
             None,
         )
@@ -1669,6 +1813,36 @@ mod tests {
         assert!(l[3] > 0.0 && l[3] < 1.0, "fading in: {}", l[3]);
         assert_eq!(l[150], 1.0);
         assert!(l[298] < 1.0, "fading out");
+    }
+
+    /// An edit made during playback (f48): the play goes on from the same place in the music, moved
+    /// across the edit, and the play's end moves with it.
+    #[test]
+    fn an_edit_while_playing_keeps_the_place_in_the_music() {
+        let mut p = Player::new(OutputChoice::default(), ChannelMap::default(), Quality::default());
+        p.stream = None;
+        let sink = Sink::start(&p.shared);
+        p.out_rate = sink.rate;
+        p.out_channels = SINK_CHANNELS;
+        p.shared.device_rate.store(sink.rate, Ordering::Release);
+        p.sink = Some(sink);
+        let _ = p.commands.send(Command::Rebuild);
+        p.set_audio(Some(ramp_state(48_000, 480_000)));
+        assert!(p.start(&Plan::new(0.0, 480_000.0), 100_000.0));
+        std::thread::sleep(Duration::from_millis(60));
+        let before = p.position() as f64;
+        // Cut the first 50,000 frames, all of them before the playhead: the same music, 50,000 frames earlier.
+        let generation = p.shared.snapshot().generation;
+        p.replace_audio(Some(ramp_state(48_000, 430_000)), &EditSpan { at: 0, removed: 50_000, inserted: 0 });
+        let now = p.shared.snapshot();
+        assert!(now.generation > generation, "the restart takes a new generation");
+        assert!((now.end - 430_000.0).abs() < 1.0, "the end moved with the cut: {}", now.end);
+        assert!(p.is_playing(), "the play goes on");
+        std::thread::sleep(Duration::from_millis(60));
+        let after = p.position() as f64;
+        let expect = before - 50_000.0;
+        assert!((after - expect).abs() < 10_000.0, "carries on from the mapped place: {after} vs {expect}");
+        p.stop();
     }
 
     /// Pause keeps the place; resume carries on from it (the silent test sink moves the position).

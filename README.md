@@ -140,8 +140,12 @@ screen is short. The overview does not depend on the frequency axis or the pictu
   for the overview: about 170 ms per channel for three hours, as long as that picture took before.
 - **The app still holds the whole file in memory after opening** (see above; task 05), and needs
   the file's length in disk space for its session store too.
-- **The output device is chosen at start-up.** It is tried again on Play after an error or when
-  there was none, but a change of the system's default device is not followed.
+- **Edit while playing, and the default output device (f48):** an edit made during playback is
+  heard from the next block, the playhead keeping its place in the music (shifted by what was
+  removed or inserted before it; a cut point if it was inside a deleted range; a crop keeps the
+  offset from the start, clamped). A change of the system's default output device (looked at once
+  a second) reopens the output and goes on from the same position. `WAVCRAFT_NO_AUDIO=1` runs a
+  silent output thread for scripted checks; control verbs `PLAY`, `DEVICE_CHANGED`.
 - When the file's rate differs from the device's, playback converts with plain linear
   interpolation (dull above 10 kHz at 44.1 → 48 kHz). Fine for finding your place, not for judging tone.
 

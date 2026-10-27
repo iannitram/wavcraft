@@ -11,6 +11,7 @@ use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOption
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::appearance;
 use wavcraft_core::chanmap::ChannelMap;
+use wavcraft_core::doc::span::EditSpan;
 use wavcraft_core::export::{self, DEFAULT_CHANNEL_PATTERN, DEFAULT_RANGE_PATTERN, ExportOptions};
 use wavcraft_core::export_presets::{ExportChoice, ExportPresets};
 use wavcraft_core::hwprofile::{Hardware, Outcome, ProfileStore};
@@ -4019,7 +4020,8 @@ impl WaveApp {
             let _ = tx.send(Document::from_state(path, state));
             ctx.request_repaint();
         });
-        self.halt_play();
+        // Playback goes on with the old audio until the edited one is ready, and then moves on
+        // with it from the same place in the music (f48: edit while playing; see `finish_rebuild`).
         self.playlist_ui.cancel();
         self.rebuilding = Some(rx);
     }
@@ -4108,7 +4110,13 @@ impl WaveApp {
         self.rebuilding = None;
         match result {
             Ok(doc) => {
-                self.set_audio(Some(doc.state.clone()));
+                // Edit while playing (f48): the player takes the edited audio and the play goes on
+                // from the same place in the music, moved across the edit. A Generate preview holds
+                // the player with its own audio, so it keeps the plain hand-over.
+                match self.doc.as_ref().filter(|_| !self.previewing) {
+                    Some(old) => self.player.replace_audio(Some(doc.state.clone()), &EditSpan::between(&old.state, &doc.state)),
+                    None => self.set_audio(Some(doc.state.clone())),
+                }
                 self.doc = Some(doc);
                 self.generation += 1;
                 self.spectrum = None;
@@ -4828,7 +4836,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved} {view} {tstate} time_display={} tempo={} meter={} selection_text={} snap_frames={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} undo={} redo={} path={}",
+                            "OK frames={} channels={} rate={} selection={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved} playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text={} snap_frames={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} undo={} redo={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -4837,6 +4845,10 @@ impl WaveApp {
                             e.history.cursor(),
                             u8::from(busy),
                             u8::from(self.include_meta),
+                            u8::from(self.player.is_playing()),
+                            self.player.position(),
+                            self.player.device.replace(' ', "_"),
+                            self.player.reopens(),
                             self.time_format.name(),
                             self.tempo.bpm_text(),
                             self.tempo.meter_text(),
@@ -4857,9 +4869,13 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {view} {tstate} time_display={} tempo={} meter={} selection_text=- snap_frames={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- undo=- redo=- path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} {tstate} time_display={} tempo={} meter={} selection_text=- snap_frames={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- undo=- redo=- path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
+                        u8::from(self.player.is_playing()),
+                        self.player.position(),
+                        self.player.device.replace(' ', "_"),
+                        self.player.reopens(),
                         self.time_format.name(),
                         self.tempo.bpm_text(),
                         self.tempo.meter_text(),
@@ -4912,16 +4928,32 @@ impl WaveApp {
                 }
                 None => "ERR PROPERTIES needs a file open".to_string(),
             },
-            // Play frames <from> <to> (scripted checks of playback from the store).
+            // Play frames <from> <to> (scripted checks of playback from the store). With no
+            // numbers, play from the selection (to its end, or the file's end for a cursor), as Space does.
             "PLAY" => {
                 let mut it = rest.split_whitespace().map(str::parse::<usize>);
                 match (it.next(), it.next(), &self.doc) {
+                    _ if rest.trim().is_empty() => match &self.doc {
+                        Some(doc) => {
+                            let frames = doc.frames();
+                            let to = if self.selection.is_empty() { frames } else { self.selection.end() };
+                            self.player.play(self.selection.start().min(frames), to.min(frames));
+                            format!("OK playing={}", u8::from(self.player.is_playing()))
+                        }
+                        None => "ERR PLAY needs a file open".to_string(),
+                    },
                     (Some(Ok(a)), Some(Ok(b)), Some(doc)) => {
                         self.player.play(a.min(doc.frames()), b.min(doc.frames()));
                         "OK".to_string()
                     }
                     _ => "ERR PLAY <from> <to>, in frames, with a file open".to_string(),
                 }
+            }
+            // Simulate the system's default output device changing (the next frame reopens it, at
+            // the same place: f48).
+            "DEVICE_CHANGED" => {
+                self.player.simulate_device_change();
+                "OK".to_string()
             }
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
@@ -6779,6 +6811,8 @@ impl eframe::App for WaveApp {
         self.finish_batch();
         self.poll_transport();
         self.run_scrub();
+        // Follow a change of the system's default output device (f48): reopen at the same place.
+        self.player.maintain();
         self.diag.poll();
         self.meters.update(self.player.take_levels());
         if self.meters.animating() || self.player.is_playing() {
