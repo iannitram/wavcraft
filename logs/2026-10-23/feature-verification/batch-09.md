@@ -1,8 +1,8 @@
 # Feature verification, batch 09
 
-Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page or a community page, and the verdict rests on my reading of it.
+Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page or a community page, and the verdict rests on my reading of it. Rows cited as 'checked in Adobe Audition 26.5 (desktop app)' were confirmed in the app's menus on 2026-10-28.
 
-C111 | exists | Under another name: multichannel files are split to mono with Extract Channels to Mono Files; sessions use mono or stereo track types. | https://helpx.adobe.com/audition/using/multichannel-audio-workflow.html (weak)
+C111 | exists | Edit > Extract Channels to Mono Files splits channels out to mono files. | checked in Adobe Audition 26.5 (desktop app)
 
 C112 | exists | Each track's output is set in the Editor or Mixer to hardware, a bus or the Mix track. | https://helpx.adobe.com/audition/using/multitrack-routing-eq-controls.html
 
@@ -20,7 +20,7 @@ C118 | exists | Dragging a clip edge trims or extends it; Clip > Trim also trims
 
 C119 | exists | The Razor tool splits at the click and Clip > Split splits all clips at the playhead. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html
 
-C120 | exists | Clips can be deleted, and Ripple Delete closes the gap; the ripple option was not on the pages I could read. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html (weak)
+C120 | exists | Edit > Ripple Delete removes the selection and closes the gap. | checked in Adobe Audition 26.5 (desktop app)
 
 C121 | exists | Edit > Copy, Cut and Paste work on clips and ranges. | https://helpx.adobe.com/audition/using/copying-cutting-pasting-deleting-audio.html
 

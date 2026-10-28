@@ -1,6 +1,6 @@
 # Feature verification, batch 10
 
-Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page or a community page, and the verdict rests on my reading of it.
+Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page or a community page, and the verdict rests on my reading of it. Rows cited as 'checked in Adobe Audition 26.5 (desktop app)' were confirmed in the app's menus on 2026-10-28.
 
 C131 | exists | Window > Properties shows clip settings for one or several selected clips. | https://helpx.adobe.com/audition/using/multitrack-clip-stretching.html
 
@@ -16,9 +16,9 @@ C136 | exists | Tools include Move, Razor (selected clips or all), Slip and Time
 
 C137 | exists | The Slip tool shifts a clip's contents without moving the clip. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html
 
-C138 | differs | Ripple Delete closes the gap after a delete; the phrase heal separation is not used. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html (weak)
+C138 | differs | Edit > Ripple Delete closes the gap; the term "heal separation" is not used. | checked in Adobe Audition 26.5 (desktop app)
 
-C139 | not in Audition | I found no key command that nudges clips by a set amount; start time can be typed in Properties. | https://helpx.adobe.com/audition/desktop/keyboard-shortcuts/default-keyboard-shortcuts.html (weak)
+C139 | exists | Clip > Nudge Left / Right / Up / Down nudge clips by key. | checked in Adobe Audition 26.5 (desktop app)
 
 C140 | exists | Snap to Clips aligns clip edges and ruler snapping covers grid divisions. | https://helpx.adobe.com/audition/using/selecting-audio.html
 
@@ -28,7 +28,7 @@ C143 | differs | Strip Silence and Split Silence (Deleting Silence) cut at silen
 
 C146 | exists | Clip Effects is a rack separate from the track rack. | https://helpx.adobe.com/audition/using/applying-effects-multitrack-editor.html
 
-C148 | differs | Sessions keep file paths; I found no relink or replace-missing dialog documented. | https://helpx.adobe.com/audition/using/saving-exporting-files1.html (weak)
+C148 | exists | Clip > Link Media... relinks a clip's media. | checked in Adobe Audition 26.5 (desktop app)
 
 C149 | exists | Video files can be inserted in a session; the audio portion becomes a clip and the video shows in the Video panel. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/importing-files-panel.html
 

@@ -1,11 +1,11 @@
 # Batch 13: Audition verification
 
-Checked 2026-10-28 against Adobe's public Audition help (helpx.adobe.com) as found through web search; Adobe's pages refused direct fetches from my tool, so most lines rest on the search excerpt of the page cited, not a full read. Some rest on forum or press sources and are marked `(weak)`. C243 and C312 were checked in the Audition desktop app (26.5) instead. Format: `row id | verdict | what Audition does | source`. Verdicts: exists, differs (exists under another name or in part), not in Audition (documented as absent or removed, or absent from every page I searched), not found (I could not source it either way). The last two are not proof of absence.
+Checked 2026-10-28 against Adobe's public Audition help (helpx.adobe.com) as found through web search; Adobe's pages refused direct fetches from my tool, so most lines rest on the search excerpt of the page cited, not a full read. Some rest on forum or press sources and are marked `(weak)`. C243 and C312 were checked in the Audition desktop app (26.5) instead. Format: `row id | verdict | what Audition does | source`. Verdicts: exists, differs (exists under another name or in part), not in Audition (documented as absent or removed, or absent from every page I searched), not found (I could not source it either way). The last two are not proof of absence. Rows cited as 'checked in Adobe Audition 26.5 (desktop app)' were confirmed in the app's menus on 2026-10-28.
 
 Rows: 19.
 
 C203 | exists | Bars and Beats is a time display format, and snapping works against it. | https://helpx.adobe.com/audition/using/navigating-time-playing-audio.html
-C206 | not found | I could not confirm that clips follow the session tempo; the docs cover manual clip stretching. | https://helpx.adobe.com/audition/desktop/mixing-multitrack-sessions/multitrack-clip-stretching.html
+C206 | not in Audition | Clip > Stretch has global clip stretching and stretch modes but no option for clips to follow the session tempo. | checked in Adobe Audition 26.5 (desktop app)
 C207 | not in Audition | Audition has no MIDI implementation, so there are no MIDI clips to render for a click (forum answers; no Adobe statement). | https://community.adobe.com/t5/audition-discussions/does-audition-cc-have-midi-support/m-p/11345101 (weak)
 C209 | differs | A clip can be made a unique copy and edited in the Waveform Editor, where effects are destructive; the multitrack effects rack stays nondestructive. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html
 C210 | exists | Multitrack > Bounce To New Track renders clips and effects into a new track with one new clip. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html

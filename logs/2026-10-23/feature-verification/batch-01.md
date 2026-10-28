@@ -1,10 +1,10 @@
 # Feature verification, batch 01
 
-Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page I read, and the verdict rests on my reading of it.
+Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page I read, and the verdict rests on my reading of it. Rows cited as 'checked in Adobe Audition 26.5 (desktop app)' were confirmed in the app's menus on 2026-10-28.
 
 A015 | exists | The toolbar has buttons that switch between the Waveform Editor and Multitrack Editor, and the default shortcut is 1. | https://helpx.adobe.com/audition/desktop/keyboard-shortcuts/default-keyboard-shortcuts.html
 
-A024 | exists | Audition has a Media Browser panel for finding files on drives and locations; Adobe's fixed-issues list mentions a fix for OneDrive not showing in it. | https://helpx.adobe.com/audition/desktop/introduction/fixed-issues.html (weak)
+A024 | exists | Window > Media Browser opens the Media Browser panel. | checked in Adobe Audition 26.5 (desktop app)
 
 A040 | differs | The current docs have no Phase Analysis panel; the Phase Meter panel (Window > Phase Meter) compares the phase of two chosen channels and shows out-of-phase or mono-compatible audio. | https://helpx.adobe.com/audition/desktop/editing-audio-files/analyzing-phase-frequency-amplitude.html
 
@@ -22,7 +22,7 @@ A056 | exists | Shift-drag adds to a lasso or paintbrush selection and Alt-drag 
 
 A067 | differs | The Spectral Pitch Display exists only as the pitch view inside the Manual Pitch Correction effect (fundamental in blue, overtones yellow to red); it is not a general alternate spectral view. | https://helpx.adobe.com/audition/desktop/applying-effects/manual-pitch-correction-effect.html
 
-A068 | not in Audition | The current docs describe only the Spectral Frequency Display and the pitch view inside Manual Pitch Correction; no page offers a spectral phase display. No Adobe page states its absence. | https://helpx.adobe.com/audition/desktop/editing-audio-files/displaying-audio-waveform-editor.html (weak)
+A068 | not in Audition | View offers only Show Spectral Frequency Display and Show Spectral Pitch Display; no spectral phase display. | checked in Adobe Audition 26.5 (desktop app)
 
 A077 | exists | Dragging the Fade In or Fade Out handle makes a linear fade (drag horizontally), logarithmic (drag up or down) or cosine (hold Ctrl or Command); in the Waveform Editor it changes the audio data directly. | https://helpx.adobe.com/audition/desktop/editing-audio-files/visually-fading-changing-amplitude.html
 

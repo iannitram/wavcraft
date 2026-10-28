@@ -4,7 +4,7 @@ One verdict line per row, merged from the batch logs in `feature-verification/`.
 
 A015 | exists | The toolbar has buttons that switch between the Waveform Editor and Multitrack Editor, and the default shortcut is 1. | https://helpx.adobe.com/audition/desktop/keyboard-shortcuts/default-keyboard-shortcuts.html
 
-A024 | exists | Audition has a Media Browser panel for finding files on drives and locations; Adobe's fixed-issues list mentions a fix for OneDrive not showing in it. | https://helpx.adobe.com/audition/desktop/introduction/fixed-issues.html (weak)
+A024 | exists | Window > Media Browser opens the Media Browser panel. | checked in Adobe Audition 26.5 (desktop app)
 
 A040 | differs | The current docs have no Phase Analysis panel; the Phase Meter panel (Window > Phase Meter) compares the phase of two chosen channels and shows out-of-phase or mono-compatible audio. | https://helpx.adobe.com/audition/desktop/editing-audio-files/analyzing-phase-frequency-amplitude.html
 
@@ -22,7 +22,7 @@ A056 | exists | Shift-drag adds to a lasso or paintbrush selection and Alt-drag 
 
 A067 | differs | The Spectral Pitch Display exists only as the pitch view inside the Manual Pitch Correction effect (fundamental in blue, overtones yellow to red); it is not a general alternate spectral view. | https://helpx.adobe.com/audition/desktop/applying-effects/manual-pitch-correction-effect.html
 
-A068 | not in Audition | The current docs describe only the Spectral Frequency Display and the pitch view inside Manual Pitch Correction; no page offers a spectral phase display. No Adobe page states its absence. | https://helpx.adobe.com/audition/desktop/editing-audio-files/displaying-audio-waveform-editor.html (weak)
+A068 | not in Audition | View offers only Show Spectral Frequency Display and Show Spectral Pitch Display; no spectral phase display. | checked in Adobe Audition 26.5 (desktop app)
 
 A077 | exists | Dragging the Fade In or Fade Out handle makes a linear fade (drag horizontally), logarithmic (drag up or down) or cosine (hold Ctrl or Command); in the Waveform Editor it changes the audio data directly. | https://helpx.adobe.com/audition/desktop/editing-audio-files/visually-fading-changing-amplitude.html
 
@@ -48,7 +48,7 @@ A214 | exists | Right-clicking the Levels meters offers Dynamic or Static peaks,
 
 A215 | exists | Clip indicators are cleared by clicking them or by right-clicking the meters and choosing Reset indicators. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/monitoring-recording-playback-levels.html
 
-A217 | not in Audition | The Levels panel documents peak, valley and clip indicators only; no RMS meter display is described. No Adobe page states its absence. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/monitoring-recording-playback-levels.html (weak)
+A217 | not in Audition | View > Metering offers peaks, valleys, LED, colour gradient and dB ranges; no RMS meter option. | checked in Adobe Audition 26.5 (desktop app)
 
 A218 | exists | The Levels panel can be docked horizontally (left channel on top) or vertically. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/monitoring-recording-playback-levels.html
 
@@ -106,7 +106,7 @@ A349 | exists | Adobe's help center has a Learn section with step-by-step tutori
 
 A353 | not in Audition | No help page covers screen reader support or a high-contrast display mode. No Adobe page states its absence. | https://helpx.adobe.com/audition/desktop.html (weak)
 
-B008 | exists | A Favorites menu exists (Fade In, Repair DC Offset, Auto Heal and others) and the noise-reduction page speaks of creating a quick key there; the fetched pages do not describe recording your own actions. | https://helpx.adobe.com/audition/desktop/effects-reference/noise-reduction-restoration-effects.html (weak)
+B008 | exists | Favorites > Start Recording Favorite / Stop Recording Favorite record your own actions. | checked in Adobe Audition 26.5 (desktop app)
 
 B009 | differs | Normalize presets are -0.1 dB and -3 dB; there is no 0 dB preset and no Dynamics presets (fade, DC offset and Auto Heal Favorites are documented). | checked in Adobe Audition 26.5 (desktop app)
 
@@ -228,7 +228,7 @@ B161 | exists | The Match Loudness panel scans a list of files and runs them to 
 
 B162 | exists | Noise Reduction is a process effect, so it can be applied to files through a recorded Favorite in Batch Process using a saved noise print; I found only community confirmation. | https://community.adobe.com/questions-544/is-there-a-way-to-add-more-then-1-favorite-in-the-batch-processing-164399 (weak)
 
-B163 | exists | Under another name: Favorites > Start Recording Favorite records a step sequence for replay (the older Scripts feature did the same); only community pages describe it. | https://community.adobe.com/t5/audition-discussions/unable-to-make-recorded-favorite-act-relative-to-playhead/m-p/11363451 (weak)
+B163 | exists | Favorites > Start Recording Favorite / Stop Recording Favorite record step sequences. | checked in Adobe Audition 26.5 (desktop app)
 
 B168 | exists | Process effect dialogs such as Noise Reduction have a Preview button that plays the processed selection before it is applied. | https://helpx.adobe.com/audition/using/effects-controls.html
 
@@ -264,7 +264,7 @@ C060 | exists | Track meters show in the Mixer and Editor for each track, and ri
 
 C061 | exists | The Level Meters panel shows the mix output, and the Mix track has its own meter in the Mixer. | https://helpx.adobe.com/audition/using/monitoring-recording-playback-levels.html
 
-C069 | exists | Under another name: the Frequency Analysis and Spectral Frequency displays update during playback and recording; I found no page that ties them to recording. | https://helpx.adobe.com/audition/using/analyzing-phase-frequency-amplitude.html (weak)
+C069 | exists | Window > Frequency Analysis opens the Frequency Analysis panel. | checked in Adobe Audition 26.5 (desktop app)
 
 C076 | differs | Session files store file paths only; Export can save copies of associated files (archive style), but I found no documented relink dialog. | https://helpx.adobe.com/audition/using/saving-exporting-files1.html (weak)
 
@@ -274,13 +274,13 @@ C078 | exists | Sample rate and bit depth are set when a session is created (bit
 
 C079 | exists | The Files panel imports files, which can be inserted into the session on separate tracks at the current time. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/importing-files-panel.html
 
-C080 | exists | File > Open Recent lists recent files and sessions; I found no Adobe page that documents it. | https://helpx.adobe.com/audition/using/creating-opening-files.html (weak)
+C080 | exists | File > Open Recent lists recent files. | checked in Adobe Audition 26.5 (desktop app)
 
 C081 | exists | Edit > Undo and the History panel cover multitrack edits, and Adobe says multitrack clip edits are non-destructive and undoable. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html
 
 C082 | exists | Zoom buttons, scroll bar and mouse wheel zoom and scroll the timeline. | https://helpx.adobe.com/audition/using/navigating-time-playing-audio.html
 
-C083 | exists | View > Time Display switches the ruler between formats including Bars and Beats; the full list was not on pages I could read. | https://helpx.adobe.com/audition/using/navigating-time-playing-audio.html (weak)
+C083 | exists | View > Time Display offers Decimal, SMPTE 23.976 to 59.94 fps (incl. drop-frame), Samples, Bars and Beats and a custom frame rate. | checked in Adobe Audition 26.5 (desktop app)
 
 C085 | exists | The Markers panel adds, edits and selects point and range markers (also called cues). | https://helpx.adobe.com/audition/using/markers.html
 
@@ -300,7 +300,7 @@ C092 | exists | Loop Playback repeats a selected range. | https://helpx.adobe.co
 
 C093 | exists | Meters show playback levels as well as recording levels. | https://helpx.adobe.com/audition/using/monitoring-recording-playback-levels.html
 
-C094 | differs | Audition has a Metadata panel for file-level fields, not free-text session notes; I found no Adobe page on it. | https://helpx.adobe.com/audition/using/creating-opening-files.html (weak)
+C094 | differs | Window > Metadata holds file-level fields; there is no session-notes panel. | checked in Adobe Audition 26.5 (desktop app)
 
 C099 | exists | Bus tracks group several tracks or sends under one control. | https://helpx.adobe.com/audition/using/multitrack-routing-eq-controls.html
 
@@ -318,11 +318,11 @@ C107 | differs | The Track Visibility panel hides tracks by eye icon and saves v
 
 C108 | exists | Bounce to New Track creates a track holding a clip that reflects a bus or mix track (also available for clips). | https://helpx.adobe.com/audition/using/multitrack-routing-eq-controls.html
 
-C109 | not in Audition | I found no Freeze Track command; bouncing to a new track is the nearest feature. | https://helpx.adobe.com/audition/using/multitrack-routing-eq-controls.html (weak)
+C109 | not in Audition | The Multitrack menu has Bounce to New Track and Mixdown Session to New File; no Freeze Track. | checked in Adobe Audition 26.5 (desktop app)
 
 C110 | exists | A Polarity Reverse (phase invert) button in the Mixer input controls flips a track's phase. | https://helpx.adobe.com/audition/using/analyzing-phase-frequency-amplitude.html
 
-C111 | exists | Under another name: multichannel files are split to mono with Extract Channels to Mono Files; sessions use mono or stereo track types. | https://helpx.adobe.com/audition/using/multichannel-audio-workflow.html (weak)
+C111 | exists | Edit > Extract Channels to Mono Files splits channels out to mono files. | checked in Adobe Audition 26.5 (desktop app)
 
 C112 | exists | Each track's output is set in the Editor or Mixer to hardware, a bus or the Mix track. | https://helpx.adobe.com/audition/using/multitrack-routing-eq-controls.html
 
@@ -340,7 +340,7 @@ C118 | exists | Dragging a clip edge trims or extends it; Clip > Trim also trims
 
 C119 | exists | The Razor tool splits at the click and Clip > Split splits all clips at the playhead. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html
 
-C120 | exists | Clips can be deleted, and Ripple Delete closes the gap; the ripple option was not on the pages I could read. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html (weak)
+C120 | exists | Edit > Ripple Delete removes the selection and closes the gap. | checked in Adobe Audition 26.5 (desktop app)
 
 C121 | exists | Edit > Copy, Cut and Paste work on clips and ranges. | https://helpx.adobe.com/audition/using/copying-cutting-pasting-deleting-audio.html
 
@@ -376,9 +376,9 @@ C136 | exists | Tools include Move, Razor (selected clips or all), Slip and Time
 
 C137 | exists | The Slip tool shifts a clip's contents without moving the clip. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html
 
-C138 | differs | Ripple Delete closes the gap after a delete; the phrase heal separation is not used. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html (weak)
+C138 | differs | Edit > Ripple Delete closes the gap; the term "heal separation" is not used. | checked in Adobe Audition 26.5 (desktop app)
 
-C139 | not in Audition | I found no key command that nudges clips by a set amount; start time can be typed in Properties. | https://helpx.adobe.com/audition/desktop/keyboard-shortcuts/default-keyboard-shortcuts.html (weak)
+C139 | exists | Clip > Nudge Left / Right / Up / Down nudge clips by key. | checked in Adobe Audition 26.5 (desktop app)
 
 C140 | exists | Snap to Clips aligns clip edges and ruler snapping covers grid divisions. | https://helpx.adobe.com/audition/using/selecting-audio.html
 
@@ -388,7 +388,7 @@ C143 | differs | Strip Silence and Split Silence (Deleting Silence) cut at silen
 
 C146 | exists | Clip Effects is a rack separate from the track rack. | https://helpx.adobe.com/audition/using/applying-effects-multitrack-editor.html
 
-C148 | differs | Sessions keep file paths; I found no relink or replace-missing dialog documented. | https://helpx.adobe.com/audition/using/saving-exporting-files1.html (weak)
+C148 | exists | Clip > Link Media... relinks a clip's media. | checked in Adobe Audition 26.5 (desktop app)
 
 C149 | exists | Video files can be inserted in a session; the audio portion becomes a clip and the video shows in the Video panel. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/importing-files-panel.html
 
@@ -440,7 +440,7 @@ C179 | exists | Keyframe transitions are Linear (default) or Hold per keyframe, 
 
 C180 | differs | Clip envelopes belong to the clip so they travel with it; track envelopes stay put on the track, and I found no option that moves them with clips (inferred from the envelope description). | https://helpx.adobe.com/audition/using/automating-mixes-envelopes1.html (weak)
 
-C181 | not found | Nothing I found describes snapping keyframes to a grid; general snapping covers clips and playhead. | https://helpx.adobe.com/audition/using/automating-mixes-envelopes1.html
+C181 | not in Audition | Edit > Snapping snaps to markers, ruler, clips, loops, zero crossings and frames; no keyframe snapping option. | checked in Adobe Audition 26.5 (desktop app)
 
 C182 | not found | I found no description of copying and pasting envelope keyframes between clips or tracks. | https://helpx.adobe.com/audition/using/automating-mixes-envelopes1.html
 
@@ -472,13 +472,13 @@ C198 | differs | The Match Loudness panel scans, corrects and exports files to a
 
 C199 | exists | Tempo (BPM) and Time Signature are set per session in the Properties panel, with a Bars and Beats display. | https://helpx.adobe.com/audition/using/navigating-time-playing-audio.html
 
-C200 | not in Audition | The docs describe one tempo and time signature per session and no tempo map along the timeline (absence in the docs I searched). | https://helpx.adobe.com/audition/using/navigating-time-playing-audio.html (weak)
+C200 | not in Audition | View > Time Display > Edit Tempo... sets one tempo; no tempo map along the timeline. | checked in Adobe Audition 26.5 (desktop app)
 
-C202 | differs | A metronome exists (Edit > Metronome, pattern and sound editable); I found no count-in setting. | https://helpx.adobe.com/audition/using/navigating-time-playing-audio.html (weak)
+C202 | differs | Multitrack > Metronome has Enable Metronome, Edit Pattern and Change Sound Type; no count-in setting. | checked in Adobe Audition 26.5 (desktop app)
 
 C203 | exists | Bars and Beats is a time display format, and snapping works against it. | https://helpx.adobe.com/audition/using/navigating-time-playing-audio.html
 
-C206 | not found | I could not confirm that clips follow the session tempo; the docs cover manual clip stretching. | https://helpx.adobe.com/audition/desktop/mixing-multitrack-sessions/multitrack-clip-stretching.html
+C206 | not in Audition | Clip > Stretch has global clip stretching and stretch modes but no option for clips to follow the session tempo. | checked in Adobe Audition 26.5 (desktop app)
 
 C207 | not in Audition | Audition has no MIDI implementation, so there are no MIDI clips to render for a click (forum answers; no Adobe statement). | https://community.adobe.com/t5/audition-discussions/does-audition-cc-have-midi-support/m-p/11345101 (weak)
 
@@ -566,7 +566,7 @@ C288 | differs | No replace-audio command; the documented way is a mixdown re-im
 
 C290 | not in Audition | Forum reports show Pro Tools sessions are not opened directly; none of the docs list it (not an Adobe statement). | https://community.adobe.com/t5/audition-discussions/workflow-protools-to-audition/m-p/15025362/highlight/true (weak)
 
-C291 | not in Audition | Audition has no MIDI implementation, so no MIDI file import or export (forum answers; no Adobe statement). | https://community.adobe.com/t5/audition-discussions/does-audition-cc-have-midi-support/m-p/11345101 (weak)
+C291 | not in Audition | File > Import lists File, Raw Data, Application Settings and Markers from File; no MIDI import. | checked in Adobe Audition 26.5 (desktop app)
 
 C292 | differs | SMPTE time formats and control-surface sync (Mackie HUI, FaderPort) exist; chasing external timecode is not documented. | https://helpx.adobe.com/audition/using/control-surface-support.html
 
@@ -578,7 +578,7 @@ C299 | not found | I found no mention of Dolby Atmos or immersive formats in Aud
 
 C301 | exists | Audition 26.0 runs natively on Windows on ARM; native Apple silicon came in May 2021 (press report). | https://helpx.adobe.com/audition/using/whats-new/2026.html (weak)
 
-C310 | not found | I found no share or upload command in Audition's documentation. | https://helpx.adobe.com/audition/using/saving-exporting-files1.html
+C310 | not in Audition | File > Export lists file, markers, mixdown, Premiere, Media Encoder, session, FCP XML, OMF and settings; no share or upload. | checked in Adobe Audition 26.5 (desktop app)
 
 C311 | not found | I found no cloud sync or library feature for Audition sessions. | https://helpx.adobe.com/audition/using/saving-exporting-files1.html
 
