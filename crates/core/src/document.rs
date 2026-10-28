@@ -6,10 +6,10 @@
 //! document keeps in RAM besides the store's block cache is the peaks, about 1/24 of a byte a
 //! sample.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::doc::span::EditSpan;
 
@@ -19,7 +19,7 @@ use crate::doc::{Channel, DocState, Piece, SourceFormat};
 pub use crate::io::OpenError;
 use crate::io::OpenOptions;
 use crate::spectrogram::Samples;
-use crate::store::{BLOCK_FRAMES, Store, StoreOptions};
+use crate::store::{BLOCK_FRAMES, BlockHandle, BlockId, Store, StoreOptions};
 
 /// Samples per level-0 block of the peaks.
 ///
@@ -46,6 +46,86 @@ fn finish(acc: (f32, f32)) -> (f32, f32) {
     if acc.0 > acc.1 { (0.0, 0.0) } else { acc }
 }
 
+/// A change covering more than this share of the document (its larger side over the new length)
+/// rebuilds the overviews in full, one thread per channel, instead of block by block. Past about
+/// half, almost every block is new anyway and the per-block walk only adds overhead.
+const FULL_BUILD_OVER: (u64, u64) = (1, 2);
+/// Bytes the shared level-0 cache may hold. A 3 h stereo file needs about 32 MB for its open
+/// overview, so this leaves room for the blocks of a few edits in history.
+pub const BLOCK_CACHE_BYTES: usize = 64 << 20;
+/// Marks a level-0 summary not yet computed (NaN never survives `merge`, so it cannot be a value).
+const UNKNOWN: (f32, f32) = (f32::NAN, f32::NAN);
+const SUMMARY_BYTES: usize = std::mem::size_of::<(f32, f32)>();
+
+/// Level-0 summaries of store blocks, shared by the documents of one history (see
+/// [`Document::after_step`]). Keyed by block identity: a block's samples never change, so a
+/// 256-frame summary of a block is valid in every piece table that uses it. An undo, redo or
+/// history jump back to an earlier step finds its blocks here and reads no samples.
+///
+/// Each entry holds a [`Weak`] to its block, so the cache never keeps audio alive. An entry goes
+/// once no step in history holds its block ([`trim`](Self::trim)). If that still leaves more than
+/// [`BLOCK_CACHE_BYTES`], entries outside the current document go too.
+#[derive(Debug, Default)]
+pub struct PeakBlockCache {
+    blocks: HashMap<BlockId, CachedBlock>,
+    bytes: usize,
+}
+
+#[derive(Debug)]
+struct CachedBlock {
+    owner: Weak<BlockHandle>,
+    /// One summary per whole 256-frame sub-block of the block (the tail of a block is never cached).
+    summaries: Arc<Vec<(f32, f32)>>,
+}
+
+impl PeakBlockCache {
+    /// The summaries of `block` if any are cached (index `k` covers frames `k * PEAK_BLOCK..`).
+    fn summaries(&self, block: &BlockHandle) -> Option<Arc<Vec<(f32, f32)>>> {
+        if block.is_zero() {
+            return None;
+        }
+        self.blocks.get(&block.id()).map(|c| Arc::clone(&c.summaries))
+    }
+
+    /// Remember the summary of whole sub-block `k` of `block`.
+    fn record(&mut self, block: &Arc<BlockHandle>, k: usize, value: (f32, f32)) {
+        if block.is_zero() {
+            return;
+        }
+        let whole = block.frames() as usize / PEAK_BLOCK;
+        if k >= whole {
+            return;
+        }
+        let bytes = &mut self.bytes;
+        let entry = self.blocks.entry(block.id()).or_insert_with(|| {
+            *bytes += whole * SUMMARY_BYTES;
+            CachedBlock { owner: Arc::downgrade(block), summaries: Arc::new(vec![UNKNOWN; whole]) }
+        });
+        if let Some(slot) = Arc::make_mut(&mut entry.summaries).get_mut(k) {
+            *slot = value;
+        }
+    }
+
+    /// Drop entries no document in history holds any more, then, if still over the budget,
+    /// every entry whose block is not in `current` (the blocks of the document being shown).
+    fn trim(&mut self, current: &HashSet<BlockId>) {
+        self.blocks.retain(|_, c| c.owner.strong_count() > 0);
+        if self.bytes_now() > BLOCK_CACHE_BYTES {
+            self.blocks.retain(|id, _| current.contains(id));
+        }
+        self.bytes = self.bytes_now();
+    }
+
+    fn bytes_now(&self) -> usize {
+        self.blocks.values().map(|c| c.summaries.len() * SUMMARY_BYTES).sum()
+    }
+
+    /// Bytes of summaries held (for tests and diagnostics).
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
 /// Multi-resolution min/max overview of one channel, built from chunked store reads.
 /// Blocks follow each piece's source grid, with short blocks at splice boundaries, so
 /// an unaligned shift never requires rereading the unchanged suffix. Coarser levels
@@ -62,11 +142,22 @@ pub struct WavePeaks {
 impl WavePeaks {
     /// Build from channel `ch` of `state`, a chunk at a time.
     pub fn build(state: &DocState, ch: usize) -> std::io::Result<WavePeaks> {
-        Self::updated(state, ch, None)
+        Self::updated(state, ch, None, None)
     }
 
-    /// Reuse unchanged source-aligned blocks, including a suffix shifted by one frame.
-    fn updated(state: &DocState, ch: usize, previous: Option<(&WavePeaks, &Channel, EditSpan)>) -> std::io::Result<WavePeaks> {
+    /// [`build`](Self::build) that also reads and fills the shared block cache.
+    fn build_shared(state: &DocState, ch: usize, cache: &Mutex<PeakBlockCache>) -> std::io::Result<WavePeaks> {
+        Self::updated(state, ch, None, Some(cache))
+    }
+
+    /// Reuse unchanged source-aligned blocks, including a suffix shifted by one frame, and
+    /// blocks held by `cache`. Level-0 summaries that were read are recorded in `cache`.
+    fn updated(
+        state: &DocState,
+        ch: usize,
+        previous: Option<(&WavePeaks, &Channel, EditSpan)>,
+        cache: Option<&Mutex<PeakBlockCache>>,
+    ) -> std::io::Result<WavePeaks> {
         let frames = usize::try_from(state.len_frames()).map_err(|_| std::io::Error::other("document too long"))?;
         let channel = state.channel(ch).ok_or_else(|| std::io::Error::other("missing peak channel"))?;
         let mut level0 = Vec::with_capacity(frames.div_ceil(PEAK_BLOCK) + channel.piece_count());
@@ -89,10 +180,19 @@ impl WavePeaks {
             let end = at + len;
             let piece_start = at;
             let shared = sources.get(&Arc::as_ptr(piece.block()));
+            // This piece's block as the cache knows it. Locked once per piece, not per block.
+            let cached = cache.and_then(|c| c.lock().ok()).and_then(|g| g.summaries(piece.block()));
             let mut first = true;
             while at < end {
                 let width = if first { head } else { PEAK_BLOCK.min(end - at) };
                 first = false;
+                // A whole sub-block of the source grid, summarised before (in this or another step).
+                let source = piece.offset() as usize + at - piece_start;
+                let cached_value = cached
+                    .as_ref()
+                    .filter(|_| width == PEAK_BLOCK && source.is_multiple_of(PEAK_BLOCK))
+                    .and_then(|s| s.get(source / PEAK_BLOCK).copied())
+                    .filter(|v| !v.0.is_nan());
                 let reused = previous.and_then(|(old, _, span)| {
                     let (old_at, limit) = if at as u64 + width as u64 <= span.at {
                         (at, end.min(span.at as usize))
@@ -117,8 +217,13 @@ impl WavePeaks {
                 if let Some((blocks, frames)) = reused {
                     level0.extend_from_slice(blocks);
                     at += frames;
+                } else if let Some(value) = cached_value {
+                    level0.push(value);
+                    at += width;
                 } else {
-                    // Read new audio in bounded chunks, ending on this piece's source grid.
+                    // Read new audio in bounded chunks, ending on this piece's source grid. Where
+                    // the cache holds some of this block, read one block at a time so cached
+                    // blocks behind a miss are not read again.
                     let limit = previous.map_or(end, |(_, _, span)| {
                         if at as u64 >= span.at && (at as u64) < span.at + span.inserted {
                             end.min(usize::try_from(span.at + span.inserted).unwrap_or(end)).max(at + width)
@@ -126,7 +231,7 @@ impl WavePeaks {
                             at + width
                         }
                     });
-                    let mut want = chunk.len().min(limit - at);
+                    let mut want = if cached.is_some() { width } else { chunk.len().min(limit - at) };
                     if want < end - at {
                         want = width + (want - width) / PEAK_BLOCK * PEAK_BLOCK;
                     }
@@ -135,8 +240,26 @@ impl WavePeaks {
                         return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "the document ended early"));
                     }
                     let (head_samples, rest) = buf.split_at(width);
-                    level0.push(finish(head_samples.iter().fold(EMPTY, |acc, &s| merge(acc, (s, s)))));
-                    level0.extend(rest.chunks(PEAK_BLOCK).map(|c| finish(c.iter().fold(EMPTY, |acc, &s| merge(acc, (s, s))))));
+                    let head_value = finish(head_samples.iter().fold(EMPTY, |acc, &s| merge(acc, (s, s))));
+                    level0.push(head_value);
+                    // Whole sub-blocks read here, by their index in the source block, for the cache.
+                    let mut fresh = Vec::new();
+                    if width == PEAK_BLOCK && source.is_multiple_of(PEAK_BLOCK) {
+                        fresh.push((source / PEAK_BLOCK, head_value));
+                    }
+                    for (j, c) in rest.chunks(PEAK_BLOCK).enumerate() {
+                        let value = finish(c.iter().fold(EMPTY, |acc, &s| merge(acc, (s, s))));
+                        level0.push(value);
+                        let s = source + width + j * PEAK_BLOCK;
+                        if c.len() == PEAK_BLOCK && s.is_multiple_of(PEAK_BLOCK) {
+                            fresh.push((s / PEAK_BLOCK, value));
+                        }
+                    }
+                    if let Some(mut shared) = cache.and_then(|c| c.lock().ok()) {
+                        for (k, value) in fresh {
+                            shared.record(piece.block(), k, value);
+                        }
+                    }
                     at += want;
                 }
             }
@@ -356,6 +479,9 @@ pub struct Document {
     pub peaks: Vec<WavePeaks>,
     /// How the overviews were made at open (see [`PeakReport`]).
     pub peak_report: PeakReport,
+    /// Level-0 summaries of the blocks in this document's history, shared by every step (see
+    /// [`PeakBlockCache`]). `after_step` hands the same cache to the new document.
+    pub peak_blocks: Arc<Mutex<PeakBlockCache>>,
 }
 
 /// How a document's waveform overviews came about, for the status line and scripted checks.
@@ -368,11 +494,14 @@ pub struct PeakReport {
     pub ms: f64,
     /// Why the cache file could not be written, if it could not.
     pub write_error: Option<String>,
+    /// For a history step: whether the change was past [`FULL_BUILD_OVER`] and the overviews were
+    /// rebuilt in full rather than updated block by block.
+    pub full_rebuild: bool,
 }
 
 impl PeakReport {
     fn off(ms: f64) -> PeakReport {
-        PeakReport { result: "off", ms, write_error: None }
+        PeakReport { result: "off", ms, write_error: None, full_rebuild: false }
     }
 }
 
@@ -420,11 +549,21 @@ impl Document {
         }
         let started = std::time::Instant::now();
         let span = EditSpan::between(&self.state, &state);
-        let mut peaks = Vec::with_capacity(state.channel_count());
-        for ch in 0..state.channel_count() {
-            let previous = self.peaks.get(ch).zip(self.state.channel(ch)).map(|(p, channel)| (p, channel.as_ref(), span));
-            peaks.push(WavePeaks::updated(&state, ch, previous).map_err(|e| OpenError::Io(e.to_string()))?);
-        }
+        // A change past half the document touches nearly every block: rebuild in full, which is
+        // what open does, instead of walking each block of the span.
+        let (num, den) = FULL_BUILD_OVER;
+        let full_rebuild = span.inserted.max(span.removed).saturating_mul(den) > state.len_frames().saturating_mul(num);
+        let peaks = if full_rebuild {
+            Self::build_all(&state, &self.peak_blocks)?
+        } else {
+            let mut peaks = Vec::with_capacity(state.channel_count());
+            for ch in 0..state.channel_count() {
+                let previous = self.peaks.get(ch).zip(self.state.channel(ch)).map(|(p, channel)| (p, channel.as_ref(), span));
+                peaks.push(WavePeaks::updated(&state, ch, previous, Some(&self.peak_blocks)).map_err(|e| OpenError::Io(e.to_string()))?);
+            }
+            peaks
+        };
+        Self::trim_blocks(&state, &self.peak_blocks);
         let src = state.source();
         let info = AudioInfo {
             format: src.format,
@@ -434,7 +573,28 @@ impl Document {
             frames: state.len_frames(),
             bwf: src.bwf.clone(),
         };
-        Ok(Document { path: self.path.clone(), info, state, peaks, peak_report: PeakReport::off(started.elapsed().as_secs_f64() * 1000.0) })
+        let peak_report = PeakReport { full_rebuild, ..PeakReport::off(started.elapsed().as_secs_f64() * 1000.0) };
+        Ok(Document { path: self.path.clone(), info, state, peaks, peak_report, peak_blocks: Arc::clone(&self.peak_blocks) })
+    }
+
+    /// Every channel's overview from scratch, one thread per channel, sharing `cache`.
+    fn build_all(state: &DocState, cache: &Mutex<PeakBlockCache>) -> Result<Vec<WavePeaks>, OpenError> {
+        let built: Vec<std::io::Result<WavePeaks>> = std::thread::scope(|s| {
+            let jobs: Vec<_> = (0..state.channel_count()).map(|ch| (ch, s.spawn(move || WavePeaks::build_shared(state, ch, cache)))).collect();
+            jobs.into_iter()
+                .map(|(ch, job)| job.join().unwrap_or_else(|_| Err(std::io::Error::other(format!("the peaks thread of channel {ch} panicked")))))
+                .collect()
+        });
+        built.into_iter().collect::<Result<Vec<_>, _>>().map_err(|e| OpenError::Io(e.to_string()))
+    }
+
+    /// Let go of cached blocks that no step in history still holds (see [`PeakBlockCache::trim`]).
+    fn trim_blocks(state: &DocState, cache: &Mutex<PeakBlockCache>) {
+        let live: HashSet<BlockId> =
+            (0..state.channel_count()).filter_map(|ch| state.channel(ch)).flat_map(|c| c.pieces().iter().map(|p| p.block().id())).collect();
+        if let Ok(mut cache) = cache.lock() {
+            cache.trim(&live);
+        }
     }
 
     /// [`from_state`](Self::from_state) with a peak cache (folder and key): the overviews are
@@ -457,11 +617,12 @@ impl Document {
         let started = std::time::Instant::now();
         let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
         let mut report = PeakReport::off(0.0);
+        let peak_blocks = Arc::new(Mutex::new(PeakBlockCache::default()));
         let mut cached = None;
         if let Some((dir, key)) = cache {
             match crate::peakcache::load(dir, key, channels, frames) {
                 Ok(peaks) => {
-                    report = PeakReport { result: "hit", ms: ms(started), write_error: None };
+                    report = PeakReport { result: "hit", ms: ms(started), write_error: None, full_rebuild: false };
                     cached = Some(peaks);
                 }
                 Err(miss) => report.result = miss.word(),
@@ -471,16 +632,7 @@ impl Document {
             Some(peaks) => peaks,
             None => {
                 let t = std::time::Instant::now();
-                let built: Vec<std::io::Result<WavePeaks>> = std::thread::scope(|s| {
-                    let state = &state;
-                    let jobs: Vec<_> = (0..state.channel_count()).map(|ch| (ch, s.spawn(move || WavePeaks::build(state, ch)))).collect();
-                    jobs.into_iter()
-                        .map(|(ch, job)| {
-                            job.join().unwrap_or_else(|_| Err(std::io::Error::other(format!("the peaks thread of channel {ch} panicked"))))
-                        })
-                        .collect()
-                });
-                let built = built.into_iter().collect::<Result<Vec<_>, _>>().map_err(|e| OpenError::Io(e.to_string()))?;
+                let built = Self::build_all(&state, &peak_blocks)?;
                 report.ms = ms(t);
                 if let Some((dir, key)) = cache {
                     report.write_error =
@@ -489,7 +641,7 @@ impl Document {
                 built
             }
         };
-        Ok(Document { path, info, state, peaks, peak_report: report })
+        Ok(Document { path, info, state, peaks, peak_report: report, peak_blocks })
     }
 
     /// Decode a file already in memory into a new session store. `path` supplies the extension
