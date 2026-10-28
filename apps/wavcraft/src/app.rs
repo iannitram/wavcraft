@@ -1475,8 +1475,6 @@ impl WaveApp {
             Some(dir) => reset_preference_files(dir)?,
             None => "Preferences reset to their defaults".to_string(),
         };
-        // The shortcut file is gone, so the keys are the shipped ones again (as at launch).
-        self.keymap = self.shortcuts_path.as_deref().map(wavcraft_core::shortcuts::load).unwrap_or_default().0;
         self.error = None;
         self.reload_settings();
         self.notice = Some(msg.clone());
@@ -4461,7 +4459,7 @@ impl WaveApp {
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.label(
-                    "Put your settings and shortcut changes back to the defaults? The old files are kept beside the new ones as settings.txt.reset-N and shortcuts.txt.reset-N.",
+                    "Put your settings back to the defaults? Your custom keyboard shortcuts are kept. The old settings file is kept beside the new one as settings.txt.reset-N.",
                 );
                 ui.horizontal(|ui| {
                     if ui.button("Restore Defaults").clicked() {
@@ -11942,17 +11940,14 @@ impl eframe::App for WaveApp {
 
 /// The one reset of the preferences on disk, for every path (the dialog's button, Shift at launch,
 /// `--reset-preferences`, File › Restore Preference Defaults and `PREF reset`). The settings and
-/// shortcut files in `dir` are moved aside as `.reset-N` (see `bundle::reset_preferences`), and the
-/// active shortcut set is forgotten so no saved set comes back at the next start. Returns what
-/// to say; an error leaves the files as they were.
+/// settings file in `dir` is moved aside as `.reset-N` (see `bundle::reset_preferences`). Custom
+/// keyboard shortcuts are kept: `shortcuts.txt` and the active shortcut set are left as they are.
+/// Returns what to say; an error leaves the files as they were.
 fn reset_preference_files(dir: &Path) -> Result<String, String> {
     let moved = bundle::reset_preferences(dir).map_err(|e| {
         log::warn!(target: "wavcraft", "could not reset the preferences in {}: {e}", dir.display());
         format!("could not reset the preferences: {e}")
     })?;
-    if let Err(e) = SetStore::new(dir).set_active(None) {
-        log::warn!(target: "wavcraft", "could not forget the active shortcut set: {e}");
-    }
     if moved.is_empty() {
         return Ok("Preferences were already the defaults".to_string());
     }
@@ -12628,3 +12623,32 @@ mod tests {
 #[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
 mod i3_shortcut_help_tests;
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+
+    /// Every reset path calls `reset_preference_files`; it moves settings.txt aside and leaves the
+    /// custom shortcuts and the active shortcut set as they were.
+    #[test]
+    fn a_reset_keeps_custom_shortcuts_and_the_active_set() {
+        let dir = std::env::temp_dir().join(format!("wavcraft-app-reset-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let shortcuts = "edit.undo = Ctrl+U\n";
+        std::fs::write(dir.join("settings.txt"), "session_folder = /x\n").expect("settings");
+        std::fs::write(dir.join("shortcuts.txt"), shortcuts).expect("shortcuts");
+        let store = SetStore::new(&dir);
+        let set = store.save("Mine", &Keymap::default()).expect("save set");
+        store.set_active(Some(&set)).expect("activate set");
+
+        reset_preference_files(&dir).expect("reset");
+
+        assert!(!dir.join("settings.txt").exists(), "settings.txt was not moved aside");
+        assert!(dir.join("settings.txt.reset-1").is_file());
+        assert_eq!(std::fs::read_to_string(dir.join("shortcuts.txt")).expect("read"), shortcuts);
+        assert!(!dir.join("shortcuts.txt.reset-1").exists());
+        assert_eq!(store.active().as_deref(), Some(set.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
