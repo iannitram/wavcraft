@@ -1,6 +1,6 @@
 # Batch 11: Audition verification
 
-Checked 2026-10-28 against Adobe's public Audition help (helpx.adobe.com) as found through web search; Adobe's pages refused direct fetches from my tool, so each line rests on the search excerpt of the page cited, not a full read. Format: `row id | verdict | what Audition does | source`. Verdicts: exists, differs (exists under another name or in part), not in Audition (documented as absent or removed, or absent from every page I searched), not found (I could not source it either way). The last two are not proof of absence.
+Checked 2026-10-28 against Adobe's public Audition help (helpx.adobe.com) as found through web search; Adobe's pages refused direct fetches from my tool, so most lines rest on the search excerpt of the page cited, not a full read. Some rest on forum or press sources and are marked `(weak)`. C243 and C312 were checked in the Audition desktop app (26.5) instead. Format: `row id | verdict | what Audition does | source`. Verdicts: exists, differs (exists under another name or in part), not in Audition (documented as absent or removed, or absent from every page I searched), not found (I could not source it either way). The last two are not proof of absence.
 
 Rows: 19.
 

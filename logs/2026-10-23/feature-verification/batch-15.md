@@ -1,6 +1,6 @@
 # Batch 15: Audition verification
 
-Checked 2026-10-28 against Adobe's public Audition help (helpx.adobe.com) as found through web search; Adobe's pages refused direct fetches from my tool, so each line rests on the search excerpt of the page cited, not a full read. Format: `row id | verdict | what Audition does | source`. Verdicts: exists, differs (exists under another name or in part), not in Audition (documented as absent or removed, or absent from every page I searched), not found (I could not source it either way). The last two are not proof of absence.
+Checked 2026-10-28 against Adobe's public Audition help (helpx.adobe.com) as found through web search; Adobe's pages refused direct fetches from my tool, so most lines rest on the search excerpt of the page cited, not a full read. Some rest on forum or press sources and are marked `(weak)`. C243 and C312 were checked in the Audition desktop app (26.5) instead. Format: `row id | verdict | what Audition does | source`. Verdicts: exists, differs (exists under another name or in part), not in Audition (documented as absent or removed, or absent from every page I searched), not found (I could not source it either way). The last two are not proof of absence.
 
 Rows: 19.
 
@@ -22,4 +22,4 @@ C311 | not found | I found no cloud sync or library feature for Audition session
 C312 | exists | Scripts run from File > Browse and Run Script...; scripting exists in Audition 26.5. | checked in Adobe Audition 26.5 (desktop app)
 C314 | differs | Audition has Generate Speech using the operating system's voices; AI Enhance Speech is documented in Adobe's Premiere Pro help, not Audition's, and no auto-tagging was found. | https://helpx.adobe.com/audition/desktop/using/text-to-speech.html
 C323 | not in Audition | Not supported; a community request asks for DAWproject. | https://community.adobe.com/t5/audition-ideas/please-add-support-for-the-new-dawproject-session-exchange-format-it-s-free-and-open-source/idi-p/14127897 (weak)
-C324 | not found | I found no public Adobe documentation of a crash-safe export finalize step in Audition. | no public Adobe page found
+C324 | not found | I found no public Adobe documentation of a crash-safe export finalize step in Audition. | not found in Adobe's public Audition docs (searched 2026-10-28); app check pending

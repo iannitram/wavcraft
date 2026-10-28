@@ -588,4 +588,4 @@ C314 | differs | Audition has Generate Speech using the operating system's voice
 
 C323 | not in Audition | Not supported; a community request asks for DAWproject. | https://community.adobe.com/t5/audition-ideas/please-add-support-for-the-new-dawproject-session-exchange-format-it-s-free-and-open-source/idi-p/14127897 (weak)
 
-C324 | not found | I found no public Adobe documentation of a crash-safe export finalize step in Audition. | no public Adobe page found
+C324 | not found | I found no public Adobe documentation of a crash-safe export finalize step in Audition. | not found in Adobe's public Audition docs (searched 2026-10-28); app check pending
