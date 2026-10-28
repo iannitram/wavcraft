@@ -362,7 +362,7 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 208 | C034 | T4 | Record from several mics in Waveform | Multi-input to one multichannel file | missing |  |  |  | M | C020 | #72 |
 | 209 | A210 | T4 | ASIO / CoreAudio / WASAPI choice and buffer size (merged: C005, C012, C006) | Device class, I/O buffer, latency | missing |  | SoundCraft #681 ASIO, #213, #196 JACK open; SoundCraft audio_systems() lists cpal hosts; SoundCraft #681 open; SoundCraft asio feature opt-in; SoundCraft devices.rs... | soundcraft-model/mix/playback (MIT/Apache) | L | A276 | #55 |
 | 210 | C011 | T4 | Duplex low-latency stream | Input and output on one clock for monitoring and overdub | missing | CP | SoundCraft gap G-01 (separate cpal streams); SoundCraft #769,#808 |  | L | A276 |  |
-| 211 | C015 | T4 | Sample-rate/clock sync (word clock/external) | External clock selection is by driver only | missing |  | SoundCraft gap G-11 external sync missing |  | L | A276 |  |
+| 211 | C015 | T4 | Sample-rate/clock sync (word clock/external) | External clock selection is by driver only [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-06.md] | missing |  | SoundCraft gap G-11 external sync missing |  | L | A276 |  |
 
 ## T5 Effects rack and core effects (56)
 
@@ -417,7 +417,7 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 258 | B041 | T5 | Match Volume (gain, selection to ref) (merged: C144) | Fit levels between clips | missing |  | SoundCraft LoudnessMeter |  | S | B125 | #72 |
 | 259 | B080 | T5 | Output noise only (monitor residue) | Listen to the removed noise to judge settings | missing | CP |  |  | S | B067 | #37 |
 | 260 | B165 | T5 | Time Shift (Insert delay) | Shift audio later by a number of milliseconds | missing |  | SoundCraft time_shift plugin reusable | soundcraft-dsp (MIT/Apache) | S | B001 |  |
-| 261 | B169 | T5 | A/B compare effect settings | Switch between two settings | missing |  |  | photocraft EditHistory, filmcraft workspaces (MIT/Apache) | S | B006 |  |
+| 261 | B169 | T5 | A/B compare effect settings | Switch between two settings [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-06.md] | missing |  |  | photocraft EditHistory, filmcraft workspaces (MIT/Apache) | S | B006 |  |
 | 262 | A076 | T5 | Amplitude HUD (heads-up gain knob) | Floating gain control: drag to change level of selection or whole file; pin; hide; show only for selections | missing |  |  |  | M |  | #28 |
 | 263 | B030 | T5 | Dynamics graph editor (transfer curve) | Draggable curve defining level mapping | missing |  |  | filmcraft meters + fx editors (MIT/Apache); egui_plot, egui_table, egui_knob, egui-bind (MIT/Apache; MIT) | M | B029 |  |
 | 264 | B032 | T5 | Gain Envelope | Time-varying gain with spline/linear handling over selection | missing |  |  |  | M | B031 |  |
@@ -628,26 +628,26 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 447 | B110 | T9 | Varispeed | Change speed and pitch together via resampling | missing |  | SoundCraft dsp::offline::resample reusable |  | S | B108 |  |
 | 448 | B111 | T9 | Pitch presets (octave, formant shift) | Predefined settings | missing |  |  | signalsmith-stretch (MIT; submodule licence unverified) | S | B107 |  |
 | 449 | B112 | T9 | Time-stretch to fit duration | Target a given length | missing |  |  | signalsmith-stretch (MIT; submodule licence unverified) | S | B108 |  |
-| 450 | C041 | T9 | Punch Again | Repeat the same punch quickly for another take | missing |  |  |  | S | C039 |  |
+| 450 | C041 | T9 | Punch Again | Repeat the same punch quickly for another take [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-07.md] | missing |  |  |  | S | C039 |  |
 | 451 | C047 | T9 | Record-enable key and transport keys | Shortcuts for record/arm | missing |  |  |  | S | C036 |  |
-| 452 | C052 | T9 | Recording trouble and error reporting | Report device loss and dropouts during multitrack record | missing |  | SoundCraft Recorder::trouble |  | S | C036 |  |
+| 452 | C052 | T9 | Recording trouble and error reporting | Report device loss and dropouts during multitrack record [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-07.md] | missing |  | SoundCraft Recorder::trouble |  | S | C036 |  |
 | 453 | C061 | T9 | Master meter | Meter on the master output | missing |  | SoundCraft StripMeter | rtrb, basedrop, creek (MIT/Apache); triple_buffer (MPL-2.0) | S | C060 |  |
 | 454 | C078 | T9 | Session properties | Rate, bit depth, master channel format, tempo; change later | missing |  | SoundCraft model Session | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C074 |  |
 | 455 | C080 | T9 | Recent sessions list | Menu of recently opened sessions | missing |  | SoundCraft issue #421 | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C075 |  |
 | 456 | C083 | T9 | Time ruler formats | Ruler units: time, samples, frames, bars and beats | partial |  | SoundCraft time/format.rs, grid.rs, timecode.rs (reusable) | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C074 |  |
-| 457 | C087 | T9 | Edit cursor vs playhead | Independent edit/playhead | missing |  |  | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C086 |  |
+| 457 | C087 | T9 | Edit cursor vs playhead | Independent edit/playhead [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-08.md] | missing |  |  | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C086 |  |
 | 458 | C088 | T9 | Snapping | Snap clips and cursor to grid, markers, clips, ruler | upstream-in-progress |  | wait for upstream: SoundCraft model/time grid.rs; SoundCraft PR #589 grid | soundcraft-time (MIT/Apache); SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C074 | #22 |
 | 459 | C089 | T9 | Snap to options | Toggle snapping to ruler ticks, clip edges, markers, loop points, zero crossings | missing |  |  | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C088 | #22 |
 | 460 | C092 | T9 | Loop range playback | Loop selection or session | missing |  | SoundCraft session.edit.loop_playback | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C091 | #24 |
 | 461 | C093 | T9 | Metering of preview/audition | Preview in context | missing |  |  | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S |  |  |
-| 462 | C094 | T9 | Session notes/metadata | Info fields on the session (title, notes) | missing |  |  | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C074 |  |
+| 462 | C094 | T9 | Session notes/metadata | Info fields on the session (title, notes) [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-08.md] | missing |  |  | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C074 |  |
 | 463 | C104 | T9 | Reorder tracks by dragging | Drag track headers up/down | missing |  |  |  | S | C097 |  |
-| 464 | C105 | T9 | Track names, colours, notes | Rename and colour tracks | missing |  | SoundCraft Track::new name/color |  | S | C097 |  |
-| 465 | C106 | T9 | Track height presets | Small/medium/large track height | missing |  | SoundCraft model TrackHeight (reusable) |  | S | C097 |  |
+| 464 | C105 | T9 | Track names, colours, notes | Rename and colour tracks [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-08.md] | missing |  | SoundCraft Track::new name/color |  | S | C097 |  |
+| 465 | C106 | T9 | Track height presets | Small/medium/large track height [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-08.md] | missing |  | SoundCraft model TrackHeight (reusable) |  | S | C097 |  |
 | 466 | C110 | T9 | Invert phase per track | Polarity flip button on a strip | missing |  | SoundCraft mix lib has phase |  | S | C097 |  |
 | 467 | C111 | T9 | Split stereo to mono tracks | Break a stereo track into two mono tracks | missing |  | SoundCraft engine split into mono (bug #663 fixed by PR) |  | S | C098 |  |
 | 468 | C123 | T9 | Clip fade-in/out handles | Draggable fade handles on each clip | upstream-in-progress |  | wait for upstream: SoundCraft model clip.rs Fade/FadeShape (reusable) | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C116 | #27 |
-| 469 | C124 | T9 | Fade curve shapes (linear, cosine, logarithmic) | Pick the fade curve | partial |  | SoundCraft FadeShape (reusable) |  | S | C123 | #27 |
+| 469 | C124 | T9 | Fade curve shapes (linear, cosine, logarithmic) | Pick the fade curve [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-09.md] | partial |  | SoundCraft FadeShape (reusable) |  | S | C123 | #27 |
 | 470 | C125 | T9 | Crossfades between overlapping clips | Overlap two clips and fade them, with shape and length | upstream-in-progress |  | wait for upstream: SoundCraft edit.rs create_fades/delete_fades (crossfade); SoundCraft PR #811 |  | M | C123 |  |
 | 471 | C126 | T9 | Auto-crossfade on overlap | Overlapping clips automatically crossfade | missing |  | SoundCraft edit.rs create_fades on range |  | S | C125 |  |
 | 472 | C132 | T9 | Lock clips in time | Prevent moving of locked clip | missing |  | SoundCraft edit.rs locked() |  | S | C116 |  |
@@ -686,10 +686,10 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 505 | B093 | T9 | Vocal Enhancer | Single-slider improvement for male/female/music | missing |  |  |  | M | B028, B057 |  |
 | 506 | B106 | T9 | Pitch Bender | Draw pitch envelope over time | missing |  |  | signalsmith-stretch (MIT; submodule licence unverified) | M | B107 |  |
 | 507 | B109 | T9 | Stretch modes (Audition, iZotope Radius) | Mode with precision options | missing |  |  |  | M | B108 |  |
-| 508 | B150 | T9 | CLAP plugin hosting | Load CLAP plugins | missing |  | SoundCraft crates/clap-host (reusable); SoundCraft PR #625 | soundcraft plugin hosts (MIT/Apache) | M | B002, B005 |  |
+| 508 | B150 | T9 | CLAP plugin hosting | Load CLAP plugins [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-06.md] | missing |  | SoundCraft crates/clap-host (reusable); SoundCraft PR #625 | soundcraft plugin hosts (MIT/Apache) | M | B002, B005 |  |
 | 509 | B151 | T9 | Audio Unit hosting (macOS) | Load AU plugins | missing |  | SoundCraft crates/au-host (reusable); SoundCraft #687 PR, #501 issue | soundcraft plugin hosts (MIT/Apache) | M | B002, B005 |  |
 | 510 | B155 | T9 | Plugin state presets and Favorites | Save plugin state | missing |  | SoundCraft Plugin::save_state | soundcraft plugin hosts (MIT/Apache) | M | B007, B148 |  |
-| 511 | B156 | T9 | Plugin latency compensation and tail | Account for latency when rendering | missing |  |  |  | M | B148 |  |
+| 511 | B156 | T9 | Plugin latency compensation and tail | Account for latency when rendering [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-06.md] | missing |  |  |  | M | B148 |  |
 | 512 | C040 | T9 | Punch and Roll with pre-roll and countdown | Play lead-in then record from the punch point, with visible count | missing |  | SoundCraft edit.pre_roll in session.rs |  | M | C039 |  |
 | 513 | C051 | T9 | Record to disk (not RAM) for long takes | Stream take files to disk | missing | CP | SoundCraft gap G-06 | rtrb, basedrop, creek (MIT/Apache); triple_buffer (MPL-2.0) | M | C036 |  |
 | 514 | C079 | T9 | Files panel: import into session | List imported files and drag onto timeline | partial |  |  | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C074 | #13 |
@@ -697,9 +697,9 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 516 | C082 | T9 | Timeline zoom and scroll | Zoom time ruler, vertical track zoom, zoom to session | missing |  | SoundCraft ui-egui reference | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C074 |  |
 | 517 | C085 | T9 | Marker/cue list panel (Markers) | List, rename, jump to markers; export | missing |  |  | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C084 | #41 |
 | 518 | C090 | T9 | Scrubbing in multitrack | Scrub the playhead across all tracks | missing |  |  | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C074 | #25 |
-| 519 | C107 | T9 | Collapse/hide tracks, track groups/folders | Group tracks into folders and hide them | missing |  | SoundCraft TrackKind::Folder |  | M | C097 |  |
+| 519 | C107 | T9 | Collapse/hide tracks, track groups/folders | Group tracks into folders and hide them [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-08.md] | missing |  | SoundCraft TrackKind::Folder |  | M | C097 |  |
 | 520 | C108 | T9 | Bounce to new track | Render one track's clips (with effects) into a new clip | missing |  | SoundCraft engine/io.rs commit_track / consolidate |  | M | C097, C185 |  |
-| 521 | C109 | T9 | Freeze track | Render a track's effects so it stops using CPU | missing |  | SoundCraft mix freeze |  | M | C097 |  |
+| 521 | C109 | T9 | Freeze track | Render a track's effects so it stops using CPU [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-08.md] | missing |  | SoundCraft mix freeze |  | M | C097 |  |
 | 522 | C113 | T9 | Track input routing | Each track takes input from a device channel or bus | missing |  | SoundCraft Route |  | M | A211 |  |
 | 523 | C114 | T9 | Track effect rack per track (inserts) | Chain of effects on each track | missing |  | SoundCraft model Insert, mix inserts |  | M | C097 | #33 |
 | 524 | C121 | T9 | Copy, cut, paste, duplicate clips | Clipboard for clips; duplicate | missing |  | SoundCraft edit.rs copy_range/paste |  | M | C116 |  |
@@ -757,9 +757,9 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 576 | B104 | T9 | Manual Pitch Correction (graphical) | Draw/edit pitch curve of a waveform | missing |  |  |  | L | A067, B103 |  |
 | 577 | B149 | T9 | Plugin editor windows | Native plugin GUI | missing |  | SoundCraft ffi.rs; SoundCraft issues #598, #596, #722 show instability | soundcraft plugin hosts (MIT/Apache) | L | B148 |  |
 | 578 | B152 | T9 | VST (2) plugin hosting | Legacy VST2 | missing |  | SoundCraft issue #30 open |  | L | B005 |  |
-| 579 | B154 | T9 | Plugin scan crash isolation / blacklist | Do not die when a plugin crashes | missing |  | SoundCraft states in-process |  | L | B153 |  |
+| 579 | B154 | T9 | Plugin scan crash isolation / blacklist | Do not die when a plugin crashes [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-06.md] | missing |  | SoundCraft states in-process |  | L | B153 |  |
 | 580 | B157 | T9 | Plugin parameter automation | Automate parameters (multitrack) | missing |  | SoundCraft issue #600 |  | L | B148 |  |
-| 581 | C044 | T9 | Composite takes / comping | Pick parts of different takes by range to build one composite clip | missing |  | none in SoundCraft found (playlists exist |  | L | C043 |  |
+| 581 | C044 | T9 | Composite takes / comping | Pick parts of different takes by range to build one composite clip [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-07.md] | missing |  | none in SoundCraft found (playlists exist |  | L | C043 |  |
 | 582 | C169 | T9 | Time-aligned latency compensation across tracks | Plugin delay compensation | missing |  | SoundCraft PR #701 Delay Comp views | rtrb, basedrop, creek (MIT/Apache); triple_buffer (MPL-2.0) | L | C157 |  |
 | 583 | C196 | T9 | Remix segment detection and quality options | Find repeatable sections and set length limits for the remix | missing |  |  |  | L | C195 |  |
 | 584 | C228 | T9 | Enhance Speech | AI speech clean-up | missing |  | SoundCraft issue named 'Enhance Speech' |  | L | C218 | #72 |
@@ -771,14 +771,14 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 590 | C292 | T9 | Timecode sync and external sync | MTC/LTC | missing |  | SoundCraft gap G-11 |  | L |  |  |
 | 591 | C299 | T9 | Dolby Atmos/immersive | Object audio | missing |  | SoundCraft issue #217, G-12 |  | L |  |  |
 | 592 | C119 | T9 | Split clip at cursor/selection | Razor split at playhead or range | upstream-in-progress |  | wait for upstream: SoundCraft edit.rs split_clip/separate_at |  | M | C116 |  |
-| 593 | C042 | T9 | Loop recording with takes | Each loop pass becomes its own take clip | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs add_recording pass (one clip per pass, new playlist) |  | M | C036 |  |
-| 594 | C076 | T9 | Session media: consolidate, relink, missing-file handling | Collect media into a folder, relink lost files | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs relink_videos, session_bundle | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C075 |  |
+| 593 | C042 | T9 | Loop recording with takes | Each loop pass becomes its own take clip [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-07.md] | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs add_recording pass (one clip per pass, new playlist) |  | M | C036 |  |
+| 594 | C076 | T9 | Session media: consolidate, relink, missing-file handling | Collect media into a folder, relink lost files [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-07.md] | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs relink_videos, session_bundle | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C075 |  |
 | 595 | C158 | T9 | Sends | Per-track sends to buses with level/pre-post | upstream-in-progress |  | wait for upstream: SoundCraft SendSlot | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C099 |  |
-| 596 | C138 | T9 | Heal separation after delete | Rejoin clips split by a cut | upstream-in-progress |  | wait for upstream: SoundCraft PR #780, issue #772 |  | S | C119 |  |
-| 597 | C139 | T9 | Nudge clips by keys | Arrow keys nudge | upstream-in-progress |  | wait for upstream: SoundCraft PRs #786,#761,#736 |  | S | C117 |  |
+| 596 | C138 | T9 | Heal separation after delete | Rejoin clips split by a cut [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-10.md] | upstream-in-progress |  | wait for upstream: SoundCraft PR #780, issue #772 |  | S | C119 |  |
+| 597 | C139 | T9 | Nudge clips by keys | Arrow keys nudge [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-10.md] | upstream-in-progress |  | wait for upstream: SoundCraft PRs #786,#761,#736 |  | S | C117 |  |
 | 598 | C140 | T9 | Clip snapping to edges and grid | Edges snap while dragging | upstream-in-progress |  | wait for upstream: SoundCraft time grid | soundcraft-time (MIT/Apache) | S | C088 |  |
-| 599 | C148 | T9 | Offline media / missing file replace | Replace missing clip source | upstream-in-progress |  | wait for upstream: SoundCraft relink |  | S | C076 |  |
-| 600 | C154 | T9 | Solo / Solo Safe | Solo tracks; safe-solo option | upstream-in-progress |  | wait for upstream: SoundCraft mix solo | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C152 |  |
+| 599 | C148 | T9 | Offline media / missing file replace | Replace missing clip source [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-10.md] | upstream-in-progress |  | wait for upstream: SoundCraft relink |  | S | C076 |  |
+| 600 | C154 | T9 | Solo / Solo Safe | Solo tracks; safe-solo option [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-10.md] | upstream-in-progress |  | wait for upstream: SoundCraft mix solo | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C152 |  |
 | 601 | C156 | T9 | Track pan / balance | Pan knob, balance for stereo, pan law | upstream-in-progress |  | wait for upstream: SoundCraft dsp/pan.rs | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C152 |  |
 | 602 | C189 | T9 | Mixdown of entire session or time range | Render range | upstream-in-progress |  | wait for upstream: SoundCraft render_range, PR #760 | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C185 |  |
 | 603 | C191 | T9 | Dither on mixdown | Dither options on bounce | upstream-in-progress |  | wait for upstream: SoundCraft issue #522 (cannot turn off), #548 |  | S | A163, C185 |  |
@@ -793,9 +793,9 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 612 | C120 | T9 | Delete/ripple delete clips | Remove clip or range and close the gap | upstream-in-progress |  | wait for upstream: SoundCraft edit.rs clear_range, shift_from, ripple |  | M | C116 |  |
 | 613 | C122 | T9 | Loop clip | Stretch a clip's end to repeat its contents | upstream-in-progress |  | wait for upstream: SoundCraft clip.loop (issue #273 open detached copies) |  | M | C116 |  |
 | 614 | C134 | T9 | Group clips | Move/trim grouped clips together | upstream-in-progress |  | wait for upstream: SoundCraft engine/clip_group_file.rs; SoundCraft PR #609 clip definitions |  | M | C116 |  |
-| 615 | C143 | T9 | Strip silence / split at transients | Cut clips at silences or transients | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs strip_silence, transients_in (reusable) |  | M | C119 |  |
+| 615 | C143 | T9 | Strip silence / split at transients | Cut clips at silences or transients [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-10.md] | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs strip_silence, transients_in (reusable) |  | M | C119 |  |
 | 616 | C149 | T9 | Extract audio from video clip | Pull audio out of video source to a track | upstream-in-progress |  | wait for upstream: SoundCraft issues #728,#658 import video | soundcraft-video (MIT/Apache) | M | C101 |  |
-| 617 | C151 | T9 | Clip variations/playlists | Alternate playlists on a track | upstream-in-progress |  | wait for upstream: SoundCraft model Playlist per pass (loop recording) | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C042 |  |
+| 617 | C151 | T9 | Clip variations/playlists | Alternate playlists on a track [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-10.md] | upstream-in-progress |  | wait for upstream: SoundCraft model Playlist per pass (loop recording) | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C042 |  |
 | 618 | C159 | T9 | Sidechain routing | Use another track as compressor key | upstream-in-progress |  | wait for upstream: SoundCraft issue #502 open | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C158 |  |
 | 619 | C160 | T9 | Track groups / VCA | Link fader of a group | upstream-in-progress |  | wait for upstream: SoundCraft TrackKind::Vca | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C152 |  |
 | 620 | C172 | T9 | Track presets | Save and recall a track's inserts and sends | upstream-in-progress |  | wait for upstream: SoundCraft PRs #670,#671 |  | M | C157 |  |
