@@ -3,7 +3,7 @@
 //! Settings live in a small text file, `settings.txt` in the system's config folder under
 //! `wavcraft` (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on a
 //! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. Today it
-//! holds `session_folder`, `hidden_panels`, `panel_layout`, `zone_sizes`, `workspace`, `status_fields` and `spectral_view`, and the preferences of the Preferences dialog (see
+//! holds `session_folder`, `hidden_panels`, `dither`, `panel_layout`, `zone_sizes`, `workspace`, `status_fields` and `spectral_view`, and the preferences of the Preferences dialog (see
 //! [`KEYS`]; `input_device` is one of them); a file from an older build, with fewer keys, loads
 //! with the defaults for the rest, and an older build reading a newer file ignores the keys it
 //! doesn't know.
@@ -50,6 +50,7 @@ const KEY_SNAP_EDGES: &str = "snap_edges";
 const KEY_SNAP_MARKERS: &str = "snap_markers";
 const KEY_RIGHT_CLICK: &str = "right_click";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
+const KEY_DITHER: &str = "dither";
 const KEY_SYNC_SELECTION: &str = "sync_selection";
 const KEY_SYNC_ZOOM: &str = "sync_zoom";
 const KEY_SYNC_PLAYHEAD: &str = "sync_playhead";
@@ -443,6 +444,9 @@ pub struct Settings {
     pub right_click_menu: bool,
     /// Ids of the panels the person hid (`crate::panels`); a panel not listed is shown.
     pub hidden_panels: Vec<String>,
+    /// Dither when a save reduces bit depth (item A4; off by default, as in Audition). Kept as
+    /// `dither = on`, written only when on, last in the file.
+    pub dither: bool,
     /// Crossfade where Delete or Cut closes a gap, in ms (0: none).
     pub cut_join_ms: u32,
     /// Crossfade at every other edit boundary, in ms (0: none).
@@ -556,6 +560,7 @@ impl Default for Settings {
             session_folder: None,
             right_click_menu: false,
             hidden_panels: Vec::new(),
+            dither: false,
             cut_join_ms: DEFAULT_CUT_JOIN_MS,
             edge_ms: DEFAULT_EDGE_MS,
             output_device: None,
@@ -839,6 +844,8 @@ impl Settings {
         };
         match key {
             KEY_SESSION_FOLDER => self.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+            // Only exactly `on` turns it on; the last line in the file wins.
+            KEY_DITHER => self.dither = value == "on",
             KEY_CUT_JOIN => self.cut_join_ms = ms(value)?,
             KEY_EDGE => self.edge_ms = ms(value)?,
             KEY_OUTPUT => self.output_device = device(value),
@@ -1132,6 +1139,10 @@ impl Settings {
         for p in &self.presets {
             out.push_str(&format!("{KEY_PRESET} = {}
 ", p.to_value()));
+        }
+        if self.dither {
+            out.push_str("# dither: dither when reducing bit depth, on or off (off by default, as in Audition).\n");
+            out.push_str("dither = on\n");
         }
         out
     }
