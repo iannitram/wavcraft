@@ -32,7 +32,7 @@ B106 | exists | Pitch Bender varies pitch over time with a keyframe envelope acr
 
 B109 | exists | Stretch and Pitch offers the Audition algorithm or iZotope Radius (slower, fewer artifacts) with a precision setting. | https://helpx.adobe.com/audition/desktop/effects-reference/time-pitch-manipulation-effects.html
 
-B111 | differs | The Pitch Shifter sets transposition and a Formant Shift value (zero keeps timbre); named octave and formant presets are not described. | https://helpx.adobe.com/audition/desktop/effects-reference/time-pitch-manipulation-effects.html (weak)
+B111 | differs | The Pitch Shifter has no formant control; it sets transposition only, and no named octave or formant presets exist. | checked in Adobe Audition 26.5 (desktop app)
 
 B112 | exists | Stretch and Pitch has a New Duration value for fitting a length, and multitrack clip stretching and Remix fit clips to a duration. | https://helpx.adobe.com/audition/desktop/effects-reference/time-pitch-manipulation-effects.html
 

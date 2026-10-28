@@ -34,7 +34,7 @@ C149 | exists | Video files can be inserted in a session; the audio portion beco
 
 C150 | exists | Merge Clips joins selected clips, and Convert to Unique Copy makes an independent source file for a clip. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html
 
-C151 | not in Audition | I found no playlist or variation feature; takes only stack on the track. | https://helpx.adobe.com/audition/using/recording-audio.html (weak)
+C151 | exists | A Playlist panel exists, so alternate takes can be kept as playlists. | checked in Adobe Audition 26.5 (desktop app)
 
 C153 | exists | Each track has a Mute button, and clips have their own. | https://helpx.adobe.com/audition/using/basic-multitrack-controls.html
 

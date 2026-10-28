@@ -28,7 +28,7 @@ A353 | not in Audition | No help page covers screen reader support or a high-con
 
 B008 | exists | A Favorites menu exists (Fade In, Repair DC Offset, Auto Heal and others) and the noise-reduction page speaks of creating a quick key there; the fetched pages do not describe recording your own actions. | https://helpx.adobe.com/audition/desktop/effects-reference/noise-reduction-restoration-effects.html (weak)
 
-B009 | differs | The docs name Fade In, Fade Out, Repair DC Offset and Auto Heal as built-in Favorites; Normalize to 0 dB and Dynamics presets are not named. | https://helpx.adobe.com/audition/desktop/editing-audio-files/selecting-audio.html (weak)
+B009 | differs | Normalize presets are -0.1 dB and -3 dB; there is no 0 dB preset and no Dynamics presets (fade, DC offset and Auto Heal Favorites are documented). | checked in Adobe Audition 26.5 (desktop app)
 
 B014 | exists | Each effect slot has a Power button and the rack has a main Power button, plus Toggle Power State of Selected Effects. | https://helpx.adobe.com/audition/desktop/applying-effects/effects-controls.html
 
