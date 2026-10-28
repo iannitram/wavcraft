@@ -1,9 +1,9 @@
 //! C078: change a multitrack session's name, tempo, time signature, rate and bit depth later
 //! (`wavcraft_core::multitrack::properties`).
 
+use soundcraft_audio_io::AudioBuffer;
 use soundcraft_model::{BitDepthSetting, Playlist, TrackId};
-use soundcraft_model_audio::AudioBuffer;
-use wavcraft_core::multitrack::{Multitrack, bits_of};
+use wavcraft_core::multitrack::{bits_of, Multitrack};
 
 const RATE: u32 = 48_000;
 
