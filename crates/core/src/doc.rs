@@ -21,10 +21,12 @@ use crate::markers::Markers;
 use crate::meta::Metadata;
 use crate::store::{BLOCK_FRAMES, BlockHandle, BlockId, Store};
 
+pub mod append;
 pub mod edit;
 pub mod history;
 pub mod span;
 pub mod rec_edit;
+pub mod newdoc;
 
 /// Part of one block.
 #[derive(Debug, Clone)]

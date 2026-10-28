@@ -40,6 +40,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use soundcraft_audio_io::SampleFormat;
+
 use super::{Channel, DocError, DocState, Piece};
 use crate::markers::Shift;
 use crate::store::{BLOCK_FRAMES, Store};
@@ -245,9 +247,16 @@ pub struct Clip {
     store: Store,
     channels: Vec<Arc<Channel>>,
     sample_rate: u32,
+    /// The sample type of the document it was copied from (a new document made from the clip
+    /// saves in it).
+    sample_format: SampleFormat,
 }
 
 impl Clip {
+    pub fn sample_format(&self) -> SampleFormat {
+        self.sample_format
+    }
+
     pub fn store(&self) -> &Store {
         &self.store
     }
@@ -281,7 +290,7 @@ impl Clip {
             }
             channels.push(Arc::new(ch));
         }
-        Ok(Clip { store: store.clone(), channels, sample_rate })
+        Ok(Clip { store: store.clone(), channels, sample_rate, sample_format: SampleFormat::Float32 })
     }
 
     /// The clip as a document state sharing its blocks (no sample copy), for writing it out.
@@ -292,7 +301,7 @@ impl Clip {
 
     /// All of `doc` as a clip (shares its blocks; no sample copy).
     pub fn of_document(doc: &DocState) -> Clip {
-        Clip { store: doc.store().clone(), channels: doc.channels().to_vec(), sample_rate: doc.sample_rate() }
+        Clip { store: doc.store().clone(), channels: doc.channels().to_vec(), sample_rate: doc.sample_rate(), sample_format: doc.source().sample_format }
     }
 
     /// Copy frames of channel `ch` from `start` into `out`, as [`DocState::read`].
@@ -341,7 +350,7 @@ pub fn copy(doc: &DocState, range: Range<u64>, channels: ChannelMask) -> Result<
     check_range(doc, &range)?;
     let chans =
         channels.active(doc.channel_count()).into_iter().filter_map(|c| doc.channel(c)).map(|ch| Arc::new(slice(ch, range.clone()))).collect();
-    Ok(Clip { store: doc.store().clone(), channels: chans, sample_rate: doc.sample_rate() })
+    Ok(Clip { store: doc.store().clone(), channels: chans, sample_rate: doc.sample_rate(), sample_format: doc.source().sample_format })
 }
 
 /// Copy, then [`delete`]: the clip holds the channels in `channels`, and the document loses

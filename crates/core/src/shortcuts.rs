@@ -157,6 +157,8 @@ pub enum Command {
     Save,
     /// File › Save As….
     SaveAs,
+    /// File › Close: the front document (Ctrl+W).
+    Close,
     /// Start or stop playback.
     PlayStop,
 }
@@ -169,6 +171,7 @@ impl Command {
             Command::Open => "file.open",
             Command::Save => "file.save",
             Command::SaveAs => "file.saveAs",
+            Command::Close => "file.close",
             Command::PlayStop => "transport.playStop",
         }
     }
@@ -199,6 +202,7 @@ pub const BINDINGS: &[Binding] = &[
     bind(Command::PlayStop, key("Space")),
     // Edit.
     act(ActionId::Undo, cmd("Z")),
+    bind(Command::Close, cmd("W")),
     act(ActionId::Redo, cmd_shift("Z")),
     act(ActionId::Redo, cmd("Y")),
     act(ActionId::RepeatLast, key("F3")),

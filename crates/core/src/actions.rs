@@ -33,6 +33,10 @@ pub enum ActionId {
     Clipboard3,
     Clipboard4,
     Clipboard5,
+    CopyToNew,
+    PasteToNew,
+    CloseAll,
+    SaveAll,
     Delete,
     Silence,
     Crop,
@@ -211,6 +215,12 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::Cut, "edit.cut", "Cut"),
     edit(ActionId::Copy, "edit.copy", "Copy"),
     edit(ActionId::Paste, "edit.paste", "Paste"),
+    // New documents and the all-documents commands: the window carries them out (they add or
+    // close documents, ask questions, or start saves).
+    window(ActionId::CopyToNew, "edit.copy_to_new", "Copy to New"),
+    window(ActionId::PasteToNew, "edit.paste_to_new", "Paste to New"),
+    window(ActionId::CloseAll, "file.close_all", "Close All"),
+    window(ActionId::SaveAll, "file.save_all", "Save All"),
     edit(ActionId::Clipboard1, "edit.clipboard.1", "Set Current Clipboard: 1"),
     edit(ActionId::Clipboard2, "edit.clipboard.2", "Set Current Clipboard: 2"),
     edit(ActionId::Clipboard3, "edit.clipboard.3", "Set Current Clipboard: 3"),
@@ -629,7 +639,9 @@ impl Editor {
             ActionId::Redo => self.history.can_redo(),
             // With no selection, Cut and Copy take the whole file (Audition).
             ActionId::Cut | ActionId::Copy => self.len() > 0,
-            ActionId::Paste => self.clipboard().is_some(),
+            ActionId::Paste | ActionId::PasteToNew => self.clipboard().is_some(),
+            ActionId::CopyToNew => self.len() > 0,
+            ActionId::CloseAll | ActionId::SaveAll => true,
             ActionId::Clipboard1 | ActionId::Clipboard2 | ActionId::Clipboard3 | ActionId::Clipboard4 | ActionId::Clipboard5 => true,
             ActionId::Delete | ActionId::Silence | ActionId::Crop | ActionId::CaptureNoisePrint => has_sel,
             ActionId::SelectAll => self.len() > 0,
@@ -1269,7 +1281,11 @@ impl Editor {
                 let to = if id == ActionId::MarkerNext { m.next_after(sel.start) } else { m.prev_before(sel.start) };
                 return unchanged(to.map_or(sel.clone(), |f| f..f));
             }
-            ActionId::InsertSilence
+            ActionId::CopyToNew
+            | ActionId::PasteToNew
+            | ActionId::CloseAll
+            | ActionId::SaveAll
+            | ActionId::InsertSilence
             | ActionId::InsertFile
             | ActionId::SelectCurrentView
             | ActionId::SetIn

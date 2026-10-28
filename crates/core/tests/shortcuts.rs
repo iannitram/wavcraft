@@ -22,7 +22,7 @@ macro_rules! shortcuts {
     };
 }
 
-use Command::{Action as A, Open, PlayStop, Save, SaveAs};
+use Command::{Action as A, Close, Open, PlayStop, Save, SaveAs};
 
 shortcuts! {
     open_ctrl_o: "Ctrl+O" => Open;
@@ -30,6 +30,7 @@ shortcuts! {
     save_as_ctrl_shift_s: "Ctrl+Shift+S" => SaveAs;
     play_stop_space: "Space" => PlayStop;
     undo_ctrl_z: "Ctrl+Z" => A(ActionId::Undo);
+    close_ctrl_w: "Ctrl+W" => Close;
     redo_ctrl_shift_z: "Ctrl+Shift+Z" => A(ActionId::Redo);
     redo_ctrl_y: "Ctrl+Y" => A(ActionId::Redo);
     repeat_last_f3: "F3" => A(ActionId::RepeatLast);
@@ -132,7 +133,7 @@ fn every_action_in_a_binding_exists_and_command_names_are_unique() {
             assert!(ids.contains(&id), "{id:?} is not in the action table");
         }
     }
-    for c in [Open, Save, SaveAs, PlayStop] {
+    for c in [Open, Save, SaveAs, Close, PlayStop] {
         assert!(names.insert(c.name()));
         assert!(TABLE.iter().all(|a| a.name != c.name()), "{} clashes with an action name", c.name());
     }
