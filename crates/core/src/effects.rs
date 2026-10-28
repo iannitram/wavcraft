@@ -335,6 +335,7 @@ pub static REGISTRY: &[&dyn Effect] = &[
     &SpeechLeveler,
     &TimeShift,
     &Normalize,
+    &Amplify,
 ];
 
 /// Every registered effect.

@@ -64,7 +64,6 @@ fn reopen(dir: &Path, path: &Path, cancel: &AtomicBool) -> DocState {
 }
 
 #[test]
-#[ignore = "E2 Amplify is not built yet (issue #28)"]
 fn amplify_is_registered_with_audition_defaults() {
     let e = effects::find("amplify").expect("amplify is in REGISTRY");
     assert_eq!(e.id(), "amplify");
@@ -85,7 +84,6 @@ fn amplify_is_registered_with_audition_defaults() {
 }
 
 #[test]
-#[ignore = "E2 Amplify is not built yet (issue #28)"]
 fn amplify_exact_gain_to_thousandth_db_across_block_boundaries() {
     let t = TempDir::new("exact-db");
     let s = store(&t.0);
@@ -113,7 +111,6 @@ fn amplify_exact_gain_to_thousandth_db_across_block_boundaries() {
 }
 
 #[test]
-#[ignore = "E2 Amplify is not built yet (issue #28)"]
 fn amplify_linked_by_default_scales_both_channels_equally() {
     let t = TempDir::new("linked");
     let s = store(&t.0);
@@ -127,7 +124,6 @@ fn amplify_linked_by_default_scales_both_channels_equally() {
 }
 
 #[test]
-#[ignore = "E2 Amplify is not built yet (issue #28)"]
 fn amplify_unlinked_scales_left_and_right_independently() {
     let t = TempDir::new("unlinked");
     let s = store(&t.0);
@@ -141,7 +137,6 @@ fn amplify_unlinked_scales_left_and_right_independently() {
 }
 
 #[test]
-#[ignore = "E2 Amplify is not built yet (issue #28)"]
 fn amplify_respects_active_channel_mask() {
     let t = TempDir::new("mask");
     let s = store(&t.0);
@@ -155,7 +150,6 @@ fn amplify_respects_active_channel_mask() {
 }
 
 #[test]
-#[ignore = "E2 Amplify is not built yet (issue #28)"]
 fn amplify_selection_only_leaves_outside_frames_untouched() {
     let t = TempDir::new("selection");
     let s = store(&t.0);
@@ -170,7 +164,6 @@ fn amplify_selection_only_leaves_outside_frames_untouched() {
 }
 
 #[test]
-#[ignore = "E2 Amplify is not built yet (issue #28)"]
 fn amplify_zero_db_is_identity() {
     let t = TempDir::new("zero-db");
     let s = store(&t.0);
@@ -187,7 +180,6 @@ fn amplify_zero_db_is_identity() {
 }
 
 #[test]
-#[ignore = "E2 Amplify is not built yet (issue #28)"]
 fn amplify_keeps_float_headroom_above_zero_dbfs_until_save() {
     let t = TempDir::new("headroom");
     let s = store(&t.0);
