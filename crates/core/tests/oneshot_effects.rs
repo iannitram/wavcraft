@@ -111,7 +111,8 @@ fn amplify_applies_the_db_to_the_selection_only_and_names_its_step() {
     let data = ramps();
     let mut e = editor(&t.0, &data);
     e.set_param("amplify.db", 6.0).unwrap();
-    run(&mut e, "effect.amplify", 70_000..120_000);
+    let out = e.run(ActionId::Amplify, 70_000..120_000).unwrap();
+    assert!(out.doc_changed, "effect.amplify changed nothing");
     let g = 10f32.powf(6.0 / 20.0);
     let c = now(&e);
     assert!(close(c[0][100_000], data[0][100_000] * g));
@@ -123,7 +124,8 @@ fn amplify_applies_the_db_to_the_selection_only_and_names_its_step() {
     e.set_param("amplify.db", -20.0).unwrap();
     e.run(ActionId::LeftChannel, 0..0).unwrap();
     let before = now(&e);
-    run(&mut e, "effect.amplify", 0..1000);
+    let out = e.run(ActionId::Amplify, 0..1000).unwrap();
+    assert!(out.doc_changed, "effect.amplify changed nothing");
     let after = now(&e);
     assert!(close(after[0][500], before[0][500] * 0.1));
     assert_eq!(after[1], before[1]);
