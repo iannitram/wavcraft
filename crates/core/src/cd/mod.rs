@@ -324,8 +324,7 @@ impl CdLayout {
             Ok(())
         })
         .map_err(|e| CdError(e.to_string()))?;
-        crate::atomic::write_atomic(&cue_path, |file| file.write_all(cue.as_bytes()))
-            .map_err(|e| CdError(e.to_string()))?;
+        crate::atomic::write_atomic(&cue_path, |file| file.write_all(cue.as_bytes())).map_err(|e| CdError(e.to_string()))?;
         log::info!(target: "wavcraft_core::cd", "exported a CD layout of {} tracks, {} CD frames, to {}", self.tracks.len(), total, wav_path.display());
         Ok(Exported { wav: wav_path, cue: cue_path, total_frames: total, warnings: self.warnings() })
     }

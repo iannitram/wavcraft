@@ -898,7 +898,11 @@ impl Settings {
                 self.channel_layout = crate::channels::ChannelLayout::parse(value).ok_or_else(|| format!("{key} is stacked or layered"))?;
             }
             KEY_CUSTOM_FPS => {
-                let rate = value.parse::<u32>().ok().and_then(crate::smpte::SmpteRate::custom).ok_or_else(|| format!("{key} is a whole number of frames a second, 2 to 1000"))?;
+                let rate = value
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(crate::smpte::SmpteRate::custom)
+                    .ok_or_else(|| format!("{key} is a whole number of frames a second, 2 to 1000"))?;
                 self.custom_fps = rate.nominal() as u16;
                 if let crate::view::TimeFormat::Custom(_) = self.time_display {
                     self.time_display = crate::view::TimeFormat::Custom(self.custom_fps);
@@ -1095,45 +1099,65 @@ impl Settings {
             out.push_str(&format!("{KEY_RIGHT_CLICK} = menu\n"));
         }
         if !self.hidden_panels.is_empty() {
-            out.push_str("# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).
-");
-            out.push_str(&format!("{KEY_HIDDEN_PANELS} = {}
-", self.hidden_panels.join(",")));
+            out.push_str(
+                "# hidden_panels: ids of panels hidden in the Window menu, comma separated (empty: all shown).
+",
+            );
+            out.push_str(&format!(
+                "{KEY_HIDDEN_PANELS} = {}
+",
+                self.hidden_panels.join(",")
+            ));
         }
         // Only what differs from the defaults is written, so a default file keeps the old format.
         if self.cut_join_ms != DEFAULT_CUT_JOIN_MS || self.edge_ms != DEFAULT_EDGE_MS {
-            out.push_str("# crossfade_*_ms: edit crossfades in milliseconds (Delete/Cut join, every other boundary); 0 turns one off.
-");
-            out.push_str(&format!("{KEY_CUT_JOIN} = {}
+            out.push_str(
+                "# crossfade_*_ms: edit crossfades in milliseconds (Delete/Cut join, every other boundary); 0 turns one off.
+",
+            );
+            out.push_str(&format!(
+                "{KEY_CUT_JOIN} = {}
 {KEY_EDGE} = {}
-", self.cut_join_ms, self.edge_ms));
+",
+                self.cut_join_ms, self.edge_ms
+            ));
         }
         if !self.save_include_metadata {
             out.push_str("# save_include_metadata: 0 saves only the audio (no markers or metadata); 1, the default, includes them.\n");
             out.push_str(&format!("{KEY_SAVE_META} = 0\n"));
         }
         if let Some(output_device) = &self.output_device {
-            out.push_str(&format!("{KEY_OUTPUT} = {output_device}
-"));
+            out.push_str(&format!(
+                "{KEY_OUTPUT} = {output_device}
+"
+            ));
         }
         if let Some(input_device) = &self.input_device {
-            out.push_str(&format!("{KEY_INPUT} = {input_device}
-"));
+            out.push_str(&format!(
+                "{KEY_INPUT} = {input_device}
+"
+            ));
         }
         if self.time_display != crate::view::TimeFormat::default() {
             out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994, custom, cd75 or bars_beats (View > Time Display).
 ");
-            out.push_str(&format!("{KEY_TIME_DISPLAY} = {}
-", self.time_display.name()));
+            out.push_str(&format!(
+                "{KEY_TIME_DISPLAY} = {}
+",
+                self.time_display.name()
+            ));
         }
         // The sync lines are written only when one is on, so a file without them keeps its old format.
         if self.sync.any() {
             out.push_str("# sync_selection, sync_zoom, sync_playhead (true/false): carry the selection, the zoom and scroll, or the cursor over when switching documents.
 ");
-            out.push_str(&format!("{KEY_SYNC_SELECTION} = {}
+            out.push_str(&format!(
+                "{KEY_SYNC_SELECTION} = {}
 {KEY_SYNC_ZOOM} = {}
 {KEY_SYNC_PLAYHEAD} = {}
-", self.sync.selection, self.sync.zoom, self.sync.playhead));
+",
+                self.sync.selection, self.sync.zoom, self.sync.playhead
+            ));
         }
         // Tempo lines are written only for documents that have one (Bars and Beats), so a file without them keeps its old format.
         if !self.tempos.is_empty() {
@@ -1144,16 +1168,22 @@ impl Settings {
         }
         // The rate is written only when it isn't the default or a custom format needs it, so a default file stays as it was.
         if self.amp_scale != crate::view::AmpScale::default() {
-            out.push_str(&format!("{KEY_AMP_SCALE} = {}
-", self.amp_scale.name()));
+            out.push_str(&format!(
+                "{KEY_AMP_SCALE} = {}
+",
+                self.amp_scale.name()
+            ));
         }
         if self.zoom_presets != crate::view::ZoomPresets::default() {
             out.push_str("# zoom_presets: the five Zoom to Time slots, in seconds, comma separated.\n");
             out.push_str(&format!("{KEY_ZOOM_PRESETS} = {}\n", self.zoom_presets.to_text()));
         }
         if self.channel_layout != crate::channels::ChannelLayout::default() {
-            out.push_str(&format!("{KEY_CHANNEL_LAYOUT} = {}
-", self.channel_layout.name()));
+            out.push_str(&format!(
+                "{KEY_CHANNEL_LAYOUT} = {}
+",
+                self.channel_layout.name()
+            ));
         }
         if self.custom_fps != crate::smpte::CUSTOM_DEFAULT_FPS || matches!(self.time_display, crate::view::TimeFormat::Custom(_)) {
             out.push_str("# custom_fps: frames a second of the custom time display, 2 to 1000.\n");
@@ -1179,15 +1209,23 @@ impl Settings {
                 (KEY_SNAP_EDGES, n.edges),
                 (KEY_SNAP_MARKERS, n.markers),
             ] {
-                out.push_str(&format!("{key} = {}
-", u8::from(on)));
+                out.push_str(&format!(
+                    "{key} = {}
+",
+                    u8::from(on)
+                ));
             }
         }
         if self.marker_columns != MarkerColumns::default() {
-            out.push_str("# marker_columns: the Markers panel's columns (start, end, duration, type, description).
-");
-            out.push_str(&format!("{KEY_MARKER_COLUMNS} = {}
-", self.marker_columns.to_list()));
+            out.push_str(
+                "# marker_columns: the Markers panel's columns (start, end, duration, type, description).
+",
+            );
+            out.push_str(&format!(
+                "{KEY_MARKER_COLUMNS} = {}
+",
+                self.marker_columns.to_list()
+            ));
         }
         if let Some(fields) = &self.metadata_fields {
             out.push_str("# metadata_fields: what file lists show (Metadata Display), comma separated.\n");
@@ -1200,18 +1238,25 @@ impl Settings {
         for k in KEYS[5..].iter().copied().filter(|k| *k != KEY_TIME_DISPLAY) {
             let v = self.get(k).unwrap_or_default();
             if v != defaults.get(k).unwrap_or_default() {
-                block.push_str(&format!("{k} = {v}
-"));
+                block.push_str(&format!(
+                    "{k} = {v}
+"
+                ));
             }
         }
         if !block.is_empty() {
-            out.push_str("# Preferences pages (non-default values only; the keys are listed in KEYS).
-");
+            out.push_str(
+                "# Preferences pages (non-default values only; the keys are listed in KEYS).
+",
+            );
             out.push_str(&block);
         }
         for p in &self.presets {
-            out.push_str(&format!("{KEY_PRESET} = {}
-", p.to_value()));
+            out.push_str(&format!(
+                "{KEY_PRESET} = {}
+",
+                p.to_value()
+            ));
         }
         if self.dither {
             out.push_str("# dither: dither when reducing bit depth, on or off (off by default, as in Audition).\n");
@@ -1282,7 +1327,11 @@ fn parse_on_off(key: &str, v: &str) -> Result<bool, String> {
 }
 
 /// A whole number in `range`, or an error saying what is allowed.
-fn parse_in<T: std::str::FromStr + PartialOrd + std::fmt::Display + Copy>(key: &str, v: &str, range: &std::ops::RangeInclusive<T>) -> Result<T, String> {
+fn parse_in<T: std::str::FromStr + PartialOrd + std::fmt::Display + Copy>(
+    key: &str,
+    v: &str,
+    range: &std::ops::RangeInclusive<T>,
+) -> Result<T, String> {
     let n: T = v.parse().map_err(|_| format!("{key} wants a whole number, not {v:?}"))?;
     if range.contains(&n) { Ok(n) } else { Err(format!("{key} must be from {} to {}", range.start(), range.end())) }
 }

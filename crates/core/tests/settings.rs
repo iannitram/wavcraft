@@ -67,7 +67,10 @@ fn the_panel_layout_is_kept_in_the_settings_file() {
     let back = Settings::load(&file);
     assert_eq!(Layout::decode(&back.panel_layout, &back.zone_sizes), layout);
     let text = std::fs::read_to_string(&file).unwrap();
-    assert!(text.contains("panel_layout = left:tools,files;right:selection,markers,playlist,match;bottom:freq,properties,transport,history*"), "{text}");
+    assert!(
+        text.contains("panel_layout = left:tools,files;right:selection,markers,playlist,match;bottom:freq,properties,transport,history*"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -359,8 +362,16 @@ fn marker_columns_are_saved_and_unknown_names_ignored() {
     assert_eq!(back.marker_columns, s.marker_columns);
     assert_eq!(back.marker_columns.to_list(), "start,end,type,description");
     assert_eq!(MarkerColumns::from_list("end, bogus ,type").to_list(), "end,type");
-    assert_eq!(Settings::parse("marker_columns =
-").marker_columns.to_list(), "", "an empty list hides them all");
+    assert_eq!(
+        Settings::parse(
+            "marker_columns =
+"
+        )
+        .marker_columns
+        .to_list(),
+        "",
+        "an empty list hides them all"
+    );
 }
 
 #[test]
@@ -473,12 +484,24 @@ fn spectral_divider_share_survives_a_save_and_a_load() {
     assert_eq!(Settings::load(&file), s);
     // Out of the divider's limits, or not a number: the default stays, the rest of the file reads.
     for bad in [MIN_SPEC_SPLIT_PCT - 1, MAX_SPEC_SPLIT_PCT + 1] {
-        assert_eq!(Settings::parse(&format!("spec_split_pct = {bad}
-")).spec_split_pct, DEFAULT_SPEC_SPLIT_PCT);
+        assert_eq!(
+            Settings::parse(&format!(
+                "spec_split_pct = {bad}
+"
+            ))
+            .spec_split_pct,
+            DEFAULT_SPEC_SPLIT_PCT
+        );
     }
-    assert_eq!(Settings::parse("spec_split_pct = lots
+    assert_eq!(
+        Settings::parse(
+            "spec_split_pct = lots
 spec_db_range = 120
-").spec_db_range, 120);
+"
+        )
+        .spec_db_range,
+        120
+    );
     assert!(Settings::default().set("spec_split_pct", "95").is_err());
 }
 

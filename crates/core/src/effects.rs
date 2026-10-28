@@ -15,9 +15,9 @@ use std::sync::atomic::AtomicBool;
 use crate::doc::DocState;
 use crate::doc::edit::{self, ChannelMask, Crossfades, Edit, EditError};
 
-pub mod dynamics;
-pub mod dynamics_graph;
 mod amplify;
+#[cfg(test)]
+mod card129_tests;
 mod channel_mixer;
 mod compare;
 mod deesser;
@@ -25,38 +25,36 @@ mod dehummer;
 mod delay;
 mod dereverb;
 mod dsp_run;
-#[cfg(test)]
-mod card129_tests;
+pub mod dynamics;
+pub mod dynamics_graph;
 mod eq;
 pub mod fade;
 mod fft_filter;
 mod gain;
-mod normalize;
 mod graphic_eq;
 mod noise_reduction;
+mod normalize;
+pub mod oneshot;
 mod phase_correction;
+pub mod pitch_presets;
 mod pitch_saturate;
 mod plate;
+pub mod preview;
 mod reverb;
 mod reverse;
 mod speech_leveler;
 mod time_shift;
-pub mod pitch_presets;
-pub mod oneshot;
-pub mod preview;
-pub use oneshot::{
-    EffectParams, FadeCurve, FadeDir, MAX_GAIN_DB, amplify, amplify_guarded, fade, fade_label, headroom_db, normalize, peak, reverse,
-};
-pub use compare::{AbCompare, Side};
 pub use channel_mixer::ChannelMixer;
+pub use compare::{AbCompare, Side};
+pub use oneshot::{EffectParams, FadeCurve, FadeDir, MAX_GAIN_DB, amplify, amplify_guarded, fade, fade_label, headroom_db, normalize, peak, reverse};
 // E2 (issue #28). The amplify module's own MAX_GAIN_DB (+40 dB, f64) is aliased because
 // oneshot::MAX_GAIN_DB (+96 dB, f32) already owns that name here.
 pub use amplify::{Amplify, DEFAULT_GAIN_DB, MAX_GAIN_DB as AMPLIFY_MAX_GAIN_DB, MIN_GAIN_DB, amplify_gains, db_to_linear};
-pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use deesser::DeEsser;
 pub use dehummer::DeHummer;
 pub use delay::Delay;
 pub use dereverb::DeReverb;
+pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
 pub use fade::{FadeIn, FadeOut};
 pub use fft_filter::FftFilter;
 pub use gain::Gain;
@@ -310,7 +308,34 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &DeEsser, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb, &PhaseCorrection, &DeHummer, &ChannelMixer, &GraphicEq, &SpeechLeveler, &TimeShift, &Normalize];
+pub static REGISTRY: &[&dyn Effect] = &[
+    &Invert,
+    &Gain,
+    &ParametricEq,
+    &HighPass,
+    &LowPass,
+    &Notch,
+    &DcOffset,
+    &dynamics::Dynamics,
+    &DeEsser,
+    &Reverb,
+    &Delay,
+    &Plate,
+    &PitchShift,
+    &Saturator,
+    &FadeIn,
+    &FadeOut,
+    &NoiseReduction,
+    &FftFilter,
+    &DeReverb,
+    &PhaseCorrection,
+    &DeHummer,
+    &ChannelMixer,
+    &GraphicEq,
+    &SpeechLeveler,
+    &TimeShift,
+    &Normalize,
+];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {

@@ -168,8 +168,8 @@ fn flush(store: &Store, planes: &mut [Vec<f32>], channels: &mut [Channel]) -> st
 mod tests {
     use super::*;
     use crate::multitrack::Multitrack;
-    use soundcraft_model::BitDepthSetting;
     use soundcraft_audio_io::AudioBuffer as ModelBuffer;
+    use soundcraft_model::BitDepthSetting;
 
     const RATE: u32 = 48_000;
 

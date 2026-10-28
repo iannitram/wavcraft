@@ -216,7 +216,8 @@ impl WaveApp {
     pub(super) fn frequency_scale_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Frequency scale", |ui| {
             let current = self.freq_axis().scale();
-            for (scale, name) in [(Scale::Linear, "Linear"), (Scale::LogPartial, "Logarithmic (above 1 kHz)"), (Scale::LogFull, "Logarithmic (full)")] {
+            for (scale, name) in [(Scale::Linear, "Linear"), (Scale::LogPartial, "Logarithmic (above 1 kHz)"), (Scale::LogFull, "Logarithmic (full)")]
+            {
                 if ui.radio(current == scale, name).clicked() {
                     let axis = self.freq_axis().with_scale_kind(scale, self.rate());
                     self.set_freq_axis(axis);

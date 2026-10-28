@@ -120,11 +120,9 @@ fn invalid_public_parts_fail_without_creating_a_file() {
     let doc = doc_from(&t.0.join("store"), &data(1000));
     let out = t.0.join("invalid.wav");
     let (start, end) = (900, 100);
-    for part in [
-        Part { frames: start..end, channels: vec![0] },
-        Part { frames: 0..1001, channels: vec![0] },
-        Part { frames: 0..100, channels: vec![2] },
-    ] {
+    for part in
+        [Part { frames: start..end, channels: vec![0] }, Part { frames: 0..1001, channels: vec![0] }, Part { frames: 0..100, channels: vec![2] }]
+    {
         assert!(write_file(&doc, &out, FileKind::Wav(SampleType::Int16), &part, &mut |_| {}).is_err());
         assert!(!out.exists());
         assert!(temp_files(&out).is_empty());

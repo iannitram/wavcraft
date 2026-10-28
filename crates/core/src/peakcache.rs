@@ -139,7 +139,8 @@ fn decode(bytes: &[u8], key: &Key, channels: usize, frames: u64) -> Result<Vec<W
         return Err(Miss::Stale);
     }
     let parts: Vec<(usize, Vec<Vec<(f32, f32)>>)> = postcard::from_bytes(payload).map_err(|_| Miss::Corrupt)?;
-    let peaks: Vec<WavePeaks> = parts.into_iter().map(|(len, levels)| WavePeaks::from_parts(len, levels)).collect::<Option<_>>().ok_or(Miss::Corrupt)?;
+    let peaks: Vec<WavePeaks> =
+        parts.into_iter().map(|(len, levels)| WavePeaks::from_parts(len, levels)).collect::<Option<_>>().ok_or(Miss::Corrupt)?;
     if peaks.len() != channels || peaks.iter().any(|p| p.len_samples() as u64 != frames) {
         return Err(Miss::Corrupt);
     }

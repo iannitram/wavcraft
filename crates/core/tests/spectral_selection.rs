@@ -5,8 +5,8 @@ use wavcraft_core::actions::{ActionId, Editor, by_name};
 use wavcraft_core::doc::edit::Crossfades;
 use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
-use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 use wavcraft_core::shortcuts::{BINDINGS, Shortcut};
+use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 use wavcraft_core::view::{Band, SpectralSelection, fraction_of_hz, hz_at_fraction};
 use wavcraft_core::{Selection, Viewport};
 

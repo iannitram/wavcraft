@@ -73,9 +73,8 @@ impl Proc {
             return Some(Proc::Multiband(host));
         }
         let r = f64::from(rate);
-        let hp = (0..channels)
-            .map(|_| Biquad::design(FilterType::HighPass, p[0] as f32, std::f32::consts::FRAC_1_SQRT_2, 0.0, rate as f32))
-            .collect();
+        let hp =
+            (0..channels).map(|_| Biquad::design(FilterType::HighPass, p[0] as f32, std::f32::consts::FRAC_1_SQRT_2, 0.0, rate as f32)).collect();
         Some(Proc::Broadband { hp, env: 0.0, att: coef(0.5, r), rel: coef(60.0, r), thr: p[1] as f32, amount: p[2] as f32 })
     }
 

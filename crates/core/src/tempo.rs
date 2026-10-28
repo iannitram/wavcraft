@@ -34,7 +34,7 @@ impl TapTempo {
 
     /// Records a tap at the given timestamp.
     /// Returns the current BPM or None if not enough data.
-    /// 
+    ///
     /// The new tap is compared against the last retained tap, even if it's a
     /// backward timestamp (which may cause the tap count to decrease).
     pub fn tap(&mut self, now_ms: f64) -> Option<f64> {
