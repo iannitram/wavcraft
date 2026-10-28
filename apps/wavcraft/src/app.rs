@@ -1942,6 +1942,8 @@ impl WaveApp {
                 self.last_op = Some(("Open".to_string(), took));
                 // The document that was open stays open, parked; this one is added at the end.
                 let path = path.clone();
+                // The clipboards outlive the document they were copied from.
+                let clips = self.editor.as_mut().map(|e| std::mem::take(&mut e.clipboards));
                 let old = self.editor.is_some().then(|| self.take_slot());
                 self.docs.add(old);
                 let r = &doc.peak_report;
@@ -1954,6 +1956,9 @@ impl WaveApp {
                 self.meters.new_file();
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = Some(Editor::new(History::new(doc.state.clone(), cap)));
+                if let (Some(clips), Some(e)) = (clips, self.editor.as_mut()) {
+                    e.clipboards = clips;
+                }
                 self.apply_crossfades();
                 self.apply_snap();
                 self.saved = if fresh { None } else { self.editor.as_ref().map(|e| e.history.current().clone()) };
