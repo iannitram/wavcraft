@@ -29,6 +29,7 @@ mod match_ui;
 mod mixpaste;
 mod menus;
 mod doclist;
+mod display;
 mod player;
 mod playlist_panel;
 // Not called yet: the Reveal in file manager menu item will use it.

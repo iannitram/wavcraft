@@ -60,6 +60,7 @@ use crate::control;
 use crate::shortcut_editor::{Change, ShortcutDialog};
 use crate::convert_ui::{self, ConvertDialog};
 use crate::doclist::{DocList, Where};
+use crate::display;
 use crate::files;
 use crate::diagnostics_panel::{self, Ask, DiagPanel};
 use crate::effect_dialog::{Answer, EffectDialog};
@@ -675,6 +676,8 @@ pub struct WaveApp {
     custom_fps_dialog: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// The saved window rectangle: restored and kept on a connected monitor (f76).
+    keeper: display::WindowKeeper,
     /// The Files panel (f45, f63, f95; `files` in the panel registry).
     files: files::View,
     /// The window's egui context, for opening a file from a click that has none at hand.
@@ -998,6 +1001,7 @@ impl WaveApp {
             mix_paste: None,
             custom_fps_dialog: None,
             confirm_clear_history: false,
+            keeper: display::WindowKeeper::new(display::WindowKeeper::default_path()),
             files: files::View { columns: files::load_columns().unwrap_or_else(|| files::Col::DEFAULT.to_vec()), ..files::View::default() },
             ctx: cc.egui_ctx.clone(),
             recent_path: recent::config_file("recent.txt"),
@@ -4012,6 +4016,20 @@ impl WaveApp {
             Some((what, took)) => format!(" last_op={} last_op_ms={}", what.replace(' ', "_"), took.as_millis()),
             None => " last_op=- last_op_ms=0".to_string(),
         }
+    }
+
+    /// The `STATE` fields for the screen (f76): scale, the window rectangle and the primary
+    /// monitor in physical pixels, and how start-up placed the window.
+    fn window_state(&self, ctx: &egui::Context) -> String {
+        let r = |r: Option<display::PxRect>| r.map_or_else(|| "-".to_string(), |r| r.to_text());
+        format!(
+            "pixels_per_point={:.3} window={} primary={} monitors={} startup={}",
+            ctx.pixels_per_point(),
+            r(self.keeper.info.rect),
+            r(self.keeper.info.primary),
+            self.keeper.info.monitors,
+            self.keeper.startup.name(),
+        )
     }
 
     fn fmt_time(&self, frame: usize) -> String {
@@ -7602,6 +7620,7 @@ impl WaveApp {
                     || self.save_all.is_some();
                 let progress = self.running.as_ref().map_or(0, |r| r.job.permille() / 10);
                 let unsaved = u8::from(self.unsaved());
+                let win = self.window_state(ctx);
                 let rec_state = self.rec.state_fields();
                 let width = self.editor_width.max(1.0);
                 let (vzoom, ampscale, layout) = (self.amp_zoom.get(), self.settings.amp_scale.name(), self.settings.channel_layout.name());
@@ -7642,7 +7661,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} selch={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} snapmarkers={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
+                            "OK frames={} channels={} rate={} selection={} selch={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} {win} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} snapmarkers={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -7688,7 +7707,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} snapmarkers={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {win} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} snapmarkers={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         u8::from(self.player.is_playing()),
@@ -10020,6 +10039,7 @@ impl WaveApp {
         if changed {
             self.persist_settings();
         }
+        let mut convert = false;
         let fields = self.settings.status_fields;
         let free = if self.doc.is_some() && fields.is_shown(StatusField::FreeSpace) { Some(self.free_space_now()) } else { None };
         ui.horizontal(|ui| {
@@ -10121,7 +10141,15 @@ impl WaveApp {
                         }
                     };
                     gap(ui);
-                    ui.label(text);
+                    if matches!(field, StatusField::Format | StatusField::BitDepth) {
+                        // The sample type (f76): double-click opens Convert Sample Type.
+                        let r = ui
+                            .add(egui::Label::new(text).sense(Sense::click()))
+                            .on_hover_text("Double-click to convert the sample type");
+                        convert |= r.double_clicked();
+                    } else {
+                        ui.label(text);
+                    }
                 }
                 // What was wrong with the file that still opened: the first in the bar, all of
                 // them on hover. Always shown, whichever fields are.
@@ -10153,6 +10181,10 @@ impl WaveApp {
                 ui.label("File › Open, or drop an audio file here.");
             }
         });
+        if convert {
+            let ctx = ui.ctx().clone();
+            let _ = self.run_action(ActionId::ConvertSampleType, &ctx);
+        }
         if cancel_job && let Some(r) = &self.running {
             r.job.cancel();
         }
@@ -10879,8 +10911,11 @@ impl WaveApp {
             }
         }
 
+        // High-DPI (f76): one column per physical pixel, each one pixel wide (display.rs).
+        let ppp = ui.ctx().pixels_per_point();
+        let hair = display::hairline(ppp);
         if let Some(area) = wave_area {
-            let cols = area.width().round().max(1.0) as usize;
+            let cols = display::physical_columns(area.width(), ppp);
             let [r, g, b] = self.settings.colors.waveform.unwrap_or_else(|| self.settings.waveform_rgb());
             let wave = Color32::from_rgb(r, g, b);
             let editing = self.editor.as_ref().map_or(wavcraft_core::ChannelMask::ALL, |e| e.channels.within(channels));
@@ -10894,7 +10929,7 @@ impl WaveApp {
                 let mid = lane.center().y;
                 painter.line_segment(
                     [pos2(lane.left(), mid), pos2(lane.right(), mid)],
-                    Stroke::new(1.0, Color32::from_gray(if self.dark { 50 } else { 200 })),
+                    Stroke::new(hair, Color32::from_gray(if self.dark { 50 } else { 200 })),
                 );
                 let half = lane.height() * 0.5 - 2.0;
                 let (first, last) = if layered { (0, channels) } else { (lane_index, lane_index + 1) };
@@ -10955,9 +10990,9 @@ impl WaveApp {
                         (false, _) => Color32::from_rgba_unmultiplied(br, bg, bb, 70),
                     };
                     for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
-                        let x = lane.left() + i as f32 + 0.5;
+                        let x = display::column_x(lane.left(), i, ppp);
                         let (top, bottom) = (mid - (hi * zoom).clamp(-1.0, 1.0) * half, mid - (lo * zoom).clamp(-1.0, 1.0) * half);
-                        painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, wave_color));
+                        painter.line_segment([pos2(x, top.min(bottom - hair)), pos2(x, bottom)], Stroke::new(hair, wave_color));
                     }
                 }
                 let ruler_lane = Rect::from_min_max(pos2(amp_col.left(), lane.top()), pos2(amp_col.right(), lane.bottom()));
@@ -11001,8 +11036,9 @@ impl WaveApp {
         if let Some(area) = spectrum_area {
             // Half resolution across, capped rows: plenty for the eye. The columns sit on a grid
             // fixed to the file, so scrolling moves the picture without changing it.
-            let cols = (area.width() * 0.5).round().clamp(1.0, 2048.0);
-            let rows = (area.height() / channels as f32).round().clamp(1.0, 384.0) as usize;
+            // Counted in physical pixels (f76), so a Retina display gets twice the columns and rows.
+            let cols = (area.width() * display::sane_scale(ppp) * 0.5).round().clamp(1.0, 2048.0);
+            let rows = (area.height() * display::sane_scale(ppp) / channels as f32).round().clamp(1.0, 768.0) as usize;
             let columns = Columns::covering(start, end, self.view.frames_per_px * f64::from(area.width() / cols), &self.params);
             self.renderer.ask(Job { generation: self.generation, columns, rows, params: self.params }, &doc.state);
             if let Some(picture) = self.renderer.take()
@@ -11162,7 +11198,8 @@ impl eframe::App for WaveApp {
     /// skips `ui` then, but still calls this on `request_repaint`): the workers' results and the
     /// control channel must not wait for the window to be shown (the 2026-10-19 by-eye check
     /// found the channel silent behind another window).
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.keeper.tick(ctx, frame);
         self.finish_opening();
         self.pump_open_queue(ctx);
         self.finish_appending(ctx);
@@ -11287,6 +11324,10 @@ impl eframe::App for WaveApp {
                 self.video_waiters.answer(seq, text);
             }
         }
+    }
+
+    fn on_exit(&mut self) {
+        self.keeper.save_now();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
