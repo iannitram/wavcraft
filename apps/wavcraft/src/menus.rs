@@ -34,12 +34,7 @@ pub struct ToolEntry {
 }
 
 pub const TOOLS: &[ToolEntry] = &[
-    ToolEntry {
-        name: "tool.timeSelection",
-        label: "Time Selection",
-        tool: Some(Tool::Select),
-        hint: "Drag to select, click to place the cursor",
-    },
+    ToolEntry { name: "tool.timeSelection", label: "Time Selection", tool: Some(Tool::Select), hint: "Drag to select, click to place the cursor" },
     ToolEntry { name: "tool.hand", label: "Hand", tool: Some(Tool::Hand), hint: "Drag to scroll through time" },
     ToolEntry { name: "tool.zoom", label: "Zoom", tool: Some(Tool::Zoom), hint: "Click to zoom in, Alt+click to zoom out" },
     ToolEntry {

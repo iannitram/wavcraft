@@ -304,7 +304,12 @@ impl Clip {
 
     /// All of `doc` as a clip (shares its blocks; no sample copy).
     pub fn of_document(doc: &DocState) -> Clip {
-        Clip { store: doc.store().clone(), channels: doc.channels().to_vec(), sample_rate: doc.sample_rate(), sample_format: doc.source().sample_format }
+        Clip {
+            store: doc.store().clone(),
+            channels: doc.channels().to_vec(),
+            sample_rate: doc.sample_rate(),
+            sample_format: doc.source().sample_format,
+        }
     }
 
     /// Copy frames of channel `ch` from `start` into `out`, as [`DocState::read`].

@@ -14,9 +14,9 @@ use crate::diagnostics::silence::{self, SilenceError, SilenceParams};
 use crate::diagnostics::{declick, declip};
 use crate::doc::edit::{self, ChannelMask, Clip, Crossfades, EditError, MixOptions, PasteAt};
 use crate::doc::history::History;
-use crate::snap::{self, SnapSettings};
 use crate::effects::{self, EffectParams, FadeCurve, FadeDir};
 use crate::generate;
+use crate::snap::{self, SnapSettings};
 use std::sync::OnceLock;
 
 /// An action's id, as the menu, the keys and the control channel name it.
@@ -352,7 +352,8 @@ pub const TABLE: &[Action] = &[
 ];
 
 /// The Zoom to Time actions, slot 1 first (f69).
-pub const ZOOM_PRESET_ACTIONS: [ActionId; 5] = [ActionId::ZoomPreset1, ActionId::ZoomPreset2, ActionId::ZoomPreset3, ActionId::ZoomPreset4, ActionId::ZoomPreset5];
+pub const ZOOM_PRESET_ACTIONS: [ActionId; 5] =
+    [ActionId::ZoomPreset1, ActionId::ZoomPreset2, ActionId::ZoomPreset3, ActionId::ZoomPreset4, ActionId::ZoomPreset5];
 
 /// The 0-based Zoom to Time slot an action recalls, if it is one of them.
 pub fn zoom_preset_slot(id: ActionId) -> Option<usize> {
@@ -620,7 +621,16 @@ pub fn zero_crossing(doc: &crate::doc::DocState, channels: ChannelMask, frame: u
 
 impl Editor {
     pub fn new(history: History) -> Editor {
-        Editor { history, channels: ChannelMask::ALL, clipboards: Default::default(), current_clipboard: 0, crossfades: Crossfades::default(), last: None, params: EffectParams::default(), snap: SnapSettings::default() }
+        Editor {
+            history,
+            channels: ChannelMask::ALL,
+            clipboards: Default::default(),
+            current_clipboard: 0,
+            crossfades: Crossfades::default(),
+            last: None,
+            params: EffectParams::default(),
+            snap: SnapSettings::default(),
+        }
     }
 
     /// The current clipboard's clip, if it holds one.
@@ -696,7 +706,9 @@ impl Editor {
             ActionId::ExtractChannels => self.channel_count() >= 2 && self.len() > 0,
             ActionId::ExportRanges => !crate::export::exportable_ranges(self.history.current(), None).is_empty(),
             ActionId::GotoTime | ActionId::SetIn | ActionId::SetOut | ActionId::ZoomIn | ActionId::ZoomOut | ActionId::ZoomOutFull => self.len() > 0,
-            ActionId::ZoomAmpIn | ActionId::ZoomAmpOut | ActionId::ZoomAmpReset | ActionId::ChannelsLayered | ActionId::ChannelsStacked => self.len() > 0,
+            ActionId::ZoomAmpIn | ActionId::ZoomAmpOut | ActionId::ZoomAmpReset | ActionId::ChannelsLayered | ActionId::ChannelsStacked => {
+                self.len() > 0
+            }
             ActionId::ZoomInAtIn | ActionId::ZoomInAtOut => self.len() > 0,
             ActionId::ZoomPreset1 | ActionId::ZoomPreset2 | ActionId::ZoomPreset3 | ActionId::ZoomPreset4 | ActionId::ZoomPreset5 => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom | ActionId::ToolMarquee => true,
@@ -745,7 +757,12 @@ impl Editor {
         match id {
             ActionId::Undo => self.history.undo_label().map_or_else(|| a.menu.to_string(), |l| format!("Undo {l}")),
             ActionId::Redo => self.history.redo_label().map_or_else(|| a.menu.to_string(), |l| format!("Redo {l}")),
-            ActionId::SnapToggle | ActionId::SnapZeroToggle | ActionId::SnapRulerCoarseToggle | ActionId::SnapRulerFineToggle | ActionId::SnapEdgesToggle | ActionId::SnapMarkersToggle => {
+            ActionId::SnapToggle
+            | ActionId::SnapZeroToggle
+            | ActionId::SnapRulerCoarseToggle
+            | ActionId::SnapRulerFineToggle
+            | ActionId::SnapEdgesToggle
+            | ActionId::SnapMarkersToggle => {
                 let on = snap_flag_value(&self.snap, id).unwrap_or(false);
                 format!("{} ({})", a.menu, if on { "on" } else { "off" })
             }

@@ -313,7 +313,9 @@ impl Document {
                     let state = &state;
                     let jobs: Vec<_> = (0..state.channel_count()).map(|ch| (ch, s.spawn(move || WavePeaks::build(state, ch)))).collect();
                     jobs.into_iter()
-                        .map(|(ch, job)| job.join().unwrap_or_else(|_| Err(std::io::Error::other(format!("the peaks thread of channel {ch} panicked")))))
+                        .map(|(ch, job)| {
+                            job.join().unwrap_or_else(|_| Err(std::io::Error::other(format!("the peaks thread of channel {ch} panicked"))))
+                        })
                         .collect()
                 });
                 let built = built.into_iter().collect::<Result<Vec<_>, _>>().map_err(|e| OpenError::Io(e.to_string()))?;

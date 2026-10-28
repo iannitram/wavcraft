@@ -38,14 +38,14 @@ use std::time::{Duration, Instant};
 use cpal::Sample as _;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use wavcraft_core::DocState;
+use wavcraft_core::chanmap::{ChannelMap, choose_buffer};
 use wavcraft_core::doc::span::EditSpan;
 use wavcraft_core::levels::LevelTap;
 use wavcraft_core::metronome::click_sound;
-use wavcraft_core::tempo::Tempo;
 use wavcraft_core::rack::{MAX_BLOCK, RackConfig, RackProcessor};
-use wavcraft_core::chanmap::{ChannelMap, choose_buffer};
-use wavcraft_core::resample::{Quality, Resampler};
 use wavcraft_core::record::MonitorRing;
+use wavcraft_core::resample::{Quality, Resampler};
+use wavcraft_core::tempo::Tempo;
 use wavcraft_core::transport::{self, Plan};
 
 /// Frames the read-ahead ring holds (a power of two).
@@ -144,7 +144,19 @@ struct Playback {
 
 impl Default for Playback {
     fn default() -> Playback {
-        Playback { generation: 0, pos: 0.0, end: 0.0, playing: false, plan: Plan::new(0.0, 0.0), from: 0.0, rev: false, speed: 1.0, grain: false, lead: 0.0, origin: 0.0 }
+        Playback {
+            generation: 0,
+            pos: 0.0,
+            end: 0.0,
+            playing: false,
+            plan: Plan::new(0.0, 0.0),
+            from: 0.0,
+            rev: false,
+            speed: 1.0,
+            grain: false,
+            lead: 0.0,
+            origin: 0.0,
+        }
     }
 }
 
@@ -152,9 +164,11 @@ impl Playback {
     /// The file frame the play is at (where it finished, once it has).
     fn file_position(&self) -> f64 {
         let mut wraps = 0;
-        self.plan
-            .position_after(self.from, (self.pos - self.from).max(0.0), self.rev, &mut wraps)
-            .unwrap_or(if self.rev { self.plan.start } else { self.plan.end })
+        self.plan.position_after(self.from, (self.pos - self.from).max(0.0), self.rev, &mut wraps).unwrap_or(if self.rev {
+            self.plan.start
+        } else {
+            self.plan.end
+        })
     }
 
     /// How many times a loop has gone round since the play began.
@@ -529,7 +543,7 @@ impl Player {
         if self.has_output() {
             self.shared.device_rate.store(self.out_rate, Ordering::Release);
             let sounds = ClickSounds { accent: click_sound(self.out_rate, true), normal: click_sound(self.out_rate, false) };
-            let old = std::mem::replace(&mut *self.shared.clicks.lock().unwrap_or_else(|e| e.into_inner()), Some(sounds));
+            let old = self.shared.clicks.lock().unwrap_or_else(|e| e.into_inner()).replace(sounds);
             drop(old);
             let _ = self.commands.send(Command::Rebuild);
         }
@@ -1305,8 +1319,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
     device_rate: f64,
     before_commit: F,
     after_check: G,
-)
-where
+) where
     f32: cpal::FromSample<T>,
 {
     let silence = T::from_sample(0.0f32);
@@ -1349,7 +1362,7 @@ where
         }
         let n = (since / beat).floor();
         let into = (since - n * beat).max(0.0) * device_rate / f64::from(rate);
-        let sound = if (n as u64) % numerator == 0 { &c.accent } else { &c.normal };
+        let sound = if (n as u64).is_multiple_of(numerator) { &c.accent } else { &c.normal };
         sound.get(into as usize).map_or(0.0, |s| s * volume)
     };
     let end = playback.end;
@@ -1419,7 +1432,7 @@ where
             // An explicit map: each device channel plays the document channels mapped to it
             // (summed), and nothing else.
             for (c, slot) in frame.iter_mut().enumerate() {
-                let sum: f32 = map.sources(c).filter(|src| *src < file_channels).map(|src| interp(src)).sum();
+                let sum: f32 = map.sources(c).filter(|src| *src < file_channels).map(interp).sum();
                 *slot = T::from_sample(sum);
             }
         } else if file_channels > 2 {
@@ -1446,7 +1459,7 @@ where
         } else if channels == 1 && file_channels > 1 {
             // A one-channel device gets the average of the file's channels, not just the left
             // one (a host-left, guest-right recording would lose the guest).
-            let sum: f32 = (0..file_channels).map(|c| interp(c)).sum();
+            let sum: f32 = (0..file_channels).map(interp).sum();
             if let Some(slot) = frame.first_mut() {
                 *slot = T::from_sample(sum / file_channels as f32);
             }
@@ -1509,7 +1522,8 @@ fn begin(shared: &Shared, state: &DocState, generation: u64) -> Feed {
     let last = play.end.ceil() as u64;
     shared.origin.store(from, Ordering::Release);
     shared.filled_to.store(from, Ordering::Release);
-    let feed = Feed { state: state.clone(), channels: state.channel_count().min(RING_CHANNELS), plan: play.plan, from: play.from, rev: play.rev, last };
+    let feed =
+        Feed { state: state.clone(), channels: state.channel_count().min(RING_CHANNELS), plan: play.plan, from: play.from, rev: play.rev, last };
     let want = (from + PRIME_FRAMES).min(last);
     while shared.filled_to.load(Ordering::Relaxed) < want {
         if !top_up(shared, &feed) {
@@ -1607,7 +1621,6 @@ fn read_ahead(shared: &Shared, inbox: &Receiver<Command>) {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

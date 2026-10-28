@@ -340,7 +340,14 @@ mod card38_arithmetic_tests {
     use super::*;
 
     fn lo(lufs: f64, true_peak: f64) -> Loudness {
-        Loudness { frames: 480_000, integrated_lufs: lufs, range_lu: 0.0, true_peak_dbtp: true_peak, sample_peak_dbfs: true_peak, max_momentary_lufs: lufs }
+        Loudness {
+            frames: 480_000,
+            integrated_lufs: lufs,
+            range_lu: 0.0,
+            true_peak_dbtp: true_peak,
+            sample_peak_dbfs: true_peak,
+            max_momentary_lufs: lufs,
+        }
     }
 
     fn near(got: f64, want: f64) {

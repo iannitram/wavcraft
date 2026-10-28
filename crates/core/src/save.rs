@@ -496,13 +496,8 @@ impl Default for SaveOptions<'_> {
 
 /// [`save_wav`] with options: metadata on or off, cancel, and the test delay.
 pub fn save_wav_with(doc: &DocState, target: &Path, ty: SampleType, opts: &SaveOptions, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
-    let hooks = Hooks {
-        metadata: opts.include_metadata,
-        extra: &opts.extra_chunks,
-        cancel: opts.cancel,
-        block_delay: opts.block_delay,
-        ..no_hooks()
-    };
+    let hooks =
+        Hooks { metadata: opts.include_metadata, extra: &opts.extra_chunks, cancel: opts.cancel, block_delay: opts.block_delay, ..no_hooks() };
     save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, hooks)
 }
 
@@ -674,10 +669,7 @@ fn save_inner(
     progress: &mut dyn FnMut(f64),
     hooks: Hooks,
 ) -> Result<(), SaveError> {
-    if part.frames.start > part.frames.end
-        || part.frames.end > doc.len_frames()
-        || part.channels.iter().any(|&ch| ch >= doc.channel_count())
-    {
+    if part.frames.start > part.frames.end || part.frames.end > doc.len_frames() || part.channels.iter().any(|&ch| ch >= doc.channel_count()) {
         return Err(SaveError::Io(io::Error::new(io::ErrorKind::InvalidInput, "invalid document part")));
     }
     let frames = part.frames.end.saturating_sub(part.frames.start);
@@ -895,9 +887,7 @@ fn write_stream(
         SaveFormat::Wav => {
             let out_channels = hooks.transform.map_or(channels, |c| c.borrow().channels);
             let ch16 = u16::try_from(out_channels).map_err(|_| invalid("too many channels for WAV"))?;
-            let whole = part.frames.start == 0
-                && part.frames.end == doc.len_frames()
-                && part.channels.iter().copied().eq(0..doc.channel_count());
+            let whole = part.frames.start == 0 && part.frames.end == doc.len_frames() && part.channels.iter().copied().eq(0..doc.channel_count());
             let (mut plan, mut source) = if whole { plan_chunks(doc, ty, hooks.metadata) } else { (vec![Item::Data], None) };
             if hooks.metadata {
                 // A262: the caller's chunks go last, so the RIFF size and the relocation table cover them.
@@ -957,9 +947,7 @@ fn write_stream(
             let ch16 = i16::try_from(channels).map_err(|_| invalid("too many channels for AIFF"))?;
             // f100 (A184): the markers go after the audio as one `MARK` chunk, for a whole-document
             // save with metadata on (A262 off drops markers with the rest).
-            let whole = part.frames.start == 0
-                && part.frames.end == doc.len_frames()
-                && part.channels.iter().copied().eq(0..doc.channel_count());
+            let whole = part.frames.start == 0 && part.frames.end == doc.len_frames() && part.channels.iter().copied().eq(0..doc.channel_count());
             let marks = if whole && hooks.metadata { doc.markers().to_aiff_mark() } else { Vec::new() };
             let data_len = write_aiff_header(&mut out, ch16, doc.sample_rate(), ty, frames, hooks.aiff, marks.len() as u64)?;
             // Big-endian, except little-endian integers (`sowt`); float is always `fl32`.
@@ -996,7 +984,15 @@ fn write_stream(
 
 /// Wave64, CAF or AU: the header, then the samples of `part` (big-endian for CAF and AU), padded
 /// as the container asks, durable before it returns.
-fn write_plain(doc: &DocState, file: File, container: Container, ty: SampleType, part: &Part, progress: &mut dyn FnMut(f64), hooks: Hooks) -> io::Result<File> {
+fn write_plain(
+    doc: &DocState,
+    file: File,
+    container: Container,
+    ty: SampleType,
+    part: &Part,
+    progress: &mut dyn FnMut(f64),
+    hooks: Hooks,
+) -> io::Result<File> {
     let frames = part.frames.end - part.frames.start;
     let channels = u16::try_from(part.channels.len()).map_err(|_| invalid("too many channels"))?;
     let rate = doc.sample_rate();
@@ -1159,7 +1155,15 @@ fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool, dither: &
 /// (`NONE`, or `sowt` for little-endian integers). Sizes are 32 bits: a longer file is refused
 /// (use WAV, which goes to RF64). `extra` is the bytes of the chunks written after the samples
 /// (the `MARK` chunk), counted in the `FORM` size.
-fn write_aiff_header(out: &mut impl Write, channels: i16, sample_rate: u32, ty: SampleType, frames: u64, kind: AiffKind, extra: u64) -> io::Result<u64> {
+fn write_aiff_header(
+    out: &mut impl Write,
+    channels: i16,
+    sample_rate: u32,
+    ty: SampleType,
+    frames: u64,
+    kind: AiffKind,
+    extra: u64,
+) -> io::Result<u64> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(channels as u64).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("AIFF too long"))?;
     let (comp, name): (Option<&[u8; 4]>, &[u8]) = match (ty, kind) {
@@ -1220,6 +1224,8 @@ fn extended(rate: u32) -> [u8; 10] {
 /// The RIFF (or, above `rf64_over`, RF64) header, `fmt ` and (float) `fact`; returns the data
 /// size and the file offset the next chunk starts at. `extra` is the bytes of every other chunk
 /// (headers and pads included) that follow; the `data` chunk is counted here.
+// The eight values are the fields of one save request, and a struct would only move the same eight names.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_header(
     out: &mut impl Write,
     channels: u16,

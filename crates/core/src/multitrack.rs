@@ -26,8 +26,8 @@ pub mod automation;
 pub mod automation_shape;
 
 pub use soundcraft_model;
-pub mod track_height;
 pub mod marker_export;
+pub mod track_height;
 
 pub mod invert;
 pub mod notes;

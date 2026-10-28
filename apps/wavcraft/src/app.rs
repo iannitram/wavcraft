@@ -12,8 +12,8 @@ use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOption
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::appearance;
 use wavcraft_core::bundle;
-use wavcraft_core::convert::{self, ConvertSettings, PresetFile};
 use wavcraft_core::chanmap::ChannelMap;
+use wavcraft_core::convert::{self, ConvertSettings, PresetFile};
 use wavcraft_core::doc::append::{self, AppendReport, NewReport};
 use wavcraft_core::doc::edit as doc_edit;
 use wavcraft_core::doc::newdoc::{self, NewDocOptions};
@@ -26,20 +26,20 @@ use wavcraft_core::i18n::{self, tr, tr_args};
 use wavcraft_core::input_meter::InputStats;
 use wavcraft_core::io::{OpenOptions, RawEncoding, RawSpec};
 use wavcraft_core::jobs::{self, JobPoll};
+use wavcraft_core::keyboard::Mods;
 use wavcraft_core::match_loudness::Target;
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
-use wavcraft_core::probe::{self, FileInfo};
-use wavcraft_core::recent::{self, Recent};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
+use wavcraft_core::probe::{self, FileInfo};
 use wavcraft_core::readout::{self, EditorLayout, Readout};
+use wavcraft_core::recent::{self, Recent};
 use wavcraft_core::resample::Quality;
 use wavcraft_core::save::{
     AiffKind, Container, ExtraChunk, FileKind, Part, SampleType, SaveError, SaveFormat, SaveOptions, SizeEstimate, VORBIS_DEFAULT_QUALITY,
     estimate_size, save_aiff_kind, save_as as save_container, save_vorbis, save_wav_with, write_file,
 };
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
-use wavcraft_core::keyboard::Mods;
 use wavcraft_core::shortcut_sets::{DEFAULT_SET, SetStore};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::snap::SnapSettings;
@@ -59,20 +59,17 @@ use wavcraft_core::{
 use crate::batch_panel::BatchPanel;
 use crate::cd_ui::CdView;
 use crate::control;
-use crate::shortcut_editor::{Change, ShortcutDialog};
 use crate::convert_ui::{self, ConvertDialog};
-use crate::doclist::{DocList, Where};
-use crate::display;
-use crate::files;
 use crate::diagnostics_panel::{self, Ask, DiagPanel};
+use crate::display;
+use crate::doclist::{DocList, Where};
 use crate::effect_dialog::{Answer, EffectDialog};
+use crate::files;
 use crate::freq_panel::{self, FreqPanel};
 use crate::input::InputMonitor;
-use crate::menus::{self, Cmd, Entry, Item, Menu};
-use crate::recording::{DEFAULT_PREROLL_MS, Max, Recording};
-use wavcraft_core::doc::rec_edit::{self, RecMode, RecPlan, RecTarget};
 use crate::markers_panel::MarkersUi;
 use crate::match_ui::MatchUi;
+use crate::menus::{self, Cmd, Entry, Item, Menu};
 use crate::meters_ui::{self, MetersUi};
 use crate::mixer::MixerModel;
 use crate::mixpaste;
@@ -80,10 +77,13 @@ use crate::multitrack_ui::MtView;
 use crate::player::{Devices, Metronome, OutputChoice, Player};
 use crate::playlist_panel::PlaylistUi;
 use crate::rack_panel::{RackPanel, Request};
+use crate::recording::{DEFAULT_PREROLL_MS, Max, Recording};
 use crate::recovery::{self, Choice, Recovery};
+use crate::shortcut_editor::{Change, ShortcutDialog};
 use crate::spectrum::{Job, Renderer};
 use crate::statspanel::{Nav, StatsPanel};
 use crate::video::{VideoPanel, Waiters};
+use wavcraft_core::doc::rec_edit::{self, RecMode, RecPlan, RecTarget};
 use wavcraft_core::multitrack::soundcraft_model::{SourceId, TrackId};
 
 const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
@@ -2012,7 +2012,8 @@ impl WaveApp {
         let (cancel, progress) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)));
         let (ctx, job_path, job_cancel, job_progress) = (ctx.clone(), path.clone(), cancel.clone(), progress.clone());
         let store = wavcraft_core::store::StoreOptions { cache_bytes: self.settings.cache_bytes(), ..Default::default() };
-        let opts = OpenOptions { sessions_root: Some(self.sessions.path.clone()), store, peak_cache: Some(self.peak_dir.clone()), ..OpenOptions::default() };
+        let opts =
+            OpenOptions { sessions_root: Some(self.sessions.path.clone()), store, peak_cache: Some(self.peak_dir.clone()), ..OpenOptions::default() };
         std::thread::spawn(move || {
             let mut last = 0;
             let mut report = |p: f64| {
@@ -3322,7 +3323,8 @@ impl WaveApp {
     }
 
     fn audio_dialog() -> rfd::FileDialog {
-        rfd::FileDialog::new().add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "mp4", "mov", "caf", "w64", "au", "snd"])
+        rfd::FileDialog::new()
+            .add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "mp4", "mov", "caf", "w64", "au", "snd"])
     }
 
     /// File › Open: one or several files; several open one after the other, each as its own document.
@@ -4234,7 +4236,13 @@ impl WaveApp {
             app.error = Some(why.clone());
             Err(why)
         };
-        if self.opening.is_some() || self.saving.is_some() || self.rebuilding.is_some() || self.inserting.is_some() || self.running.is_some() || self.integrating.is_some() {
+        if self.opening.is_some()
+            || self.saving.is_some()
+            || self.rebuilding.is_some()
+            || self.inserting.is_some()
+            || self.running.is_some()
+            || self.integrating.is_some()
+        {
             return fail(self, "wait for the open, save or earlier recording to finish".to_string());
         }
         let Some(editor) = self.editor.as_ref() else { return fail(self, "open a file to record into first".to_string()) };
@@ -5020,7 +5028,8 @@ impl WaveApp {
         if matches!(id, ActionId::MarkerAdd | ActionId::MarkerNext | ActionId::MarkerPrev) && self.player.is_playing() {
             let at = self.player.position() as u64;
             // f53: Previous Marker steps back past a marker the playhead has only just passed.
-            let from = if id == ActionId::MarkerPrev { transport::prev_search_from(at, self.doc.as_ref().map_or(0, Document::sample_rate)) } else { at };
+            let from =
+                if id == ActionId::MarkerPrev { transport::prev_search_from(at, self.doc.as_ref().map_or(0, Document::sample_rate)) } else { at };
             sel = from..from;
         }
         if id == ActionId::Paste {
@@ -5438,24 +5447,27 @@ impl WaveApp {
         let time_format = self.time_format;
         let Some(text) = self.insert_silence.as_mut() else { return };
         let mut choice = None;
-        egui::Window::new(tr("dialog.insert_silence")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(format!("Duration ({}):", time_format.menu()));
-                let r = ui.text_edit_singleline(text);
-                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                    choice = Some(true);
-                }
-                r.request_focus();
-            });
-            ui.horizontal(|ui| {
-                if ui.button(tr("button.ok")).clicked() {
-                    choice = Some(true);
-                }
-                if ui.button(tr("button.cancel")).clicked() {
-                    choice = Some(false);
-                }
-            });
-        });
+        egui::Window::new(tr("dialog.insert_silence")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+            ctx,
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Duration ({}):", time_format.menu()));
+                    let r = ui.text_edit_singleline(text);
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        choice = Some(true);
+                    }
+                    r.request_focus();
+                });
+                ui.horizontal(|ui| {
+                    if ui.button(tr("button.ok")).clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button(tr("button.cancel")).clicked() {
+                        choice = Some(false);
+                    }
+                });
+            },
+        );
         match choice {
             Some(true) => {
                 let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
@@ -6143,7 +6155,10 @@ impl WaveApp {
                     let label = rows.iter().find(|r| r.key == *f).map(|r| r.label.to_lowercase()).unwrap_or_default();
                     // Channel names are not in the display sets: they always show.
                     (f.starts_with("chname.") || self.meta_sets.is_shown(f))
-                        && (needle.is_empty() || f.to_lowercase().contains(&needle) || label.contains(&needle) || draft.to_lowercase().contains(&needle))
+                        && (needle.is_empty()
+                            || f.to_lowercase().contains(&needle)
+                            || label.contains(&needle)
+                            || draft.to_lowercase().contains(&needle))
                 })
                 .collect()
         };
@@ -6690,7 +6705,10 @@ impl WaveApp {
             return Err(why.into());
         }
         let Some(doc) = &self.doc else { return Err("no document".into()) };
-        let audio = wavcraft_core::multitrack::ModelBuffer { sample_rate: doc.sample_rate(), channels: doc.audio_buffer().map_err(|e| e.to_string())?.channels };
+        let audio = wavcraft_core::multitrack::ModelBuffer {
+            sample_rate: doc.sample_rate(),
+            channels: doc.audio_buffer().map_err(|e| e.to_string())?.channels,
+        };
         let change = match self.mtv.replace_source(edit.source, audio) {
             Ok(c) => c,
             Err(e) => {
@@ -6786,7 +6804,9 @@ impl WaveApp {
         };
         log::info!(target: "wavcraft", "convert sample type: {}", settings.to_text());
         let settings = settings.clone();
-        let job = jobs::Job::spawn_with(base, "Convert Sample Type", Some(wake), move |doc, cancel, progress| convert::convert(doc, &settings, cancel, progress));
+        let job = jobs::Job::spawn_with(base, "Convert Sample Type", Some(wake), move |doc, cancel, progress| {
+            convert::convert(doc, &settings, cancel, progress)
+        });
         self.running = Some(Running { job });
         self.halt_play();
         self.error = None;
@@ -7071,8 +7091,21 @@ impl WaveApp {
             ctx.request_repaint();
         });
         self.halt_play();
-        self.saving =
-            Some(Saving { path, state, ty, format, aiff, container, result: rx, progress, cancel, then_close, doc_id: self.doc_id, copy: None, started: Instant::now() });
+        self.saving = Some(Saving {
+            path,
+            state,
+            ty,
+            format,
+            aiff,
+            container,
+            result: rx,
+            progress,
+            cancel,
+            then_close,
+            doc_id: self.doc_id,
+            copy: None,
+            started: Instant::now(),
+        });
         Ok(())
     }
 
@@ -7761,7 +7794,7 @@ impl WaveApp {
                 let rec_state = self.rec.state_fields();
                 let width = self.editor_width.max(1.0);
                 let (vzoom, ampscale, layout) = (self.amp_zoom.get(), self.settings.amp_scale.name(), self.settings.channel_layout.name());
-        let zfactor = f64::from(self.settings.zoom_factor);
+                let zfactor = f64::from(self.settings.zoom_factor);
                 let spectral = format!("{} {} {}{}", self.spectral_state(), self.freq_band_state(), self.status_state(), self.op_state());
                 let view = format!(
                     "tool={} right_click={} view={:.0}-{:.0} sync={}",
@@ -8775,12 +8808,10 @@ impl WaveApp {
             }
             // The History panel's click: go to step <index> (0 is Open).
             "HISTORY" => match (rest.trim().parse::<usize>(), self.editor.is_some()) {
-                (Ok(i), true) if self.saving.is_none() && self.running.is_none() && self.rec.going_into_doc().is_none() && self.integrating.is_none() => {
-                    if self.history_go(i, ctx) {
-                        "OK".to_string()
-                    } else {
-                        format!("ERR no step {i}")
-                    }
+                (Ok(i), true)
+                    if self.saving.is_none() && self.running.is_none() && self.rec.going_into_doc().is_none() && self.integrating.is_none() =>
+                {
+                    if self.history_go(i, ctx) { "OK".to_string() } else { format!("ERR no step {i}") }
                 }
                 _ => "ERR HISTORY <step>, with a file open".to_string(),
             },
@@ -9499,10 +9530,7 @@ impl WaveApp {
             )
         };
         for a in TABLE.iter().filter(|a| a.name.starts_with("edit.") && !grouped(a.id)) {
-            if matches!(
-                a.id,
-                ActionId::Cut | ActionId::Clipboard1 | ActionId::Delete | ActionId::Crop | ActionId::ZeroInward | ActionId::SetIn
-            ) {
+            if matches!(a.id, ActionId::Cut | ActionId::Clipboard1 | ActionId::Delete | ActionId::Crop | ActionId::ZeroInward | ActionId::SetIn) {
                 ui.separator();
             }
             let (enabled, label) =
@@ -9515,9 +9543,8 @@ impl WaveApp {
             }
         }
         ui.separator();
-        let enabled_for = |s: &Self, id: ActionId| {
-            s.saving.is_none() && s.running.is_none() && s.editor.as_ref().is_some_and(|e| e.enabled(id, &sel))
-        };
+        let enabled_for =
+            |s: &Self, id: ActionId| s.saving.is_none() && s.running.is_none() && s.editor.as_ref().is_some_and(|e| e.enabled(id, &sel));
         let item = |s: &Self, ui: &mut egui::Ui, id: ActionId, chosen: &mut Option<ActionId>| {
             let a = actions::action(id);
             let label = s.editor.as_ref().map_or_else(|| a.menu.to_string(), |e| e.label(id));
@@ -10117,12 +10144,13 @@ impl WaveApp {
                 ui.separator();
                 let (sel, mac) = (self.selection_range(), cfg!(target_os = "macos"));
                 let mut chosen = None;
-                for a in
-                    TABLE.iter().filter(|a| {
-                        (a.name.starts_with("view.") && !a.name.starts_with("view.time_display.") && !a.name.starts_with("view.snap.") && !a.name.starts_with("view.zoom.preset."))
-                            || a.name.starts_with("tool.")
-                    })
-                {
+                for a in TABLE.iter().filter(|a| {
+                    (a.name.starts_with("view.")
+                        && !a.name.starts_with("view.time_display.")
+                        && !a.name.starts_with("view.snap.")
+                        && !a.name.starts_with("view.zoom.preset."))
+                        || a.name.starts_with("tool.")
+                }) {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
                     let keys = self.keymap.menu_text(Command::Action(a.id), mac);
                     if ui.add_enabled(enabled, egui::Button::new(tr(&format!("action.{}", a.name))).shortcut_text(keys)).clicked() {
@@ -10225,7 +10253,13 @@ impl WaveApp {
                     self.show_about = true;
                 }
             });
-            let label = if self.player.is_playing() { tr("transport.stop") } else if self.transport.mode == Mode::Paused { "▶ Resume".to_string() } else { tr("transport.play") };
+            let label = if self.player.is_playing() {
+                tr("transport.stop")
+            } else if self.transport.mode == Mode::Paused {
+                "▶ Resume".to_string()
+            } else {
+                tr("transport.play")
+            };
             if ui.add_enabled(!self.rec.is_active(), egui::Button::new(label)).on_hover_text("Space").clicked() {
                 self.toggle_play();
             }
@@ -10386,7 +10420,13 @@ impl WaveApp {
                                 None => {
                                     let i = self.player.info();
                                     if i.resampling {
-                                        ui.label(format!("Out: {} ({} → {} Hz, {})", self.player.device, i.doc_rate, i.device_rate, i.quality.as_str()))
+                                        ui.label(format!(
+                                            "Out: {} ({} → {} Hz, {})",
+                                            self.player.device,
+                                            i.doc_rate,
+                                            i.device_rate,
+                                            i.quality.as_str()
+                                        ))
                                     } else {
                                         ui.label(tr_args("status.out", &[&self.player.device]))
                                     }
@@ -10398,9 +10438,7 @@ impl WaveApp {
                     gap(ui);
                     if matches!(field, StatusField::Format | StatusField::BitDepth) {
                         // The sample type (f76): double-click opens Convert Sample Type.
-                        let r = ui
-                            .add(egui::Label::new(text).sense(Sense::click()))
-                            .on_hover_text("Double-click to convert the sample type");
+                        let r = ui.add(egui::Label::new(text).sense(Sense::click())).on_hover_text("Double-click to convert the sample type");
                         convert |= r.double_clicked();
                     } else {
                         ui.label(text);
@@ -10866,7 +10904,8 @@ impl WaveApp {
         // Snapping (f09, f49) pulls a placed frame to the ruler, the selection's edges and, when on,
         // zero crossings, on top of the timecode-frame snap `frame_at` already does.
         let fpp = self.view.frames_per_px;
-        let snap = |app: &WaveApp, frame: usize, targets: &[u64]| app.editor.as_ref().map_or(frame, |e| app.snap_at(e, frame as u64, fpp, targets) as usize);
+        let snap =
+            |app: &WaveApp, frame: usize, targets: &[u64]| app.editor.as_ref().map_or(frame, |e| app.snap_at(e, frame as u64, fpp, targets) as usize);
         let edge_at = |sel: &Selection, view: &Viewport, pos: Pos2| sel.edge_near(view, pos.x - rect.left(), GRAB_PX);
         if let Some(pos) = response.hover_pos().or(response.interact_pointer_pos())
             && edge_at(&self.selection, &self.view, pos).is_some()
@@ -10885,7 +10924,13 @@ impl WaveApp {
         if response.drag_started() {
             self.freq_drag = self.drag_origin.filter(|o| over_freq_ruler(*o)).map(|origin| {
                 let (anchor_t, lane_height) = lane_at(origin.y);
-                spectral::FreqDrag { origin, axis: self.freq_axis(), zoom: response.dragged_by(egui::PointerButton::Secondary), anchor_t, lane_height }
+                spectral::FreqDrag {
+                    origin,
+                    axis: self.freq_axis(),
+                    zoom: response.dragged_by(egui::PointerButton::Secondary),
+                    anchor_t,
+                    lane_height,
+                }
             });
         }
         let freq_busy = self.freq_drag.is_some();
@@ -10947,8 +10992,8 @@ impl WaveApp {
         let marquee_hit = spectrum_hit.filter(|_| marquee_tool);
         let marquee_starts = !freq_busy
             && marquee_hit.is_some_and(|a| {
-            response.drag_started_by(egui::PointerButton::Primary) && ui.input(|i| i.pointer.press_origin()).is_some_and(|o| a.contains(o))
-        });
+                response.drag_started_by(egui::PointerButton::Primary) && ui.input(|i| i.pointer.press_origin()).is_some_and(|o| a.contains(o))
+            });
         // Selection gestures: the Select tool's, and the Marquee tool's outside a marquee drag.
         let select = (self.tool == Tool::Select || (marquee_tool && self.marquee.is_none() && !marquee_starts)) && !freq_busy && !on_freq_click;
         let shift = ui.input(|i| i.modifiers.shift);
@@ -11054,14 +11099,11 @@ impl WaveApp {
                 let l = lane(area, ch, channels).shrink2(vec2(0.0, 1.0));
                 axis.hz_at_fraction((1.0 - (pos.y - l.top()) / l.height().max(1.0)).clamp(0.0, 1.0))
             };
-            if marquee_starts
-                && let Some(origin) = ui.input(|i| i.pointer.press_origin())
-            {
+            if marquee_starts && let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
                 let (ch, frame0) = (lane_of(origin), frame_at(&self.view, origin));
                 let hz0 = hz_at(origin, ch);
-                let inside = self
-                    .spectral()
-                    .filter(|s| (s.time.start()..=s.time.end()).contains(&frame0) && (s.band.lo_hz..=s.band.hi_hz).contains(&hz0));
+                let inside =
+                    self.spectral().filter(|s| (s.time.start()..=s.time.end()).contains(&frame0) && (s.band.lo_hz..=s.band.hi_hz).contains(&hz0));
                 self.marquee = Some(match inside {
                     Some(from) => MarqueeDrag::Move { from, frame0, hz0, ch },
                     None => MarqueeDrag::Draw { frame0, hz0, ch },
@@ -11409,10 +11451,10 @@ impl WaveApp {
         if let Some(scale) = chosen_scale {
             self.set_amp_scale(scale);
         }
-        if let Some(ch) = toggled {
-            if let Err(why) = self.run_action(ActionId::ToggleChannel(ch as u8), ui.ctx()) {
-                self.error = Some(why);
-            }
+        if let Some(ch) = toggled
+            && let Err(why) = self.run_action(ActionId::ToggleChannel(ch as u8), ui.ctx())
+        {
+            self.error = Some(why);
         }
         // Each editor panel's ≡ menu sits in the top right corner of its area.
         let mut chosen = None;
@@ -12031,21 +12073,21 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap) -> Vec<Command> {
             .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(n as u8))))
             .collect();
         pressed.extend(rows.iter().filter_map(|(command, k)| {
-                let key = Key::from_name(k.key)?;
-                let mut mods = egui::Modifiers::NONE;
-                if k.cmd {
-                    mods |= egui::Modifiers::COMMAND;
-                }
-                if k.shift {
-                    mods |= egui::Modifiers::SHIFT;
-                }
-                if k.alt {
-                    mods |= egui::Modifiers::ALT;
-                }
-                // Play/Stop must not toggle again on auto-repeat during a long press.
-                let fresh = *command != Command::PlayStop
-                    || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
-                (i.consume_key(mods, key) && fresh).then_some(*command)
+            let key = Key::from_name(k.key)?;
+            let mut mods = egui::Modifiers::NONE;
+            if k.cmd {
+                mods |= egui::Modifiers::COMMAND;
+            }
+            if k.shift {
+                mods |= egui::Modifiers::SHIFT;
+            }
+            if k.alt {
+                mods |= egui::Modifiers::ALT;
+            }
+            // Play/Stop must not toggle again on auto-repeat during a long press.
+            let fresh = *command != Command::PlayStop
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
+            (i.consume_key(mods, key) && fresh).then_some(*command)
         }));
         pressed
     })

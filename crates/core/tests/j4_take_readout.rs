@@ -9,14 +9,8 @@ fn mono() -> TakeStats {
 
 #[test]
 fn j4_readout_elapsed_is_whole_seconds_as_a_clock() {
-    let cases: [(u64, &str); 6] = [
-        (0, "0:00"),
-        (47_999, "0:00"),
-        (3_120_000, "1:05"),
-        (172_799_999, "59:59"),
-        (172_800_000, "1:00:00"),
-        (1_733_904_000, "10:02:03"),
-    ];
+    let cases: [(u64, &str); 6] =
+        [(0, "0:00"), (47_999, "0:00"), (3_120_000, "1:05"), (172_799_999, "59:59"), (172_800_000, "1:00:00"), (1_733_904_000, "10:02:03")];
     for (frames, want) in cases {
         assert_eq!(take_readout(&TakeStats { frames, ..mono() }).elapsed, want, "frames {frames}");
     }

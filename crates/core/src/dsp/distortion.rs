@@ -18,11 +18,7 @@ impl ToneLp {
     ///
     /// If `cutoff_hz >= sample_rate / 2.0`, the filter is bypassed (alpha = 1.0).
     pub fn new(cutoff_hz: f32, sample_rate: f32) -> Self {
-        let alpha = if cutoff_hz >= sample_rate / 2.0 {
-            1.0
-        } else {
-            1.0 - (-2.0 * std::f32::consts::PI * cutoff_hz / sample_rate).exp()
-        };
+        let alpha = if cutoff_hz >= sample_rate / 2.0 { 1.0 } else { 1.0 - (-2.0 * std::f32::consts::PI * cutoff_hz / sample_rate).exp() };
         Self { alpha, y: 0.0 }
     }
 

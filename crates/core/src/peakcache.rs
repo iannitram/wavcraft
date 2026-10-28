@@ -100,9 +100,11 @@ fn take_u64(b: &[u8], at: &mut usize) -> Option<u64> {
     Some(v)
 }
 
+type EncodedParts<'a> = Vec<(usize, &'a [Vec<(f32, f32)>])>;
+
 /// The cache file's bytes for `peaks` (one per channel, each of `frames` samples) under `key`.
 fn encode(key: &Key, frames: u64, peaks: &[WavePeaks]) -> Option<Vec<u8>> {
-    let parts: Vec<(usize, &[Vec<(f32, f32)>])> = peaks.iter().map(WavePeaks::to_parts).collect();
+    let parts: EncodedParts<'_> = peaks.iter().map(WavePeaks::to_parts).collect();
     let payload = postcard::to_stdvec(&parts).ok()?;
     let mut out = Vec::with_capacity(payload.len() + 64);
     out.extend_from_slice(MAGIC);
@@ -116,6 +118,8 @@ fn encode(key: &Key, frames: u64, peaks: &[WavePeaks]) -> Option<Vec<u8>> {
     out.extend_from_slice(&payload);
     Some(out)
 }
+
+type DecodedParts = Vec<(usize, Vec<Vec<(f32, f32)>>)>;
 
 /// Parse a cache file's bytes against `key`, `channels` and `frames`.
 fn decode(bytes: &[u8], key: &Key, channels: usize, frames: u64) -> Result<Vec<WavePeaks>, Miss> {
@@ -138,8 +142,9 @@ fn decode(bytes: &[u8], key: &Key, channels: usize, frames: u64) -> Result<Vec<W
     if size != key.size || mtime != key.mtime_ns || header != key.header_hash || ch != channels as u64 || fr != frames {
         return Err(Miss::Stale);
     }
-    let parts: Vec<(usize, Vec<Vec<(f32, f32)>>)> = postcard::from_bytes(payload).map_err(|_| Miss::Corrupt)?;
-    let peaks: Vec<WavePeaks> = parts.into_iter().map(|(len, levels)| WavePeaks::from_parts(len, levels)).collect::<Option<_>>().ok_or(Miss::Corrupt)?;
+    let parts: DecodedParts = postcard::from_bytes(payload).map_err(|_| Miss::Corrupt)?;
+    let peaks: Vec<WavePeaks> =
+        parts.into_iter().map(|(len, levels)| WavePeaks::from_parts(len, levels)).collect::<Option<_>>().ok_or(Miss::Corrupt)?;
     if peaks.len() != channels || peaks.iter().any(|p| p.len_samples() as u64 != frames) {
         return Err(Miss::Corrupt);
     }

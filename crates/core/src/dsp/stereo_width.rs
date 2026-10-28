@@ -32,11 +32,9 @@ pub fn widen(left: &mut [f32], right: &mut [f32], width: f32) {
 /// Like [`widen`] for interleaved stereo (`L, R, L, R, ...`). A last odd sample is not touched.
 pub fn widen_interleaved(samples: &mut [f32], width: f32) {
     let width = clean_width(width);
-    for frame in samples.chunks_exact_mut(2) {
-        if let [left, right] = frame {
-            let (mid, side) = lr_to_ms(*left, *right);
-            (*left, *right) = ms_to_lr(mid, side * width);
-        }
+    for [left, right] in samples.as_chunks_mut::<2>().0 {
+        let (mid, side) = lr_to_ms(*left, *right);
+        (*left, *right) = ms_to_lr(mid, side * width);
     }
 }
 

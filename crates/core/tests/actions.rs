@@ -10,8 +10,8 @@ use wavcraft_core::doc::edit::Crossfades;
 use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::io::{OpenOptions, open};
-use wavcraft_core::shortcuts::{Command, Keymap};
 use wavcraft_core::save::{SampleType, save_wav};
+use wavcraft_core::shortcuts::{Command, Keymap};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 const RATE: u32 = 48_000;
