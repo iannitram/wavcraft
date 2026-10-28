@@ -219,3 +219,118 @@ fn aligned_fft_suffix_is_reused_and_pending_stale_blocks_survive_later_steps() {
         state = next;
     }
 }
+
+/// Each channel's overview after a step equals a full build; returns the step's document and the
+/// store block loads it took.
+fn step_and_check(doc: &Document, state: DocState) -> (Document, u64) {
+    let before = doc.state.store().cache_stats();
+    let next = doc.after_step(state).unwrap();
+    let after = next.state.store().cache_stats();
+    for ch in 0..next.channels() {
+        assert_eq!(next.peaks[ch], WavePeaks::build(&next.state, ch).unwrap(), "all waveform levels, channel {ch}");
+    }
+    let loads = after.hits + after.misses - before.hits - before.misses;
+    (next, loads)
+}
+
+fn gain_state(state: &DocState, range: std::ops::Range<u64>) -> DocState {
+    edit::replace_range(state, range, ChannelMask::ALL, "Gain", NONE, &AtomicBool::new(false), |_, input, output| {
+        for (source, dest) in input.iter().zip(output) {
+            for (s, d) in source.iter().zip(dest.iter_mut()) {
+                *d = *s * 0.37;
+            }
+        }
+        Ok(())
+    })
+    .unwrap()
+    .state
+}
+
+#[test]
+fn whole_file_step_then_undo_reuses_cached_blocks() {
+    let frames = 2_100_013usize;
+    let len = frames as u64;
+    let mut doc = Document::from_buffer(spiky(frames)).unwrap();
+    let original = doc.state.clone();
+    let mut history = History::new(doc.state.clone(), u64::MAX);
+    // Whole-file gain: every block is new, so the step reads the file once.
+    history.push_edit(
+        edit::replace_range(&doc.state, 0..len, ChannelMask::ALL, "Gain", NONE, &AtomicBool::new(false), |_, input, output| {
+            for (source, dest) in input.iter().zip(output) {
+                for (s, d) in source.iter().zip(dest.iter_mut()) {
+                    *d = *s * 0.37;
+                }
+            }
+            Ok(())
+        })
+        .unwrap(),
+    );
+    let (next, _) = step_and_check(&doc, history.current().as_ref().clone());
+    assert!(next.peak_report.full_rebuild, "a whole-file gain takes the full build");
+    doc = next;
+    let cur = history.current();
+    history.push_edit(edit::delete(cur, 37..38, ChannelMask::ALL, NONE).unwrap());
+    let (next, _) = step_and_check(&doc, history.current().as_ref().clone());
+    assert!(!next.peak_report.full_rebuild);
+    doc = next;
+    let undone_small = history.undo().unwrap().as_ref().clone();
+    let (next, _) = step_and_check(&doc, undone_small);
+    doc = next;
+    // Undo the whole-file gain: its pieces are the original blocks, all summarised at open.
+    let (next, loads) = step_and_check(&doc, history.undo().unwrap().as_ref().clone());
+    assert!(loads <= 4, "undo of the whole-file gain loaded {loads} store blocks");
+    assert_eq!(next.state.len_frames(), len);
+    doc = next;
+    // Redo: the gained blocks were summarised when the gain was made.
+    let (next, loads) = step_and_check(&doc, history.redo().unwrap().as_ref().clone());
+    assert!(loads <= 4, "redo of the whole-file gain loaded {loads} store blocks");
+    doc = next;
+    let (next, _) = step_and_check(&doc, history.redo().unwrap().as_ref().clone());
+    doc = next;
+    // Jump straight back to the original, two steps at once.
+    let (next, loads) = step_and_check(&doc, original.clone());
+    assert!(loads <= 4, "jump back two steps loaded {loads} store blocks");
+    assert_eq!(next.state.len_frames(), len);
+}
+
+#[test]
+fn a_mostly_whole_file_change_uses_the_full_build() {
+    let frames = 2_100_013usize;
+    let len = frames as u64;
+    let doc = Document::from_buffer(spiky(frames)).unwrap();
+    for (range, full) in [(0..len * 3 / 4, true), (0..len / 4, false)] {
+        let next = doc.after_step(gain_state(&doc.state, range.clone())).unwrap();
+        assert_eq!(next.peak_report.full_rebuild, full, "change {range:?} of {len} frames");
+        for ch in 0..next.channels() {
+            assert_eq!(next.peaks[ch], WavePeaks::build(&next.state, ch).unwrap(), "channel {ch}, change {range:?}");
+        }
+    }
+}
+
+#[test]
+fn a_spectrogram_overview_reinstated_by_an_undo_equals_a_full_build() {
+    let frames = 300_017usize;
+    let doc = Document::from_buffer(spiky(frames)).unwrap();
+    let params = SpectrogramParams { fft_size: 512, ..SpectrogramParams::default() };
+    let before = doc.state.clone();
+    let mut overview = Overview::build_from(&StoreChannel::new(&before, 0), &params);
+    // The app keeps the overview of the step it leaves (a clone), then moves on.
+    let kept = overview.clone();
+    let next = edit::delete(&before, 37..50_040, ChannelMask::ALL, NONE).unwrap().state;
+    let span = EditSpan::between(&before, &next);
+    overview.after_step(span, next.len_frames() as usize);
+    let view = Columns::covering(0.0, next.len_frames() as f64, 8_000.0, &params);
+    overview.refresh_visible(&StoreChannel::new(&next, 0), &params, view);
+    // Undo: the kept overview is re-installed for the earlier state and shows what a full build shows.
+    let mut back = kept;
+    let samples = StoreChannel::new(&before, 0);
+    let full = Overview::build_from(&samples, &params);
+    let view = Columns::covering(0.0, frames as f64, 8_000.0, &params);
+    back.refresh_visible(&samples, &params, view);
+    assert_eq!(
+        spectrogram::render_columns_from(&samples, before.sample_rate(), view, 32, &params, Some(&back)),
+        spectrogram::render_columns_from(&samples, before.sample_rate(), view, 32, &params, Some(&full))
+    );
+    back.refresh_blocks(&samples, &params, 0..usize::MAX);
+    assert_eq!(back, full);
+}

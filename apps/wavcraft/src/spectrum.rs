@@ -39,6 +39,7 @@ pub struct Renderer {
 }
 
 /// One overview per channel of one file, for one FFT length, window and dB scale.
+#[derive(Clone)]
 struct Overviews {
     generation: usize,
     params: SpectrogramParams,
@@ -55,6 +56,14 @@ impl Overviews {
     }
 }
 
+/// Whether two history states have the same piece table: every channel is the same `Channel`
+/// (so the same pieces, in the same order), and the same length. Undo and redo keep the pieces.
+fn same_table(a: &DocState, b: &DocState) -> bool {
+    a.channel_count() == b.channel_count()
+        && a.len_frames() == b.len_frames()
+        && (0..a.channel_count()).all(|ch| matches!((a.channel(ch), b.channel(ch)), (Some(x), Some(y)) if std::sync::Arc::ptr_eq(x, y)))
+}
+
 impl Renderer {
     /// Start the worker. It colours levels with `palette` and wakes `ctx` when a picture is ready.
     pub fn new(ctx: &egui::Context, palette: Vec<Color32>) -> Renderer {
@@ -63,6 +72,8 @@ impl Renderer {
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let mut overviews: Option<Overviews> = None;
+            // The overview of the step before the current one, kept for an undo or redo straight back.
+            let mut retired: Option<Overviews> = None;
             while let Ok(mut request) = inbox.recv() {
                 // The view moved on while the last picture was being made: only the newest counts.
                 while let Ok(newer) = inbox.try_recv() {
@@ -70,6 +81,14 @@ impl Renderer {
                 }
                 let (job, state) = request;
                 let sources: Vec<StoreChannel> = (0..state.channel_count()).map(|ch| StoreChannel::new(&state, ch)).collect();
+                // An undo or redo straight back to the state the retired overview was made for: re-install it.
+                let back = retired.take().filter(|r| r.serve(&job) && r.channels.len() == state.channel_count() && same_table(&r.state, &state));
+                if let Some(mut back) = back {
+                    back.generation = job.generation;
+                    if let Some(current) = overviews.replace(back) {
+                        retired = Some(current);
+                    }
+                }
                 if !overviews.as_ref().is_some_and(|o| o.serve(&job) && o.channels.len() == state.channel_count()) {
                     // Drop the last file's before building this one's.
                     drop(overviews.take());
@@ -78,6 +97,8 @@ impl Renderer {
                 }
                 if let Some(overviews) = &mut overviews {
                     if overviews.generation != job.generation {
+                        // Keep this step's overview (one generation) for an undo back to it, then move on.
+                        retired = Some(overviews.clone());
                         let span = wavcraft_core::doc::span::EditSpan::between(&overviews.state, &state);
                         for overview in &mut overviews.channels {
                             overview.after_step(span, state.len_frames() as usize);
