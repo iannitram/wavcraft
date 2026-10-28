@@ -529,17 +529,17 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 355 | B162 | T8 | Batch: Noise Reduction with shared print | Process many files with one noise print | missing | CP |  |  | M | B067, B158 | #36, #37 |
 | 356 | C235 | T8 | Output folder, format, name template | Pick format, sample type, rename pattern, folder | missing | CP |  |  | M | B158 | #72 |
 | 357 | C237 | T8 | Batch sample-rate/bit-depth conversion | Convert many files | missing | CP |  | rubato (MIT/Apache) | M | A161, B158 | #72 |
-| 358 | C239 | T8 | Command line batch | Headless run | missing |  | SoundCraft CLI convert exists |  | M | B158 |  |
-| 359 | C260 | T8 | Opus export | Write Opus | missing |  |  | effectcraft-opusenc (MIT/Apache); ogg (BSD-3-Clause); rusty-opus (BSD-3-Clause; fallback) | M |  | #72 |
-| 360 | C261 | T8 | Other formats (WMA, AMR, APE, CAF write) | Less common formats | missing |  |  |  | M |  |  |
-| 361 | C277 | T8 | Streamed export for large files | Write without whole buffer in RAM | partial | CP | save is whole-buffer (SoundCraft encode needs whole buffer per code-map) | flac-codec (MIT/Apache) | M |  |  |
+| 358 | C239 | T8 | Command line batch | Headless run | missing |  | SoundCraft CLI convert exists; Audition check 2026-10-28: not in Audition (batch 14) |  | M | B158 |  |
+| 359 | C260 | T8 | Opus export | Write Opus | missing |  | Audition check 2026-10-28: not found (batch 14) | effectcraft-opusenc (MIT/Apache); ogg (BSD-3-Clause); rusty-opus (BSD-3-Clause; fallback) | M |  | #72 |
+| 360 | C261 | T8 | Other formats (WMA, AMR, APE, CAF write) | Less common formats | missing |  | Audition check 2026-10-28: differs (batch 14) |  | M |  |  |
+| 361 | C277 | T8 | Streamed export for large files | Write without whole buffer in RAM | partial | CP | save is whole-buffer (SoundCraft encode needs whole buffer per code-map); Audition check 2026-10-28: not found (batch 14) | flac-codec (MIT/Apache) | M |  |  |
 | 362 | A228 | T8 | Read formats: AAC/HE-AAC, AIFF/AIFC, AC-3, APE, AU, AVR, BWF, CAF, EC-3, FLAC, HTK, IFF, M4A, MAT, MPC, MP2, MP3, OGA/OGG, PAF, PCM, PVF, RAW, RF64, SD2, SDS, SF, SND, VOC, VOX, W64, WAV, WMA, WVE, XI | Very wide import list | partial |  |  | filmcraft opus/ogg/ac3/mpa (MIT/Apache); rusty-opus (BSD-3-Clause; fallback) | L |  |  |
 | 363 | B163 | T8 | Scripting / macro recording of effect sequences (merged: C238) | Record command steps | missing | CP |  |  | L | B008 | #72 |
-| 364 | C258 | T8 | AAC/M4A export | Write M4A AAC | missing |  | SoundCraft gap G-21; no encoder in SC | filmcraft-aac + craft-media (MIT/Apache; patent check) | L |  | #72 |
-| 365 | C275 | T8 | Immersive/ADM export | Atmos or ADM BWF | missing |  | SoundCraft gap G-12, issue #217 | bwavfile (MIT) | L |  |  |
+| 364 | C258 | T8 | AAC/M4A export | Write M4A AAC | missing |  | SoundCraft gap G-21; no encoder in SC; Audition check 2026-10-28: differs (batch 14) | filmcraft-aac + craft-media (MIT/Apache; patent check) | L |  | #72 |
+| 365 | C275 | T8 | Immersive/ADM export | Atmos or ADM BWF | missing |  | SoundCraft gap G-12, issue #217; Audition check 2026-10-28: not found (batch 14) | bwavfile (MIT) | L |  |  |
 | 366 | A229 | T8 | AAC gapless trimming and edit list | Correct AAC length and start [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-02.md] | upstream-in-progress |  | wait for upstream: SoundCraft PRs #814, #713, #753 (MP3 length), issues #707, #712; usable via audio-io if WavCraft's pin is bumped | filmcraft-aac + craft-media (MIT/Apache; patent check) | S |  |  |
 | 367 | A230 | T8 | iXML field-recorder metadata (merged: C289) | Read iXML chunks [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-02.md] | upstream-in-progress |  | wait for upstream: SoundCraft PR #644 (audio-io ixml.rs); SoundCraft PR #644 open | bwavfile (MIT); quick-xml, xmp_writer (MIT; MIT/Apache) | S | A265 |  |
-| 637 | C324 | T8 | Crash-safe export finalize step | Write export to a temp file, fsync, then rename into place so a crash never leaves a half-written output | missing | CP | added 2026-10-20 from reuse research | craft-atomic (MIT/Apache); atomic-write-file, tempfile (BSD-3-Clause; MIT/Apache) | M |  |  |
+| 637 | C324 | T8 | Crash-safe export finalize step | Write export to a temp file, fsync, then rename into place so a crash never leaves a half-written output | missing | CP | added 2026-10-20 from reuse research; Audition check 2026-10-28: not found (batch 15) | craft-atomic (MIT/Apache); atomic-write-file, tempfile (BSD-3-Clause; MIT/Apache) | M |  |  |
 | 638 | C325 | T8 | FLAC, Opus and AAC metadata round-trips | Read and write tags, pictures and chapters in FLAC, Opus and AAC/M4A files without damaging the audio | missing | CP | added 2026-10-20 from reuse research | flac-codec (MIT/Apache); lofty (MIT/Apache) | M |  |  |
 
 ## T9 Multitrack and everything else (269)
@@ -597,7 +597,7 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 416 | C175 | T9 | Track and clip envelopes | Draw volume/pan envelopes with points | upstream-in-progress |  | wait for upstream: SoundCraft AutomationLane set_point/thin | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C174 | #72 |
 | 417 | C223 | T9 | Auto-ducking | Lower music/ambience under other content with sensitivity, amount and fade times | missing |  | none in SC |  | L | C175, C215 | #72 |
 | 418 | C185 | T9 | Export Multitrack Mixdown | Render time selection, entire session or selected clips to a file | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs Bounce/render_range (reusable) | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C074 |  |
-| 419 | C274 | T9 | Export video with mixed audio | Mix audio into video file | missing |  | SoundCraft video crate mux (isobmff mux) partial |  | L | C101, C185 |  |
+| 419 | C274 | T9 | Export video with mixed audio | Mix audio into video file | missing |  | SoundCraft video crate mux (isobmff mux) partial; Audition check 2026-10-28: differs (batch 14) |  | L | C101, C185 |  |
 | 420 | C278 | T9 | Import/export Final Cut XML | Exchange sessions with video editors | missing |  | SoundCraft uses fcpxml? (not found) | quick-xml, xmp_writer (MIT; MIT/Apache) | L | C074 |  |
 | 421 | C284 | T9 | Video playback in session | Show video in Video panel in sync | missing |  | SoundCraft video crate (decode H.264, ProRes) reusable |  | L | C101 | #72 |
 | 422 | C216 | T9 | Dialogue: Loudness (Auto-Match) (merged: C145, C227) | Match dialogue clips to a target LUFS | missing |  |  |  | M | B125, C215 | #38, #39, #72 |
@@ -658,19 +658,19 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 477 | C166 | T9 | Show/hide mixer sections | Toggle EQ, effects, sends, I/O rows | missing |  |  |  | S | C152 |  |
 | 478 | C171 | T9 | Master output mode mono/stereo/5.1 | Master bus format | missing |  | SoundCraft main_format |  | S | C100 |  |
 | 479 | C179 | T9 | Curve/hold shapes for keyframes | Linear/bezier/step segments | missing |  | SoundCraft AutomationPoint (linear) |  | S | C178 |  |
-| 480 | C181 | T9 | Snap keyframes to grid | Snap points | missing |  |  |  | S | C088, C178 |  |
+| 480 | C181 | T9 | Snap keyframes to grid | Snap points | missing |  | Audition check 2026-10-28: not found (batch 12) |  | S | C088, C178 |  |
 | 481 | C176 | T9 | Automation modes (Off, Read, Write, Touch, Latch) | Record movements on faders/knobs | upstream-in-progress |  | wait for upstream: SoundCraft AutomationMode (Off/Read/Touch/Latch/TouchLatch/Write/Trim) reusable | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C152, C174 |  |
 | 482 | C183 | T9 | Automation Read/write lanes bypass | Toggle automation on/off | missing |  | SoundCraft AutomationMode::Off |  | S | C176 |  |
 | 483 | C188 | T9 | Mixdown of selected clips | Render only chosen clips | missing |  | SoundCraft bounce clips | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C185 |  |
 | 484 | C193 | T9 | Normalize on export | Apply normalise at mixdown | missing |  |  |  | S | C185 | #29 |
-| 485 | C194 | T9 | Render tail for effects | Add time to catch reverb tails | missing |  |  |  | S | C185 |  |
-| 486 | C202 | T9 | Count-in / pre-roll click | Clicks before recording | missing |  | SoundCraft session.pre_roll |  | S | C201 |  |
-| 487 | C207 | T9 | MIDI clip-to-audio for click | Metronome via MIDI | missing |  |  |  | S | C201 |  |
+| 485 | C194 | T9 | Render tail for effects | Add time to catch reverb tails | missing |  | Audition check 2026-10-28: not found (batch 12) |  | S | C185 |  |
+| 486 | C202 | T9 | Count-in / pre-roll click | Clicks before recording | missing |  | SoundCraft session.pre_roll; Audition check 2026-10-28: differs (batch 12) |  | S | C201 |  |
+| 487 | C207 | T9 | MIDI clip-to-audio for click | Metronome via MIDI | missing |  | Audition check 2026-10-28: not in Audition (batch 13) |  | S | C201 |  |
 | 488 | C210 | T9 | Convert multitrack clip to new waveform | Extract a clip to a waveform file | missing |  | SoundCraft export_clips |  | S | C116 |  |
 | 489 | C211 | T9 | Insert a waveform file into multitrack | Send an open waveform to a track | missing |  |  |  | S | C074 |  |
 | 490 | C225 | T9 | Custom presets for the panel | Save own | missing |  |  |  | S | C224 | #72 |
-| 491 | C230 | T9 | Reset panel | Clear applied changes | missing |  |  |  | S | C226 |  |
-| 492 | C245 | T9 | Track gap and fades | Set gap length | missing |  |  |  | S | C241 | #72 |
+| 491 | C230 | T9 | Reset panel | Clear applied changes | missing |  | Audition check 2026-10-28: not found (batch 14) |  | S | C226 |  |
+| 492 | C245 | T9 | Track gap and fades | Set gap length | missing |  | Audition check 2026-10-28: not in Audition (batch 14) |  | S | C241 | #72 |
 | 493 | C295 | T9 | Downmix 5.1 to stereo | Fold-down options | missing |  | SoundCraft mix itu_stereo_fold / fold_down_stereo |  | S | C293 |  |
 | 494 | A024 | T9 | Media Browser panel | Browse folders and drives, filter by media type, preview and open files | missing |  |  |  | M | A020 |  |
 | 495 | A189 | T9 | Play list items/loops | Play all or from item; per-item loop count | missing |  |  |  | M | A188 |  |
@@ -716,30 +716,30 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 535 | C161 | T9 | Effects Rack for tracks | Rack panel showing track effects | missing |  |  |  | M | C157 | #33 |
 | 536 | C164 | T9 | Track EQ section on strip | Quick EQ on every strip | missing |  | SoundCraft dsp plugins eq.rs, strip.rs |  | M | C152 |  |
 | 537 | C165 | T9 | Mixer input/output selectors | Pick routes in mixer | missing |  | SoundCraft Route |  | M | C112 |  |
-| 538 | C170 | T9 | Monitor/Control Room output | Separate monitor out | missing |  |  |  | M | A211 |  |
+| 538 | C170 | T9 | Monitor/Control Room output | Separate monitor out | missing |  | Audition check 2026-10-28: not in Audition (batch 11) |  | M | A211 |  |
 | 539 | C117 | T9 | Move clips (time and between tracks) | Drag or arrow-nudge clips | upstream-in-progress |  | wait for upstream: SoundCraft engine/edit.rs move_clips (reusable) |  | M | C116 |  |
-| 540 | C180 | T9 | Move automation with clips | Envelopes follow clip moves/splits | missing |  | SoundCraft shift_from |  | M | C117, C178 |  |
-| 541 | C182 | T9 | Copy/paste automation | Copy lane ranges | missing |  |  |  | M | C178 |  |
-| 542 | C184 | T9 | Auto-generated volume keyframes (ducking) | Generate envelope from analysis | missing |  |  |  | M | C223 |  |
+| 540 | C180 | T9 | Move automation with clips | Envelopes follow clip moves/splits | missing |  | SoundCraft shift_from; Audition check 2026-10-28: differs (batch 12) |  | M | C117, C178 |  |
+| 541 | C182 | T9 | Copy/paste automation | Copy lane ranges | missing |  | Audition check 2026-10-28: not found (batch 12) |  | M | C178 |  |
+| 542 | C184 | T9 | Auto-generated volume keyframes (ducking) | Generate envelope from analysis | missing |  | Audition check 2026-10-28: differs (batch 12) |  | M | C223 |  |
 | 543 | C187 | T9 | Mixdown channel layouts (mono/stereo/5.1 at once) | Render several layouts in one pass | missing |  | SoundCraft fold_down_stereo, main_format | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C185 |  |
 | 544 | C190 | T9 | Mix down session to new waveform (Bounce to new file) (merged: C212) | Render mix and open as waveform | missing |  | SoundCraft bounce; SoundCraft Bounce |  | M | C185, C208 |  |
-| 545 | C198 | T9 | Export with loudness target | Meet a LUFS target on export | missing |  |  | ebur128 (MIT; test oracle) | M | B125, C185 | #38 |
-| 546 | C200 | T9 | Tempo/meter changes along the timeline | Multiple tempo events | missing |  | SoundCraft TempoMap set_tempo/set_meter |  | M | C199 |  |
+| 545 | C198 | T9 | Export with loudness target | Meet a LUFS target on export | missing |  | Audition check 2026-10-28: differs (batch 12) | ebur128 (MIT; test oracle) | M | B125, C185 | #38 |
+| 546 | C200 | T9 | Tempo/meter changes along the timeline | Multiple tempo events | missing |  | SoundCraft TempoMap set_tempo/set_meter; Audition check 2026-10-28: not in Audition (batch 12) |  | M | C199 |  |
 | 547 | C203 | T9 | Bars-and-beats ruler and snapping | Musical grid | missing |  | SoundCraft time/grid.rs |  | M | C199 |  |
 | 548 | C205 | T9 | Tap tempo / detect tempo | Detect or tap tempo | missing |  | SoundCraft dsp pitch_detect |  | M | C199 |  |
-| 549 | C209 | T9 | Apply effect to clip source file (destructive) | Process clip's source in Waveform and update all clips | missing |  |  |  | M | C208 |  |
+| 549 | C209 | T9 | Apply effect to clip source file (destructive) | Process clip's source in Waveform and update all clips | missing |  | Audition check 2026-10-28: differs (batch 13) |  | M | C208 |  |
 | 550 | C219 | T9 | Dialogue: Creative (Reverb) | Reverb amount slider | missing |  | SoundCraft dsp reverb |  | M | C215 |  |
 | 551 | C220 | T9 | Music: Loudness, Ducking, Remix (duration), Stereo Width, Dynamics | Music-type tools | missing |  |  |  | M | C215 | #72 |
 | 552 | C221 | T9 | SFX: Loudness, Reverb, panner, EQ | SFX tools | missing |  |  |  | M | C215 | #72 |
 | 553 | C222 | T9 | Ambience: Loudness, Reverb, stereo width, dialogue-aware ducking | Ambience tools | missing |  |  |  | M | C215 | #72 |
 | 554 | C244 | T9 | CD-Text and ISRC/UPC metadata | Titles, ISRC codes | missing |  |  |  | M | C241 | #72 |
-| 555 | C246 | T9 | Podcast session templates | Start sessions for podcast with prepared tracks | missing |  |  |  | M | C077 |  |
-| 556 | C250 | T9 | Chapter markers for podcasts | Markers exported as chapters in MP3/M4A | missing |  |  | id3 (MIT) | M | A248, C084 |  |
-| 557 | C271 | T9 | Export queue / background export | Run exports without blocking | missing |  | SoundCraft Bounce::step progress |  | M | C185 |  |
+| 555 | C246 | T9 | Podcast session templates | Start sessions for podcast with prepared tracks | missing |  | Audition check 2026-10-28: differs (batch 14) |  | M | C077 |  |
+| 556 | C250 | T9 | Chapter markers for podcasts | Markers exported as chapters in MP3/M4A | missing |  | Audition check 2026-10-28: differs (batch 14) | id3 (MIT) | M | A248, C084 |  |
+| 557 | C271 | T9 | Export queue / background export | Run exports without blocking | missing |  | SoundCraft Bounce::step progress; Audition check 2026-10-28: differs (batch 14) |  | M | C185 |  |
 | 558 | C286 | T9 | Video/audio sync and frame rate display | Timecode frame rates, drop-frame | missing |  | SoundCraft time/timecode.rs reusable |  | M | C284 |  |
-| 559 | C291 | T9 | Import/export MIDI files | SMF | missing |  | SoundCraft midi/smf.rs |  | M | C102 |  |
-| 560 | C294 | T9 | Surround Panner | 2D panner for tracks | missing |  | SoundCraft model SurroundPan |  | M | C293 |  |
-| 561 | C297 | T9 | Surround meters | Meter per speaker | missing |  |  |  | M | C060, C293 |  |
+| 559 | C291 | T9 | Import/export MIDI files | SMF | missing |  | SoundCraft midi/smf.rs; Audition check 2026-10-28: not in Audition (batch 15) |  | M | C102 |  |
+| 560 | C294 | T9 | Surround Panner | 2D panner for tracks | missing |  | SoundCraft model SurroundPan; Audition check 2026-10-28: differs (batch 15) |  | M | C293 |  |
+| 561 | C297 | T9 | Surround meters | Meter per speaker | missing |  | Audition check 2026-10-28: not found (batch 15) |  | M | C060, C293 |  |
 | 562 | A015 | T9 | Waveform / Multitrack editor switch (key 1) | Toggle between single-file and multitrack views | missing |  |  | soundcraft ui-egui patterns (MIT/Apache) | L |  |  |
 | 563 | A166 | T9 | Frequency Band Splitter | Split selection into up to 8 band copies with crossovers (multitrack tracks) | missing |  |  |  | L |  |  |
 | 564 | A232 | T9 | Import Premiere sequence (.prproj) | Imports sequences referencing media (multitrack) [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-02.md] | missing |  |  |  | L |  |  |
@@ -760,16 +760,16 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 579 | B154 | T9 | Plugin scan crash isolation / blacklist | Do not die when a plugin crashes [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-06.md] | missing |  | SoundCraft states in-process |  | L | B153 |  |
 | 580 | B157 | T9 | Plugin parameter automation | Automate parameters (multitrack) | missing |  | SoundCraft issue #600 |  | L | B148 |  |
 | 581 | C044 | T9 | Composite takes / comping | Pick parts of different takes by range to build one composite clip [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-07.md] | missing |  | none in SoundCraft found (playlists exist |  | L | C043 |  |
-| 582 | C169 | T9 | Time-aligned latency compensation across tracks | Plugin delay compensation | missing |  | SoundCraft PR #701 Delay Comp views | rtrb, basedrop, creek (MIT/Apache); triple_buffer (MPL-2.0) | L | C157 |  |
+| 582 | C169 | T9 | Time-aligned latency compensation across tracks | Plugin delay compensation | missing |  | SoundCraft PR #701 Delay Comp views; Audition check 2026-10-28: not found (batch 11) | rtrb, basedrop, creek (MIT/Apache); triple_buffer (MPL-2.0) | L | C157 |  |
 | 583 | C196 | T9 | Remix segment detection and quality options | Find repeatable sections and set length limits for the remix | missing |  |  |  | L | C195 |  |
-| 584 | C228 | T9 | Enhance Speech | AI speech clean-up | missing |  | SoundCraft issue named 'Enhance Speech' |  | L | C218 | #72 |
-| 585 | C243 | T9 | Burn audio CD | Write disc | missing |  |  |  | L | C241 | #72 |
+| 584 | C228 | T9 | Enhance Speech | AI speech clean-up | missing |  | SoundCraft issue named 'Enhance Speech'; Audition check 2026-10-28: differs (batch 13) |  | L | C218 | #72 |
+| 585 | C243 | T9 | Burn audio CD | Write disc | missing |  | Audition check 2026-10-28: not in Audition (batch 14) |  | L | C241 | #72 |
 | 586 | C251 | T9 | Voice-over edit tools | Edit by transcript | missing |  | SoundCraft PR #676 VO Cut Pipeline; SoundCraft G-18 |  | L |  | #72 |
-| 587 | C252 | T9 | Speech to text transcription | Transcribe audio to text with search | missing |  | SoundCraft gap G-18, PR #676 |  | L |  | #72 |
+| 587 | C252 | T9 | Speech to text transcription | Transcribe audio to text with search | missing |  | SoundCraft gap G-18, PR #676; Audition check 2026-10-28: not in Audition (batch 14) |  | L |  | #72 |
 | 588 | C280 | T9 | OMF import/export | Open Media Framework exchange | missing |  | SoundCraft gap G-03 (no OMF) |  | L | C074 |  |
-| 589 | C288 | T9 | Replace audio in exported video | Mux mix into a video copy | missing |  | SoundCraft isobmff mux |  | L | C274 |  |
-| 590 | C292 | T9 | Timecode sync and external sync | MTC/LTC | missing |  | SoundCraft gap G-11 |  | L |  |  |
-| 591 | C299 | T9 | Dolby Atmos/immersive | Object audio | missing |  | SoundCraft issue #217, G-12 |  | L |  |  |
+| 589 | C288 | T9 | Replace audio in exported video | Mux mix into a video copy | missing |  | SoundCraft isobmff mux; Audition check 2026-10-28: differs (batch 15) |  | L | C274 |  |
+| 590 | C292 | T9 | Timecode sync and external sync | MTC/LTC | missing |  | SoundCraft gap G-11; Audition check 2026-10-28: differs (batch 15) |  | L |  |  |
+| 591 | C299 | T9 | Dolby Atmos/immersive | Object audio | missing |  | SoundCraft issue #217, G-12; Audition check 2026-10-28: not found (batch 15) |  | L |  |  |
 | 592 | C119 | T9 | Split clip at cursor/selection | Razor split at playhead or range | upstream-in-progress |  | wait for upstream: SoundCraft edit.rs split_clip/separate_at |  | M | C116 |  |
 | 593 | C042 | T9 | Loop recording with takes | Each loop pass becomes its own take clip [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-07.md] | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs add_recording pass (one clip per pass, new playlist) |  | M | C036 |  |
 | 594 | C076 | T9 | Session media: consolidate, relink, missing-file handling | Collect media into a folder, relink lost files [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-07.md] | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs relink_videos, session_bundle | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C075 |  |
@@ -781,9 +781,9 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 600 | C154 | T9 | Solo / Solo Safe | Solo tracks; safe-solo option [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-10.md] | upstream-in-progress |  | wait for upstream: SoundCraft mix solo | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C152 |  |
 | 601 | C156 | T9 | Track pan / balance | Pan knob, balance for stereo, pan law | upstream-in-progress |  | wait for upstream: SoundCraft dsp/pan.rs | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C152 |  |
 | 602 | C189 | T9 | Mixdown of entire session or time range | Render range | upstream-in-progress |  | wait for upstream: SoundCraft render_range, PR #760 | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | S | C185 |  |
-| 603 | C191 | T9 | Dither on mixdown | Dither options on bounce | upstream-in-progress |  | wait for upstream: SoundCraft issue #522 (cannot turn off), #548 |  | S | A163, C185 |  |
-| 604 | C192 | T9 | Bounce report (peaks, LUFS) | Peak/loudness report after render | upstream-in-progress |  | wait for upstream: SoundCraft PRs #734, issue #717 |  | S | B125, C185 |  |
-| 605 | C197 | T9 | Bounce from command line | Headless bounce | upstream-in-progress |  | wait for upstream: SoundCraft PR #760,#745 |  | S | C185 |  |
+| 603 | C191 | T9 | Dither on mixdown | Dither options on bounce | upstream-in-progress |  | wait for upstream: SoundCraft issue #522 (cannot turn off), #548; Audition check 2026-10-28: differs (batch 12) |  | S | A163, C185 |  |
+| 604 | C192 | T9 | Bounce report (peaks, LUFS) | Peak/loudness report after render | upstream-in-progress |  | wait for upstream: SoundCraft PRs #734, issue #717; Audition check 2026-10-28: not in Audition (batch 12) |  | S | B125, C185 |  |
+| 605 | C197 | T9 | Bounce from command line | Headless bounce | upstream-in-progress |  | wait for upstream: SoundCraft PR #760,#745; Audition check 2026-10-28: not in Audition (batch 12) |  | S | C185 |  |
 | 606 | C301 | T9 | Windows on ARM / Apple Silicon native | ARM builds | upstream-in-progress |  | wait for upstream: SoundCraft issue #699 |  | S | A345 | #48, #50 |
 | 607 | C045 | T9 | Per-track input monitoring | Monitor button per track; auto vs manual monitor mode | upstream-in-progress |  | wait for upstream: SoundCraft PR #808, #782, #769; SoundCraft #42 opt-out request |  | M | C036 |  |
 | 608 | C046 | T9 | Live clip drawing while recording | Waveform grows on the timeline during record | upstream-in-progress |  | wait for upstream: SoundCraft #403 open |  | M | C036 |  |
@@ -796,25 +796,25 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 615 | C143 | T9 | Strip silence / split at transients | Cut clips at silences or transients [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-10.md] | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs strip_silence, transients_in (reusable) |  | M | C119 |  |
 | 616 | C149 | T9 | Extract audio from video clip | Pull audio out of video source to a track | upstream-in-progress |  | wait for upstream: SoundCraft issues #728,#658 import video | soundcraft-video (MIT/Apache) | M | C101 |  |
 | 617 | C151 | T9 | Clip variations/playlists | Alternate playlists on a track [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-10.md] | upstream-in-progress |  | wait for upstream: SoundCraft model Playlist per pass (loop recording) | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C042 |  |
-| 618 | C159 | T9 | Sidechain routing | Use another track as compressor key | upstream-in-progress |  | wait for upstream: SoundCraft issue #502 open | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C158 |  |
-| 619 | C160 | T9 | Track groups / VCA | Link fader of a group | upstream-in-progress |  | wait for upstream: SoundCraft TrackKind::Vca | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C152 |  |
-| 620 | C172 | T9 | Track presets | Save and recall a track's inserts and sends | upstream-in-progress |  | wait for upstream: SoundCraft PRs #670,#671 |  | M | C157 |  |
+| 618 | C159 | T9 | Sidechain routing | Use another track as compressor key | upstream-in-progress |  | wait for upstream: SoundCraft issue #502 open; Audition check 2026-10-28: differs (batch 11) | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C158 |  |
+| 619 | C160 | T9 | Track groups / VCA | Link fader of a group | upstream-in-progress |  | wait for upstream: SoundCraft TrackKind::Vca; Audition check 2026-10-28: not in Audition (batch 11) | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C152 |  |
+| 620 | C172 | T9 | Track presets | Save and recall a track's inserts and sends | upstream-in-progress |  | wait for upstream: SoundCraft PRs #670,#671; Audition check 2026-10-28: differs (batch 11) |  | M | C157 |  |
 | 621 | C177 | T9 | Automate effect parameters | Any plugin parameter gets a lane | upstream-in-progress |  | wait for upstream: SoundCraft AutoParam | soundcraft plugin hosts (MIT/Apache); SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C157, C174 |  |
-| 622 | C186 | T9 | Per-track/bus stems export | Write each track as its own file | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs bounce_stems (reusable) | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C185 |  |
-| 623 | C206 | T9 | Clips follow session tempo | Stretch clips with tempo changes | upstream-in-progress |  | wait for upstream: SoundCraft PR #785 tempo-follow tracks, SoundCraft issue #171 |  | M | C204 |  |
-| 624 | C283 | T9 | OpenTimelineIO exchange | Open interchange alternative | upstream-in-progress |  | wait for upstream: SoundCraft issue #725 |  | M | C074 |  |
-| 625 | C312 | T9 | Scripting / automation API | Automate with scripts | upstream-in-progress |  | wait for upstream: SoundCraft automation crate MCP + CLI | soundcraft-engine pattern (MIT/Apache) | M |  |  |
+| 622 | C186 | T9 | Per-track/bus stems export | Write each track as its own file | upstream-in-progress |  | wait for upstream: SoundCraft engine/io.rs bounce_stems (reusable); Audition check 2026-10-28: differs (batch 12) | SoundCraft has it (model/mix/engine); blocked on disk-backed sample source | M | C185 |  |
+| 623 | C206 | T9 | Clips follow session tempo | Stretch clips with tempo changes | upstream-in-progress |  | wait for upstream: SoundCraft PR #785 tempo-follow tracks, SoundCraft issue #171; Audition check 2026-10-28: not found (batch 13) |  | M | C204 |  |
+| 624 | C283 | T9 | OpenTimelineIO exchange | Open interchange alternative | upstream-in-progress |  | wait for upstream: SoundCraft issue #725; Audition check 2026-10-28: not found (batch 15) |  | M | C074 |  |
+| 625 | C312 | T9 | Scripting / automation API | Automate with scripts | upstream-in-progress |  | wait for upstream: SoundCraft automation crate MCP + CLI; Audition check 2026-10-28: not found (batch 15) | soundcraft-engine pattern (MIT/Apache) | M |  |  |
 | 626 | C163 | T9 | Built-in track effects set (EQ, comp, reverb, delay...) | Audition-class built-in effects usable as inserts | upstream-in-progress |  | wait for upstream: WavCraft #34 (F2) from SoundCraft dsp/plugins (dynamics, eq, reverb, modulation, pitch) |  | L | C157 | #34 |
-| 627 | C279 | T9 | AAF import/export | Exchange sessions with Avid etc. | upstream-in-progress |  | wait for upstream: SoundCraft PR #799 (external-WAV AAF import), issue #40 |  | L | C074 |  |
-| 628 | C290 | T9 | Pro Tools session read | Open PTX | upstream-in-progress |  | wait for upstream: SoundCraft issue #528 |  | L | C074 |  |
-| 629 | C314 | T9 | AI features (generative, Enhance Speech, tagging) | AI-assisted audio | upstream-in-progress |  | wait for upstream: SoundCraft PR #603 Craft AI, #676 |  | L |  | #72 |
+| 627 | C279 | T9 | AAF import/export | Exchange sessions with Avid etc. | upstream-in-progress |  | wait for upstream: SoundCraft PR #799 (external-WAV AAF import), issue #40; Audition check 2026-10-28: not in Audition (batch 14) |  | L | C074 |  |
+| 628 | C290 | T9 | Pro Tools session read | Open PTX | upstream-in-progress |  | wait for upstream: SoundCraft issue #528; Audition check 2026-10-28: not in Audition (batch 15) |  | L | C074 |  |
+| 629 | C314 | T9 | AI features (generative, Enhance Speech, tagging) | AI-assisted audio | upstream-in-progress |  | wait for upstream: SoundCraft PR #603 Craft AI, #676; Audition check 2026-10-28: differs (batch 15) |  | L |  | #72 |
 | 630 | A234 | T9 | Legacy ASND handling | Instruct user to unzip [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-02.md] | missing |  | Adobe-specific; replace or skip |  | S |  |  |
 | 631 | A264 | T9 | Export with Adobe Media Encoder (merged: C270) | Multitrack export route; not applicable (no AME) | missing |  | Adobe-specific; replace or skip |  | S | C185 |  |
-| 632 | C310 | T9 | Share / upload (Creative Cloud, social) | Share to cloud or social | missing |  | Adobe-specific; replace or skip: SoundCraft PR #774 CollabCraft share |  | M |  |  |
+| 632 | C310 | T9 | Share / upload (Creative Cloud, social) | Share to cloud or social | missing |  | Adobe-specific; replace or skip: SoundCraft PR #774 CollabCraft share; Audition check 2026-10-28: not found (batch 15) |  | M |  |  |
 | 633 | C281 | T9 | Premiere Pro round trip (Edit in Audition) (merged: A325) | Send Premiere sequence/clips and send mix back | missing |  | Adobe-specific; replace or skip |  | L | C278 | #72 |
 | 634 | C282 | T9 | Dynamic Link | Live link between two applications; not replicable, skip | missing |  | Adobe-specific; replace or skip |  | L |  |  |
-| 635 | C311 | T9 | Cloud sync / libraries | Cloud-hosted libraries and sync; out of scope | missing |  | Adobe-specific; replace or skip: Craft family: SoundCraft #173 backup |  | L |  |  |
-| 639 | C323 | T9 | DAWproject interchange | Import and export multitrack sessions in the open DAWproject format | missing |  | added 2026-10-20 from reuse research | dawproject 0.11.0 (MIT/Apache; early) | L | C074 |  |
+| 635 | C311 | T9 | Cloud sync / libraries | Cloud-hosted libraries and sync; out of scope | missing |  | Adobe-specific; replace or skip: Craft family: SoundCraft #173 backup; Audition check 2026-10-28: not found (batch 15) |  | L |  |  |
+| 639 | C323 | T9 | DAWproject interchange | Import and export multitrack sessions in the open DAWproject format | missing |  | added 2026-10-20 from reuse research; Audition check 2026-10-28: not in Audition (batch 15) | dawproject 0.11.0 (MIT/Apache; early) | L | C074 |  |
 
 ## Merged duplicates
 
