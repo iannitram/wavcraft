@@ -137,6 +137,26 @@
 //! - `VIEWPORT <start frame> <frames per pixel>` → `OK view=…` (set the zoom and scroll, for scripted checks)
 //! - `ACTION view.sync.selection|zoom|playhead` toggles that View option (shown in `STATE` as `sync=`)
 //! - `QUIT` → `OK`, then the window closes; with unsaved changes in any document `ERR …` unless `QUIT discard`
+//! - `FILES` → `OK count=<shown> total=<n> current=<i> sort=<col:asc|desc|none> filter="…" | <row> doc=<i> current=<0|1> unsaved=<0|1> frames=<n> rate=<hz> ch=<n> bits=<b> format=<f> name=<n> path=<p> | …` (the Files panel's table); `FILES sort <col> asc|desc` (or `sort none`), `FILES filter <text>`, `FILES select <row>` (makes that row's document current), `FILES expand <row>` / `FILES collapse <row>` (a line `<row>.<ch> channel label=<n> active=<0|1>` follows an expanded file; each file row ends `expanded=<0|1>` before `size=`), `FILES select <row>.<ch>` (channels from 0: makes the file current and edits only that channel), `FILES reveal [row]` (answers the command Reveal would run; it is not run)
+//! - `SHORTCUTS` → `OK <command>=<chord>[|<chord>]…` for every command (`-` when it has none)
+//! - `SHORTCUT set <command> <chord> [reassign]` → `OK …`, or `ERR conflict: <chord> is already <command>`
+//!   (with `reassign` the chord is taken from that command); `SHORTCUT clear <command>`;
+//!   `SHORTCUT reset` (the defaults). Each saves the user's key file.
+//! - `SHORTCUTSETS` → `OK active=<name|default> sets=<name>|<name>…` (the saved sets; the built-in `default` is not listed)
+//! - `SHORTCUTSET save|switch|delete <name>` → `OK …` or `ERR …`: save the current keys as a named set (it becomes
+//!   the active one), switch to a set (`default` is the shipped table), delete a set (not `default`). The active set applies at start.
+//! - `KEYBOARD <mods>` (`none`, `Ctrl`, `Ctrl+Shift`…) → `OK mods=<mods> keys=<Key>=<command> …` (the visual keyboard's coloured keys)
+//! - `DIVIDER drag <left|right|bottom> <dx> <dy>` | `DIVIDER corner <dx> <dy> [left|right]` | `DIVIDER reset <zone>` → the same line as `PANELS` (which also carries `size.left=… size.right=… size.bottom=…`, in points); what dragging a divider, dragging a corner where two meet, and double-clicking a divider do; held to the zone minimum and the window; saved in the settings file
+//! - `RECOVERTAKE [index]` → `OK` (repairs the `index`th unfinished take, default 0, and opens it as the document) / `ERR …`; `DISCARDTAKE [index]` deletes it (C032)
+//! - `CONVERT rate=44100 channels=1 bits=16 dither=tpdf shaping=light quality=high mix=50,50` or `CONVERT preset=<name>` → `OK`
+//!   (Convert Sample Type, in the background; poll `STATE` until `busy=0`; `ERR` for a bad setting)
+//! - `INTERPRET <hz>` → `OK` (Interpret Sample Rate: relabel the rate, no resampling)
+//! - `MATCH [target=<LUFS>] [tp=<dBTP>] [tol=<LU>] [limit=on|off] [lookahead=<ms>] [release=<ms>] [preset=podcast|broadcast]`
+//!   → `OK gain=<dB> limited=<0|1> on_target=<0|1> before=<LUFS> after=<LUFS> true_peak=<dBTP> changed=<0|1>` (Match
+//!   Loudness on the whole file as one undoable step, default the podcast preset; runs on the window's thread;
+//!   poll `STATE` until `busy=0`, then `LOUDNESS` reads the result back)
+//! - `XMP get [<ns>:<prop>]` / `XMP set <ns>:<prop> <value>` → `OK status=<ok|none|malformed> props=<n> …` / `OK <value>` / `OK changed=<0|1>` (`<ns>` is a namespace URI or a prefix such as `dc`; one undo step "Edit Metadata" per set; an empty value removes the property)
+//! - `PRESET list` | `PRESET save <name> | <settings>` | `PRESET delete <name>` → `OK …` (conversion presets)
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
 

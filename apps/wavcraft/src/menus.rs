@@ -125,6 +125,7 @@ impl Menu {
                 act(ActionId::SnapRulerCoarseToggle),
                 act(ActionId::SnapRulerFineToggle),
                 act(ActionId::SnapEdgesToggle),
+                act(ActionId::SnapMarkersToggle),
             ],
             Menu::History => vec![act(ActionId::Undo), act(ActionId::Redo)],
         }

@@ -47,6 +47,7 @@ const KEY_SNAP_ZERO: &str = "snap_zero_crossings";
 const KEY_SNAP_COARSE: &str = "snap_ruler_coarse";
 const KEY_SNAP_FINE: &str = "snap_ruler_fine";
 const KEY_SNAP_EDGES: &str = "snap_edges";
+const KEY_SNAP_MARKERS: &str = "snap_markers";
 const KEY_RIGHT_CLICK: &str = "right_click";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
 const KEY_SYNC_SELECTION: &str = "sync_selection";
@@ -659,13 +660,14 @@ impl Settings {
                 KEY_ZONE_SIZES => s.zone_sizes = value.to_string(),
                 KEY_WORKSPACE => s.workspace = value.to_string(),
                 // The snap switches (f49): a value that is not a switch leaves the default.
-                KEY_SNAP | KEY_SNAP_ZERO | KEY_SNAP_COARSE | KEY_SNAP_FINE | KEY_SNAP_EDGES => {
+                KEY_SNAP | KEY_SNAP_ZERO | KEY_SNAP_COARSE | KEY_SNAP_FINE | KEY_SNAP_EDGES | KEY_SNAP_MARKERS => {
                     if let Some(on) = parse_flag(value) {
                         match key.trim() {
                             KEY_SNAP => s.snap.enabled = on,
                             KEY_SNAP_ZERO => s.snap.zero_crossings = on,
                             KEY_SNAP_COARSE => s.snap.ruler_coarse = on,
                             KEY_SNAP_FINE => s.snap.ruler_fine = on,
+                            KEY_SNAP_MARKERS => s.snap.markers = on,
                             _ => s.snap.edges = on,
                         }
                     }
@@ -1086,7 +1088,7 @@ impl Settings {
         }
         // Written only when a switch differs from its default, so a default file keeps the old format.
         if self.snap != SnapSettings::default() {
-            out.push_str("# snap_*: what snapping pulls to (1 on, 0 off): all, zero crossings, ruler major ticks, ruler minor ticks, selection edges and cursor.
+            out.push_str("# snap_*: what snapping pulls to (1 on, 0 off): all, zero crossings, ruler major ticks, ruler minor ticks, selection edges and cursor, markers.
 ");
             let n = &self.snap;
             for (key, on) in [
@@ -1095,6 +1097,7 @@ impl Settings {
                 (KEY_SNAP_COARSE, n.ruler_coarse),
                 (KEY_SNAP_FINE, n.ruler_fine),
                 (KEY_SNAP_EDGES, n.edges),
+                (KEY_SNAP_MARKERS, n.markers),
             ] {
                 out.push_str(&format!("{key} = {}
 ", u8::from(on)));

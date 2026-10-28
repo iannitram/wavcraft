@@ -23,7 +23,8 @@ craft-log = { path = "crates/craft-log" }
 # keeps the app's old name on purpose: it lives on another repo, and renaming it would break old pins.)
 soundcraft-audio-io = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
 # f27: the biquad filter designs (RBJ cookbook shelves, peaks, notch, high/low-pass), MIT OR Apache-2.0,
-# from the same pinned commit as soundcraft-audio-io.
+# from the same pinned commit as soundcraft-audio-io. f28 (compressor, hard limiter, de-esser) uses the
+# same crate and commit.
 soundcraft-dsp = { git = "https://github.com/iannitram/soundcraft", rev = "274f7881a40fe649c1fa2f5678c2d246320a6944" }
 
 # f122 (the Video panel): SoundCraft's `soundcraft-video` (MIT OR Apache-2.0: pure Rust H.264, ProRes

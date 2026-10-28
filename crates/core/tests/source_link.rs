@@ -25,6 +25,9 @@ fn busy_meta() -> Metadata {
         ixml: Some(b"<BWFXML></BWFXML>\0\0".to_vec()),
         chnames: vec!["L".to_string(), "R".to_string()],
         chnames_edited: false,
+        xmp: None,
+        xmp_problem: None,
+        xmp_edited: false,
     }
 }
 

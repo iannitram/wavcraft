@@ -98,6 +98,50 @@ impl Job {
         Job { label: label.to_string(), base, progress, cancel, result: rx }
     }
 
+    /// Start any edit that makes its own result from `base` on a worker thread (A161: Convert
+    /// Sample Type, which changes the length and the rate, so it is no `replace_range`). `work`
+    /// gets the state, the cancel flag and a progress callback (0.0 to 1.0); `wake` as
+    /// [`Job::spawn_replace`].
+    pub fn spawn_with<F>(base: Arc<DocState>, label: &str, wake: Option<Arc<dyn Fn() + Send + Sync>>, work: F) -> Job
+    where
+        F: FnOnce(&DocState, &AtomicBool, &mut dyn FnMut(f64)) -> Result<Edit, EditError> + Send + 'static,
+    {
+        let (tx, rx) = channel();
+        let progress = Arc::new(AtomicU32::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (w_base, w_progress, w_cancel) = (base.clone(), progress.clone(), cancel.clone());
+        let spawned = std::thread::Builder::new().name("job".into()).spawn(move || {
+            let mut last = 0;
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                let mut report = |p: f64| {
+                    let permille = ((p.clamp(0.0, 1.0) * f64::from(FULL)) as u32).min(FULL - 1);
+                    w_progress.fetch_max(permille, Ordering::Relaxed);
+                    if permille >= last + 10 {
+                        last = permille;
+                        if let Some(w) = &wake {
+                            w();
+                        }
+                    }
+                };
+                work(&w_base, &w_cancel, &mut report)
+            }));
+            let result = outcome.unwrap_or_else(|_| Err(EditError::Io(io::Error::other("the job stopped unexpectedly"))));
+            if result.is_ok() {
+                w_progress.store(FULL, Ordering::Relaxed);
+            }
+            let _ = tx.send(result);
+            if let Some(w) = &wake {
+                w();
+            }
+        });
+        if let Err(e) = spawned {
+            let (tx, rx) = channel();
+            let _ = tx.send(Err(EditError::Io(e)));
+            return Job { label: label.to_string(), base, progress, cancel, result: rx };
+        }
+        Job { label: label.to_string(), base, progress, cancel, result: rx }
+    }
+
     /// The History label the edit will have.
     pub fn label(&self) -> &str {
         &self.label

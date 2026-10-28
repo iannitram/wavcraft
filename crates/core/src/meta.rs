@@ -10,6 +10,7 @@
 use std::fmt::Write as _;
 
 pub mod source_link;
+use crate::xmp::{self, Xmp};
 
 /// Size of the fixed part of `bext` (EBU Tech 3285): description 256, originator 32, reference
 /// 32, date 10, time 8, time reference 8, then version, UMID, loudness and reserved bytes.
@@ -60,6 +61,12 @@ pub struct Metadata {
     /// A channel name was changed: the save rewrites the names in the iXML (the rest of it
     /// byte for byte); until then the chunk is copied through.
     pub chnames_edited: bool,
+    /// The XMP packet of the `_PMX` chunk, when it was read.
+    pub xmp: Option<Xmp>,
+    /// Why the `_PMX` chunk could not be read: it is then copied through unchanged and not edited.
+    pub xmp_problem: Option<String>,
+    /// An XMP property was changed: the save writes the `_PMX` chunk fresh.
+    pub xmp_edited: bool,
 }
 
 /// The fields `META get|set` and the panel know, in the panel's order.
@@ -391,6 +398,10 @@ impl Metadata {
         if let Some(ch) = chname_index(field) {
             return self.chnames.get(ch).cloned();
         }
+        if let Some(key) = self.xmp_key(field) {
+            let (ns, name) = key.ok()?;
+            return Some(self.xmp.as_ref().and_then(|x| x.get(&ns, &name)).unwrap_or_default());
+        }
         if let Some(id) = info_id(field) {
             return Some(self.info.get(id).unwrap_or_default());
         }
@@ -421,6 +432,18 @@ impl Metadata {
             let slot = self.chnames.get_mut(ch).ok_or_else(|| format!("no channel {} (the file has {n})", ch + 1))?;
             *slot = value.trim().to_string();
             self.chnames_edited = true;
+            return Ok(());
+        }
+        if let Some(key) = self.xmp_key(field) {
+            let (ns, name) = key?;
+            if let Some(why) = &self.xmp_problem {
+                return Err(format!("the file's XMP packet could not be read ({why}); it is kept as it is"));
+            }
+            let mut x = self.xmp.clone().unwrap_or_else(Xmp::empty);
+            if x.set(&ns, &name, value)? {
+                self.xmp = Some(x);
+                self.xmp_edited = true;
+            }
             return Ok(());
         }
         if let Some(id) = info_id(field) {
@@ -484,6 +507,23 @@ impl Metadata {
     /// The field names the panel shows: [`FIELDS`], then `chname.N` for each channel.
     pub fn keys(&self) -> Vec<String> {
         FIELDS.iter().map(|f| f.to_string()).chain((1..=self.chnames.len()).map(|n| format!("chname.{n}"))).collect()
+    }
+
+    /// `Some` for an XMP field: a panel name (`xmp_title`, see [`xmp::FIELDS`]) or `xmp:<ns>:<prop>`
+    /// where `<ns>` is a namespace URI or a prefix of the packet. The inner result is the
+    /// namespace and property, or why the key is no good.
+    fn xmp_key(&self, field: &str) -> Option<Result<(String, String), String>> {
+        if let Some(f) = xmp::FIELDS.iter().find(|f| f.name == field) {
+            return Some(Ok((f.ns.to_string(), f.prop.to_string())));
+        }
+        let key = field.strip_prefix("xmp:")?;
+        let resolver = self.xmp.clone().unwrap_or_else(Xmp::empty);
+        Some(resolver.split_key(key))
+    }
+
+    /// Every field the panel shows, in order: the file fields, then the XMP ones.
+    pub fn panel_fields() -> Vec<&'static str> {
+        FIELDS.iter().copied().chain(xmp::FIELDS.iter().map(|f| f.name)).collect()
     }
 
     /// `name=value` lines for every field, for the control channel's `META get`.

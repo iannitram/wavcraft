@@ -222,8 +222,13 @@ impl History {
 
     fn push_with_change(&mut self, label: String, state: DocState, change: Change, same_audio_ok: bool) -> usize {
         let cur = self.current();
+        // The same channels, rate, source and markers: nothing changed. (A rate or bit-depth
+        // relabel keeps every channel but is a step: it differs in rate or source. A metadata step
+        // (`same_audio_ok`) is recorded although the audio is shared.)
         if !same_audio_ok
             && cur.channel_count() == state.channel_count()
+            && cur.sample_rate() == state.sample_rate()
+            && Arc::ptr_eq(cur.source(), state.source())
             && cur.channels().iter().zip(state.channels()).all(|(a, b)| Arc::ptr_eq(a, b))
             && cur.markers() == state.markers()
         {

@@ -9,11 +9,13 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod convert_ui;
 mod batch_panel;
 mod cd_ui;
 mod control;
 mod diagnostics_panel;
 mod effect_dialog;
+mod files;
 mod input;
 mod recording;
 mod rec_input;
@@ -23,6 +25,7 @@ mod meters_ui;
 mod freq_panel;
 mod oscb;
 mod markers_panel;
+mod match_ui;
 mod mixpaste;
 mod menus;
 mod doclist;
@@ -34,6 +37,7 @@ mod reveal;
 mod rack_panel;
 mod recovery;
 mod selflog;
+mod shortcut_editor;
 mod spectrum;
 mod video;
 mod statspanel;

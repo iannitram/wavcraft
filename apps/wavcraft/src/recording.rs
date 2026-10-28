@@ -206,6 +206,8 @@ pub fn parse_start_args(args: &str, now_unix: u64) -> Result<(RecFormat, StartOp
 pub struct Recording {
     active: Option<Active>,
     armed: Option<Armed>,
+    /// How the last timed start went: (milliseconds after its due time, an open or save was running).
+    pub last_timed: Option<(u64, bool)>,
     /// The format of the last take started; Quick Record (C031) and the dialog begin from it.
     last_fmt: Option<RecFormat>,
     /// File › New Recording…: the format being chosen while the dialog is up.
@@ -313,7 +315,10 @@ impl Recording {
     /// The armed take when its time has come.
     pub fn due(&mut self) -> Option<(RecFormat, Option<u64>)> {
         if self.armed.as_ref().is_some_and(|a| Instant::now() >= a.at) {
-            return self.armed.take().map(|a| (a.fmt, a.max_secs));
+            return self.armed.take().map(|a| {
+                self.last_timed = Some((Instant::now().saturating_duration_since(a.at).as_millis() as u64, false));
+                (a.fmt, a.max_secs)
+            });
         }
         None
     }
@@ -368,6 +373,7 @@ impl Recording {
         let monitor;
         let (recorder, source, ring, device) = match FakeSpec::from_env()? {
             Some(spec) => {
+                let tones = spec.tones_for(want)?;
                 let ring_frames = spec.ring_ms.map_or(want.rate as usize * 2, |ms| (want.rate as usize * ms as usize / 1000).max(1));
                 let mon = want_monitor.then(|| MonitorRing::new(crate::rec_input::monitor_frames(want.rate), want.channels));
                 let ring = Ring::with_monitor(ring_frames, want.channels, mon.clone());
@@ -376,7 +382,7 @@ impl Recording {
                 let recorder =
                     Recorder::start_stalled(make(want)?, ring.clone(), Duration::from_millis(u64::from(spec.stall_ms))).map_err(|e| e.to_string())?;
                 let fake = FakeInput::spawn(spec, want, ring.clone()).map_err(|e| e.to_string())?;
-                (recorder, Source::Fake(fake), ring, format!("fake sine {} Hz", spec.hz))
+                (recorder, Source::Fake(fake), ring, format!("fake sine {} Hz", tones.iter().map(f64::to_string).collect::<Vec<_>>().join(" + ")))
             }
             None => {
                 let opened = crate::rec_input::open(want, want_monitor)?;
@@ -485,6 +491,14 @@ impl Recording {
         self.armed.as_ref().map_or(-1, |a| a.at.saturating_duration_since(Instant::now()).as_secs() as i64)
     }
 
+    /// ` rec_late_ms=<n> rec_start_busy=<0|1>` for the last timed start, `-1 -1` before any.
+    fn timed_fields(&self) -> String {
+        match self.last_timed {
+            Some((late, busy)) => format!(" rec_late_ms={late} rec_start_busy={}", u8::from(busy)),
+            None => " rec_late_ms=-1 rec_start_busy=-1".to_string(),
+        }
+    }
+
     /// Seconds of recording that fit in the free space, if known.
     fn left_secs(a: &Active) -> Option<u64> {
         a.free.map(|f| f / a.recorder.format().bytes_per_second().max(1))
@@ -494,17 +508,18 @@ impl Recording {
     pub fn state_fields(&self) -> String {
         match &self.active {
             None => format!(
-                " recording=0 rec_frames=0 rec_bytes=0 rec_dropped=0 rec_left_s=-1 rec_paused=0 rec_resumes=0 rec_max_s=-1 rec_armed={} rec_mode=none rec_target=- rec_gate=-1{} rec_offset_ms={} rec_offset_frames={}",
+                " recording=0 rec_frames=0 rec_bytes=0 rec_dropped=0 rec_left_s=-1 rec_paused=0 rec_resumes=0 rec_max_s=-1 rec_armed={} rec_mode=none rec_target=- rec_gate=-1{} rec_offset_ms={} rec_offset_frames={}{}",
                 self.armed_in(),
                 self.last_monitor.fields(),
                 self.last_offset.map_or(-1, |o| i64::from(o.0)),
-                self.last_offset.map_or(-1, |o| o.1 as i64)
+                self.last_offset.map_or(-1, |o| o.1 as i64),
+                self.timed_fields()
             ),
             Some(a) => {
                 let s = a.recorder.status();
                 let left = Self::left_secs(a).map_or(-1, |l| l.min(i64::MAX as u64) as i64);
                 format!(
-                    " recording=1 rec_frames={} rec_bytes={} rec_dropped={} rec_left_s={left} rec_paused={} rec_resumes={} rec_resume_at={} rec_max_s={} rec_armed=-1 rec_rate={} rec_ch={} rec_bits={} rec_mode={} rec_target={} rec_gate={}{} rec_offset_ms=-1 rec_offset_frames=-1",
+                    " recording=1 rec_frames={} rec_bytes={} rec_dropped={} rec_left_s={left} rec_paused={} rec_resumes={} rec_resume_at={} rec_max_s={} rec_armed=-1 rec_rate={} rec_ch={} rec_bits={} rec_mode={} rec_target={} rec_gate={}{} rec_inputs={} rec_offset_ms=-1 rec_offset_frames=-1{}",
                     s.frames,
                     s.file_bytes,
                     s.dropped_frames,
@@ -518,7 +533,9 @@ impl Recording {
                     self.into.as_ref().map_or("none", |i| i.plan.mode.name()),
                     self.into.as_ref().map_or("-", |i| i.plan.target.name()),
                     self.into.as_ref().and_then(|i| i.punch.as_ref()).map_or(-1, |p| i64::from(p.open)),
-                    a.monitor.as_ref().map_or(MonStats::default(), MonStats::of).fields()
+                    a.monitor.as_ref().map_or(MonStats::default(), MonStats::of).fields(),
+                    a.recorder.format().inputs_text(),
+                    self.timed_fields()
                 )
             }
         }
@@ -548,13 +565,14 @@ impl Recording {
         let state = if a.monitor.as_ref().is_some_and(|m| m.audible) { format!("{state} (monitoring)") } else { state };
         let limit = a.max_frames.map_or(String::new(), |m| format!(" of {}", clock(m / u64::from(fmt.rate.max(1)))));
         let mut text = format!(
-            "{warn}{state} {}{limit} · {} · {left} left on disk · peak {db}{} · {} Hz {} ch {}-bit · {}",
+            "{warn}{state} {}{limit} · {} · {left} left on disk · peak {db}{} · {} Hz {} ch {}-bit{} · {}",
             clock(elapsed),
             format_bytes(s.file_bytes),
             if a.clipped { " CLIP" } else { "" },
             fmt.rate,
             fmt.channels,
             fmt.bits,
+            if fmt.inputs != 0 { format!(" (inputs {})", fmt.inputs_text()) } else { String::new() },
             a.device
         );
         if let Some(e) = s.error {
@@ -581,9 +599,43 @@ impl Recording {
                 });
                 ui.end_row();
                 ui.label("Channels:");
-                egui::ComboBox::from_id_salt("rec-ch").selected_text(if fmt.channels == 1 { "Mono" } else { "Stereo" }).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut fmt.channels, 1, "Mono");
-                    ui.selectable_value(&mut fmt.channels, 2, "Stereo");
+                egui::ComboBox::from_id_salt("rec-ch")
+                    .selected_text(match fmt.channels {
+                        1 => "Mono".to_string(),
+                        2 => "Stereo".to_string(),
+                        n => format!("{n} channels"),
+                    })
+                    .show_ui(ui, |ui| {
+                        for n in 1..=8u16 {
+                            let label = match n {
+                                1 => "Mono".to_string(),
+                                2 => "Stereo".to_string(),
+                                n => format!("{n} channels"),
+                            };
+                            if ui.selectable_value(&mut fmt.channels, n, label).clicked() {
+                                fmt.inputs = 0;
+                            }
+                        }
+                    });
+                ui.end_row();
+                ui.label("Inputs:");
+                ui.horizontal_wrapped(|ui| {
+                    let mut picked: Vec<u32> = fmt.pick().indices().iter().map(|i| u32::from(*i) + 1).collect();
+                    let mut changed = false;
+                    for n in 1..=8u32 {
+                        let mut on = picked.contains(&n);
+                        if ui.checkbox(&mut on, n.to_string()).changed() {
+                            if on {
+                                picked.push(n);
+                            } else if picked.len() > 1 {
+                                picked.retain(|p| *p != n);
+                            }
+                            changed = true;
+                        }
+                    }
+                    if changed && let Ok(f) = fmt.with_inputs(&picked) {
+                        *fmt = f;
+                    }
                 });
                 ui.end_row();
                 ui.label("Bit depth:");
@@ -658,6 +710,20 @@ mod tests {
     use super::{Duration, Instant, NullSink, StartOpts, clock, parse_start_args};
     use wavcraft_core::doc::rec_edit::{RecMode, RecTarget};
     use wavcraft_core::record::{MonitorRing, RecFormat};
+
+    #[test]
+    fn a_timed_start_reports_how_late_it_was() {
+        let mut r = super::Recording::default();
+        assert!(r.state_fields().contains("rec_late_ms=-1"));
+        r.arm(RecFormat::default(), std::time::Duration::ZERO, Some(3)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let (_, max) = r.due().expect("due");
+        assert_eq!(max, Some(3));
+        let (late, busy) = r.last_timed.unwrap();
+        assert!(late >= 15 && !busy, "{late} {busy}");
+        assert!(r.state_fields().contains("rec_start_busy=0"));
+        assert!(r.due().is_none(), "a due take is handed out once");
+    }
 
     #[test]
     fn start_arguments_split_the_timer_from_the_format() {

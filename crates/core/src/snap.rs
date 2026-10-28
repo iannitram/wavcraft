@@ -1,8 +1,8 @@
 //! Snapping (f09, roadmap A123 and A127; f49, A125, A126 and A129): move a frame the pointer is
 //! on to the nearest snap target within [`SNAP_PX`] pixels. Targets, each with its own switch:
 //! the ruler's major ticks (coarse), its minor ticks (fine), the frames the caller lists
-//! (selection edges, the cursor) and zero crossings of the enabled channels. The
-//! selection gestures (f08) call [`snap_frame`] (or `Editor::snap`) for each frame they place.
+//! (selection edges, the cursor), the document's markers (f59, A124) and zero crossings of the
+//! enabled channels. The selection gestures (f08) call [`snap_frame`] (or `Editor::snap`) for each frame they place.
 
 use crate::actions::{Toward, ZERO_CROSSING_REACH_MS, zero_crossing};
 use crate::doc::DocState;
@@ -24,11 +24,13 @@ pub struct SnapSettings {
     pub ruler_fine: bool,
     /// Snap to the frames the caller lists: selection edges and the cursor (f49).
     pub edges: bool,
+    /// Also snap to markers: point markers and the edges of range markers (f59, A124).
+    pub markers: bool,
 }
 
 impl Default for SnapSettings {
     fn default() -> Self {
-        SnapSettings { enabled: true, zero_crossings: false, ruler_coarse: true, ruler_fine: false, edges: true }
+        SnapSettings { enabled: true, zero_crossings: false, ruler_coarse: true, ruler_fine: false, edges: true, markers: true }
     }
 }
 
@@ -129,6 +131,15 @@ pub fn snap_frame_steps(
             best = Some((d, c));
         }
     };
+    if settings.markers {
+        for m in doc.markers().iter() {
+            for c in [m.start, m.end] {
+                if near(c) {
+                    offer(c);
+                }
+            }
+        }
+    }
     if settings.ruler_coarse {
         let tick = match steps {
             Some((major, _)) => tick_near(frame, major, doc.sample_rate()),

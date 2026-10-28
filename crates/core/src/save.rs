@@ -1,6 +1,7 @@
 //! Save (task 06): WAV, AIFF, FLAC and Ogg Vorbis (f93), and Sony Wave64, Apple CAF and Sun/NeXT AU (f91). The document is streamed out 64 K frames at a time with
 //! [`DocState::read`], never flattened, so a three-hour file saves on an 8 GB machine. Integer
-//! samples are `round(x · 2^(bits−1))`, clamped, with no dither: the exact inverse of how they
+//! samples are `round(x · 2^(bits−1))`, clamped (dither and noise shaping, [`crate::dither`], only
+//! when the document's `SourceFormat::dither` asks for them, A163): the exact inverse of how they
 //! are read, so untouched audio saves bit for bit. Above 4 GiB a WAV is RF64; AIFF (32-bit sizes)
 //! is refused there.
 //!
@@ -29,6 +30,7 @@ use std::time::{Duration, SystemTime};
 
 use soundcraft_audio_io::SampleFormat;
 
+use crate::dither::Ditherer;
 use crate::doc::edit::ChannelMask;
 use crate::doc::{ChunkInfo, DocState, SourceFormat};
 use crate::flac_enc::{BLOCK_SIZE, Encoder};
@@ -761,6 +763,10 @@ fn plan_chunks(doc: &DocState, ty: SampleType, metadata: bool) -> (Vec<Item>, Op
     let has_ixml_chunk = chunks.iter().any(|c| c.id == *b"iXML");
     let mut ixml = (meta.chnames_edited && (meta.ixml.is_some() || !has_ixml_chunk))
         .then(|| Item::Fresh { id: *b"iXML", body: crate::meta::ixml_with_names(meta.ixml.as_deref(), &meta.chnames) });
+    // f62: the XMP packet is always written from the model (it keeps the text it read, so an
+    // unedited one comes back byte for byte): the saved file may hold an edit an undone step does not.
+    let mut xmp = if meta.xmp_problem.is_none() { meta.xmp.as_ref().map(|x| Item::Fresh { id: *b"_PMX", body: x.to_bytes() }) } else { None };
+    let (mut have_xmp, drop_xmp) = (false, meta.xmp.is_none() && meta.xmp_problem.is_none());
     let (mut bext, mut info) = (bext, info);
     let mut plan = Vec::new();
     let (mut have_data, mut have_info) = (false, false);
@@ -797,6 +803,12 @@ fn plan_chunks(doc: &DocState, ty: SampleType, metadata: bool) -> (Vec<Item>, Op
                 plan.push(Item::Copy(c.clone()));
             }
             have_info = true;
+        } else if c.id == *b"_PMX" && drop_xmp {
+            // The step has no packet (an earlier save added one): none is kept.
+        } else if c.id == *b"_PMX" && !have_xmp && xmp.is_some() {
+            // The packet takes the place of the first `_PMX`; a later one is copied through.
+            plan.extend(xmp.take());
+            have_xmp = true;
         } else if c.id == *b"LIST" && is_list(f, c, b"adtl") {
             // The marker code owns the labels with the cue list.
         } else {
@@ -813,6 +825,7 @@ fn plan_chunks(doc: &DocState, ty: SampleType, metadata: bool) -> (Vec<Item>, Op
         plan.extend(info.take());
     }
     plan.extend(ixml.take());
+    plan.extend(xmp.take());
     // Markers (A183): the cue list and its `adtl` labels, written fresh after everything else.
     if let Some((cue, adtl)) = doc.markers().to_wav_bodies() {
         plan.push(Item::Fresh { id: *b"cue ", body: cue });
@@ -926,22 +939,33 @@ fn write_stream(
         }
         SaveFormat::Aiff => {
             let ch16 = i16::try_from(channels).map_err(|_| invalid("too many channels for AIFF"))?;
-            let data_len = write_aiff_header(&mut out, ch16, doc.sample_rate(), ty, frames, hooks.aiff)?;
+            // f100 (A184): the markers go after the audio as one `MARK` chunk, for a whole-document
+            // save with metadata on (A262 off drops markers with the rest).
+            let whole = part.frames.start == 0
+                && part.frames.end == doc.len_frames()
+                && part.channels.iter().copied().eq(0..doc.channel_count());
+            let marks = if whole && hooks.metadata { doc.markers().to_aiff_mark() } else { Vec::new() };
+            let data_len = write_aiff_header(&mut out, ch16, doc.sample_rate(), ty, frames, hooks.aiff, marks.len() as u64)?;
             // Big-endian, except little-endian integers (`sowt`); float is always `fl32`.
             let big = !(hooks.aiff == AiffKind::AifcSowt && ty != SampleType::Float32);
             write_pcm(&mut out, doc, ty, part, progress, hooks, big)?;
             if data_len & 1 == 1 {
                 out.write_all(&[0])?;
             }
+            out.write_all(&marks)?;
         }
         SaveFormat::Flac => {
             let bits = if ty == SampleType::Int16 { 16 } else { 24 };
             let mut enc = Encoder::new(&mut out, channels, doc.sample_rate(), bits, frames)?;
+            let mut dithers: Vec<Ditherer> = (0..channels).map(|ch| Ditherer::new(&doc.source().dither, ch)).collect();
             stream_samples(doc, part, progress, hooks, |bufs, n| {
                 for start in (0..n).step_by(BLOCK_SIZE) {
                     let end = (start + BLOCK_SIZE).min(n);
-                    let block: Vec<Vec<i64>> =
-                        bufs.iter().map(|b| b[start..end].iter().map(|&x| i64::from(quantize(x, bits))).collect()).collect();
+                    let block: Vec<Vec<i64>> = bufs
+                        .iter()
+                        .zip(dithers.iter_mut())
+                        .map(|(b, d)| b[start..end].iter().map(|&x| i64::from(d.quantize(x, bits))).collect())
+                        .collect();
                     enc.write_block(&mut out, &block)?;
                 }
                 Ok(())
@@ -1013,6 +1037,9 @@ fn write_pcm(
     let out_channels = xf.as_ref().map_or(part.channels.len(), |t| t.channels);
     let mut tbufs = vec![vec![0f32; BLOCK_FRAMES]; if xf.is_some() { out_channels } else { 0 }];
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * out_channels * ty.bytes());
+    // A163: one quantiser per written channel for the whole file, so its noise and filter state
+    // carry across blocks. With the document's dither off it is plain [`quantize`].
+    let mut dithers: Vec<Ditherer> = (0..out_channels).map(|ch| Ditherer::new(&doc.source().dither, ch)).collect();
     stream_samples(doc, part, progress, hooks, |bufs, n| {
         let bufs: &[Vec<f32>] = match xf.as_mut() {
             Some(t) => {
@@ -1023,8 +1050,8 @@ fn write_pcm(
         };
         bytes.clear();
         for i in 0..n {
-            for buf in bufs {
-                push_sample(&mut bytes, buf[i], ty, big);
+            for (buf, dither) in bufs.iter().zip(dithers.iter_mut()) {
+                push_sample(&mut bytes, buf[i], ty, big, dither);
             }
         }
         out.write_all(&bytes)
@@ -1076,7 +1103,8 @@ fn cancelled(hooks: Hooks) -> bool {
 }
 
 /// One sample as bytes: little-endian unless `big`.
-fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool) {
+fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool, dither: &mut Ditherer) {
+    let mut quantize = |x: f32, bits: u32| dither.quantize(x, bits);
     match (ty, big) {
         (SampleType::Int16, false) => bytes.extend_from_slice(&(quantize(x, 16) as i16).to_le_bytes()),
         (SampleType::Int16, true) => bytes.extend_from_slice(&(quantize(x, 16) as i16).to_be_bytes()),
@@ -1094,8 +1122,9 @@ fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool) {
 /// The AIFF header up to the first sample; returns the data size. AIFF-C (a `FVER` chunk and a
 /// compression type in `COMM`) is written for 32-bit float (`fl32`) and when `kind` asks for it
 /// (`NONE`, or `sowt` for little-endian integers). Sizes are 32 bits: a longer file is refused
-/// (use WAV, which goes to RF64).
-fn write_aiff_header(out: &mut impl Write, channels: i16, sample_rate: u32, ty: SampleType, frames: u64, kind: AiffKind) -> io::Result<u64> {
+/// (use WAV, which goes to RF64). `extra` is the bytes of the chunks written after the samples
+/// (the `MARK` chunk), counted in the `FORM` size.
+fn write_aiff_header(out: &mut impl Write, channels: i16, sample_rate: u32, ty: SampleType, frames: u64, kind: AiffKind, extra: u64) -> io::Result<u64> {
     let bytes = ty.bytes() as u64;
     let data_len = frames.checked_mul(channels as u64).and_then(|s| s.checked_mul(bytes)).ok_or_else(|| invalid("AIFF too long"))?;
     let (comp, name): (Option<&[u8; 4]>, &[u8]) = match (ty, kind) {
@@ -1109,7 +1138,7 @@ fn write_aiff_header(out: &mut impl Write, channels: i16, sample_rate: u32, ty: 
     let pstring = written + (written & 1);
     let comm_len: u32 = if aifc { 18 + 4 + pstring } else { 18 };
     let ssnd_len = 8 + data_len;
-    let form_len = 4 + if aifc { 12 } else { 0 } + (8 + u64::from(comm_len)) + 8 + ssnd_len + (data_len & 1);
+    let form_len = 4 + if aifc { 12 } else { 0 } + (8 + u64::from(comm_len)) + 8 + ssnd_len + (data_len & 1) + extra;
     let form_len = u32::try_from(form_len).map_err(|_| invalid("too long for AIFF (4 GiB limit): save as WAV or FLAC"))?;
     let frames32 = u32::try_from(frames).map_err(|_| invalid("too long for AIFF"))?;
     out.write_all(b"FORM")?;
@@ -1265,8 +1294,9 @@ fn pcm_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) 
         }
         SaveFormat::Aiff => {
             let ch16 = i16::try_from(channels).map_err(|_| invalid("too many channels for AIFF"))?;
-            let data = write_aiff_header(&mut c, ch16, rate, ty, frames, kind)?;
-            Ok(c.0 + data + (data & 1))
+            let marks = doc.markers().to_aiff_mark().len() as u64;
+            let data = write_aiff_header(&mut c, ch16, rate, ty, frames, kind, marks)?;
+            Ok(c.0 + data + (data & 1) + marks)
         }
         SaveFormat::Flac | SaveFormat::Vorbis => Err(invalid("not PCM")),
     }

@@ -60,6 +60,7 @@ pub struct PanelInfo {
 
 /// Every panel, in Window menu order.
 pub const REGISTRY: &[PanelInfo] = &[
+    PanelInfo { id: EDITOR, title: "Editor", default_dock: DockSide::Center },
     PanelInfo { id: "waveform", title: "Waveform", default_dock: DockSide::Center },
     PanelInfo { id: "spectral", title: "Spectral Frequency Display", default_dock: DockSide::Center },
     PanelInfo { id: "history", title: "History", default_dock: DockSide::Right },
@@ -70,7 +71,18 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "properties", title: "Properties", default_dock: DockSide::Bottom },
     PanelInfo { id: "transport", title: "Transport", default_dock: DockSide::Bottom },
     PanelInfo { id: "tools", title: "Tools", default_dock: DockSide::Left },
+    PanelInfo { id: "files", title: "Files", default_dock: DockSide::Left },
+    PanelInfo { id: "match", title: "Match Loudness", default_dock: DockSide::Right },
 ];
+
+/// The Editor panel (roadmap A029): the area in the centre that holds the waveform and spectral
+/// displays. It is always shown, cannot be closed, and can be maximised.
+pub const EDITOR: &str = "editor";
+
+/// Whether a panel can be closed (hidden): every panel but the Editor.
+pub fn is_closable(id: &str) -> bool {
+    by_id(id).is_some() && id != EDITOR
+}
 
 /// The registered panel with this id.
 pub fn by_id(id: &str) -> Option<&'static PanelInfo> {
@@ -240,9 +252,7 @@ impl PanelSet {
     pub fn from_hidden<S: AsRef<str>>(hidden: &[S]) -> PanelSet {
         let mut set = PanelSet::default();
         for h in hidden {
-            if let Some(i) = REGISTRY.iter().position(|p| p.id == h.as_ref().trim()) {
-                set.shown[i] = false;
-            }
+            set.set(h.as_ref().trim(), false);
         }
         set
     }
@@ -257,8 +267,12 @@ impl PanelSet {
         REGISTRY.iter().position(|p| p.id == id).is_some_and(|i| self.shown[i])
     }
 
-    /// Show or hide a panel. Returns false for an id that is not registered.
+    /// Show or hide a panel. Returns false for an id that is not registered, and for hiding the
+    /// Editor (it can't be closed).
     pub fn set(&mut self, id: &str, shown: bool) -> bool {
+        if !shown && !is_closable(id) {
+            return false;
+        }
         match REGISTRY.iter().position(|p| p.id == id) {
             Some(i) => {
                 self.shown[i] = shown;
@@ -283,6 +297,9 @@ impl PanelSet {
         if !matches!(verb, "toggle" | "show" | "hide") {
             return None;
         }
+        if verb != "show" && !is_closable(id) && by_id(id).is_some() {
+            return Some(Err("the Editor is always shown and can't be closed".into()));
+        }
         let result = match verb {
             "toggle" => self.toggle(id),
             "show" => self.set(id, true).then_some(true),
@@ -300,6 +317,9 @@ impl PanelSet {
 /// The least and most a zone may measure (width for left and right, height for bottom), in points.
 pub const ZONE_SIZE_RANGE: (f32, f32) = (120.0, 1200.0);
 const DEFAULT_ZONE_SIZES: [f32; 3] = [220.0, 240.0, 180.0];
+
+/// The least the editor (centre) keeps when a zone grows, in points: width, then height.
+pub const EDITOR_MIN: (f32, f32) = (240.0, 200.0);
 
 fn zone_index(zone: DockSide) -> Option<usize> {
     ZONES.iter().position(|z| *z == zone)
@@ -572,6 +592,109 @@ impl Layout {
         changed
     }
 
+    /// A zone's default size (what a double-click on its divider restores).
+    pub fn default_size(zone: DockSide) -> Option<f32> {
+        zone_index(zone).map(|i| DEFAULT_ZONE_SIZES[i])
+    }
+
+    /// The most a zone may measure in a window of `win` (width, height) points: what is left once
+    /// the editor keeps [`EDITOR_MIN`] and the other shown zones on the same axis keep their sizes.
+    /// Never below the zone minimum, never above [`ZONE_SIZE_RANGE`].
+    pub fn max_size(&self, zone: DockSide, set: &PanelSet, win: (f32, f32)) -> f32 {
+        let Some(i) = zone_index(zone) else { return ZONE_SIZE_RANGE.0 };
+        let (total, keep, peers): (f32, f32, &[usize]) =
+            if zone == DockSide::Bottom { (win.1, EDITOR_MIN.1, &[]) } else { (win.0, EDITOR_MIN.0, if i == 0 { &[1] } else { &[0] }) };
+        let others: f32 = peers.iter().filter(|j| self.zone_shown(ZONES[**j], set)).map(|j| self.sizes[*j]).sum();
+        (total - keep - others).max(ZONE_SIZE_RANGE.0).min(ZONE_SIZE_RANGE.1)
+    }
+
+    /// The size to draw a zone at: the stored size, held to what the window allows (the stored
+    /// size is kept, so a bigger window brings it back).
+    pub fn effective_size(&self, zone: DockSide, set: &PanelSet, win: (f32, f32)) -> f32 {
+        self.size(zone).unwrap_or(ZONE_SIZE_RANGE.0).min(self.max_size(zone, set, win))
+    }
+
+    fn zone_shown(&self, zone: DockSide, set: &PanelSet) -> bool {
+        !self.visible(zone, set).is_empty()
+    }
+
+    /// Drag the divider of `zone` by (`dx`, `dy`) points: the left zone grows with `dx`, the right
+    /// one shrinks with it, the bottom one shrinks with `dy` (dragging up grows it). Held to the
+    /// zone minimum and to the window. True when the size changed.
+    pub fn drag_divider(&mut self, zone: DockSide, dx: f32, dy: f32, set: &PanelSet, win: (f32, f32)) -> bool {
+        let Some(now) = self.size(zone) else { return false };
+        let delta = match zone {
+            DockSide::Left => dx,
+            DockSide::Right => -dx,
+            DockSide::Bottom => -dy,
+            DockSide::Center => return false,
+        };
+        if !delta.is_finite() {
+            return false;
+        }
+        let top = self.max_size(zone, set, win);
+        self.set_size(zone, (now + delta).clamp(ZONE_SIZE_RANGE.0, top))
+    }
+
+    /// Drag the corner where the divider of the side zone `side` (left or right) meets the
+    /// bottom zone's: both are resized at once. True when either changed.
+    pub fn drag_corner(&mut self, side: DockSide, dx: f32, dy: f32, set: &PanelSet, win: (f32, f32)) -> bool {
+        if !matches!(side, DockSide::Left | DockSide::Right) {
+            return false;
+        }
+        let a = self.drag_divider(side, dx, 0.0, set, win);
+        let b = self.drag_divider(DockSide::Bottom, 0.0, dy, set, win);
+        a || b
+    }
+
+    /// Put a zone back to its default size. True when it changed.
+    pub fn reset_divider(&mut self, zone: DockSide) -> bool {
+        match Layout::default_size(zone) {
+            Some(d) => self.set_size(zone, d),
+            None => false,
+        }
+    }
+
+    /// Carry out the words after the control verb `DIVIDER`: `drag <zone> <dx> <dy>`,
+    /// `corner <dx> <dy> [left|right]` (default: the side zone shown, left first) or
+    /// `reset <zone>`. `win` is the window's (width, height).
+    pub fn divider_command(&mut self, set: &PanelSet, win: (f32, f32), text: &str) -> Result<(), String> {
+        const USAGE: &str = "DIVIDER drag <zone> <dx> <dy> | corner <dx> <dy> [left|right] | reset <zone>";
+        let w: Vec<&str> = text.split_whitespace().collect();
+        let zone = |s: &str| match DockSide::parse(s) {
+            Some(z) if z != DockSide::Center => Ok(z),
+            _ => Err(format!("no zone named {s:?}; use left, right or bottom")),
+        };
+        let num = |s: &str| s.parse::<f32>().ok().filter(|n| n.is_finite()).ok_or_else(|| format!("{s:?} is not a number"));
+        match w.as_slice() {
+            ["drag", z, dx, dy] => {
+                let z = zone(z)?;
+                if !self.zone_shown(z, set) {
+                    return Err(format!("the {} zone has no shown panel, so no divider", z.name()));
+                }
+                self.drag_divider(z, num(dx)?, num(dy)?, set, win);
+                Ok(())
+            }
+            ["corner", dx, dy, rest @ ..] => {
+                let side = match rest {
+                    [] => [DockSide::Left, DockSide::Right].into_iter().find(|z| self.zone_shown(*z, set)).ok_or("no left or right zone is shown")?,
+                    [s] => zone(s)?,
+                    _ => return Err(USAGE.into()),
+                };
+                if side == DockSide::Bottom || !self.zone_shown(side, set) || !self.zone_shown(DockSide::Bottom, set) {
+                    return Err("a corner needs the bottom zone and a shown side zone".into());
+                }
+                self.drag_corner(side, num(dx)?, num(dy)?, set, win);
+                Ok(())
+            }
+            ["reset", z] => {
+                self.reset_divider(zone(z)?);
+                Ok(())
+            }
+            _ => Err(USAGE.into()),
+        }
+    }
+
     /// The two settings lines' values: `left:history*,selection;right:;bottom:` (a `*` marks the
     /// front tab) and `left:220,right:240,bottom:180`. Floating panels add a part to the first:
     /// `;float:history@120_120_320_260_left_main` (x, y, width, height, the zone it came from, and the
@@ -669,6 +792,9 @@ impl Layout {
             .map(|z| format!("zone.{}={}", z.name(), list(self.visible(*z, set))))
             .collect();
         for z in ZONES {
+            out.push(format!("size.{}={}", z.name(), self.size(z).unwrap_or(0.0).round()));
+        }
+        for z in ZONES {
             out.push(format!("front.{}={}", z.name(), self.active_in(z, set).unwrap_or("-")));
         }
         out.push(format!("maximized={}", self.maximized(set).unwrap_or("-")));
@@ -739,6 +865,9 @@ impl Layout {
             }
             "close" => {
                 known(id)?;
+                if !is_closable(id) {
+                    return Err("the Editor can't be closed; maximize it instead".into());
+                }
                 set.set(id, false);
                 if self.maximized.as_deref() == Some(id) {
                     self.maximized = None;
@@ -794,9 +923,9 @@ mod tests {
     #[test]
     fn actions_toggle_show_hide_and_report() {
         let mut s = PanelSet::default();
-        assert_eq!(s.report(), "waveform=1 spectral=1 history=1 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1");
+        assert_eq!(s.report(), "editor=1 waveform=1 spectral=1 history=1 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1 tools=1 files=1 match=1");
         assert_eq!(s.apply_action("window.toggle.history"), Some(Ok(false)));
-        assert_eq!(s.report(), "waveform=1 spectral=1 history=0 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1");
+        assert_eq!(s.report(), "editor=1 waveform=1 spectral=1 history=0 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1 tools=1 files=1 match=1");
         assert_eq!(s.apply_action("window.show.history"), Some(Ok(true)));
         assert_eq!(s.apply_action("window.hide.spectral"), Some(Ok(false)));
         assert!(matches!(s.apply_action("window.toggle.nope"), Some(Err(_))));
@@ -811,9 +940,9 @@ mod tests {
     #[test]
     fn the_default_layout_follows_the_registry() {
         let (l, set) = (Layout::default(), all());
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "selection", "markers", "playlist"]);
-        assert!(l.visible(DockSide::Left, &set).is_empty());
-        assert_eq!(l.visible(DockSide::Center, &set), vec!["waveform", "spectral"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "selection", "markers", "playlist", "match"]);
+        assert_eq!(l.visible(DockSide::Left, &set), vec!["tools", "files"]);
+        assert_eq!(l.visible(DockSide::Center, &set), vec!["editor", "waveform", "spectral"]);
         assert_eq!(l.zone_of("history"), Some(DockSide::Right));
         assert_eq!(l.zone_of("waveform"), Some(DockSide::Center));
         assert_eq!(l.zone_of("nope"), None);
@@ -821,16 +950,35 @@ mod tests {
     }
 
     #[test]
+    fn the_editor_is_a_panel_that_cannot_be_closed_but_can_be_maximised() {
+        let (mut l, mut set) = (Layout::default(), all());
+        assert_eq!(by_id(EDITOR).map(|p| (p.title, p.default_dock)), Some(("Editor", DockSide::Center)));
+        assert!(!is_closable(EDITOR) && is_closable("history") && !is_closable("nope"));
+        assert!(!set.set(EDITOR, false) && set.is_shown(EDITOR));
+        assert_eq!(set.toggle(EDITOR), None);
+        assert!(matches!(set.apply_action("window.hide.editor"), Some(Err(_))));
+        assert!(matches!(set.apply_action("window.toggle.editor"), Some(Err(_))));
+        assert_eq!(set.apply_action("window.show.editor"), Some(Ok(true)));
+        assert!(PanelSet::from_hidden(&["editor"]).is_shown(EDITOR), "a settings file can't hide it");
+        assert!(l.apply_command(&mut set, "close editor").unwrap_err().contains("can't be closed"));
+        assert!(l.apply_command(&mut set, "move editor left").is_err());
+        l.apply_command(&mut set, "maximize editor").unwrap();
+        assert_eq!(l.maximized(&set), Some("editor"));
+        l.apply_command(&mut set, "maximize editor").unwrap();
+        assert_eq!(l.maximized(&set), None);
+    }
+
+    #[test]
     fn a_panel_moves_between_zones_and_into_a_tab_position() {
         let (mut l, set) = (Layout::default(), all());
         l.move_to("history", DockSide::Left, None).unwrap();
-        assert_eq!(l.visible(DockSide::Left, &set), vec!["history"]);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["selection", "markers", "playlist"]);
+        assert_eq!(l.visible(DockSide::Left, &set), vec!["tools", "files", "history"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["selection", "markers", "playlist", "match"]);
         l.move_to("selection", DockSide::Left, Some(0)).unwrap();
-        assert_eq!(l.visible(DockSide::Left, &set), vec!["selection", "history"]);
+        assert_eq!(l.visible(DockSide::Left, &set), vec!["selection", "tools", "files", "history"]);
         assert_eq!(l.active_in(DockSide::Left, &set), Some("selection"));
         l.move_to("history", DockSide::Left, Some(0)).unwrap();
-        assert_eq!(l.visible(DockSide::Left, &set), vec!["history", "selection"]);
+        assert_eq!(l.visible(DockSide::Left, &set), vec!["history", "selection", "tools", "files"]);
         assert!(l.move_to("waveform", DockSide::Left, None).is_err(), "the editor stays");
         assert!(l.move_to("history", DockSide::Center, None).is_err());
         assert!(l.move_to("nope", DockSide::Left, None).is_err());
@@ -839,28 +987,34 @@ mod tests {
     #[test]
     fn hidden_tabs_are_skipped_but_keep_their_place() {
         let (mut l, mut set) = (Layout::default(), all());
+        l.move_to("selection", DockSide::Right, None).unwrap();
         l.activate("selection");
         set.set("selection", false);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "markers", "playlist"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "markers", "playlist", "match"]);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("history"), "a hidden front tab gives way");
         set.set("selection", true);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "selection", "markers", "playlist"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "markers", "playlist", "match", "selection"]);
     }
 
     #[test]
     fn cycling_wraps_over_the_shown_tabs() {
         let (mut l, set) = (Layout::default(), all());
-        l.cycle(DockSide::Right, &set, 1);
-        assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
+        l.move_to("selection", DockSide::Right, None).unwrap();
+        l.activate("history");
+        // `move_to` with no position puts selection last: history, markers, playlist, match, selection.
         l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("markers"));
         l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("playlist"));
         l.cycle(DockSide::Right, &set, 1);
+        assert_eq!(l.active_in(DockSide::Right, &set), Some("match"));
+        l.cycle(DockSide::Right, &set, 1);
+        assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
+        l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("history"));
         l.cycle(DockSide::Right, &set, -1);
-        assert_eq!(l.active_in(DockSide::Right, &set), Some("playlist"));
+        assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
         l.cycle(DockSide::Left, &set, 1);
     }
 
@@ -886,7 +1040,7 @@ mod tests {
         assert!(!l.set_size(DockSide::Bottom, 300.4));
         l.toggle_maximize("history");
         let (tabs, sizes) = l.encode();
-        assert_eq!(tabs, "left:selection*;right:markers,playlist;bottom:freq,properties,transport,history*");
+        assert_eq!(tabs, "left:tools,files,selection*;right:markers,playlist,match;bottom:freq,properties,transport,history*");
         assert_eq!(sizes, "left:220,right:240,bottom:300");
         let back = Layout::decode(&tabs, &sizes);
         l.restore();
@@ -897,8 +1051,8 @@ mod tests {
     fn decoding_ignores_nonsense_and_places_missing_panels() {
         let l = Layout::decode("left:waveform,history,history,gone;moon:selection;right:", "left:5,bottom:abc,right:nan,x:1");
         let set = all();
-        assert_eq!(l.visible(DockSide::Left, &set), vec!["history"]);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["selection", "markers", "playlist"], "the missing panel returns to its default zone");
+        assert_eq!(l.visible(DockSide::Left, &set), vec!["history", "tools", "files"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["selection", "markers", "playlist", "match"], "the missing panel returns to its default zone");
         assert_eq!(l.size(DockSide::Left), Some(220.0), "out of range: default");
         assert_eq!(Layout::decode("", ""), Layout::default());
         assert_eq!(Layout::decode("garbage", ",,"), Layout::default());
@@ -928,11 +1082,11 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         assert_eq!(
             l.report(&set),
-            "zone.left=- zone.right=history,selection,markers,playlist zone.bottom=freq,properties,transport zone.center=waveform,spectral front.left=- front.right=history front.bottom=freq maximized=- floating=-"
+            "zone.left=tools,files zone.right=history,selection,markers,playlist,match zone.bottom=freq,properties,transport zone.center=editor,waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=tools front.right=history front.bottom=freq maximized=- floating=-"
         );
         l.apply_command(&mut set, "move selection left").unwrap();
         l.apply_command(&mut set, "maximize selection").unwrap();
-        assert!(l.report(&set).starts_with("zone.left=selection zone.right=history,markers,playlist "));
+        assert!(l.report(&set).starts_with("zone.left=tools,files,selection zone.right=history,markers,playlist,match "));
         assert!(l.report(&set).contains("maximized=selection"));
     }
 
@@ -1011,6 +1165,116 @@ mod tests {
         l.apply_command(&mut set, "dock selection").unwrap();
         assert_eq!(l.zone_of("selection"), Some(DockSide::Right));
         assert_eq!(l.float_group(DockSide::Bottom, &set), 4, "freq, properties, transport and history are all in the bottom zone");
+    }
+    /// History on the left, selection at the bottom, the right zone empty.
+    fn docked() -> Layout {
+        let mut l = Layout::default();
+        l.move_to("history", DockSide::Left, None).unwrap();
+        for id in ["selection", "markers", "playlist", "match"] {
+            l.move_to(id, DockSide::Bottom, None).unwrap();
+        }
+        l
+    }
+
+    fn win() -> (f32, f32) {
+        (1200.0, 800.0)
+    }
+
+    #[test]
+    fn a_divider_drag_moves_one_zone_the_right_way() {
+        let (mut l, set) = (Layout::default(), all());
+        assert!(l.drag_divider(DockSide::Left, 30.0, 99.0, &set, win()));
+        assert_eq!(l.size(DockSide::Left), Some(250.0));
+        assert!(l.drag_divider(DockSide::Right, 40.0, 0.0, &set, win()), "dragging the right divider right shrinks it");
+        assert_eq!(l.size(DockSide::Right), Some(200.0));
+        assert!(l.drag_divider(DockSide::Bottom, 99.0, -50.0, &set, win()), "dragging up grows the bottom zone");
+        assert_eq!(l.size(DockSide::Bottom), Some(230.0));
+        assert!(!l.drag_divider(DockSide::Center, 5.0, 5.0, &set, win()));
+        assert!(!l.drag_divider(DockSide::Left, f32::NAN, 0.0, &set, win()));
+    }
+
+    #[test]
+    fn a_drag_stops_at_the_minimum_and_at_the_window() {
+        let (mut l, set) = (Layout::default(), all());
+        l.drag_divider(DockSide::Left, -1000.0, 0.0, &set, win());
+        assert_eq!(l.size(DockSide::Left), Some(ZONE_SIZE_RANGE.0));
+        // 1200 wide: the editor keeps 240 and the right zone 240, so the left may reach 720.
+        l.drag_divider(DockSide::Left, 5000.0, 0.0, &set, win());
+        assert_eq!(l.size(DockSide::Left), Some(720.0));
+        // 800 high: the bottom zone may reach 600.
+        l.drag_divider(DockSide::Bottom, 0.0, -5000.0, &set, win());
+        assert_eq!(l.size(DockSide::Bottom), Some(600.0));
+        // A tiny window never takes a zone below its minimum.
+        assert_eq!(l.max_size(DockSide::Left, &set, (100.0, 100.0)), ZONE_SIZE_RANGE.0);
+        // The stored size survives a small window; only the drawn size shrinks.
+        assert_eq!(l.effective_size(DockSide::Left, &set, (800.0, 800.0)), 320.0);
+        assert_eq!(l.size(DockSide::Left), Some(720.0));
+    }
+
+    #[test]
+    fn a_hidden_zone_gives_its_room_to_the_other() {
+        let (mut l, mut set) = (Layout::default(), all());
+        for id in ["history", "selection", "markers", "playlist", "match"] {
+            set.set(id, false);
+        }
+        l.drag_divider(DockSide::Left, 5000.0, 0.0, &set, win());
+        assert_eq!(l.size(DockSide::Left), Some(960.0), "no right zone: only the editor minimum is kept");
+        assert!(l.divider_command(&set, win(), "drag right 1 0").is_err(), "a zone with no panel has no divider");
+    }
+
+    #[test]
+    fn a_corner_drag_resizes_both_zones() {
+        let (mut l, set) = (Layout::default(), all());
+        assert!(l.drag_corner(DockSide::Left, 20.0, -60.0, &set, win()));
+        assert_eq!((l.size(DockSide::Left), l.size(DockSide::Bottom)), (Some(240.0), Some(240.0)));
+        assert!(l.drag_corner(DockSide::Right, 40.0, 30.0, &set, win()));
+        assert_eq!((l.size(DockSide::Right), l.size(DockSide::Bottom)), (Some(200.0), Some(210.0)));
+        // One axis at its limit still moves the other.
+        l.drag_corner(DockSide::Left, 5000.0, 10.0, &set, win());
+        assert_eq!(l.size(DockSide::Left), Some(760.0), "1200 - 240 editor - 200 right");
+        assert_eq!(l.size(DockSide::Bottom), Some(200.0));
+        assert!(!l.drag_corner(DockSide::Bottom, 5.0, 5.0, &set, win()));
+    }
+
+    #[test]
+    fn a_reset_restores_the_default_and_the_commands_check_their_words() {
+        let (mut l, set) = (docked(), all());
+        l.divider_command(&set, win(), "drag left 100 0").unwrap();
+        assert_eq!(l.size(DockSide::Left), Some(320.0));
+        l.divider_command(&set, win(), "reset left").unwrap();
+        assert_eq!(l.size(DockSide::Left), Some(220.0));
+        assert!(!l.reset_divider(DockSide::Left), "already the default");
+        l.divider_command(&set, win(), "corner -10 -20").unwrap();
+        assert_eq!((l.size(DockSide::Left), l.size(DockSide::Bottom)), (Some(210.0), Some(200.0)));
+        l.divider_command(&set, win(), "corner 5 5 left").unwrap();
+        assert_eq!((l.size(DockSide::Left), l.size(DockSide::Bottom)), (Some(215.0), Some(195.0)));
+        for bad in [
+            "",
+            "drag",
+            "drag moon 1 1",
+            "drag left x 1",
+            "drag center 1 1",
+            "drag right 1 1",
+            "corner 1 1 right",
+            "corner 1 1 bottom",
+            "corner 1",
+            "reset",
+            "reset center",
+            "spin left",
+        ] {
+            assert!(l.divider_command(&set, win(), bad).is_err(), "{bad:?}");
+        }
+        assert!(l.report(&set).contains("size.left=215 size.right=240 size.bottom=195"));
+    }
+
+    #[test]
+    fn sizes_dragged_come_back_from_the_settings_text() {
+        let (mut l, set) = (docked(), all());
+        l.divider_command(&set, win(), "drag left 55 0").unwrap();
+        l.divider_command(&set, win(), "drag bottom 0 -70").unwrap();
+        let (t, s) = l.encode();
+        let back = Layout::decode(&t, &s);
+        assert_eq!((back.size(DockSide::Left), back.size(DockSide::Bottom)), (Some(275.0), Some(250.0)));
     }
 
     fn mons(text: &str) -> Vec<Monitor> {

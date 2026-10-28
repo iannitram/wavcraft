@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use wavcraft_core::actions::Editor;
 use wavcraft_core::autosave::{Autosaver, Recoverable, Snapshot, recoverable_sessions};
+use wavcraft_core::take_recovery::{UnfinishedTake, unfinished_takes};
 
 /// The default for how often a journal is handed to the writer (the Auto Save preference
 /// overrides it). Edits in between are in the next one.
@@ -18,6 +19,10 @@ const INTERVAL: Duration = Duration::from_secs(wavcraft_core::settings::DEFAULT_
 pub enum Choice {
     Recover(usize),
     Discard(usize),
+    /// Repair and open an unfinished take (C032).
+    RecoverTake(usize),
+    /// Delete an unfinished take, after the second confirmation.
+    DiscardTake(usize),
 }
 
 pub struct Recovery {
@@ -25,11 +30,15 @@ pub struct Recovery {
     pub offers: Vec<Recoverable>,
     /// The scan at start-up is done.
     pub scanned: bool,
-    scan: Option<Receiver<Vec<Recoverable>>>,
+    /// Takes a crashed recording left, found with the sessions (C032). Never deleted by a scan.
+    pub takes: Vec<UnfinishedTake>,
+    scan: Option<Receiver<(Vec<Recoverable>, Vec<UnfinishedTake>)>>,
     /// The window was closed with "Later".
     dismissed: bool,
     /// The offer being asked "discard for good?".
     confirming: Option<usize>,
+    /// The take being asked "delete for good?".
+    confirming_take: Option<usize>,
     /// The open document's journal writer, and which session folder it is for.
     saver: Option<(PathBuf, Autosaver)>,
     last_sig: Option<(usize, usize, usize, usize, usize)>,
@@ -42,11 +51,13 @@ pub struct Recovery {
 impl Recovery {
     /// Look for recoverable sessions under `roots` on a worker thread, then sweep the stale
     /// sessions that hold no journal (a sweep never removes a recoverable one).
-    pub fn new(roots: Vec<PathBuf>, wake: impl Fn() + Send + 'static) -> Recovery {
+    /// `takes_dir`: the folder takes are recorded in, searched for unfinished takes.
+    pub fn new(roots: Vec<PathBuf>, takes_dir: Option<PathBuf>, wake: impl Fn() + Send + 'static) -> Recovery {
         let (tx, rx) = channel();
         let spawned = std::thread::Builder::new().name("recovery scan".into()).spawn(move || {
             let found: Vec<Recoverable> = roots.iter().flat_map(|r| recoverable_sessions(r)).collect();
-            let _ = tx.send(found);
+            let takes = takes_dir.map(|d| unfinished_takes(&d)).unwrap_or_default();
+            let _ = tx.send((found, takes));
             wake();
             // Then, in this same thread, the sweep of sessions with nothing to recover: two probes
             // of one session's lock at once would each see the other's as a running program.
@@ -56,10 +67,12 @@ impl Recovery {
         });
         Recovery {
             offers: Vec::new(),
+            takes: Vec::new(),
             scanned: spawned.is_err(),
             scan: spawned.ok().map(|_| rx),
             dismissed: false,
             confirming: None,
+            confirming_take: None,
             saver: None,
             last_sig: None,
             last_offer: None,
@@ -79,7 +92,11 @@ impl Recovery {
     pub fn poll(&mut self) {
         let Some(rx) = &self.scan else { return };
         match rx.try_recv() {
-            Ok(found) => {
+            Ok((found, takes)) => {
+                if !takes.is_empty() {
+                    log::info!(target: "wavcraft", "recovery: {} take(s) from a recording that ended without finishing can be recovered", takes.len());
+                }
+                self.takes = takes;
                 if !found.is_empty() {
                     log::info!(target: "wavcraft", "recovery: {} session(s) from a run that ended without closing can be recovered", found.len());
                 }
@@ -150,9 +167,17 @@ impl Recovery {
         self.confirming = None;
     }
 
+    /// Drop a take that was recovered or discarded.
+    pub fn remove_take(&mut self, index: usize) {
+        if index < self.takes.len() {
+            self.takes.remove(index);
+        }
+        self.confirming_take = None;
+    }
+
     /// The recovery window, while there is anything to offer. What the owner chose, if anything.
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Choice> {
-        if self.dismissed || self.offers.is_empty() {
+        if self.dismissed || (self.offers.is_empty() && self.takes.is_empty()) {
             return None;
         }
         let mut choice = None;
@@ -161,6 +186,25 @@ impl Recovery {
             ctx,
             |ui| {
                 ui.label("WavCraft ended without closing last time. This work was kept:");
+                for (i, t) in self.takes.iter().enumerate() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("Recover take {}, {}", t.title(), wavcraft_core::format_time(t.frames as usize, t.fmt.rate)));
+                        if ui.button("Recover").clicked() {
+                            choice = Some(Choice::RecoverTake(i));
+                        }
+                        if self.confirming_take == Some(i) {
+                            ui.label("Delete this take for good?");
+                            if ui.button("Delete for good").clicked() {
+                                choice = Some(Choice::DiscardTake(i));
+                            }
+                            if ui.button("Keep").clicked() {
+                                self.confirming_take = None;
+                            }
+                        } else if ui.button("Discard…").clicked() {
+                            self.confirming_take = Some(i);
+                        }
+                    });
+                }
                 ui.add_space(6.0);
                 for (i, o) in self.offers.iter().enumerate() {
                     ui.horizontal_wrapped(|ui| {

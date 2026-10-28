@@ -83,6 +83,16 @@ shortcuts! {
     tool_hand_h: "H" => A(ActionId::ToolHand);
     tool_zoom_z: "Z" => A(ActionId::ToolZoom);
     tool_marquee_e: "E" => A(ActionId::ToolMarquee);
+    convert_sample_type_shift_t: "Shift+T" => A(ActionId::ConvertSampleType);
+    workspace_1_alt_shift_1: "Alt+Shift+1" => Command::Workspace(1);
+    workspace_2_alt_shift_2: "Alt+Shift+2" => Command::Workspace(2);
+    workspace_3_alt_shift_3: "Alt+Shift+3" => Command::Workspace(3);
+    workspace_4_alt_shift_4: "Alt+Shift+4" => Command::Workspace(4);
+    workspace_5_alt_shift_5: "Alt+Shift+5" => Command::Workspace(5);
+    workspace_6_alt_shift_6: "Alt+Shift+6" => Command::Workspace(6);
+    workspace_7_alt_shift_7: "Alt+Shift+7" => Command::Workspace(7);
+    workspace_8_alt_shift_8: "Alt+Shift+8" => Command::Workspace(8);
+    workspace_9_alt_shift_9: "Alt+Shift+9" => Command::Workspace(9);
 }
 
 #[test]

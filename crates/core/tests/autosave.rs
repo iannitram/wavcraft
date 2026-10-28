@@ -4,10 +4,13 @@
 //! that can be recovered, never a live one, and a failed recovery leaves every file as found.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use wavcraft_core::History;
-use wavcraft_core::autosave::{Autosaver, JOURNAL_FILE, JOURNAL_TMP, RecoverError, Snapshot, discard, recover, recoverable_sessions, write_journal};
+use wavcraft_core::autosave::{
+    Autosaver, Extra, JOURNAL_FILE, JOURNAL_TMP, RecoverError, Snapshot, discard, recover, recoverable_sessions, write_journal,
+};
 use wavcraft_core::doc::edit::{self, ChannelMask, Crossfades, PasteAt};
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions, stale_sessions, sweep_stale_sessions};
@@ -370,4 +373,100 @@ fn a_zero_block_and_a_one_channel_document_round_trip() {
     let rec = recover(&dir, opts(1 << 20)).unwrap();
     assert_eq!(content(&rec.steps[0].1), want);
     assert_eq!(rec.steps[0].1.sample_rate(), 44_100);
+}
+
+/// A copy of `d` as another state of the same samples with its own rate and source (what a rate
+/// change or Convert Sample Type makes).
+fn retargeted(d: &DocState, rate: u32, name: &str) -> DocState {
+    let mut src = SourceFormat::synthetic(rate, 2);
+    src.path = PathBuf::from(name);
+    src.format = soundcraft_audio_io::FileFormat::Flac;
+    src.sample_format = soundcraft_audio_io::SampleFormat::Float32;
+    DocState::from_shared(d.store().clone(), d.channels().iter().map(|c| Arc::new((**c).clone())).collect(), rate, Arc::new(src)).unwrap()
+}
+
+/// Steps with different rates and sources: Open (48 kHz), a rate change (44.1 kHz, another
+/// source), an edit after it, then back to a step in the middle.
+fn rate_history(s: &Store) -> History {
+    let mut h = History::new(doc(s, 20_000, 3_000), u64::MAX);
+    let r = retargeted(h.current(), 44_100, "/converted.flac");
+    h.push("Convert Sample Rate", r);
+    let cur = h.current().clone();
+    h.push_edit(edit::delete(&cur, 100..900, ChannelMask::ALL, NONE).unwrap());
+    h.go_to(1);
+    h
+}
+
+fn crash_with(root: &Path, h: &History, snap: Snapshot) -> PathBuf {
+    let s = h.current().store().clone();
+    write_journal(&s, &snap).unwrap();
+    let _ = root;
+    s.dir().to_path_buf()
+}
+
+#[test]
+fn every_step_comes_back_with_its_own_rate_and_source() {
+    let t = TempDir::new("rates");
+    let s = Store::create_session(Some(&t.0), opts(1 << 20)).unwrap();
+    let h = rate_history(&s);
+    let want: Vec<(u32, PathBuf, soundcraft_audio_io::FileFormat)> =
+        h.steps().iter().map(|st| (st.state().sample_rate(), st.state().source().path.clone(), st.state().source().format)).collect();
+    assert_eq!(want[0].0, RATE);
+    assert_eq!(want[1].0, 44_100);
+    let dir = crash_with(&t.0, &h, Snapshot::of(&h));
+    drop(h);
+    drop(s);
+    let rec = recover(&dir, opts(1 << 20)).unwrap();
+    let got: Vec<_> = rec.steps.iter().map(|(_, st)| (st.sample_rate(), st.source().path.clone(), st.source().format)).collect();
+    assert_eq!(got, want, "an older step keeps its own rate and source");
+    assert_eq!(rec.cursor, 1);
+}
+
+/// What a feature that keeps data beside the samples (markers) would hand the journal: a record
+/// per step, different on every step, with text that needs escaping, plus one of a key the
+/// reader has never heard of.
+fn stand_in(i: usize, st: &DocState) -> Vec<Extra> {
+    let mut v = vec![Extra { key: "markers".to_string(), version: 1, data: format!("step {i}\nat {} \"cue %1\"\n", st.len_frames() / 2) }];
+    if i == 1 {
+        v.push(Extra { key: "future thing".to_string(), version: 9, data: String::new() });
+    }
+    v
+}
+
+#[test]
+fn per_step_extra_records_come_back_with_their_step() {
+    let t = TempDir::new("extras");
+    let s = Store::create_session(Some(&t.0), opts(1 << 20)).unwrap();
+    let h = rate_history(&s);
+    let snap = Snapshot::of(&h).with_extras(stand_in);
+    let want: Vec<Vec<Extra>> = h.steps().iter().enumerate().map(|(i, st)| stand_in(i, st.state())).collect();
+    let dir = crash_with(&t.0, &h, snap);
+    drop(h);
+    drop(s);
+    let rec = recover(&dir, opts(1 << 20)).unwrap();
+    assert_eq!(rec.extras, want, "every step gets back exactly its own records, unknown keys included");
+    assert_eq!(rec.extras.len(), rec.steps.len());
+    // A journal without extras recovers with none.
+    let t2 = TempDir::new("noextras");
+    let s2 = Store::create_session(Some(&t2.0), opts(1 << 20)).unwrap();
+    let h2 = rate_history(&s2);
+    let dir2 = crash_with(&t2.0, &h2, Snapshot::of(&h2));
+    drop(h2);
+    drop(s2);
+    let rec2 = recover(&dir2, opts(1 << 20)).unwrap();
+    assert!(rec2.extras.iter().all(Vec::is_empty) && rec2.extras.len() == rec2.steps.len());
+}
+
+#[test]
+fn a_damaged_extra_record_refuses_the_journal() {
+    let t = TempDir::new("badextra");
+    let s = Store::create_session(Some(&t.0), opts(1 << 20)).unwrap();
+    let h = rate_history(&s);
+    let dir = crash_with(&t.0, &h, Snapshot::of(&h).with_extras(stand_in));
+    drop(h);
+    drop(s);
+    let j = dir.join(JOURNAL_FILE);
+    let text = std::fs::read_to_string(&j).unwrap();
+    std::fs::write(&j, text.replace("extra 0 markers", "extra 99 markers")).unwrap();
+    assert!(matches!(recover(&dir, opts(1 << 20)), Err(RecoverError::Journal(_))), "the checksum catches the edit");
 }

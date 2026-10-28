@@ -111,11 +111,11 @@ impl From<io::Error> for OpenError {
     }
 }
 
-fn malformed(what: impl std::fmt::Display) -> OpenError {
+pub(crate) fn malformed(what: impl std::fmt::Display) -> OpenError {
     OpenError::Decode(format!("malformed audio: {what}"))
 }
 
-fn unsupported(what: impl std::fmt::Display) -> OpenError {
+pub(crate) fn unsupported(what: impl std::fmt::Display) -> OpenError {
     OpenError::Decode(format!("unsupported audio: {what}"))
 }
 
@@ -125,7 +125,7 @@ fn unsupported(what: impl std::fmt::Display) -> OpenError {
 pub const MAX_SAMPLE_RATE_HZ: u32 = 768_000;
 
 /// Refuse a sample rate of 0 or above [`MAX_SAMPLE_RATE_HZ`]; `what` names the file's kind.
-fn check_rate(rate: u32, what: &str) -> Result<(), OpenError> {
+pub(crate) fn check_rate(rate: u32, what: &str) -> Result<(), OpenError> {
     if rate == 0 {
         return Err(malformed(format!("{what} declares a zero sample rate")));
     }
@@ -251,11 +251,12 @@ fn stream_file(
     let mut job = Job { file: &mut file, file_len, progress, cancel, free_space, expect_rate };
     // Raw PCM (main's `raw` spec) is never a WAV, so no `cue `/`LIST` chunks are read from it.
     let is_wav_file = raw.is_none() && is_wav(&head);
+    let is_aiff_file = raw.is_none() && !is_wav_file && is_aiff(&head);
     let built = if let Some(spec) = raw {
         containers::open_raw(&mut job, store, &mut src, spec)
     } else if is_wav_file {
         open_wav(&mut job, store, &mut src)
-    } else if is_aiff(&head) {
+    } else if is_aiff_file {
         open_aiff(&mut job, store, &mut src)
     } else if containers::is_w64(&head) {
         containers::open_w64(&mut job, store, &mut src)
@@ -290,7 +291,14 @@ fn stream_file(
         }
         src.origin = Arc::new(origin);
     }
-    let markers = if is_wav_file { read_wav_markers(&mut job, &src, built.channels.first().map_or(0, Channel::len)) } else { Markers::new() };
+    let frames = built.channels.first().map_or(0, Channel::len);
+    let markers = if is_wav_file {
+        read_wav_markers(&mut job, &src, frames)
+    } else if is_aiff_file {
+        read_aiff_markers(&mut job, &src, frames)
+    } else {
+        Markers::new()
+    };
     DocState::new(store.clone(), built.channels, rate, src)
         .map(|d| if markers.is_empty() { d } else { d.with_markers(Arc::new(markers)) })
         .map_err(|e| malformed(e.to_string()))
@@ -316,6 +324,20 @@ fn read_wav_markers(job: &mut Job<'_>, src: &SourceFormat, frames: u64) -> Marke
     }
     let lists: Vec<&[u8]> = lists.iter().map(Vec::as_slice).collect();
     Markers::from_wav_chunks(&cue, &lists, frames)
+}
+
+/// The markers an AIFF file carries (A184): its `MARK` chunk. None if it has none or it is damaged.
+fn read_aiff_markers(job: &mut Job<'_>, src: &SourceFormat, frames: u64) -> Markers {
+    let file_len = job.file_len;
+    let Some(c) =
+        src.chunks.iter().find(|c| &c.id == b"MARK" && c.size <= (16 << 20) && c.offset.saturating_add(8).saturating_add(c.size) <= file_len)
+    else {
+        return Markers::new();
+    };
+    match job.read_at(c.offset + 8, c.size) {
+        Ok(body) => Markers::from_aiff_mark(&body, frames),
+        Err(_) => Markers::new(),
+    }
 }
 
 struct Job<'a> {
@@ -613,55 +635,55 @@ fn stream_pcm(job: &mut Job<'_>, store: &Store, data_start: u64, frames: u64, ki
 // ---------------------------------------------------------------------------------------------
 // WAV
 
-const WAVE_FORMAT_PCM: u16 = 1;
-const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
+pub(crate) const WAVE_FORMAT_PCM: u16 = 1;
+pub(crate) const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 
-fn tag(b: &[u8], pos: usize) -> Option<[u8; 4]> {
+pub(crate) fn tag(b: &[u8], pos: usize) -> Option<[u8; 4]> {
     b.get(pos..pos.checked_add(4)?)?.try_into().ok()
 }
 
-fn le_u16(b: &[u8], pos: usize) -> Option<u16> {
+pub(crate) fn le_u16(b: &[u8], pos: usize) -> Option<u16> {
     Some(u16::from_le_bytes(b.get(pos..pos.checked_add(2)?)?.try_into().ok()?))
 }
 
-fn le_u32(b: &[u8], pos: usize) -> Option<u32> {
+pub(crate) fn le_u32(b: &[u8], pos: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(pos..pos.checked_add(4)?)?.try_into().ok()?))
 }
 
-fn le_u64(b: &[u8], pos: usize) -> Option<u64> {
+pub(crate) fn le_u64(b: &[u8], pos: usize) -> Option<u64> {
     Some(u64::from_le_bytes(b.get(pos..pos.checked_add(8)?)?.try_into().ok()?))
 }
 
-fn be_u16(b: &[u8], pos: usize) -> Option<u16> {
+pub(crate) fn be_u16(b: &[u8], pos: usize) -> Option<u16> {
     Some(u16::from_be_bytes(b.get(pos..pos.checked_add(2)?)?.try_into().ok()?))
 }
 
-fn be_u32(b: &[u8], pos: usize) -> Option<u32> {
+pub(crate) fn be_u32(b: &[u8], pos: usize) -> Option<u32> {
     Some(u32::from_be_bytes(b.get(pos..pos.checked_add(4)?)?.try_into().ok()?))
 }
 
-fn is_wav(b: &[u8]) -> bool {
+pub(crate) fn is_wav(b: &[u8]) -> bool {
     matches!(tag(b, 0), Some(t) if &t == b"RIFF" || &t == b"RF64" || &t == b"BW64") && tag(b, 8).is_some_and(|t| &t == b"WAVE")
 }
 
-fn is_aiff(b: &[u8]) -> bool {
+pub(crate) fn is_aiff(b: &[u8]) -> bool {
     tag(b, 0).is_some_and(|t| &t == b"FORM") && tag(b, 8).is_some_and(|t| &t == b"AIFF" || &t == b"AIFC")
 }
 
-struct Fmt {
-    tag: u16,
-    channels: u16,
-    sample_rate: u32,
-    bits: u16,
-    valid_bits: u16,
+pub(crate) struct Fmt {
+    pub(crate) tag: u16,
+    pub(crate) channels: u16,
+    pub(crate) sample_rate: u32,
+    pub(crate) bits: u16,
+    pub(crate) valid_bits: u16,
     /// `dwChannelMask` of a `WAVE_FORMAT_EXTENSIBLE` header (0 or absent: unlabelled).
-    channel_mask: u32,
+    pub(crate) channel_mask: u32,
     /// Bytes a frame takes, as the header says (checked against the format before use).
-    block_align: u16,
+    pub(crate) block_align: u16,
 }
 
-fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
+pub(crate) fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
     let short = || malformed("fmt chunk too short");
     let mut fmt = Fmt {
         tag: le_u16(c, 0).ok_or_else(short)?,
@@ -688,7 +710,7 @@ fn parse_fmt(c: &[u8]) -> Result<Fmt, OpenError> {
     Ok(fmt)
 }
 
-fn fixed_str(b: &[u8]) -> String {
+pub(crate) fn fixed_str(b: &[u8]) -> String {
     let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
     String::from_utf8_lossy(b.get(..end).unwrap_or_default()).trim_end().to_string()
 }
@@ -755,6 +777,20 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
                     let raw = job.read_at(body, declared)?;
                     src.bwf = parse_bext(&raw);
                     src.meta.bext = crate::meta::Bext::parse(&raw);
+                }
+                b"_PMX" if src.meta.xmp.is_none() && src.meta.xmp_problem.is_none() => {
+                    let read = if declared <= crate::xmp::MAX_XMP_BYTES {
+                        crate::xmp::Xmp::parse(&job.read_at(body, declared)?)
+                    } else {
+                        Err("the packet is larger than 4 MiB".to_string())
+                    };
+                    match read {
+                        Ok(x) => src.meta.xmp = Some(x),
+                        Err(e) => {
+                            src.warnings.push(format!("the XMP packet could not be read ({e}); it is kept as it is"));
+                            src.meta.xmp_problem = Some(e);
+                        }
+                    }
                 }
                 b"LIST" if declared <= crate::meta::MAX_META_BYTES && src.meta.info.0.is_empty() => {
                     if let Some(tags) = crate::meta::InfoTags::parse(&job.read_at(body, declared)?) {
@@ -855,7 +891,7 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
 const MAX_SAMPLE_RATE: f64 = MAX_SAMPLE_RATE_HZ as f64;
 
 /// An 80-bit IEEE 754 extended float.
-fn extended_to_f64(b: &[u8]) -> Option<f64> {
+pub(crate) fn extended_to_f64(b: &[u8]) -> Option<f64> {
     let se = be_u16(b, 0)?;
     let hi = u64::from(be_u32(b, 2)?);
     let lo = u64::from(be_u32(b, 6)?);
@@ -1004,7 +1040,7 @@ impl MediaSource for CountingFile {
     }
 }
 
-fn format_from_codec(codec: CodecType, detected: FileFormat) -> FileFormat {
+pub(crate) fn format_from_codec(codec: CodecType, detected: FileFormat) -> FileFormat {
     if detected != FileFormat::Other {
         return detected;
     }
@@ -1018,7 +1054,7 @@ fn format_from_codec(codec: CodecType, detected: FileFormat) -> FileFormat {
     }
 }
 
-fn sample_format_of(p: &CodecParameters) -> SampleFormat {
+pub(crate) fn sample_format_of(p: &CodecParameters) -> SampleFormat {
     let c = p.codec;
     if c == sc::CODEC_TYPE_PCM_F32LE || c == sc::CODEC_TYPE_PCM_F32BE {
         return SampleFormat::Float32;
@@ -1051,7 +1087,7 @@ fn sample_format_of(p: &CodecParameters) -> SampleFormat {
     }
 }
 
-fn sym_err(e: SymError) -> OpenError {
+pub(crate) fn sym_err(e: SymError) -> OpenError {
     match e {
         SymError::Unsupported(m) => unsupported(m),
         SymError::LimitError(m) => OpenError::Decode(format!("audio too large: {m}")),

@@ -116,6 +116,22 @@ def main():
         check("a cancelled start time records nothing", c.ask("RECORD cancel") == "OK" and c.state(wait=False)["rec_armed"] == "-1" and r.startswith("OK armed"), r)
         check("cancel with nothing armed is refused", c.ask("RECORD cancel").startswith("ERR"), None)
 
+        # fix150: a timed start whose time comes while an open or save is running must not be dropped.
+        before = set(os.listdir(takes))
+        c.ask("RECORD start in=1 max=1")
+        check("a manual start is refused while busy (hook)", c.ask("HOLD_BUSY 5000") == "OK" and c.ask("RECORD start max=1").startswith("ERR"), None)
+        check("the busy hold shows in STATE", c.state(wait=False)["busy"] == "1", None)
+        time.sleep(1.6)
+        st = c.state(wait=False)
+        check("the timed take started at its time although busy", st["recording"] == "1" and st["rec_start_busy"] == "1", st)
+        check("the delay is reported (small)", 0 <= int(st["rec_late_ms"]) < 1500, st)
+        time.sleep(2.0)
+        new = sorted(set(os.listdir(takes)) - before)
+        t = read_take(os.path.join(takes, new[0])) if new else {}
+        check("that take ran and kept about 1 s", len(new) == 1 and abs(t["frames"] - 48000) < 0.35 * 48000, (new, t))
+        time.sleep(2.0)
+        wait_idle(c)
+
         # C031: record at once with the last settings, no dialog.
         r = c.ask("RECORD start rate=44100 ch=2 bits=16 max=1")
         time.sleep(2.0)

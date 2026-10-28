@@ -10,11 +10,15 @@
 //! - [`cd`]: the CD layout (track order, pauses, ISRC), and its single-WAV-plus-CUE export.
 //! - [`io`]: streamed open into the store.
 //! - [`peakcache`]: saved waveform overviews, so a long file reopens fast.
+//! - [`probe`]: a file's format, length and title from its header alone (no store).
+//! - [`recent`]: the Open Recent list and the config folder's small files.
 //! - [`space`]: the store's size for a file and the free space on its disk.
 //! - [`resample`]: windowed-sinc sample-rate conversion for playback.
 //! - [`hwprofile`]: audio hardware settings kept per device setup.
 //! - [`chanmap`]: output/input channel maps and the output buffer size choice.
 //! - [`record`]: recording a take: the ring buffer, the crash-safe WAV writer, the fake input.
+//! - [`take_recovery`]: finding and repairing takes a crash left unfinished.
+//! - [`take_recovery`]: finding and repairing takes a crash left unfinished.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app sees it: the document in the store, read in
 //!   chunks (no whole-file copy since task 05), and its waveform peaks.
@@ -40,7 +44,9 @@ pub mod cd;
 pub mod chanmap;
 pub mod channels;
 pub mod diagnostics;
+pub mod dither;
 pub mod clipboard;
+pub mod convert;
 pub mod doc;
 pub mod document;
 pub mod export;
@@ -56,7 +62,9 @@ pub mod input_meter;
 pub mod freq_axis;
 pub mod io;
 pub mod jobs;
+pub mod keyboard;
 pub mod meta;
+pub mod meta_view;
 pub mod meters;
 pub mod mix;
 pub mod mixdown;
@@ -72,14 +80,17 @@ pub mod mixer_sections;
 pub mod levels;
 pub mod loudness;
 pub mod presets;
+pub mod probe;
 pub mod rack;
 pub mod markers;
+pub mod match_loudness;
 pub mod peakcache;
 pub mod playlist;
 pub mod metronome;
 pub mod random;
 pub mod resample;
 pub mod readout;
+pub mod recent;
 pub mod recent_sessions;
 pub mod ruler;
 pub mod record;
@@ -88,6 +99,7 @@ pub mod sc_source;
 pub mod session_file;
 pub mod sessions;
 pub mod settings;
+pub mod shortcut_sets;
 pub mod shortcuts;
 pub mod smpte;
 pub mod snap;
@@ -101,6 +113,7 @@ pub mod store;
 pub mod strip_eq;
 pub mod take_readout;
 pub mod take_recover;
+pub mod take_recovery;
 pub mod take_repair;
 pub mod tempo;
 pub mod transcript_cut;
@@ -109,13 +122,14 @@ pub mod timepitch;
 pub mod transport;
 pub mod view;
 pub mod workspaces;
+pub mod xmp;
 pub mod vst3;
 
 pub use channels::{ChannelLayout, channel_color};
 pub use doc::edit::{ChannelMask, Clip, Crossfades, Edit, EditError};
 pub use doc::history::History;
 pub use doc::{Channel, DocState, Piece, SourceFormat};
-pub use markers::{Marker, MarkerPick, Markers};
+pub use markers::{Marker, MarkerPick, Markers, PALETTE};
 pub use playlist::Playlist;
 
 pub use document::{Document, OpenError, PeakReport};

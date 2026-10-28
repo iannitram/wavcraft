@@ -67,7 +67,7 @@ fn the_panel_layout_is_kept_in_the_settings_file() {
     let back = Settings::load(&file);
     assert_eq!(Layout::decode(&back.panel_layout, &back.zone_sizes), layout);
     let text = std::fs::read_to_string(&file).unwrap();
-    assert!(text.contains("panel_layout = left:;right:selection,markers,playlist;bottom:freq,history*"), "{text}");
+    assert!(text.contains("panel_layout = left:tools,files;right:selection,markers,playlist,match;bottom:freq,properties,transport,history*"), "{text}");
 }
 
 #[test]
@@ -425,7 +425,7 @@ fn snapping_choices_last_from_run_to_run() {
     let dir = TempDir::new("snap");
     let file = dir.0.join("settings.txt");
     assert_eq!(Settings::load(&file).snap, SnapSettings::default());
-    let snap = SnapSettings { enabled: false, zero_crossings: true, ruler_coarse: false, ruler_fine: true, edges: false };
+    let snap = SnapSettings { enabled: false, zero_crossings: true, ruler_coarse: false, ruler_fine: true, edges: false, markers: false };
     Settings { snap, ..Settings::default() }.save(&file).unwrap();
     assert_eq!(Settings::load(&file).snap, snap);
     // A value that is not a switch leaves the default; a file without the keys is the defaults.

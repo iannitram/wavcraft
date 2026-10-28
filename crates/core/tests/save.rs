@@ -527,3 +527,37 @@ fn m3_markers_moved_by_an_edit_are_what_the_saved_file_holds() {
     assert_eq!(back.len_frames(), 3_000);
     assert_eq!(back.markers().iter().map(|m| (m.start, m.end)).collect::<Vec<_>>(), [(500, 500), (2_000, 2_500)]);
 }
+
+// ---- f100: AIFF markers in a MARK chunk (A184) ----
+
+#[test]
+fn f100_aiff_save_writes_a_mark_chunk_and_reopen_restores_point_and_range_markers() {
+    let t = TempDir::new("aiff-mark");
+    for ty in [SampleType::Int16, SampleType::Int24, SampleType::Float32] {
+        let doc = marked_doc(&t.0.join("s"), 3_001);
+        let path = t.0.join(format!("m-{ty:?}.aiff"));
+        save(&doc, &path, SaveFormat::Aiff, ty, &mut |_| {}).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.windows(4).any(|w| w == b"MARK"), "{ty:?}: a MARK chunk");
+        assert_eq!(u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize, bytes.len() - 8, "{ty:?}: FORM size covers MARK");
+        let back = reopen(&path, &t.0.join("r"));
+        assert_eq!(back.len_frames(), 3_001, "{ty:?}: the audio is whole");
+        assert_eq!(marker_view(&back), marker_view(&doc), "{ty:?}");
+    }
+}
+
+#[test]
+fn f100_aiff_without_markers_has_no_mark_chunk_and_flac_and_failed_saves_stay_clean() {
+    let t = TempDir::new("aiff-nomark");
+    let doc = doc_from(&t.0.join("s"), &exact(16, 2_000));
+    let path = t.0.join("plain.aiff");
+    save(&doc, &path, SaveFormat::Aiff, SampleType::Int16, &mut |_| {}).unwrap();
+    assert!(!std::fs::read(&path).unwrap().windows(4).any(|w| w == b"MARK"));
+    assert!(reopen(&path, &t.0.join("r")).markers().is_empty());
+    // A failed marked AIFF save leaves no file and no temporary.
+    let marked = marked_doc(&t.0.join("s2"), 3 * BLOCK_FRAMES);
+    let bad = t.0.join("bad.aiff");
+    assert!(save_failing_after(&marked, &bad, SaveFormat::Aiff, SampleType::Int16, 1).is_err());
+    assert!(!bad.exists());
+    assert!(temp_files(&bad).is_empty());
+}

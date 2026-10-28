@@ -1,6 +1,6 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use std::time::Instant;
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::appearance;
+use wavcraft_core::convert::{self, ConvertSettings, PresetFile};
 use wavcraft_core::chanmap::ChannelMap;
 use wavcraft_core::doc::append::{self, AppendReport, NewReport};
 use wavcraft_core::doc::edit as doc_edit;
@@ -23,8 +24,11 @@ use wavcraft_core::hwprofile::{Hardware, Outcome, ProfileStore};
 use wavcraft_core::input_meter::InputStats;
 use wavcraft_core::io::{OpenOptions, RawEncoding, RawSpec};
 use wavcraft_core::jobs::{self, JobPoll};
+use wavcraft_core::match_loudness::Target;
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
+use wavcraft_core::probe::{self, FileInfo};
+use wavcraft_core::recent::{self, Recent};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
 use wavcraft_core::readout::{self, EditorLayout, Readout};
 use wavcraft_core::resample::Quality;
@@ -33,6 +37,8 @@ use wavcraft_core::save::{
     estimate_size, save_aiff_kind, save_as as save_container, save_vorbis, save_wav_with, write_file,
 };
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
+use wavcraft_core::keyboard::Mods;
+use wavcraft_core::shortcut_sets::{DEFAULT_SET, SetStore};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 use wavcraft_core::snap::SnapSettings;
 use wavcraft_core::spectrogram::Columns;
@@ -51,7 +57,10 @@ use wavcraft_core::{
 use crate::batch_panel::BatchPanel;
 use crate::cd_ui::CdView;
 use crate::control;
+use crate::shortcut_editor::{Change, ShortcutDialog};
+use crate::convert_ui::{self, ConvertDialog};
 use crate::doclist::{DocList, Where};
+use crate::files;
 use crate::diagnostics_panel::{self, Ask, DiagPanel};
 use crate::effect_dialog::{Answer, EffectDialog};
 use crate::freq_panel::{self, FreqPanel};
@@ -60,6 +69,7 @@ use crate::menus::{self, Cmd, Entry, Item, Menu};
 use crate::recording::{DEFAULT_PREROLL_MS, Max, Recording};
 use wavcraft_core::doc::rec_edit::{self, RecMode, RecPlan, RecTarget};
 use crate::markers_panel::MarkersUi;
+use crate::match_ui::MatchUi;
 use crate::meters_ui::{self, MetersUi};
 use crate::mixer::MixerModel;
 use crate::mixpaste;
@@ -413,6 +423,48 @@ fn is_unsaved(editor: &Option<Editor>, saved: &Option<Arc<DocState>>) -> bool {
     }
 }
 
+/// A file added by File › Import (f63): listed in the Files panel, but not open. Only its header
+/// was read (`info`); it gets a session store when it is first made current.
+struct Import {
+    path: PathBuf,
+    info: FileInfo,
+}
+
+/// What the Files panel shows about an open document's file beyond its audio, from its header.
+#[derive(Default, Clone)]
+struct Meta {
+    title: String,
+    size: u64,
+}
+
+/// Whether two paths are the same file (equal, or the same after resolving links).
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+}
+
+/// The Files panel's Bits text for a sample type.
+fn bits_text(f: SampleFormat) -> &'static str {
+    match f {
+        SampleFormat::Int8 => "8",
+        SampleFormat::Int16 => "16",
+        SampleFormat::Int24 => "24",
+        SampleFormat::Int32 => "32",
+        SampleFormat::Float32 => "32f",
+        SampleFormat::Float64 => "64f",
+        SampleFormat::Compressed => "-",
+    }
+}
+
+fn reveal_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else if cfg!(target_os = "windows") {
+        "Reveal in Explorer"
+    } else {
+        "Show in Folder"
+    }
+}
+
 fn path_name(path: &std::path::Path) -> String {
     path.file_name().map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned())
 }
@@ -528,6 +580,8 @@ pub struct WaveApp {
     pointer: Option<Readout>,
     renderer: Renderer,
     opening: Option<Opening>,
+    /// Test hook (`HOLD_BUSY`, fake input only): counts as an open or save running until then.
+    test_busy_until: Option<Instant>,
     /// Files still to open one after the other (Open with several files chosen, `OPEN_MANY`).
     open_queue: VecDeque<PathBuf>,
     /// The files of the queue that could not be opened, reported when the queue is empty.
@@ -621,6 +675,24 @@ pub struct WaveApp {
     custom_fps_dialog: Option<String>,
     /// Clear History asks first: it can't be undone.
     confirm_clear_history: bool,
+    /// The Files panel (f45, f63, f95; `files` in the panel registry).
+    files: files::View,
+    /// The window's egui context, for opening a file from a click that has none at hand.
+    ctx: egui::Context,
+    /// File › Open Recent (f63), and the file it is kept in (`None` when the system has no config folder).
+    recent: Recent,
+    recent_path: Option<PathBuf>,
+    /// Files added by File › Import (f63), not open: listed after the open documents.
+    imports: Vec<Import>,
+    /// Header details of the open documents' files, by path (filled when the panel needs them).
+    meta: HashMap<PathBuf, Meta>,
+    /// Edit › Convert Sample Type… (A161): the dialog while it is up (the conversion itself runs
+    /// as a background job, `running`).
+    convert_dialog: Option<ConvertDialog>,
+    /// Edit › Interpret Sample Rate… (A162): the rate being typed while the dialog is up.
+    interpret: Option<String>,
+    /// Named conversion settings (built in, and the user's from `convert-presets.txt`).
+    convert_presets: PresetFile,
     /// Frames a selection drag snaps to besides the ruler: the edges of the selection that was
     /// there when the gesture began (the cursor is its start).
     snap_targets: Vec<u64>,
@@ -638,6 +710,10 @@ pub struct WaveApp {
     /// from: refilled whenever the current step's metadata is another one.
     meta_draft: Vec<String>,
     meta_for: Option<Arc<wavcraft_core::SourceFormat>>,
+    /// The Metadata panel's filter text, and the display sets (which fields it shows; f98).
+    meta_filter: String,
+    meta_sets: wavcraft_core::meta_view::DisplaySets,
+    meta_set_name: String,
     /// Video › Attach video file…: the picture of a video file at the playhead (f122).
     video: Option<VideoPanel>,
     show_video: bool,
@@ -657,12 +733,20 @@ pub struct WaveApp {
     previewing: bool,
     /// The keyboard shortcuts in use (the defaults; the user's key file will override them).
     keymap: Keymap,
+    /// Where the user's key file is (f46; `None`: the system has no config folder).
+    shortcuts_path: Option<PathBuf>,
+    /// The saved shortcut sets (f60, A293), in the config folder.
+    shortcut_sets: Option<SetStore>,
+    /// Edit › Keyboard Shortcuts…, while it is open.
+    shortcut_dialog: Option<ShortcutDialog>,
     /// The Multitrack session and its editor view (f103).
     mtv: MtView,
     /// The CD Layout and its view (f121).
     cdv: CdView,
     /// Window › Levels and the statistics window (f26).
     meters: MetersUi,
+    /// The Match Loudness panel (f33; `match` in the panel registry).
+    matcher: MatchUi,
     /// The input monitor (f56): open only while `meter_input` is on or a mic check listens.
     input: InputMonitor,
     /// Window › Meter Input Signal: the Levels panel shows the input while nothing plays.
@@ -777,9 +861,23 @@ impl WaveApp {
         let roots = recovery::roots(&sessions.path, &default_sessions_root());
         let recovery = {
             let ctx = cc.egui_ctx.clone();
-            Recovery::new(roots, move || ctx.request_repaint())
+            Recovery::new(roots, crate::recording::record_dir().ok(), move || ctx.request_repaint())
         };
-        let keymap = Keymap::new();
+        // f46: the defaults with the user's key file applied; f60: the active shortcut set, when
+        // there is one, is what the app starts with.
+        let shortcuts_path = wavcraft_core::shortcuts::default_path();
+        let (keymap, shortcuts_warning) = shortcuts_path.as_deref().map(wavcraft_core::shortcuts::load).unwrap_or_default();
+        if let Some(w) = shortcuts_warning {
+            log::warn!(target: "wavcraft", "{w}");
+        }
+        let shortcut_sets = SetStore::default_store();
+        let (keymap, set_warning) = match &shortcut_sets {
+            Some(store) => store.startup(keymap),
+            None => (keymap, None),
+        };
+        if let Some(w) = set_warning {
+            log::warn!(target: "wavcraft", "{w}");
+        }
         if let Err(e) = keymap.check() {
             log::error!(target: "wavcraft", "keyboard shortcuts conflict: {e}");
         }
@@ -839,6 +937,7 @@ impl WaveApp {
             pointer: None,
             renderer: Renderer::new(&cc.egui_ctx, initial_colours),
             opening: None,
+            test_busy_until: None,
             open_queue: VecDeque::new(),
             open_failures: Vec::new(),
             appending: None,
@@ -899,12 +998,26 @@ impl WaveApp {
             mix_paste: None,
             custom_fps_dialog: None,
             confirm_clear_history: false,
+            files: files::View { columns: files::load_columns().unwrap_or_else(|| files::Col::DEFAULT.to_vec()), ..files::View::default() },
+            ctx: cc.egui_ctx.clone(),
+            recent_path: recent::config_file("recent.txt"),
+            recent: recent::config_file("recent.txt").map(|p| Recent::load(&p)).unwrap_or_default(),
+            imports: Vec::new(),
+            meta: HashMap::new(),
+            convert_dialog: None,
+            interpret: None,
+            convert_presets: PresetFile::load(PresetFile::default_path()),
             snap_targets: Vec::new(),
             rec: Recording::default(),
             integrating: None,
             show_metadata: false,
             meta_draft: Vec::new(),
             meta_for: None,
+            meta_filter: String::new(),
+            meta_sets: wavcraft_core::meta_view::DisplaySets::default_path()
+                .map(|p| wavcraft_core::meta_view::DisplaySets::load_file(&p))
+                .unwrap_or_default(),
+            meta_set_name: String::new(),
             video: None,
             show_video: true,
             video_waiters: Waiters::default(),
@@ -915,9 +1028,13 @@ impl WaveApp {
             diag_wait: false,
             previewing: false,
             keymap,
+            shortcuts_path,
+            shortcut_sets,
+            shortcut_dialog: None,
             mtv: MtView::default(),
             cdv: CdView::default(),
             meters: MetersUi::new(),
+            matcher: MatchUi::new(),
             input: InputMonitor::new(),
             meter_input: false,
             mic: None,
@@ -1954,6 +2071,7 @@ impl WaveApp {
                 self.peak_report = Some(r.clone());
                 self.set_audio(Some(doc.state.clone()));
                 self.meters.new_file();
+                self.matcher.new_file();
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = Some(Editor::new(History::new(doc.state.clone(), cap)));
                 if let (Some(clips), Some(e)) = (clips, self.editor.as_mut()) {
@@ -1963,6 +2081,8 @@ impl WaveApp {
                 self.apply_snap();
                 self.saved = if fresh { None } else { self.editor.as_ref().map(|e| e.history.current().clone()) };
                 self.doc_path = doc.path.clone();
+                self.note_recent(&doc.path);
+                self.imports.retain(|i| !same_file(&i.path, &doc.path));
                 self.tempo = self.settings.tempo_for(&self.doc_path);
                 self.doc_serial += 1;
                 self.doc_id = self.doc_serial;
@@ -2275,6 +2395,7 @@ impl WaveApp {
         self.freq.reset();
         self.playlist_ui.reset();
         self.meters.new_file();
+        self.matcher.new_file();
         self.generation += 1;
         self.spectrum = None;
     }
@@ -2355,6 +2476,7 @@ impl WaveApp {
         self.drop_video();
         self.stats.forget();
         self.meters.new_file();
+        self.matcher.new_file();
         self.apply_crossfades();
         if frames > 0 {
             self.rebuild(ctx);
@@ -2651,6 +2773,518 @@ impl WaveApp {
         }
     }
 
+    /// The Files panel's rows, one per open document, in the order opened.
+    fn file_rows(&self) -> Vec<files::Row> {
+        let open = self.docs.len(self.editor.is_some());
+        let imported = self.imports.iter().enumerate().map(|(k, imp)| files::Row {
+            doc: open + k,
+            name: path_name(&imp.path),
+            unsaved: false,
+            frames: imp.info.frames,
+            rate: imp.info.sample_rate,
+            channels: usize::from(imp.info.channels),
+            bits: bits_text(imp.info.sample_format).to_string(),
+            format: format!("{:?}", imp.info.format),
+            path: imp.path.to_string_lossy().into_owned(),
+            title: imp.info.title.clone(),
+            size: imp.info.file_bytes,
+            imported: true,
+            mask: u64::MAX,
+        });
+        (0..open)
+            .filter_map(|i| {
+                let (path, editor, unsaved) = match self.docs.locate(i) {
+                    Where::Current => (&self.doc_path, &self.editor, self.unsaved()),
+                    Where::Parked(p) => {
+                        let s = self.docs.parked().get(p)?;
+                        (&s.doc_path, &s.editor, is_unsaved(&s.editor, &s.saved))
+                    }
+                };
+                let state = editor.as_ref()?.history.current();
+                let src = state.source();
+                let meta = self.meta.get(path).cloned().unwrap_or_default();
+                Some(files::Row {
+                    doc: i,
+                    name: path_name(path),
+                    unsaved,
+                    frames: state.len_frames(),
+                    rate: state.sample_rate(),
+                    channels: state.channel_count(),
+                    bits: bits_text(src.sample_format).to_string(),
+                    format: format!("{:?}", src.format),
+                    path: path.to_string_lossy().into_owned(),
+                    title: meta.title,
+                    size: meta.size,
+                    imported: false,
+                    mask: editor.as_ref()?.channels.within(state.channel_count()).bits(),
+                })
+            })
+            .chain(imported)
+            .collect()
+    }
+
+    /// Read the header details of any open document's file not yet in the cache.
+    fn refresh_meta(&mut self) {
+        let paths: Vec<PathBuf> = std::iter::once(self.doc_path.clone()).chain(self.docs.parked().iter().map(|s| s.doc_path.clone())).collect();
+        for p in paths {
+            if p.as_os_str().is_empty() || self.meta.contains_key(&p) {
+                continue;
+            }
+            let m = probe::probe(&p).map(|i| Meta { title: i.title, size: i.file_bytes }).unwrap_or_default();
+            self.meta.insert(p, m);
+        }
+    }
+
+    /// The document the shown row `i` stands for (rows are sorted and filtered).
+    fn file_row_doc(&self, i: usize) -> Result<usize, String> {
+        let rows = self.file_rows();
+        self.files
+            .arrange(&rows)
+            .get(i)
+            .map(|r| r.doc)
+            .ok_or_else(|| format!("no row {i} (the table shows {} rows)", self.files.arrange(&rows).len()))
+    }
+
+    /// Make only channel `ch` of open document `doc` the one edits act on (the document is made current).
+    fn select_channel(&mut self, doc: usize, ch: usize) -> Result<(), String> {
+        let channels = self.file_rows().into_iter().find(|r| r.doc == doc && !r.imported).map(|r| r.channels).ok_or("open the file first")?;
+        if ch >= channels {
+            return Err(format!("the file has {channels} channels, not a channel {ch}"));
+        }
+        self.switch_doc(doc)?;
+        if let Some(e) = self.editor.as_mut() {
+            e.channels = wavcraft_core::ChannelMask::only(ch);
+        }
+        Ok(())
+    }
+
+    /// Reveal a document's file in the system file manager (Linux: its folder).
+    fn reveal_file(&self, doc: usize) -> Result<(), String> {
+        let path = self.file_rows().into_iter().find(|r| r.doc == doc).map(|r| r.path).unwrap_or_default();
+        let (prog, args) = files::reveal_command(std::env::consts::OS, &path).ok_or("this document has no file yet: Save As first")?;
+        std::process::Command::new(&prog).args(&args).spawn().map(drop).map_err(|e| format!("could not run {prog}: {e}"))
+    }
+
+    /// `path` was opened: it goes to the front of Open Recent, and the list is kept.
+    fn note_recent(&mut self, path: &Path) {
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        self.recent.push(&std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()));
+        self.save_recent();
+    }
+
+    fn save_recent(&self) {
+        if let Some(file) = &self.recent_path
+            && let Err(e) = self.recent.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not save the recent files list {}: {e}", file.display());
+        }
+    }
+
+    /// File › Open Recent › entry `i`. A file that is gone is taken off the list instead, and
+    /// the error says so.
+    fn open_recent(&mut self, i: usize) -> Result<PathBuf, String> {
+        let Some(path) = self.recent.paths().get(i).cloned() else { return Err(format!("no recent file {i}")) };
+        if !path.is_file() {
+            self.recent.remove(i);
+            self.save_recent();
+            return Err(format!("{} is missing, so it was removed from Open Recent", path.display()));
+        }
+        let ctx = self.ctx.clone();
+        self.open(path.clone(), &ctx);
+        Ok(path)
+    }
+
+    /// File › Import › File…: add `path` to the Files panel. Only its header is read: it is not
+    /// made current, the editor is left on whatever it shows, and no session store is made until
+    /// the row is first made current.
+    fn import_file(&mut self, path: PathBuf) -> Result<(), String> {
+        let path = std::path::absolute(&path).unwrap_or(path);
+        if !path.is_file() {
+            return Err(format!("{} is not a file", path.display()));
+        }
+        let open_here = std::iter::once(&self.doc_path).chain(self.docs.parked().iter().map(|s| &s.doc_path));
+        if open_here.chain(self.imports.iter().map(|i| &i.path)).any(|p| same_file(p, &path)) {
+            return Err(format!("{} is already in the Files panel", path.display()));
+        }
+        let info = probe::probe(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        self.notice = Some(format!("Imported {} (it opens when you select it in the Files panel)", path_name(&path)));
+        self.error = None;
+        self.imports.push(Import { path, info });
+        Ok(())
+    }
+
+    /// File › Import › File…, asking which files.
+    fn pick_import(&mut self) {
+        let picked =
+            rfd::FileDialog::new().add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "caf"]).pick_files();
+        for path in picked.unwrap_or_default() {
+            if let Err(e) = self.import_file(path) {
+                self.error = Some(e);
+            }
+        }
+    }
+
+    /// Open the imported file `k` (the open runs in the background, as File › Open does).
+    fn open_import(&mut self, k: usize) -> Result<(), String> {
+        if k >= self.imports.len() {
+            return Err(format!("no imported file {k}"));
+        }
+        let imp = self.imports.remove(k);
+        let ctx = self.ctx.clone();
+        self.open(imp.path, &ctx);
+        Ok(())
+    }
+
+    /// Make Files panel row document `i` current: an open document is switched to, an imported
+    /// file starts opening. `Some(i)` when `i` is now current, `None` while an import opens.
+    fn activate_row(&mut self, i: usize) -> Result<Option<usize>, String> {
+        let open = self.docs.len(self.editor.is_some());
+        if i >= open {
+            return self.open_import(i - open).map(|()| None);
+        }
+        self.switch_doc(i).map(|()| Some(i))
+    }
+
+    /// Window › Files: the open documents as a table.
+    fn files_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Files");
+        ui.horizontal(|ui| {
+            ui.label("Filter");
+            ui.text_edit_singleline(&mut self.files.filter);
+        });
+        self.refresh_meta();
+        let rows = self.file_rows();
+        let shown: Vec<(files::Row, Option<usize>)> = self
+            .files
+            .lines(&rows)
+            .into_iter()
+            .map(|l| match l {
+                files::Line::File(r) => (r.clone(), None),
+                files::Line::Channel { row, ch } => (row.clone(), Some(ch)),
+            })
+            .collect();
+        let (mut toggle, mut pick_channel) = (None, None);
+        let cur = self.docs.current();
+        let busy = self.saving.is_some() || self.making.is_some() || self.save_all.is_some();
+        let (mut go, mut open, mut close, mut reveal, mut import, mut unlist) = (None, false, false, false, false, None);
+        let columns = self.files.columns.clone();
+        egui::ScrollArea::both().max_height((ui.available_height() - 40.0).max(60.0)).show(ui, |ui| {
+            egui::Grid::new("files_grid").striped(true).show(ui, |ui| {
+                ui.label("");
+                for &col in &columns {
+                    let arrow = match self.files.sort {
+                        Some((c, true)) if c == col => " ▲",
+                        Some((c, false)) if c == col => " ▼",
+                        _ => "",
+                    };
+                    if ui.button(format!("{}{arrow}", col.title())).clicked() {
+                        self.files.click_header(col);
+                    }
+                }
+                ui.end_row();
+                for (r, channel) in &shown {
+                    if let Some(ch) = *channel {
+                        // A channel line: its name under the Name column, a mark if edits act on it.
+                        ui.label("");
+                        for k in 0..columns.len() {
+                            let text = if k == 0 {
+                                format!(
+                                    "    {} {}",
+                                    if r.channel_active(ch) && r.doc == cur { "●" } else { "○" },
+                                    files::channel_label(r.channels, ch)
+                                )
+                            } else {
+                                String::new()
+                            };
+                            if ui.selectable_label(false, text).on_hover_text("Edit only this channel").clicked() {
+                                pick_channel = Some((r.doc, ch));
+                            }
+                        }
+                        ui.end_row();
+                        continue;
+                    }
+                    let on = !r.imported && r.doc == cur;
+                    if r.imported {
+                        ui.label("");
+                    } else if ui.small_button(if self.files.is_expanded(r) { "▾" } else { "▸" }).on_hover_text("Show the channels").clicked() {
+                        toggle = Some(r.clone());
+                    }
+                    for &col in &columns {
+                        // An imported row is dimmed: it is listed, not open.
+                        let text = egui::RichText::new(r.cell(col));
+                        let resp = ui.selectable_label(on, if r.imported { text.weak() } else { text });
+                        if resp.clicked() || resp.double_clicked() {
+                            go = Some(r.doc);
+                        }
+                        if r.imported {
+                            resp.context_menu(|ui| {
+                                if ui.button("Open this file").clicked() {
+                                    go = Some(r.doc);
+                                    ui.close();
+                                }
+                                if ui.button("Remove from the list").clicked() {
+                                    unlist = Some(r.doc);
+                                    ui.close();
+                                }
+                            });
+                            continue;
+                        }
+                        resp.context_menu(|ui| {
+                            go = Some(r.doc);
+                            if ui.button("Open…").clicked() {
+                                open = true;
+                                ui.close();
+                            }
+                            if ui.add_enabled(!busy, egui::Button::new("Close")).clicked() {
+                                close = true;
+                                ui.close();
+                            }
+                            if ui.add_enabled(!r.path.is_empty(), egui::Button::new(reveal_label())).clicked() {
+                                reveal = true;
+                                ui.close();
+                            }
+                        });
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            open |= ui.button("Open…").clicked();
+            import |= ui.button("Import…").on_hover_text("Add files to this list without opening them").clicked();
+            close |= ui.add_enabled(!busy && self.editor.is_some(), egui::Button::new("Close")).clicked();
+            reveal |= ui.add_enabled(self.editor.is_some(), egui::Button::new(reveal_label())).clicked();
+            ui.menu_button("Columns", |ui| {
+                let mut cols = self.files.columns.clone();
+                for c in files::Col::ALL {
+                    let mut on = cols.contains(&c);
+                    // At least one column stays.
+                    if ui.add_enabled(!on || cols.len() > 1, egui::Checkbox::new(&mut on, c.title())).changed() {
+                        if on {
+                            cols.push(c);
+                        } else {
+                            cols.retain(|x| *x != c);
+                        }
+                    }
+                }
+                if cols != self.files.columns {
+                    self.set_columns(cols);
+                }
+            });
+        });
+        // Clicking a row makes it current; Open, Close and Reveal then act on the current document.
+        if let Some(i) = go
+            && let Err(e) = self.activate_row(i)
+        {
+            self.error = Some(e);
+        }
+        if let Some(r) = toggle {
+            let on = !self.files.is_expanded(&r);
+            let _ = self.files.set_expanded(&r, on);
+        }
+        if let Some((doc, ch)) = pick_channel
+            && let Err(e) = self.select_channel(doc, ch)
+        {
+            self.error = Some(e);
+        }
+        if let Some(i) = unlist {
+            let open = self.docs.len(self.editor.is_some());
+            if i >= open && i - open < self.imports.len() {
+                self.imports.remove(i - open);
+            }
+        }
+        if import {
+            self.pick_import();
+        }
+        if open {
+            self.pick_file(ui.ctx());
+        }
+        if close && let Err(e) = self.close_doc() {
+            self.error = Some(e);
+        }
+        if reveal && let Err(e) = self.reveal_file(self.docs.current()) {
+            self.error = Some(e);
+        }
+    }
+
+    /// Show these columns, and keep the choice for the next run.
+    fn set_columns(&mut self, cols: Vec<files::Col>) {
+        if let Err(e) = files::save_columns(&cols) {
+            log::warn!(target: "wavcraft", "could not save the Files panel columns: {e}");
+        }
+        self.files.columns = cols;
+    }
+
+    /// `RECENT …` from the control channel.
+    fn recent_request(&mut self, rest: &str) -> String {
+        let mut words = rest.split_whitespace();
+        match words.next().map(str::to_ascii_lowercase).as_deref() {
+            None => {
+                let mut out = format!("OK count={}", self.recent.paths().len());
+                for (i, p) in self.recent.paths().iter().enumerate() {
+                    out.push_str(&format!(" | {i} exists={} path={}", u8::from(p.is_file()), p.display()));
+                }
+                out
+            }
+            Some("open") => match words.next().and_then(|w| w.parse::<usize>().ok()) {
+                Some(i) => match self.open_recent(i) {
+                    Ok(p) => format!("OK opening {}", p.display()),
+                    Err(e) => {
+                        self.error = Some(e.clone());
+                        format!("ERR {e}")
+                    }
+                },
+                None => "ERR RECENT open <i>, from RECENT".to_string(),
+            },
+            Some("clear") => {
+                self.recent.clear();
+                self.save_recent();
+                "OK count=0".to_string()
+            }
+            _ => "ERR RECENT [open <i> | clear]".to_string(),
+        }
+    }
+
+    /// `FILES …` from the control channel.
+    fn files_request(&mut self, rest: &str) -> String {
+        let mut words = rest.split_whitespace();
+        match words.next().map(str::to_ascii_lowercase).as_deref() {
+            None => {
+                self.refresh_meta();
+                let rows = self.file_rows();
+                let shown = self.files.arrange(&rows);
+                let mut out = format!(
+                    "OK count={} total={} current={} sort={} filter={:?} columns={}",
+                    shown.len(),
+                    rows.len(),
+                    self.docs.current(),
+                    self.files.sort_text(),
+                    self.files.filter.trim(),
+                    files::columns_text(&self.files.columns)
+                );
+                let mut i = 0;
+                for line in self.files.lines(&rows) {
+                    let r = match line {
+                        files::Line::File(r) => r,
+                        files::Line::Channel { row, ch } => {
+                            // Under its file: `<file row>.<channel>`, channels counted from 0.
+                            out.push_str(&format!(
+                                " | {}.{ch} channel label={} active={}",
+                                i - 1,
+                                files::channel_label(row.channels, ch),
+                                u8::from(row.channel_active(ch))
+                            ));
+                            continue;
+                        }
+                    };
+                    out.push_str(&format!(
+                        " | {i} doc={} current={} unsaved={} frames={} rate={} ch={} bits={} format={} imported={} expanded={} size={} name={} path={}",
+                        r.doc,
+                        u8::from(!r.imported && r.doc == self.docs.current()),
+                        u8::from(r.unsaved),
+                        r.frames,
+                        r.rate,
+                        r.channels,
+                        r.bits,
+                        r.format,
+                        u8::from(r.imported),
+                        u8::from(self.files.is_expanded(r)),
+                        r.size,
+                        r.name,
+                        r.path
+                    ));
+                    // Last, and only when there is one: a title can hold spaces.
+                    if !r.title.is_empty() {
+                        out.push_str(&format!(" title={}", r.title));
+                    }
+                    i += 1;
+                }
+                out
+            }
+            Some("sort") => {
+                let (col, dir) = (words.next(), words.next().map(str::to_ascii_lowercase));
+                match (col.map(str::to_ascii_lowercase).as_deref(), col.and_then(files::Col::parse), dir.as_deref()) {
+                    (Some("none"), _, None) => self.files.sort = None,
+                    (_, Some(c), Some("asc")) => self.files.sort = Some((c, true)),
+                    (_, Some(c), Some("desc")) => self.files.sort = Some((c, false)),
+                    _ => {
+                        return "ERR FILES sort <name|unsaved|duration|rate|channels|bits|format|path|title|size> asc|desc, or FILES sort none"
+                            .to_string();
+                    }
+                }
+                format!("OK sort={}", self.files.sort_text())
+            }
+            Some("filter") => {
+                let text = rest.trim().get("filter".len()..).unwrap_or("").trim();
+                self.files.filter = text.to_string();
+                format!("OK filter={text:?}")
+            }
+            Some("columns") => {
+                let list = rest.trim().get("columns".len()..).unwrap_or("").trim();
+                if !list.is_empty() {
+                    match files::parse_columns(list) {
+                        Ok(cols) => self.set_columns(cols),
+                        Err(e) => return format!("ERR {e}"),
+                    }
+                }
+                format!("OK columns={}", files::columns_text(&self.files.columns))
+            }
+            // Making an imported row current starts opening its file: poll STATE until busy=0.
+            Some("select") if words.clone().next().is_some_and(|w| w.contains('.')) => {
+                let w = words.next().unwrap_or_default();
+                let (row, ch) = w.split_once('.').unwrap_or_default();
+                match (row.parse::<usize>(), ch.parse::<usize>()) {
+                    (Ok(i), Ok(ch)) => match self.file_row_doc(i).and_then(|d| self.select_channel(d, ch)) {
+                        Ok(()) => format!("OK current={} channel={ch}", self.docs.current()),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    _ => "ERR FILES select <row>.<channel>, channels counted from 0".to_string(),
+                }
+            }
+            Some("select") => match words.next().and_then(|w| w.parse::<usize>().ok()) {
+                Some(i) => match self.file_row_doc(i).and_then(|d| self.activate_row(d)) {
+                    Ok(Some(d)) => format!("OK current={d}"),
+                    Ok(None) => "OK opening".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                },
+                None => "ERR FILES select <row>, from FILES".to_string(),
+            },
+            Some(verb @ ("expand" | "collapse")) => match words.next().and_then(|w| w.parse::<usize>().ok()) {
+                Some(i) => {
+                    let rows = self.file_rows();
+                    let shown = self.files.arrange(&rows);
+                    match shown.get(i) {
+                        Some(r) => {
+                            let r = (*r).clone();
+                            match self.files.set_expanded(&r, verb == "expand") {
+                                Ok(()) => format!("OK expanded={}", u8::from(self.files.is_expanded(&r))),
+                                Err(e) => format!("ERR {e}"),
+                            }
+                        }
+                        None => format!("ERR no row {i} (the table shows {} rows)", shown.len()),
+                    }
+                }
+                None => format!("ERR FILES {verb} <row>, from FILES"),
+            },
+            // What Reveal would run for row <i> (the current document without one). It is not run from here.
+            Some("reveal") => {
+                let doc = match words.next() {
+                    Some(w) => w.parse::<usize>().map_err(|_| "FILES reveal [row]".to_string()).and_then(|i| self.file_row_doc(i)),
+                    None => Ok(self.docs.current()),
+                };
+                match doc.map(|d| self.file_rows().into_iter().find(|r| r.doc == d).map(|r| r.path).unwrap_or_default()) {
+                    Ok(path) => {
+                        files::reveal_text(&path).map_or_else(|| "ERR this document has no file yet".to_string(), |c| format!("OK would run: {c}"))
+                    }
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+            _ => "ERR FILES [sort <col> asc|desc | filter <text> | columns [<list>] | select <row>[.<channel>] | expand <row> | collapse <row> | reveal [row]]".to_string(),
+        }
+    }
+
     /// The tab strip above the editor, when more than one document is open.
     fn doc_tabs(&mut self, ui: &mut egui::Ui) {
         let (n, cur, mut go) = (self.docs.len(self.editor.is_some()), self.docs.current(), None);
@@ -2761,6 +3395,36 @@ impl WaveApp {
         self.notice = Some("Recovered the unsaved work (File › Save keeps it)".to_string());
         log::info!(target: "wavcraft", "recovery: restored the session in {}", dir.display());
         self.rebuild(ctx);
+        Ok(())
+    }
+
+    /// Remove a crashed run's session folder the owner chose to discard.
+    fn recover_take(&mut self, index: usize, ctx: &egui::Context) -> Result<(), String> {
+        if self.rec.is_active() {
+            return Err("Stop recording before recovering a take".to_string());
+        }
+        if self.opening.is_some() || self.rebuilding.is_some() || self.saving.is_some() {
+            return Err("Wait for the current job to finish before recovering".to_string());
+        }
+        if self.unsaved() {
+            return Err("Save or close the open file before recovering".to_string());
+        }
+        let take = self.recovery.takes.get(index).cloned().ok_or_else(|| format!("no recoverable take {index}"))?;
+        let frames =
+            wavcraft_core::take_recovery::repair_take(&take).map_err(|e| format!("Could not recover the take (it is kept as it is): {e}"))?;
+        self.recovery.remove_take(index);
+        log::info!(target: "wavcraft", "recovery: repaired take {} ({frames} frames), opening it", take.path.display());
+        self.open(take.path, ctx);
+        self.notice = Some("Recovered the interrupted take".to_string());
+        Ok(())
+    }
+
+    /// Delete an unfinished take the owner chose to discard (after the window's second question).
+    fn discard_take(&mut self, index: usize) -> Result<(), String> {
+        let take = self.recovery.takes.get(index).cloned().ok_or_else(|| format!("no recoverable take {index}"))?;
+        wavcraft_core::take_recovery::discard_take(&take).map_err(|e| format!("Could not discard: {e}"))?;
+        log::info!(target: "wavcraft", "recovery: discarded take {} at the owner's request", take.path.display());
+        self.recovery.remove_take(index);
         Ok(())
     }
 
@@ -2937,6 +3601,8 @@ impl WaveApp {
             "playlist" => self.playlist_panel(ui),
             "properties" => self.properties_panel(ui),
             "transport" => self.transport_panel(ui),
+            "match" => self.match_panel(ui),
+            "files" => self.files_panel(ui),
             _ => {}
         }
     }
@@ -2946,13 +3612,15 @@ impl WaveApp {
     fn dock_zone(&mut self, ui: &mut egui::Ui, zone: DockSide) {
         let tabs: Vec<&'static str> = self.layout.visible(zone, &self.panels).into_iter().filter_map(|id| panels::by_id(id).map(|p| p.id)).collect();
         let Some(front) = self.layout.active_in(zone, &self.panels).and_then(panels::by_id).map(|p| p.id) else { return };
-        let size = self.layout.size(zone).unwrap_or(220.0);
+        let size = self.layout.effective_size(zone, &self.panels, self.window_size(ui.ctx()));
         let panel = match zone {
             DockSide::Left => egui::Panel::left("zone-left"),
             DockSide::Bottom => egui::Panel::bottom("zone-bottom"),
             _ => egui::Panel::right("zone-right"),
         };
-        let shown = panel.default_size(size).size_range(panels::ZONE_SIZE_RANGE.0..=panels::ZONE_SIZE_RANGE.1).show(ui, |ui| {
+        let shown = panel.resizable(false).exact_size(size).show(ui, |ui| {
+            // Fill the size the zone was given, so a short panel doesn't shrink the zone (A001: the size is part of the layout).
+            ui.set_min_height(ui.available_height());
             let mut wheel = 0.0f32;
             let strip = egui::ScrollArea::horizontal().id_salt(("tabs", zone.name())).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -2988,8 +3656,62 @@ impl WaveApp {
         if shown.response.contains_pointer() {
             self.hover_next = Some(front);
         }
-        let now = if zone == DockSide::Bottom { rect.height() } else { rect.width() };
-        if self.layout.set_size(zone, now) {
+    }
+
+    /// The window's (width, height) in points, for holding the zones inside it.
+    fn window_size(&self, ctx: &egui::Context) -> (f32, f32) {
+        let r = ctx.content_rect();
+        (r.width(), r.height())
+    }
+
+    /// The dividers between the docked zones and the editor (f89, A005): drag one to resize its
+    /// zone, drag where a side divider meets the bottom one to resize both, double-click to
+    /// reset. Drawn after the editor so they are on top of the panel edges.
+    fn dividers(&mut self, ui: &mut egui::Ui) {
+        const GRAB: f32 = 5.0;
+        let win = self.window_size(ui.ctx());
+        let rect_of = |zone: DockSide, rects: &[(DockSide, Rect)]| rects.iter().find(|(z, _)| *z == zone).map(|(_, r)| *r);
+        let rects = self.zone_rects.clone();
+        let mut changed = false;
+        for (zone, rect) in &rects {
+            let (strip, icon) = match zone {
+                DockSide::Left => {
+                    (Rect::from_x_y_ranges(rect.right() - GRAB..=rect.right() + GRAB, rect.y_range()), egui::CursorIcon::ResizeHorizontal)
+                }
+                DockSide::Right => {
+                    (Rect::from_x_y_ranges(rect.left() - GRAB..=rect.left() + GRAB, rect.y_range()), egui::CursorIcon::ResizeHorizontal)
+                }
+                _ => (Rect::from_x_y_ranges(rect.x_range(), rect.top() - GRAB..=rect.top() + GRAB), egui::CursorIcon::ResizeVertical),
+            };
+            let r = ui.interact(strip, egui::Id::new(("divider", zone.name())), Sense::click_and_drag());
+            if r.hovered() || r.dragged() {
+                ui.ctx().set_cursor_icon(icon);
+            }
+            if r.double_clicked() {
+                changed |= self.layout.reset_divider(*zone);
+            } else if r.dragged() {
+                let d = r.drag_delta();
+                changed |= self.layout.drag_divider(*zone, d.x, d.y, &self.panels, win);
+            }
+        }
+        if let Some(bottom) = rect_of(DockSide::Bottom, &rects) {
+            for side in [DockSide::Left, DockSide::Right] {
+                let Some(sr) = rect_of(side, &rects) else { continue };
+                let x = if side == DockSide::Left { sr.right() } else { sr.left() };
+                let spot = Rect::from_center_size(pos2(x, bottom.top()), egui::vec2(GRAB * 4.0, GRAB * 4.0));
+                let r = ui.interact(spot, egui::Id::new(("divider-corner", side.name())), Sense::click_and_drag());
+                if r.hovered() || r.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+                }
+                if r.double_clicked() {
+                    changed |= self.layout.reset_divider(side) | self.layout.reset_divider(DockSide::Bottom);
+                } else if r.dragged() {
+                    let d = r.drag_delta();
+                    changed |= self.layout.drag_corner(side, d.x, d.y, &self.panels, win);
+                }
+            }
+        }
+        if changed {
             self.layout_dirty = true;
         }
     }
@@ -3064,8 +3786,15 @@ impl WaveApp {
         let modified = self.workspaces.is_modified(&self.snapshot());
         let mut result: Result<(), String> = Ok(());
         let mut done = false;
-        for name in self.workspaces.names() {
-            let label = if name == current && modified { format!("{name} (changed)") } else { name.clone() };
+        for (i, name) in self.workspaces.names().into_iter().enumerate() {
+            let mut label = if name == current && modified { format!("{name} (changed)") } else { name.clone() };
+            // f96: the first nine show their Alt+Shift+n key.
+            if i < 9 {
+                let keys = self.keymap.menu_text(Command::Workspace(i as u8 + 1), cfg!(target_os = "macos"));
+                if !keys.is_empty() {
+                    label = format!("{label}    {keys}");
+                }
+            }
             if ui.radio(name == current, label).clicked() && name != current {
                 result = self.workspace_command(&format!("switch {name}"));
                 done = true;
@@ -3088,7 +3817,7 @@ impl WaveApp {
             done = true;
         }
         ui.menu_button("Delete Workspace", |ui| {
-            let others: Vec<String> = self.workspaces.names().into_iter().filter(|n| *n != current && n != workspaces::DEFAULT).collect();
+            let others: Vec<String> = self.workspaces.names().into_iter().filter(|n| *n != current && !workspaces::is_builtin(n)).collect();
             if others.is_empty() {
                 ui.add_enabled(false, egui::Label::new("No other saved workspaces"));
             }
@@ -3396,9 +4125,41 @@ impl WaveApp {
 
     /// Start a take that stops by itself after `max_secs` of recorded audio, if given (C028).
     fn start_recording_max(&mut self, fmt: wavcraft_core::record::RecFormat, max_secs: Option<u64>) -> Result<PathBuf, String> {
-        if self.opening.is_some() || self.saving.is_some() || self.inserting.is_some() || self.running.is_some() {
+        if self.op_running() || self.inserting.is_some() || self.running.is_some() {
             return Err("wait for the open, save or background job to finish".to_string());
         }
+        self.begin_recording(fmt, max_secs)
+    }
+
+    /// An open or save is running (or the `HOLD_BUSY` test hook says so).
+    fn op_running(&self) -> bool {
+        self.opening.is_some() || self.saving.is_some() || self.test_busy_until.is_some_and(|t| std::time::Instant::now() < t)
+    }
+
+    /// A timed start whose time has come (0a64b5c). A take has its own writer and shares nothing
+    /// with an open or save, so it starts right away even while one runs; it is never dropped.
+    /// The delay and the overlap are logged, shown in the status bar and kept in `STATE`.
+    fn start_timed(&mut self, fmt: wavcraft_core::record::RecFormat, max_secs: Option<u64>) {
+        let busy = self.op_running();
+        match self.begin_recording(fmt, max_secs) {
+            Ok(path) => {
+                let late = self.rec.last_timed.map_or(0, |t| t.0);
+                self.rec.last_timed = Some((late, busy));
+                let msg = format!(
+                    "Timed recording started {late} ms after its time{} -> {}",
+                    if busy { ", while an open or save was running" } else { "" },
+                    path.display()
+                );
+                log::info!(target: "wavcraft", "{msg}");
+                if busy || late >= 1000 {
+                    self.notice = Some(msg);
+                }
+            }
+            Err(why) => log::error!(target: "wavcraft", "Timed recording could NOT start: {why}"),
+        }
+    }
+
+    fn begin_recording(&mut self, fmt: wavcraft_core::record::RecFormat, max_secs: Option<u64>) -> Result<PathBuf, String> {
         self.halt_play();
         self.player.set_muted(true);
         self.rec.monitor_default = self.settings.monitor_input;
@@ -3452,7 +4213,7 @@ impl WaveApp {
         if let Err(e) = plan.check(&base) {
             return fail(self, e);
         }
-        let fmt = wavcraft_core::record::RecFormat { rate: base.sample_rate(), channels: plan.take_channels(&base), bits: want.bits };
+        let fmt = wavcraft_core::record::RecFormat { rate: base.sample_rate(), channels: plan.take_channels(&base), bits: want.bits, inputs: 0 };
         let punch = mode == RecMode::Punch;
         // A punch-in's take runs the preference's offset longer, so the range is still filled to its end.
         let pref_frames = rec_edit::offset_frames(self.offset_ms(), base.sample_rate());
@@ -3990,6 +4751,11 @@ impl WaveApp {
                 Ok(false)
             }
             Command::Close => self.close_doc().map(|()| false),
+            // f96: Alt+Shift+1..9 switch to the nth workspace, in menu order.
+            Command::Workspace(n) => {
+                let name = self.workspaces.nth(usize::from(n)).ok_or_else(|| format!("there is no workspace {n}"))?;
+                self.workspace_command(&format!("switch {name}")).map(|()| false)
+            }
         }
     }
 
@@ -4101,7 +4867,9 @@ impl WaveApp {
         // Markers go where play is, when it is playing (a point at the playhead).
         if matches!(id, ActionId::MarkerAdd | ActionId::MarkerNext | ActionId::MarkerPrev) && self.player.is_playing() {
             let at = self.player.position() as u64;
-            sel = at..at;
+            // f53: Previous Marker steps back past a marker the playhead has only just passed.
+            let from = if id == ActionId::MarkerPrev { transport::prev_search_from(at, self.doc.as_ref().map_or(0, Document::sample_rate)) } else { at };
+            sel = from..from;
         }
         if id == ActionId::Paste {
             self.take_system_clipboard();
@@ -4342,6 +5110,13 @@ impl WaveApp {
                 self.insert_silence = Some(self.time_format.format_with(rate as usize, rate, &self.tempo));
             }
             ActionId::InsertFile => self.pick_insert_file(ctx)?,
+            ActionId::ConvertSampleType if self.editor.is_some() => {
+                let doc = self.editor.as_ref().map(|e| e.history.current().clone());
+                self.convert_dialog = doc.map(|d| ConvertDialog::new(d.sample_rate(), d.channel_count()));
+            }
+            ActionId::InterpretSampleRate if self.editor.is_some() => {
+                self.interpret = self.editor.as_ref().map(|e| e.history.current().sample_rate().to_string());
+            }
             // f79: next to the file, as <name>_L.wav, <name>_R.wav (the menu and the control channel).
             ActionId::ExtractChannels => return self.start_extract(ctx).map(|()| false),
             ActionId::ExportRanges => return Err("Export Audio of Range Markers needs a folder: use the menu, or EXPORT_RANGES <folder>".to_string()),
@@ -5092,28 +5867,170 @@ impl WaveApp {
     /// Window › Metadata: the Broadcast Wave fields and the INFO title, artist and comment of the
     /// current step. Apply makes one history step.
     fn metadata_panel(&mut self, ui: &mut egui::Ui) {
+        self.metadata_panel_body(ui);
+    }
+
+    fn save_meta_sets(&self) {
+        if let Some(p) = wavcraft_core::meta_view::DisplaySets::default_path()
+            && let Err(e) = self.meta_sets.save_file(&p)
+        {
+            log::warn!(target: "wavcraft", "could not save the metadata sets: {e}");
+        }
+    }
+
+    fn all_meta_keys() -> Vec<String> {
+        meta::Metadata::panel_fields().iter().map(|f| f.to_string()).collect()
+    }
+
+    /// `METASET save|load|delete <name>`, `METASET fields <key,key|all>`, `METASET list` (f98).
+    fn metaset_command(&mut self, rest: &str) -> String {
+        let (verb, name) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+        let r = match verb {
+            "save" => self.meta_sets.save(name, &Self::all_meta_keys()),
+            "load" => self.meta_sets.load(name),
+            "delete" => self.meta_sets.delete(name),
+            "fields" => {
+                let valid = Self::all_meta_keys();
+                let keys: Vec<String> = name.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect();
+                match keys.iter().find(|k| name.trim() != "all" && !valid.contains(k)) {
+                    Some(bad) => Err(format!("no panel field {bad:?}")),
+                    None => {
+                        self.meta_sets.show_only(if name.trim() == "all" { None } else { Some(keys) });
+                        Ok(())
+                    }
+                }
+            }
+            "list" => {
+                let names: Vec<_> = self.meta_sets.sets.keys().map(|n| n.replace(' ', "_")).collect();
+                let shown = self.meta_sets.shown.as_ref().map_or_else(|| "all".to_string(), |s| s.join(","));
+                return format!(
+                    "OK sets={} active={} shown={shown}",
+                    names.join(","),
+                    self.meta_sets.active.clone().unwrap_or_default().replace(' ', "_")
+                );
+            }
+            _ => Err("METASET save|load|delete <name> | fields <key,key|all> | list".to_string()),
+        };
+        match r {
+            Ok(()) => {
+                self.save_meta_sets();
+                "OK".to_string()
+            }
+            Err(e) => format!("ERR {e}"),
+        }
+    }
+
+    fn metadata_panel_body(&mut self, ui: &mut egui::Ui) {
         ui.heading("Metadata");
         let Some(editor) = self.editor.as_ref() else {
             ui.label("No file open.");
             return;
         };
         let src = editor.history.current().source().clone();
-        let keys = src.meta.keys();
+        // The file fields, the XMP fields (f62), then the channel names.
+        let mut keys = src.meta.keys();
+        let at = keys.iter().position(|k| k.starts_with("chname.")).unwrap_or(keys.len());
+        keys.splice(at..at, wavcraft_core::xmp::FIELDS.iter().map(|f| f.name.to_string()));
         if self.meta_for.as_ref().is_none_or(|a| !Arc::ptr_eq(a, &src)) || self.meta_draft.len() != keys.len() {
             self.meta_draft = keys.iter().map(|f| src.meta.get(f).unwrap_or_default()).collect();
             self.meta_for = Some(src.clone());
         }
         let mut apply = false;
+        // f98: a filter, and display sets (which fields the panel shows).
+        let mut sets_changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Filter");
+            ui.add(egui::TextEdit::singleline(&mut self.meta_filter).hint_text("name or value").desired_width(f32::INFINITY));
+        });
+        let all_keys = Self::all_meta_keys();
+        ui.horizontal(|ui| {
+            let shown = self.meta_sets.active.clone().unwrap_or_else(|| "All fields".to_string());
+            egui::ComboBox::from_id_salt("metaset").selected_text(shown).show_ui(ui, |ui| {
+                if ui.selectable_label(false, "All fields").clicked() {
+                    self.meta_sets.show_only(None);
+                    sets_changed = true;
+                }
+                for name in self.meta_sets.sets.keys().cloned().collect::<Vec<_>>() {
+                    if ui.selectable_label(false, &name).clicked() {
+                        let _ = self.meta_sets.load(&name);
+                        sets_changed = true;
+                    }
+                }
+            });
+            ui.add(egui::TextEdit::singleline(&mut self.meta_set_name).hint_text("set name").desired_width(80.0));
+            if ui.button("Save").clicked() && self.meta_sets.save(&self.meta_set_name, &all_keys).is_ok() {
+                sets_changed = true;
+            }
+            if ui.button("Delete").clicked() && self.meta_sets.delete(&self.meta_set_name).is_ok() {
+                sets_changed = true;
+            }
+        });
+        ui.collapsing("Fields shown", |ui| {
+            for key in &all_keys {
+                let mut on = self.meta_sets.is_shown(key);
+                if ui.checkbox(&mut on, key.replace('_', " ")).changed() {
+                    let mut now: Vec<String> = all_keys.iter().filter(|k| self.meta_sets.is_shown(k)).cloned().collect();
+                    now.retain(|k| k != key);
+                    if on {
+                        now.push(key.clone());
+                    }
+                    self.meta_sets.show_only(Some(now));
+                    sets_changed = true;
+                }
+            }
+        });
+        if sets_changed {
+            self.save_meta_sets();
+        }
+        let needle = self.meta_filter.trim().to_lowercase();
+        let visible: Vec<bool> = {
+            let rows = wavcraft_core::meta_view::rows(&src.meta);
+            keys.iter()
+                .zip(self.meta_draft.iter())
+                .map(|(f, draft)| {
+                    let label = rows.iter().find(|r| r.key == *f).map(|r| r.label.to_lowercase()).unwrap_or_default();
+                    // Channel names are not in the display sets: they always show.
+                    (f.starts_with("chname.") || self.meta_sets.is_shown(f))
+                        && (needle.is_empty() || f.to_lowercase().contains(&needle) || label.contains(&needle) || draft.to_lowercase().contains(&needle))
+                })
+                .collect()
+        };
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (field, text) in keys.iter().zip(self.meta_draft.iter_mut()) {
-                match field.strip_prefix("chname.") {
-                    Some(n) => ui.label(format!("channel {n} name")),
-                    None => ui.label(field.replace('_', " ")),
+            for ((field, text), show) in keys.iter().zip(self.meta_draft.iter_mut()).zip(visible.iter()) {
+                if !*show {
+                    continue;
+                }
+                match (field.strip_prefix("chname."), wavcraft_core::xmp::FIELDS.iter().find(|f| f.name == field.as_str())) {
+                    (Some(n), _) => ui.label(format!("channel {n} name")),
+                    (None, Some(x)) => ui.label(x.label),
+                    (None, None) => ui.label(field.replace('_', " ")),
                 };
                 if *field == "coding_history" {
                     ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY));
                 } else {
                     ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                }
+            }
+            if let Some(why) = &src.meta.xmp_problem {
+                ui.add_space(4.0);
+                ui.colored_label(
+                    Color32::LIGHT_RED,
+                    format!("The XMP packet could not be read ({why}). It is kept as it is and cannot be edited here."),
+                );
+            } else if let Some(x) = &src.meta.xmp {
+                let unknown = x.properties().iter().filter(|p| !p.known).count();
+                if unknown > 0 {
+                    ui.add_space(4.0);
+                    ui.label(format!("{unknown} other XMP properties are kept as they are."));
+                }
+            }
+            if !needle.is_empty() {
+                let others: Vec<_> = wavcraft_core::meta_view::filter_rows(wavcraft_core::meta_view::rows(&src.meta), &needle)
+                    .into_iter()
+                    .filter(|r| r.key.starts_with("xmp:"))
+                    .collect();
+                for r in others {
+                    ui.label(format!("{} = {}", r.label, r.value));
                 }
             }
             ui.add_space(6.0);
@@ -5649,6 +6566,7 @@ impl WaveApp {
     /// Show the current step: build its peaks (reading the store a chunk at a time) on a worker
     /// thread. No samples are copied; the views and the player read the step from the store.
     fn rebuild(&mut self, ctx: &egui::Context) {
+        self.matcher.audio_changed();
         let Some(editor) = &self.editor else { return };
         let (tx, rx) = channel();
         let (state, path, ctx) = (editor.history.current().as_ref().clone(), self.doc_path.clone(), ctx.clone());
@@ -5691,6 +6609,118 @@ impl WaveApp {
         Ok(())
     }
 
+    /// Convert Sample Type (A161) as a background job (see `start_job`): the result becomes one
+    /// History step when it finishes, and `finish_job` keeps the selection's place in time.
+    fn start_convert(&mut self, settings: &ConvertSettings, ctx: &egui::Context) -> Result<(), String> {
+        if self.running.is_some() {
+            return Err("a background job is already running".to_string());
+        }
+        if self.saving.is_some() || self.rebuilding.is_some() || self.opening.is_some() {
+            return Err("wait for the current job to finish".to_string());
+        }
+        if let Some(why) = self.edit_lock() {
+            return Err(why.to_string());
+        }
+        let Some(editor) = &self.editor else { return Err("no file is open".to_string()) };
+        let base = editor.history.current().clone();
+        editor.history.can_afford(convert::estimate_bytes(&base, settings)).map_err(|e| format!("Convert Sample Type: {e}"))?;
+        let wake = {
+            let ctx = ctx.clone();
+            let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || ctx.request_repaint());
+            wake
+        };
+        log::info!(target: "wavcraft", "convert sample type: {}", settings.to_text());
+        let settings = settings.clone();
+        let job = jobs::Job::spawn_with(base, "Convert Sample Type", Some(wake), move |doc, cancel, progress| convert::convert(doc, &settings, cancel, progress));
+        self.running = Some(Running { job });
+        self.halt_play();
+        self.error = None;
+        self.notice = None;
+        Ok(())
+    }
+
+    /// Interpret Sample Rate (A162): relabel the rate, one History step, no sample touched (the
+    /// selection keeps its frames).
+    fn run_interpret(&mut self, rate: u32, ctx: &egui::Context) -> Result<(), String> {
+        if self.running.is_some() || self.saving.is_some() {
+            return Err("wait for the current job to finish".to_string());
+        }
+        if let Some(why) = self.edit_lock() {
+            return Err(why.to_string());
+        }
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        let edit = convert::interpret_rate(editor.history.current(), rate).map_err(|e| format!("Interpret Sample Rate: {e}"))?;
+        if edit.is_noop() {
+            return Ok(());
+        }
+        editor.history.push_edit(edit);
+        self.notice = Some(format!("Interpreting the file as {rate} Hz"));
+        self.error = None;
+        self.fit_on_next_frame = true;
+        self.rebuild(ctx);
+        Ok(())
+    }
+
+    /// The two conversion dialogs (A161, A162), when up.
+    fn convert_dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(d) = self.convert_dialog.as_mut() {
+            match d.show(ctx, &mut self.convert_presets) {
+                convert_ui::Outcome::Open => {}
+                convert_ui::Outcome::Cancel => self.convert_dialog = None,
+                convert_ui::Outcome::Apply(s) => {
+                    self.convert_dialog = None;
+                    if let Err(e) = self.start_convert(&s, ctx) {
+                        self.error = Some(e);
+                    }
+                }
+            }
+        }
+        if let Some(text) = self.interpret.as_mut() {
+            let current = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
+            if let Some(answer) = convert_ui::interpret_dialog(ctx, text, current) {
+                self.interpret = None;
+                if let Some(text) = answer {
+                    match text.trim().parse::<u32>() {
+                        Ok(rate) => {
+                            if let Err(e) = self.run_interpret(rate, ctx) {
+                                self.error = Some(e);
+                            }
+                        }
+                        Err(_) => self.error = Some("Interpret Sample Rate: type a whole number of Hz".to_string()),
+                    }
+                }
+            }
+        }
+    }
+
+    /// A Match Loudness run from the panel finished (f33): one step on the history, unless the
+    /// audio changed while it ran.
+    fn finish_match(&mut self, ctx: &egui::Context) {
+        self.matcher.tick();
+        let Some(done) = self.matcher.take_finished() else { return };
+        let Some(editor) = self.editor.as_mut() else { return };
+        if !Arc::ptr_eq(&done.base, editor.history.current()) {
+            self.matcher.say(false, "The audio changed while matching; nothing was applied. Run it again.".to_string());
+            return;
+        }
+        let changed = !done.result.edit.is_noop();
+        editor.history.push_edit(done.result.edit);
+        self.matcher.say(true, done.result.message.clone());
+        self.notice = Some(done.result.message);
+        if changed {
+            self.rebuild(ctx);
+        }
+    }
+
+    /// The Match Loudness panel's body (f33).
+    fn match_panel(&mut self, ui: &mut egui::Ui) {
+        let file = self.editor.as_ref().map(|e| {
+            let name = self.doc_path.file_name().map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned());
+            (name, e.history.current().clone())
+        });
+        self.matcher.panel(ui, file);
+    }
+
     fn start_test_job(&mut self, ms: u64, ctx: &egui::Context) -> Result<(), String> {
         let len = self.editor.as_ref().map_or(0, |e| e.history.current().len_frames());
         let range = if self.selection.is_empty() { 0..len } else { self.selection_range() };
@@ -5721,8 +6751,15 @@ impl WaveApp {
                 }
                 let label = edit.label.clone();
                 let changed = !edit.is_noop();
+                // A conversion (A161) changes the rate: the selection keeps its place in time.
+                let (old_rate, new_rate, new_len) = (job.base().sample_rate(), edit.state.sample_rate(), edit.state.len_frames() as usize);
                 editor.history.push_edit(edit);
                 self.notice = Some(label);
+                if changed && old_rate != new_rate {
+                    let scale = |f: usize| (wavcraft_core::doc::rescale_frame(f as u64, old_rate, new_rate) as usize).min(new_len);
+                    self.selection = Selection { anchor: scale(self.selection.anchor), head: scale(self.selection.head) };
+                    self.fit_on_next_frame = true;
+                }
                 if changed {
                     self.rebuild(ctx);
                 }
@@ -6551,7 +7588,8 @@ impl WaveApp {
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
             "STATE" => {
-                let busy = self.opening.is_some()
+                let busy = self.op_running()
+                    || self.opening.is_some()
                     || !self.open_queue.is_empty()
                     || self.appending.is_some()
                     || self.inserting.is_some()
@@ -6604,7 +7642,7 @@ impl WaveApp {
                     Some(e) => {
                         let doc = e.history.current();
                         format!(
-                            "OK frames={} channels={} rate={} selection={} selch={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
+                            "OK frames={} channels={} rate={} selection={} selch={} steps={} cursor={} busy={} meta={} progress={progress} unsaved={unsaved}{rec_state} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text={} metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} snapmarkers={} enabled={} custom_fps={} cursor_frame={} cursor_text={} clipboard={} clip_frames={} msel={} labels={} active={} undo={} redo={} band={} path={}",
                             doc.len_frames(),
                             doc.channel_count(),
                             doc.sample_rate(),
@@ -6630,6 +7668,7 @@ impl WaveApp {
                             u8::from(e.snap.ruler_coarse),
                             u8::from(e.snap.ruler_fine),
                             u8::from(e.snap.edges),
+                            u8::from(e.snap.markers),
                             e.enabled_flags(),
                             self.settings.custom_fps,
                             self.selection.start(),
@@ -6649,7 +7688,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} snapmarkers={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         u8::from(self.player.is_playing()),
@@ -6667,6 +7706,7 @@ impl WaveApp {
                         u8::from(self.settings.snap.ruler_coarse),
                         u8::from(self.settings.snap.ruler_fine),
                         u8::from(self.settings.snap.edges),
+                        u8::from(self.settings.snap.markers),
                         "",
                         self.settings.custom_fps,
                         self.band_text()
@@ -6769,6 +7809,14 @@ impl WaveApp {
                     _ => "ERR HOVER <x_px> <y_px>, from the editor's top-left corner".to_string(),
                 }
             }
+            // Test hook: count as busy (open or save running) for <ms>. Fake input only.
+            "HOLD_BUSY" if std::env::var_os("WAVCRAFT_FAKE_INPUT").is_some() => match rest.trim().parse::<u64>() {
+                Ok(ms) => {
+                    self.test_busy_until = Some(Instant::now() + std::time::Duration::from_millis(ms));
+                    "OK".to_string()
+                }
+                Err(_) => "ERR HOLD_BUSY <ms>".to_string(),
+            },
             "OPEN" if !rest.is_empty() => {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
@@ -7037,6 +8085,18 @@ impl WaveApp {
                 Some(e) => freq_panel::control(e.history.current(), e.channels, self.selection_range(), rest),
                 None => "ERR no file open".to_string(),
             },
+            // `DIVIDER drag <zone> <dx> <dy>`, `DIVIDER corner <dx> <dy> [left|right]`,
+            // `DIVIDER reset <zone>` (f89): what dragging and double-clicking the dividers do.
+            "DIVIDER" => {
+                let win = self.window_size(ctx);
+                match self.layout.divider_command(&self.panels, win, rest) {
+                    Ok(()) => {
+                        self.save_panels();
+                        self.panels_report()
+                    }
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
             "ACTION" => match actions::id_by_name(rest) {
                 Some(id) => match if matches!(id, ActionId::CopyToNew | ActionId::PasteToNew | ActionId::CloseAll | ActionId::SaveAll) {
                     self.run_doc_action(id, ctx, false)
@@ -7090,6 +8150,8 @@ impl WaveApp {
             "CONTEXTMENU" => self.control_contextmenu(rest, ctx),
             "TOOLBAR" => self.control_toolbar(rest, ctx),
             // Minimise or restore the window (scripted checks of hidden-window behaviour).
+            "SHORTCUTS" | "SHORTCUT" => self.shortcut_request(cmd, rest),
+            "SHORTCUTSETS" | "SHORTCUTSET" | "KEYBOARD" => self.shortcut_set_request(cmd, rest),
             "WINDOW" => match rest {
                 "minimize" => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -7280,7 +8342,49 @@ impl WaveApp {
             // VST3 hosting (f128): `VST3 scan` (background), `VST3 list`.
             "VST3" => self.rack.vst3_command(rest),
             // `PRESET save|load|delete|list <effect|rack> [name]`.
+            // PRESET list|save|delete: the conversion presets (A161); any other PRESET line is the
+            // Effects Rack's (f31).
+            "PRESET" if matches!(rest.split_whitespace().next(), Some("list" | "save" | "delete")) => {
+                let (verb, arg) = rest.split_once(' ').unwrap_or((rest, ""));
+                match verb {
+                    "list" => format!(
+                        "OK {}",
+                        self.convert_presets.all().iter().map(|p| format!("{} | {}", p.name, p.settings.to_text())).collect::<Vec<_>>().join(" ; ")
+                    ),
+                    "save" => match arg.split_once('|') {
+                        Some((name, settings)) => match ConvertSettings::parse(settings).and_then(|s| self.convert_presets.save(name, s)) {
+                            Ok(()) => "OK".to_string(),
+                            Err(e) => format!("ERR {e}"),
+                        },
+                        None => "ERR PRESET save <name> | <settings>".to_string(),
+                    },
+                    _ => match self.convert_presets.delete(arg) {
+                        Ok(()) => "OK".to_string(),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                }
+            }
             "PRESET" => self.rack.preset(rest, &mut self.effect_dialog),
+            // Convert Sample Type with `key=value` settings (`rate=44100 channels=1 bits=16`), or
+            // `preset=<name>`; it runs as a background job: poll STATE until busy=0.
+            "CONVERT" => {
+                let parsed = match rest.strip_prefix("preset=") {
+                    Some(name) => self.convert_presets.find(name).map(|p| p.settings).ok_or_else(|| format!("no preset named {:?}", name.trim())),
+                    None => ConvertSettings::parse(rest),
+                };
+                match parsed.and_then(|s| self.start_convert(&s, ctx)) {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+            // Interpret Sample Rate: relabel the rate, no resampling.
+            "INTERPRET" => match rest.trim().parse::<u32>() {
+                Ok(rate) => match self.run_interpret(rate, ctx) {
+                    Ok(()) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                },
+                Err(_) => "ERR INTERPRET <hz>".to_string(),
+            },
             // A number the effects use: `PARAM amplify.db 6`, `PARAM normalize.db -1`.
             "PARAM" => {
                 let mut it = rest.split_whitespace();
@@ -7448,12 +8552,21 @@ impl WaveApp {
             "AUTOSAVE" => {
                 let (offered, written, failed, pending) = self.recovery.stats();
                 format!(
-                    "OK offered={offered} written={written} failed={failed} pending={} scanned={} recoverable={}",
+                    "OK offered={offered} written={written} failed={failed} pending={} scanned={} recoverable={} takes={}",
                     u8::from(pending),
                     u8::from(self.recovery.scanned),
-                    self.recovery.offers.len()
+                    self.recovery.offers.len(),
+                    self.recovery.takes.len()
                 )
             }
+            // C032 (f55): unfinished takes. RECOVERTAKE [index] repairs and opens; DISCARDTAKE deletes.
+            "RECOVERTAKE" | "DISCARDTAKE" => match rest.trim().parse::<usize>().or_else(|_| if rest.trim().is_empty() { Ok(0) } else { Err(()) }) {
+                Ok(i) => {
+                    let r = if cmd == "RECOVERTAKE" { self.recover_take(i, ctx) } else { self.discard_take(i) };
+                    r.map_or_else(|e| format!("ERR {e}"), |()| "OK".to_string())
+                }
+                Err(()) => format!("ERR {cmd} [index]"),
+            },
             "RECOVER" | "DISCARD_RECOVERY" => match rest.trim().parse::<usize>().or_else(|_| if rest.trim().is_empty() { Ok(0) } else { Err(()) }) {
                 Ok(i) => {
                     let r = if cmd == "RECOVER" { self.recover_session(i, ctx) } else { self.discard_recovery(i) };
@@ -7543,6 +8656,44 @@ impl WaveApp {
                 _ => "ERR HISTORY_KEY up|down".to_string(),
             },
             // META get [field] | META set <field> <value>: the metadata of the current step.
+            // XMP get [<ns>:<prop>] | XMP set <ns>:<prop> <value>: the XMP packet of the current step (f62).
+            "XMP" => {
+                let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
+                let meta = &editor.history.current().source().meta;
+                match (verb, rest.trim()) {
+                    ("get", "") => {
+                        let props = meta.xmp.as_ref().map(|x| x.properties()).unwrap_or_default();
+                        let status = match (&meta.xmp_problem, &meta.xmp) {
+                            (Some(_), _) => "malformed",
+                            (None, Some(_)) => "ok",
+                            _ => "none",
+                        };
+                        let list: Vec<String> = props
+                            .iter()
+                            .map(|p| {
+                                format!("{}:{}{}={}", p.ns, p.name, if p.known { "" } else { "?" }, meta::escape_lines(&p.value).replace(' ', "_"))
+                            })
+                            .collect();
+                        format!("OK status={status} props={} {}", props.len(), list.join(" ")).trim_end().to_string()
+                    }
+                    ("get", key) => match meta.get(&format!("xmp:{key}")) {
+                        Some(v) if meta.xmp.as_ref().and_then(|x| x.split_key(key).ok().and_then(|(n, p)| x.get(&n, &p))).is_some() => {
+                            format!("OK {}", meta::escape_lines(&v))
+                        }
+                        Some(_) => "ERR no such XMP property".to_string(),
+                        None => format!("ERR {key:?} is not <namespace>:<property>"),
+                    },
+                    ("set", args) => {
+                        let (key, value) = args.split_once(' ').unwrap_or((args, ""));
+                        match self.apply_metadata(&[(format!("xmp:{key}"), meta::unescape_lines(value))]) {
+                            Ok(changed) => format!("OK changed={}", u8::from(changed)),
+                            Err(e) => format!("ERR {e}"),
+                        }
+                    }
+                    _ => "ERR XMP get [<ns>:<prop>] | XMP set <ns>:<prop> <value>".to_string(),
+                }
+            }
             "META" => {
                 let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
                 let Some(editor) = self.editor.as_ref() else { return "ERR no file is open".to_string() };
@@ -7560,9 +8711,17 @@ impl WaveApp {
                             Err(e) => format!("ERR {e}"),
                         }
                     }
-                    _ => "ERR META get [field] | META set <field> <value>".to_string(),
+                    // META filter <text>: the rows whose name, label or value contains the text; also sets the panel's filter (f98).
+                    ("filter", text) => {
+                        let hits = wavcraft_core::meta_view::filter_rows(wavcraft_core::meta_view::rows(meta), text);
+                        let names: Vec<String> = hits.iter().map(|r| r.key.replace(' ', "_")).collect();
+                        self.meta_filter = text.to_string();
+                        format!("OK {} {}", names.len(), names.join(" "))
+                    }
+                    _ => "ERR META get [field] | META set <field> <value> | META filter <text>".to_string(),
                 }
             }
+            "METASET" => self.metaset_command(rest),
             // CHNAME get | CHNAME set <ch> <name>: channel names (<ch> counts from 1); one undo step.
             "CHNAME" => {
                 let (verb, rest) = rest.split_once(' ').unwrap_or((rest, ""));
@@ -7854,6 +9013,13 @@ impl WaveApp {
                     },
                 }
             }
+            "FILES" => self.files_request(rest),
+            "RECENT" => self.recent_request(rest),
+            // Add a file to the Files panel without opening it (f63).
+            "IMPORT" if !rest.is_empty() => match self.import_file(PathBuf::from(rest)) {
+                Ok(()) => format!("OK listed={} open={}", self.imports.len(), self.docs.len(self.editor.is_some())),
+                Err(e) => format!("ERR {e}"),
+            },
             "SWITCH" => match rest.trim().parse::<usize>().map_err(|_| "SWITCH <index>, from DOCS".to_string()).and_then(|i| self.switch_doc(i)) {
                 Ok(()) => format!("OK current={}", self.docs.current()),
                 Err(e) => format!("ERR {e}"),
@@ -7876,6 +9042,58 @@ impl WaveApp {
                         format!("OK view={:.3}+{:.6}", self.view.start, self.view.frames_per_px)
                     }
                     _ => "ERR VIEWPORT <start frame> <frames per pixel>, with a file open".to_string(),
+                }
+            }
+            // f33: `MATCH [target=<LUFS>] [tp=<dBTP>] [limit=on|off] [tol=<LU>] [lookahead=<ms>]
+            // [release=<ms>] [preset=podcast|broadcast]`: Match Loudness on the whole file, one step.
+            "MATCH" => {
+                if let Some(why) = self.edit_lock() {
+                    return format!("ERR {why}");
+                }
+                if self.running.is_some() || self.saving.is_some() {
+                    return "ERR wait for the current job to finish".to_string();
+                }
+                let Some(e) = &mut self.editor else { return "ERR MATCH needs a file".to_string() };
+                let mut t = Target::PODCAST;
+                for word in rest.split_whitespace() {
+                    let (k, v) = word.split_once('=').unwrap_or((word, ""));
+                    let num = v.parse::<f64>();
+                    match (k, num) {
+                        ("preset", _) => match v {
+                            "podcast" => t = Target::PODCAST,
+                            "broadcast" => t = Target::BROADCAST,
+                            _ => return "ERR MATCH preset=podcast|broadcast".to_string(),
+                        },
+                        ("target", Ok(n)) => t.lufs = n,
+                        ("tp", Ok(n)) => t.max_true_peak_dbtp = n,
+                        ("tol", Ok(n)) => t.tolerance_lu = n,
+                        ("lookahead", Ok(n)) => t.look_ahead_ms = n,
+                        ("release", Ok(n)) => t.release_ms = n,
+                        ("limit", _) if v == "on" || v == "off" => t.limit = v == "on",
+                        _ => return format!("ERR MATCH: cannot read {word:?}; keys target tp tol limit lookahead release preset"),
+                    }
+                }
+                let state = e.history.current().clone();
+                match wavcraft_core::match_loudness::run(&state, &t, None, &AtomicBool::new(false), &mut |_| {}) {
+                    Ok(r) => {
+                        let line = format!(
+                            "OK gain={:.2} limited={} on_target={} before={:.2} after={:.2} true_peak={:.2} changed={}",
+                            r.gain_db,
+                            u8::from(r.limited),
+                            u8::from(r.on_target),
+                            r.before.integrated_lufs,
+                            r.after.integrated_lufs,
+                            r.after.true_peak_dbtp,
+                            u8::from(!r.edit.is_noop())
+                        );
+                        if !r.edit.is_noop() {
+                            e.history.push_edit(r.edit);
+                            self.notice = Some(r.message);
+                            self.rebuild(ctx);
+                        }
+                        line
+                    }
+                    Err(err) => format!("ERR {err}"),
                 }
             }
             "SAVE" => {
@@ -7918,7 +9136,7 @@ impl WaveApp {
             "SAVEOPTS" => self.control_saveopts(ctx, rest),
             "EXPORTPRESET" => self.control_export_preset(rest),
             // A plain QUIT refuses with unsaved changes; `QUIT discard` closes anyway.
-            // RECORD start [rate=48000 ch=1 bits=24] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop
+            // RECORD start [rate=48000 ch=1 bits=24] [inputs=1,2,3,4] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop
             "RECORD" => {
                 let (verb, args) = rest.split_once(' ').unwrap_or((rest, ""));
                 match verb {
@@ -7967,7 +9185,7 @@ impl WaveApp {
                         Some(t) => format!("ERR the take stopped early: {} (kept at {})", t.error.unwrap_or_default(), t.path.display()),
                         None => "ERR not recording".to_string(),
                     },
-                    _ => "ERR RECORD start [rate=48000 ch=1 bits=24] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop"
+                    _ => "ERR RECORD start [rate=48000 ch=1 bits=24] [inputs=1,2,3,4] [max=<s>] [in=<s>|at=<unix s>] | quick | pause | resume | cancel | stop"
                         .to_string(),
                 }
             }
@@ -8009,9 +9227,20 @@ impl WaveApp {
 
     /// The `MARKER` control verb (see `control_request`).
     fn control_marker(&mut self, rest: &str) -> String {
-        const USAGE: &str = "ERR MARKER rename <i> <name> | move <i> <frame> | select <i> [add]";
+        const USAGE: &str =
+            "ERR MARKER rename <i> <name> | move <i> <frame> | select <i> [add] | merge <i> <j> ... | color <i> <n> | desc <i> <text> | info <i>";
         if self.saving.is_some() {
             return "ERR wait for the save to finish".to_string();
+        }
+        if let Some(list) = rest.strip_prefix("merge ") {
+            let Some(editor) = self.editor.as_mut() else { return "ERR no file is open".to_string() };
+            let markers = editor.history.current().markers().clone();
+            let ids: Option<Vec<u64>> = list.split_whitespace().map(|i| i.parse::<usize>().ok().and_then(|i| markers.id_at(i))).collect();
+            return match ids {
+                Some(ids) if editor.merge_markers(&ids) => "OK".to_string(),
+                Some(_) => "ERR need two or more different markers, and no other marker may already have the merged extent".to_string(),
+                None => USAGE.to_string(),
+            };
         }
         let mut it = rest.splitn(3, ' ');
         let (verb, index, arg) = (it.next().unwrap_or(""), it.next().and_then(|i| i.parse::<usize>().ok()), it.next().unwrap_or("").trim());
@@ -8032,6 +9261,21 @@ impl WaveApp {
                 Ok(_) => "ERR the marker would not move (same place, or another marker is there)".to_string(),
                 Err(_) => USAGE.to_string(),
             },
+            "color" => match arg.parse::<u8>() {
+                Ok(n) if editor.set_marker_color(id, n) => "OK".to_string(),
+                Ok(_) => format!("ERR colour is 0 (none) to {}, and must differ from the current one", wavcraft_core::PALETTE.len()),
+                Err(_) => USAGE.to_string(),
+            },
+            "desc" => {
+                if editor.set_marker_description(id, arg) {
+                    "OK".to_string()
+                } else {
+                    "ERR the description is unchanged".to_string()
+                }
+            }
+            "info" => {
+                markers.iter().nth(index).map_or_else(String::new, |m| format!("OK color={} desc={}", m.color, m.description.replace('\n', " ")))
+            }
             "select" if arg.is_empty() || arg == "add" => {
                 if let Some(span) = self.markers_ui.click(&markers, index, false, arg == "add") {
                     self.selection = Selection { anchor: span.start as usize, head: span.end as usize };
@@ -8140,8 +9384,162 @@ impl WaveApp {
             let _ = self.run_action(id, ui.ctx());
         }
         ui.separator();
+        if ui.button("Keyboard Shortcuts…").clicked() {
+            self.shortcut_dialog = Some(ShortcutDialog::default());
+        }
         if ui.add(egui::Button::new("Preferences…").shortcut_text(if mac { "⌘," } else { "Ctrl+," })).clicked() {
             self.open_preferences();
+        }
+    }
+
+    /// Apply a shortcut change and save the key file (f46, f60). `Err` says what went wrong (a
+    /// conflict, or the file not saved: the change still holds until the app closes).
+    fn change_shortcuts(&mut self, change: Change) -> Result<String, String> {
+        let edits_keys = matches!(change, Change::Assign { .. } | Change::Clear(_));
+        let outcome = match change {
+            Change::Assign { command, chord, reassign: false } => self
+                .keymap
+                .assign(command, chord)
+                .map(|()| format!("{} is {}", command.name(), chord.to_ascii()))
+                .map_err(|c| format!("conflict: {} is already {}", c.chord.to_ascii(), c.holder.name()))?,
+            Change::Assign { command, chord, reassign: true } => match self.keymap.assign_reassign(command, chord) {
+                Some(old) => format!("{} is {} (taken from {})", command.name(), chord.to_ascii(), old.name()),
+                None => format!("{} is {}", command.name(), chord.to_ascii()),
+            },
+            Change::Clear(command) => {
+                self.keymap.clear(command);
+                format!("{} has no chord", command.name())
+            }
+            Change::Reset => {
+                self.keymap.reset();
+                self.set_active_set(None);
+                "default shortcuts restored".to_string()
+            }
+            Change::SaveSet(name) => {
+                let store = self.shortcut_sets.as_ref().ok_or("no config folder to keep sets in")?;
+                let name = store.save(&name, &self.keymap)?;
+                self.set_active_set(Some(&name));
+                format!("saved the shortcut set {name}")
+            }
+            Change::SwitchSet(name) => {
+                let store = self.shortcut_sets.as_ref().ok_or("no config folder to keep sets in")?;
+                let map = store.load(&name)?;
+                self.keymap = map;
+                let active = (!name.eq_ignore_ascii_case(DEFAULT_SET)).then_some(name.as_str());
+                self.set_active_set(active);
+                format!("switched to the shortcut set {}", if active.is_some() { name.as_str() } else { DEFAULT_SET })
+            }
+            Change::DeleteSet(name) => {
+                let store = self.shortcut_sets.as_ref().ok_or("no config folder to keep sets in")?;
+                let was_active = store.active().as_deref() == Some(name.as_str());
+                store.delete(&name)?;
+                if was_active {
+                    // The set in use is gone: back to the shipped table.
+                    self.keymap.reset();
+                    self.set_active_set(None);
+                }
+                format!("deleted the shortcut set {name}")
+            }
+        };
+        // Edits to the set in use are kept in it.
+        if edits_keys
+            && let (Some(store), Some(active)) = (&self.shortcut_sets, self.shortcut_sets.as_ref().and_then(SetStore::active))
+            && let Err(e) = store.save(&active, &self.keymap)
+        {
+            log::warn!(target: "wavcraft", "{e}");
+        }
+        if let Err(e) = self.keymap.check() {
+            log::error!(target: "wavcraft", "keyboard shortcuts conflict: {e}");
+        }
+        if let Some(path) = &self.shortcuts_path
+            && let Err(e) = wavcraft_core::shortcuts::save(path, &self.keymap)
+        {
+            return Err(format!("changed, but the key file {} could not be saved: {e}", path.display()));
+        }
+        Ok(outcome)
+    }
+
+    /// Remember which set is in use (`None`: the default). A failure is logged, not fatal.
+    fn set_active_set(&self, name: Option<&str>) {
+        if let Some(store) = &self.shortcut_sets
+            && let Err(e) = store.set_active(name)
+        {
+            log::warn!(target: "wavcraft", "could not remember the active shortcut set: {e}");
+        }
+    }
+
+    /// `SHORTCUTSETS`, `SHORTCUTSET save|switch|delete <name>` and `KEYBOARD <mods>` on the
+    /// control channel (see `control.rs`).
+    fn shortcut_set_request(&mut self, verb: &str, rest: &str) -> String {
+        match verb {
+            "SHORTCUTSETS" => {
+                let Some(store) = &self.shortcut_sets else { return "ERR no config folder to keep sets in".to_string() };
+                let active = store.active().unwrap_or_else(|| DEFAULT_SET.to_string());
+                format!("OK active={active} sets={}", store.list().join("|"))
+            }
+            "KEYBOARD" => match Mods::parse(rest) {
+                Ok(mods) => {
+                    let keys: Vec<String> = self.keymap.keys_with(mods).iter().map(|(k, c)| format!("{k}={}", c.name())).collect();
+                    format!("OK mods={} keys={}", mods.text(), keys.join(" "))
+                }
+                Err(e) => format!("ERR {e}"),
+            },
+            _ => {
+                let (action, name) = rest.split_once(char::is_whitespace).map(|(a, n)| (a, n.trim())).unwrap_or((rest.trim(), ""));
+                let change = match action {
+                    "save" => Ok(Change::SaveSet(name.to_string())),
+                    "switch" => Ok(Change::SwitchSet(name.to_string())),
+                    "delete" => Ok(Change::DeleteSet(name.to_string())),
+                    _ => Err("SHORTCUTSET save|switch|delete <name>".to_string()),
+                };
+                match change.and_then(|c| self.change_shortcuts(c)) {
+                    Ok(m) => format!("OK {m}"),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
+        }
+    }
+
+    /// `SHORTCUTS` and `SHORTCUT set|clear|reset` on the control channel (see `control.rs`).
+    fn shortcut_request(&mut self, verb: &str, rest: &str) -> String {
+        if verb == "SHORTCUTS" {
+            let mut out = String::from("OK");
+            for command in Command::all() {
+                let chords: Vec<String> = self.keymap.chords(command).map(|c| c.to_ascii()).collect();
+                out.push_str(&format!(" {}={}", command.name(), if chords.is_empty() { "-".to_string() } else { chords.join("|") }));
+            }
+            return out;
+        }
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let find = |name: &str| Command::from_name(name).ok_or_else(|| format!("no command named {name:?}"));
+        let change = match words.as_slice() {
+            ["reset"] => Ok(Change::Reset),
+            ["clear", name] => find(name).map(Change::Clear),
+            ["set", name, chord] | ["set", name, chord, "reassign"] => {
+                find(name).and_then(|command| Shortcut::parse(chord).map(|chord| Change::Assign { command, chord, reassign: words.len() == 4 }))
+            }
+            _ => Err("SHORTCUT set <command> <chord> [reassign] | clear <command> | reset".to_string()),
+        };
+        match change.and_then(|c| self.change_shortcuts(c)) {
+            Ok(m) => format!("OK {m}"),
+            Err(e) => format!("ERR {e}"),
+        }
+    }
+
+    /// Edit › Keyboard Shortcuts… (f46, f60), while it is open.
+    fn shortcut_dialog_ui(&mut self, ctx: &egui::Context) {
+        if let Some(mut dialog) = self.shortcut_dialog.take() {
+            let sets = self.shortcut_sets.as_ref().map(SetStore::list).unwrap_or_default();
+            let active = self.shortcut_sets.as_ref().and_then(SetStore::active);
+            let (open, change) = dialog.show(ctx, &self.keymap, cfg!(target_os = "macos"), &sets, active.as_deref());
+            if let Some(change) = change
+                && let Err(e) = self.change_shortcuts(change)
+            {
+                self.error = Some(e);
+            }
+            if open {
+                self.shortcut_dialog = Some(dialog);
+            }
         }
     }
 
@@ -8198,6 +9596,35 @@ impl WaveApp {
         }
     }
 
+    /// File › Open Recent: the last files opened, a missing one greyed (clicking it takes it
+    /// off the list and says so), and Clear Recent.
+    fn recent_menu(&mut self, ui: &mut egui::Ui) {
+        let mut chosen = None;
+        if self.recent.paths().is_empty() {
+            ui.add_enabled(false, egui::Button::new("(none)"));
+        }
+        for (i, p) in self.recent.paths().iter().enumerate() {
+            let text = egui::RichText::new(path_name(p));
+            let missing = !p.is_file();
+            let hover = if missing { format!("{} (missing)", p.display()) } else { p.display().to_string() };
+            if ui.button(if missing { text.weak() } else { text }).on_hover_text(hover).clicked() {
+                chosen = Some(i);
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.add_enabled(!self.recent.paths().is_empty(), egui::Button::new("Clear Recent")).clicked() {
+            self.recent.clear();
+            self.save_recent();
+            ui.close();
+        }
+        if let Some(i) = chosen
+            && let Err(e) = self.open_recent(i)
+        {
+            self.error = Some(e);
+        }
+    }
+
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -8205,6 +9632,7 @@ impl WaveApp {
                 if ui.button(open).clicked() {
                     self.pick_file(ui.ctx());
                 }
+                ui.menu_button("Open Recent", |ui| self.recent_menu(ui));
                 ui.menu_button("Open Append", |ui| {
                     let free = self.appending.is_none() && self.making.is_none() && self.saving.is_none();
                     if ui.add_enabled(self.editor.is_some() && free, egui::Button::new("To Current…")).clicked() {
@@ -8267,6 +9695,10 @@ impl WaveApp {
                     self.error = Some(e);
                 }
                 ui.menu_button("Import", |ui| {
+                    if ui.button("File…").on_hover_text("Add files to the Files panel without opening them").clicked() {
+                        self.pick_import();
+                        ui.close();
+                    }
                     if ui.button("Raw Data…").on_hover_text("Open a file with no header: say its rate, channels and sample format").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
                             self.raw_import = Some(RawDialog::new(path));
@@ -8362,9 +9794,15 @@ impl WaveApp {
             ui.menu_button("Window", |ui| {
                 for p in panels::REGISTRY {
                     let mut shown = self.panels.is_shown(p.id);
-                    if ui.checkbox(&mut shown, p.title).changed() {
+                    // The Editor is always shown (A029): its entry is a fixed tick, and below it maximises.
+                    if ui.add_enabled(panels::is_closable(p.id), egui::Checkbox::new(&mut shown, p.title)).changed() {
                         self.set_panel(p.id, shown);
                     }
+                }
+                let editor_max = self.layout.maximized(&self.panels) == Some(panels::EDITOR);
+                if ui.button(if editor_max { "Restore Editor" } else { "Maximize Editor" }).clicked() {
+                    self.layout.toggle_maximize(panels::EDITOR);
+                    ui.close();
                 }
                 ui.checkbox(&mut self.show_mixer, "Mixer panel");
                 ui.checkbox(&mut self.meters.show_levels, "Levels");
@@ -8884,7 +10322,7 @@ impl WaveApp {
     /// panel being maximised.
     fn editor_shows(&self, id: &str) -> bool {
         match self.layout.maximized(&self.panels) {
-            Some(m) if !panels::is_movable(m) => m == id,
+            Some(m) if !panels::is_movable(m) => m == id || m == panels::EDITOR,
             Some(_) => false,
             None => self.panels.is_shown(id),
         }
@@ -9435,6 +10873,9 @@ impl WaveApp {
                 self.hover_next = Some("waveform");
             } else if spectrum_area.is_some_and(|a| a.contains(pos)) {
                 self.hover_next = Some("spectral");
+            } else if rect.contains(pos) {
+                // The ruler and the empty parts of the Editor: the Editor itself (maximise, never close).
+                self.hover_next = Some(panels::EDITOR);
             }
         }
 
@@ -9759,8 +11200,7 @@ impl eframe::App for WaveApp {
             self.finish_recording(true, ctx);
         }
         if let Some((fmt, max)) = self.rec.due() {
-            // Errors show in the status bar and the log.
-            let _ = self.start_recording_max(fmt, max);
+            self.start_timed(fmt, max);
         }
         if self.rec.is_active() || self.rec.is_armed() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -9773,8 +11213,9 @@ impl eframe::App for WaveApp {
         self.sync_input();
         let peaks = self.meter_peaks();
         self.meters.update(peaks);
+        self.finish_match(ctx);
         self.poll_mic_check();
-        if self.meters.animating() || self.player.is_playing() {
+        if self.meters.animating() || self.matcher.animating() || self.player.is_playing() {
             ctx.request_repaint();
         }
         if self.input.is_open() || self.mic.is_some() {
@@ -9906,7 +11347,12 @@ impl eframe::App for WaveApp {
                 let _ = self.quick_record();
             }
         }
-        for command in pressed_commands(&ctx, &self.keymap) {
+        // While the shortcuts dialog waits for a chord, or its search box has the keyboard, keys
+        // are not commands (f46).
+        let keys_for_dialog =
+            self.shortcut_dialog.as_ref().is_some_and(|d| d.capturing()) || (self.shortcut_dialog.is_some() && ctx.egui_wants_keyboard_input());
+        let pressed = if keys_for_dialog { Vec::new() } else { pressed_commands(&ctx, &self.keymap) };
+        for command in pressed {
             if let Err(e) = self.run_command(command, &ctx) {
                 // A key that can't act now (no file open, a save running) is not an error to show,
                 // except a failed save, which the old key handler reported.
@@ -10102,10 +11548,15 @@ impl eframe::App for WaveApp {
                     }
                 }
             });
+            if self.layout.maximized(&self.panels).is_none() {
+                self.dividers(ui);
+            }
         }
         self.floating_windows(&ctx);
         self.keep_freq_axis(&ctx);
         self.insert_silence_dialog(&ctx);
+        self.convert_dialogs(&ctx);
+        self.shortcut_dialog_ui(&ctx);
         self.new_audio_dialog(&ctx);
         self.tempo_dialog(&ctx);
         self.effect_dialog_ui(&ctx);
@@ -10119,6 +11570,16 @@ impl eframe::App for WaveApp {
             }
             Some(Choice::Discard(i)) => {
                 if let Err(e) = self.discard_recovery(i) {
+                    self.error = Some(e);
+                }
+            }
+            Some(Choice::RecoverTake(i)) => {
+                if let Err(e) = self.recover_take(i, &ctx) {
+                    self.error = Some(e);
+                }
+            }
+            Some(Choice::DiscardTake(i)) => {
+                if let Err(e) = self.discard_take(i) {
                     self.error = Some(e);
                 }
             }
@@ -10453,7 +11914,12 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, f
 fn draw_markers(painter: &egui::Painter, rect: Rect, view: &Viewport, markers: &wavcraft_core::Markers, picked: &[u64]) {
     let painter = painter.with_clip_rect(rect);
     for m in markers.iter() {
-        let color = if picked.contains(&m.id) { Color32::from_rgb(255, 255, 255) } else { Color32::from_rgb(240, 190, 60) };
+        let own = m
+            .color
+            .checked_sub(1)
+            .and_then(|n| wavcraft_core::PALETTE.get(usize::from(n)))
+            .map_or(Color32::from_rgb(240, 190, 60), |(_, c)| Color32::from_rgb(c[0], c[1], c[2]));
+        let color = if picked.contains(&m.id) { Color32::from_rgb(255, 255, 255) } else { own };
         let x0 = rect.left() + view.x_of(m.start as f64);
         let x1 = rect.left() + view.x_of(m.end.max(m.start) as f64);
         if x1 < rect.left() - 200.0 || x0 > rect.right() {

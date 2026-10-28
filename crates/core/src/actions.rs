@@ -93,6 +93,10 @@ pub enum ActionId {
     ZeroRightToRight,
     RepeatLast,
     RepeatLastDialog,
+    /// Edit › Convert Sample Type… (A161): opens the window's dialog, then `convert::convert`.
+    ConvertSampleType,
+    /// Edit › Interpret Sample Rate… (A162): opens the window's dialog, then `convert::interpret_rate`.
+    InterpretSampleRate,
     /// View › Snapping on or off (Audition's default key S).
     SnapToggle,
     /// Snap to zero crossings on or off (f09).
@@ -103,6 +107,8 @@ pub enum ActionId {
     SnapRulerFineToggle,
     /// Snap to selection edges and the cursor on or off (f49).
     SnapEdgesToggle,
+    /// Snap to markers on or off (f59).
+    SnapMarkersToggle,
     /// Enable or disable channel `n` (0-based): edits and the selection act on enabled ones.
     ToggleChannel(u8),
     /// Window > Meter Input Signal (f56): the Levels panel shows the input device while idle.
@@ -249,6 +255,9 @@ pub const TABLE: &[Action] = &[
     // Diagnostics › DeClicker / Automatic Click Remover: find clicks and pops and redraw them.
     edit(ActionId::DeClick, "diagnostics.declick", "DeClicker"),
     edit(ActionId::AutoClick, "diagnostics.autoClickRemover", "Automatic Click Remover"),
+    // Both open a dialog (the window's), then `convert::convert` / `convert::interpret_rate` (A161).
+    window(ActionId::ConvertSampleType, "edit.convertSampleType", "Convert Sample Type…"),
+    window(ActionId::InterpretSampleRate, "edit.interpretSampleRate", "Interpret Sample Rate…"),
     window(ActionId::SetIn, "edit.setIn", "Set In Point to Playhead"),
     window(ActionId::SetOut, "edit.setOut", "Set Out Point to Playhead"),
     edit(ActionId::LeftChannel, "edit.leftChannel", "Left Channel Only"),
@@ -326,6 +335,7 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::SnapRulerCoarseToggle, "view.snap.ruler_coarse.toggle", "Snap to Ruler (Coarse)"),
     edit(ActionId::SnapRulerFineToggle, "view.snap.ruler_fine.toggle", "Snap to Ruler (Fine)"),
     edit(ActionId::SnapEdgesToggle, "view.snap.edges.toggle", "Snap to Selection Edges and Cursor"),
+    edit(ActionId::SnapMarkersToggle, "view.snap.markers.toggle", "Snap to Markers"),
     // Transport (f23, f36). Space (Play / Stop, and resume after Pause) is handled by the window itself.
     window(ActionId::Play, "transport.play", "Play"),
     window(ActionId::Pause, "transport.pause", "Pause"),
@@ -394,6 +404,7 @@ pub fn snap_flag(snap: &mut SnapSettings, id: ActionId) -> Option<&mut bool> {
         ActionId::SnapRulerCoarseToggle => Some(&mut snap.ruler_coarse),
         ActionId::SnapRulerFineToggle => Some(&mut snap.ruler_fine),
         ActionId::SnapEdgesToggle => Some(&mut snap.edges),
+        ActionId::SnapMarkersToggle => Some(&mut snap.markers),
         _ => None,
     }
 }
@@ -413,6 +424,7 @@ pub fn toggle_snap(snap: &mut SnapSettings, id: ActionId) -> Option<String> {
         ActionId::SnapZeroToggle => "Snap to zero crossings",
         ActionId::SnapRulerCoarseToggle => "Snap to ruler (coarse)",
         ActionId::SnapRulerFineToggle => "Snap to ruler (fine)",
+        ActionId::SnapMarkersToggle => "Snap to markers",
         _ => "Snap to selection edges and cursor",
     };
     Some(format!("{what} {}", if on { "on" } else { "off" }))
@@ -670,7 +682,9 @@ impl Editor {
             | ActionId::SnapZeroToggle
             | ActionId::SnapRulerCoarseToggle
             | ActionId::SnapRulerFineToggle
-            | ActionId::SnapEdgesToggle => true,
+            | ActionId::SnapEdgesToggle
+            | ActionId::SnapMarkersToggle => true,
+            ActionId::ConvertSampleType | ActionId::InterpretSampleRate => self.len() > 0,
             ActionId::ToggleChannel(n) => usize::from(n) < self.channel_count(),
             ActionId::StatsShow | ActionId::StatsGotoPeak | ActionId::StatsNextClip | ActionId::StatsPrevClip => self.len() > 0,
             ActionId::MarkerAdd => self.len() > 0,
@@ -731,7 +745,7 @@ impl Editor {
         match id {
             ActionId::Undo => self.history.undo_label().map_or_else(|| a.menu.to_string(), |l| format!("Undo {l}")),
             ActionId::Redo => self.history.redo_label().map_or_else(|| a.menu.to_string(), |l| format!("Redo {l}")),
-            ActionId::SnapToggle | ActionId::SnapZeroToggle | ActionId::SnapRulerCoarseToggle | ActionId::SnapRulerFineToggle | ActionId::SnapEdgesToggle => {
+            ActionId::SnapToggle | ActionId::SnapZeroToggle | ActionId::SnapRulerCoarseToggle | ActionId::SnapRulerFineToggle | ActionId::SnapEdgesToggle | ActionId::SnapMarkersToggle => {
                 let on = snap_flag_value(&self.snap, id).unwrap_or(false);
                 format!("{} ({})", a.menu, if on { "on" } else { "off" })
             }
@@ -1010,6 +1024,28 @@ impl Editor {
         true
     }
 
+    /// Merge markers `ids` into one range (one history step, "Merge Markers", f58). Returns
+    /// whether anything changed.
+    pub fn merge_markers(&mut self, ids: &[u64]) -> bool {
+        let Some(markers) = self.history.current().markers().merged(ids) else { return false };
+        self.history.push_markers("Merge Markers", Arc::new(markers));
+        true
+    }
+
+    /// Give marker `id` colour `color` (0 clears; one history step, "Marker Colour", f58).
+    pub fn set_marker_color(&mut self, id: u64, color: u8) -> bool {
+        let Some(markers) = self.history.current().markers().with_color(id, color) else { return false };
+        self.history.push_markers("Marker Colour", Arc::new(markers));
+        true
+    }
+
+    /// Set marker `id`'s description (one history step, "Marker Description", f58).
+    pub fn set_marker_description(&mut self, id: u64, text: &str) -> bool {
+        let Some(markers) = self.history.current().markers().with_description(id, text) else { return false };
+        self.history.push_markers("Marker Description", Arc::new(markers));
+        true
+    }
+
     /// Move marker `id` so it starts at `start`, keeping its length (one history step,
     /// "Move Marker"). Returns whether anything changed.
     pub fn move_marker(&mut self, id: u64, start: u64) -> bool {
@@ -1105,7 +1141,8 @@ impl Editor {
             | ActionId::SnapZeroToggle
             | ActionId::SnapRulerCoarseToggle
             | ActionId::SnapRulerFineToggle
-            | ActionId::SnapEdgesToggle => {
+            | ActionId::SnapEdgesToggle
+            | ActionId::SnapMarkersToggle => {
                 return Ok(Outcome { doc_changed: false, selection: sel, message: toggle_snap(&mut self.snap, id) });
             }
             ActionId::ToggleChannel(n) => return Ok(self.toggle_channel(usize::from(n), sel)),
@@ -1322,6 +1359,9 @@ impl Editor {
             | ActionId::SnapRulerCoarseToggle
             | ActionId::SnapRulerFineToggle
             | ActionId::SnapEdgesToggle
+            | ActionId::SnapMarkersToggle
+            | ActionId::ConvertSampleType
+            | ActionId::InterpretSampleRate
             | ActionId::ToggleChannel(_)
             | ActionId::GotoTime
             // Repeat, Delete Silence and the zero-crossing adjusts returned above.

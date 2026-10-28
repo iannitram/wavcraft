@@ -20,6 +20,7 @@ pub mod dynamics_graph;
 mod amplify;
 mod channel_mixer;
 mod compare;
+mod deesser;
 mod dehummer;
 mod delay;
 mod dereverb;
@@ -52,6 +53,7 @@ pub use channel_mixer::ChannelMixer;
 // oneshot::MAX_GAIN_DB (+96 dB, f32) already owns that name here.
 pub use amplify::{Amplify, DEFAULT_GAIN_DB, MAX_GAIN_DB as AMPLIFY_MAX_GAIN_DB, MIN_GAIN_DB, amplify_gains, db_to_linear};
 pub use eq::{DcOffset, HighPass, LowPass, Notch, ParametricEq};
+pub use deesser::DeEsser;
 pub use dehummer::DeHummer;
 pub use delay::Delay;
 pub use dereverb::DeReverb;
@@ -308,7 +310,7 @@ impl Effect for Invert {
 }
 
 /// Every effect, in Effects-menu order.
-pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb, &PhaseCorrection, &DeHummer, &ChannelMixer, &GraphicEq, &SpeechLeveler, &TimeShift, &Normalize];
+pub static REGISTRY: &[&dyn Effect] = &[&Invert, &Gain, &ParametricEq, &HighPass, &LowPass, &Notch, &DcOffset, &dynamics::Dynamics, &DeEsser, &Reverb, &Delay, &Plate, &PitchShift, &Saturator, &FadeIn, &FadeOut, &NoiseReduction, &FftFilter, &DeReverb, &PhaseCorrection, &DeHummer, &ChannelMixer, &GraphicEq, &SpeechLeveler, &TimeShift, &Normalize];
 
 /// Every registered effect.
 pub fn all() -> &'static [&'static dyn Effect] {
