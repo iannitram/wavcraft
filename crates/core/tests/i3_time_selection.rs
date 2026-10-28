@@ -1,4 +1,4 @@
-use wavcraft_core::actions::{action, ActionId};
+use wavcraft_core::actions::{ActionId, action};
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 
 #[test]

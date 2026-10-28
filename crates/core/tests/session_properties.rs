@@ -3,7 +3,7 @@
 
 use soundcraft_audio_io::AudioBuffer;
 use soundcraft_model::{BitDepthSetting, Playlist, TrackId};
-use wavcraft_core::multitrack::{bits_of, Multitrack};
+use wavcraft_core::multitrack::{Multitrack, bits_of};
 
 const RATE: u32 = 48_000;
 

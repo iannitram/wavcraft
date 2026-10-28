@@ -50,11 +50,7 @@ fn repeat_dialog(e: &Editor, selection: &Range<u64>) -> RepeatDialog {
     match e.last.clone() {
         Some(Repeat::Effect(i, params)) => {
             let has_dialog = effects::all().get(usize::from(i)).is_some_and(|effect| !effect.parameters().is_empty());
-            if has_dialog {
-                RepeatDialog::Effect(i, params)
-            } else {
-                RepeatDialog::RunNow
-            }
+            if has_dialog { RepeatDialog::Effect(i, params) } else { RepeatDialog::RunNow }
         }
         Some(Repeat::InsertSilence(frames)) => RepeatDialog::InsertSilence(frames),
         Some(_) => RepeatDialog::RunNow,
