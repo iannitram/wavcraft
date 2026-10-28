@@ -41,8 +41,8 @@ fn editor(samples: &[f32]) -> (TempDir, Editor) {
     (dir, editor)
 }
 
-/// What the Repeat Last Command dialog would offer, from the editor's public state. The
-/// library's `Editor::repeat_dialog` is still a stub, so the test reads the same state it does.
+/// What the Repeat Last Command dialog would offer, from the editor's public state.
+/// `Editor::repeat_dialog` is a stub on main, so the test uses this helper.
 fn repeat_dialog(e: &Editor, selection: &Range<u64>) -> RepeatDialog {
     if !e.enabled(ActionId::RepeatLast, selection) {
         return RepeatDialog::Unavailable;
@@ -163,7 +163,43 @@ fn e5_delete_is_not_repeatable_and_never_replaces_a_remembered_effect() {
 }
 
 #[test]
-fn e5_works_for_every_registered_effect_in_the_registry() {
+fn e5_repeat_last_reuses_the_non_default_settings_of_the_original_effects() {
+    // The original table's effects, looked up by id rather than registry position. Parametric EQ
+    // now takes 10 settings and Notch Filter 3, and the filters' slope is a choice index (1 is
+    // 24 dB/oct), so those vectors carry the original non-default values in the current order.
+    let eq = vec![120.0, 3.0, 1200.0, -3.0, 1.5, 6000.0, 2.0, 0.8, 6000.0, 2.0];
+    let notch = vec![1000.0, 4.0, 48.0];
+    let cases: [(&str, Vec<f64>, RepeatDialog); 7] = [
+        ("invert", vec![], RepeatDialog::RunNow),
+        ("gain", vec![-3.0], RepeatDialog::Effect(1, vec![-3.0])),
+        ("parametric_eq", eq.clone(), RepeatDialog::Effect(2, eq)),
+        ("high_pass", vec![250.0, 1.0], RepeatDialog::Effect(3, vec![250.0, 1.0])),
+        ("low_pass", vec![2500.0, 1.0], RepeatDialog::Effect(4, vec![2500.0, 1.0])),
+        ("notch", notch.clone(), RepeatDialog::Effect(5, notch)),
+        ("dc_offset", vec![], RepeatDialog::RunNow),
+    ];
+    let half: Vec<f32> = (0..32).map(|k| 0.25 + 0.5 * (k as f32 * 0.375).sin()).collect();
+    let mut input = half.clone();
+    input.extend_from_slice(&half);
+    for (id, params, expected_dialog) in cases {
+        let i = effects::all().iter().position(|effect| effect.id() == id).expect("effect is registered");
+        let (_s, mut repeated) = editor(&input);
+        repeated.run_effect(i as u16, params.clone(), 0..32).unwrap();
+        assert_eq!(repeat_dialog(&repeated, &(32..64)), expected_dialog);
+        repeated.run(ActionId::RepeatLast, 32..64).unwrap();
+
+        // What a second direct run of the same effect would produce. Some effects read the
+        // audio around the range, so the two halves alone are not compared.
+        let (_s2, mut direct) = editor(&input);
+        direct.run_effect(i as u16, params.clone(), 0..32).unwrap();
+        direct.run_effect(i as u16, params, 32..64).unwrap();
+
+        assert_eq!(read(&repeated), read(&direct), "effect {i} ({id})");
+    }
+}
+
+#[test]
+fn e5_repeat_last_matches_a_direct_run_for_every_registered_effect_with_defaults() {
     let half: Vec<f32> = (0..32).map(|k| 0.25 + 0.5 * (k as f32 * 0.375).sin()).collect();
     let mut input = half.clone();
     input.extend_from_slice(&half);
