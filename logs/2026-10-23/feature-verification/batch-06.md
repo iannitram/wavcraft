@@ -1,6 +1,6 @@
 # Feature verification, batch 06
 
-Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page or a community page, and the verdict rests on my reading of it.
+Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page or a community page, and the verdict rests on my reading of it. Rows cited as 'checked in Adobe Audition 26.5 (desktop app)' were confirmed in the app's menus on 2026-10-28.
 
 B144 | exists | The Spot Healing Brush and Auto Heal in the spectral display repair clicks and short artifacts by rebuilding the area from its surroundings (selections of about four seconds or less); Audition names it Spot Healing, not Spectral Repair. | https://helpx.adobe.com/audition/using/selecting-audio.html
 
@@ -28,7 +28,7 @@ B161 | exists | The Match Loudness panel scans a list of files and runs them to 
 
 B162 | exists | Noise Reduction is a process effect, so it can be applied to files through a recorded Favorite in Batch Process using a saved noise print; I found only community confirmation. | https://community.adobe.com/questions-544/is-there-a-way-to-add-more-then-1-favorite-in-the-batch-processing-164399 (weak)
 
-B163 | exists | Under another name: Favorites > Start Recording Favorite records a step sequence for replay (the older Scripts feature did the same); only community pages describe it. | https://community.adobe.com/t5/audition-discussions/unable-to-make-recorded-favorite-act-relative-to-playhead/m-p/11363451 (weak)
+B163 | exists | Favorites > Start Recording Favorite / Stop Recording Favorite record step sequences. | checked in Adobe Audition 26.5 (desktop app)
 
 B168 | exists | Process effect dialogs such as Noise Reduction have a Preview button that plays the processed selection before it is applied. | https://helpx.adobe.com/audition/using/effects-controls.html
 

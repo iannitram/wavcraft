@@ -1,6 +1,6 @@
 # Feature verification, batch 08
 
-Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page or a community page, and the verdict rests on my reading of it.
+Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page or a community page, and the verdict rests on my reading of it. Rows cited as 'checked in Adobe Audition 26.5 (desktop app)' were confirmed in the app's menus on 2026-10-28.
 
 C085 | exists | The Markers panel adds, edits and selects point and range markers (also called cues). | https://helpx.adobe.com/audition/using/markers.html
 
@@ -20,7 +20,7 @@ C092 | exists | Loop Playback repeats a selected range. | https://helpx.adobe.co
 
 C093 | exists | Meters show playback levels as well as recording levels. | https://helpx.adobe.com/audition/using/monitoring-recording-playback-levels.html
 
-C094 | differs | Audition has a Metadata panel for file-level fields, not free-text session notes; I found no Adobe page on it. | https://helpx.adobe.com/audition/using/creating-opening-files.html (weak)
+C094 | differs | Window > Metadata holds file-level fields; there is no session-notes panel. | checked in Adobe Audition 26.5 (desktop app)
 
 C099 | exists | Bus tracks group several tracks or sends under one control. | https://helpx.adobe.com/audition/using/multitrack-routing-eq-controls.html
 
@@ -38,7 +38,7 @@ C107 | differs | The Track Visibility panel hides tracks by eye icon and saves v
 
 C108 | exists | Bounce to New Track creates a track holding a clip that reflects a bus or mix track (also available for clips). | https://helpx.adobe.com/audition/using/multitrack-routing-eq-controls.html
 
-C109 | not in Audition | I found no Freeze Track command; bouncing to a new track is the nearest feature. | https://helpx.adobe.com/audition/using/multitrack-routing-eq-controls.html (weak)
+C109 | not in Audition | The Multitrack menu has Bounce to New Track and Mixdown Session to New File; no Freeze Track. | checked in Adobe Audition 26.5 (desktop app)
 
 C110 | exists | A Polarity Reverse (phase invert) button in the Mixer input controls flips a track's phase. | https://helpx.adobe.com/audition/using/analyzing-phase-frequency-amplitude.html
 

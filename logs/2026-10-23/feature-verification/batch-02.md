@@ -1,6 +1,6 @@
 # Feature verification, batch 02
 
-Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page I read, and the verdict rests on my reading of it.
+Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page I read, and the verdict rests on my reading of it. Rows cited as 'checked in Adobe Audition 26.5 (desktop app)' were confirmed in the app's menus on 2026-10-28.
 
 A204 | exists | Play Spectral Selection Only (right-click the Play button) plays just the frequencies selected with the Marquee, Lasso or Paintbrush tools. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/navigating-time-playing-audio.html
 
@@ -8,7 +8,7 @@ A214 | exists | Right-clicking the Levels meters offers Dynamic or Static peaks,
 
 A215 | exists | Clip indicators are cleared by clicking them or by right-clicking the meters and choosing Reset indicators. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/monitoring-recording-playback-levels.html
 
-A217 | not in Audition | The Levels panel documents peak, valley and clip indicators only; no RMS meter display is described. No Adobe page states its absence. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/monitoring-recording-playback-levels.html (weak)
+A217 | not in Audition | View > Metering offers peaks, valleys, LED, colour gradient and dB ranges; no RMS meter option. | checked in Adobe Audition 26.5 (desktop app)
 
 A218 | exists | The Levels panel can be docked horizontally (left channel on top) or vertically. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/monitoring-recording-playback-levels.html
 

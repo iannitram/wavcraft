@@ -1,6 +1,6 @@
 # Feature verification, batch 07
 
-Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page or a community page, and the verdict rests on my reading of it.
+Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page or a community page, and the verdict rests on my reading of it. Rows cited as 'checked in Adobe Audition 26.5 (desktop app)' were confirmed in the app's menus on 2026-10-28.
 
 C041 | not in Audition | I found no repeat-punch command; a punch is repeated by recording over the range again. | https://helpx.adobe.com/audition/using/recording-audio.html (weak)
 
@@ -24,7 +24,7 @@ C060 | exists | Track meters show in the Mixer and Editor for each track, and ri
 
 C061 | exists | The Level Meters panel shows the mix output, and the Mix track has its own meter in the Mixer. | https://helpx.adobe.com/audition/using/monitoring-recording-playback-levels.html
 
-C069 | exists | Under another name: the Frequency Analysis and Spectral Frequency displays update during playback and recording; I found no page that ties them to recording. | https://helpx.adobe.com/audition/using/analyzing-phase-frequency-amplitude.html (weak)
+C069 | exists | Window > Frequency Analysis opens the Frequency Analysis panel. | checked in Adobe Audition 26.5 (desktop app)
 
 C076 | differs | Session files store file paths only; Export can save copies of associated files (archive style), but I found no documented relink dialog. | https://helpx.adobe.com/audition/using/saving-exporting-files1.html (weak)
 
@@ -34,11 +34,11 @@ C078 | exists | Sample rate and bit depth are set when a session is created (bit
 
 C079 | exists | The Files panel imports files, which can be inserted into the session on separate tracks at the current time. | https://helpx.adobe.com/audition/desktop/importing-recording-and-playing/importing-files-panel.html
 
-C080 | exists | File > Open Recent lists recent files and sessions; I found no Adobe page that documents it. | https://helpx.adobe.com/audition/using/creating-opening-files.html (weak)
+C080 | exists | File > Open Recent lists recent files. | checked in Adobe Audition 26.5 (desktop app)
 
 C081 | exists | Edit > Undo and the History panel cover multitrack edits, and Adobe says multitrack clip edits are non-destructive and undoable. | https://helpx.adobe.com/audition/using/arranging-editing-multitrack-clips.html
 
 C082 | exists | Zoom buttons, scroll bar and mouse wheel zoom and scroll the timeline. | https://helpx.adobe.com/audition/using/navigating-time-playing-audio.html
 
-C083 | exists | View > Time Display switches the ruler between formats including Bars and Beats; the full list was not on pages I could read. | https://helpx.adobe.com/audition/using/navigating-time-playing-audio.html (weak)
+C083 | exists | View > Time Display offers Decimal, SMPTE 23.976 to 59.94 fps (incl. drop-frame), Samples, Bars and Beats and a custom frame rate. | checked in Adobe Audition 26.5 (desktop app)
 

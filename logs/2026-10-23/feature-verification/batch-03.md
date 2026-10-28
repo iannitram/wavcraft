@@ -1,6 +1,6 @@
 # Feature verification, batch 03
 
-Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page I read, and the verdict rests on my reading of it.
+Checked 2026-10-28 against Adobe's public Audition help pages. Each line: `row | verdict | what Audition does | source`. A trailing `(weak)` means no Adobe page stated it directly: the source is the closest page I read, and the verdict rests on my reading of it. Rows cited as 'checked in Adobe Audition 26.5 (desktop app)' were confirmed in the app's menus on 2026-10-28.
 
 A294 | exists | The shortcut editor warns of a conflict at the bottom of the editor, highlights the command in conflict and enables Undo and Clear. | https://helpx.adobe.com/audition/desktop/keyboard-shortcuts/finding-customizing-shortcuts.html
 
@@ -26,7 +26,7 @@ A349 | exists | Adobe's help center has a Learn section with step-by-step tutori
 
 A353 | not in Audition | No help page covers screen reader support or a high-contrast display mode. No Adobe page states its absence. | https://helpx.adobe.com/audition/desktop.html (weak)
 
-B008 | exists | A Favorites menu exists (Fade In, Repair DC Offset, Auto Heal and others) and the noise-reduction page speaks of creating a quick key there; the fetched pages do not describe recording your own actions. | https://helpx.adobe.com/audition/desktop/effects-reference/noise-reduction-restoration-effects.html (weak)
+B008 | exists | Favorites > Start Recording Favorite / Stop Recording Favorite record your own actions. | checked in Adobe Audition 26.5 (desktop app)
 
 B009 | differs | Normalize presets are -0.1 dB and -3 dB; there is no 0 dB preset and no Dynamics presets (fade, DC offset and Auto Heal Favorites are documented). | checked in Adobe Audition 26.5 (desktop app)
 
