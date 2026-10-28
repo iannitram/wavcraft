@@ -407,6 +407,8 @@ pub struct Player {
     /// The output stream's channel count and sample rate (what a rack is built for).
     pub out_channels: usize,
     out_rate: u32,
+    /// The last Effects Rack configuration, rebuilt whenever the output is reopened.
+    rack_config: Mutex<Option<RackConfig>>,
     /// What the preferences asked for.
     wanted: OutputChoice,
     /// The play Pause stopped, to carry on from with Resume (f23).
@@ -472,6 +474,7 @@ impl Player {
             wanted,
             out_channels: 2,
             out_rate: 48_000,
+            rack_config: Mutex::new(None),
             held: Mutex::new(None),
             wraps_base: AtomicU32::new(0),
             reopens: AtomicU32::new(0),
@@ -541,6 +544,13 @@ impl Player {
             }
         }
         if self.has_output() {
+            let rack_config = self.rack_config.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(config) = rack_config
+                && let Err(e) = park_rack(&self.shared, &config, self.out_channels, self.out_rate)
+            {
+                log::warn!(target: "wavcraft", "Effects Rack: {e}");
+                self.error = Some(format!("Effects Rack: {e}"));
+            }
             self.shared.device_rate.store(self.out_rate, Ordering::Release);
             let sounds = ClickSounds { accent: click_sound(self.out_rate, true), normal: click_sound(self.out_rate, false) };
             let old = self.shared.clicks.lock().unwrap_or_else(|e| e.into_inner()).replace(sounds);
@@ -617,12 +627,8 @@ impl Player {
     /// nothing switched on) is removed. The swap into the audio callback is lock-free; calling
     /// this while playing is fine. Takes effect for the next audio buffer.
     pub fn set_rack(&self, config: &RackConfig) -> Result<(), String> {
-        let new = if config.is_active() { Some(Box::new(RackProcessor::new(config, self.out_channels.min(2), self.out_rate)?)) } else { None };
-        if let Ok(mut slot) = self.shared.rack_mailbox.lock() {
-            *slot = new;
-            self.shared.rack_new.store(true, Ordering::Release);
-        }
-        Ok(())
+        *self.rack_config.lock().map_err(|e| format!("could not store Effects Rack settings: {e}"))? = Some(config.clone());
+        park_rack(&self.shared, config, self.out_channels, self.out_rate)
     }
 
     /// Whether the output stream has reported an error since it was opened.
@@ -1229,6 +1235,15 @@ where
     if let (true, Some(r)) = (was_playing, rack.as_mut()) {
         run_rack(r, out, channels);
     }
+}
+
+/// Build and park the rack for an output. An inactive configuration removes the rack.
+fn park_rack(shared: &Shared, config: &RackConfig, channels: usize, rate: u32) -> Result<(), String> {
+    let new = if config.is_active() { Some(Box::new(RackProcessor::new(config, channels.min(2), rate)?)) } else { None };
+    let mut slot = shared.rack_mailbox.lock().map_err(|e| format!("could not park Effects Rack: {e}"))?;
+    *slot = new;
+    shared.rack_new.store(true, Ordering::Release);
+    Ok(())
 }
 
 /// Pick up a rack the UI parked in the mailbox (see [`Shared::rack_mailbox`]). Never blocks.
@@ -2075,6 +2090,28 @@ mod tests {
             c.set_slot(i, id, p.clone()).unwrap();
         }
         c
+    }
+
+    #[test]
+    fn reopening_parks_the_stored_rack_for_each_new_device_rate() {
+        let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 8]] });
+        let shared = shared_with(&state);
+        let active = rack_of(&[("invert", None)]);
+
+        for rate in [44_100, 96_000] {
+            shared.rack_new.store(false, Ordering::Release);
+            park_rack(&shared, &active, 2, rate).unwrap();
+            assert!(shared.rack_new.load(Ordering::Acquire));
+            let slot = shared.rack_mailbox.lock().unwrap();
+            let rack = slot.as_ref().expect("active rack is parked");
+            assert_eq!(rack.channels(), 2);
+            assert_eq!(rack.rate(), rate);
+        }
+
+        let inactive = RackConfig::new();
+        park_rack(&shared, &inactive, 2, 96_000).unwrap();
+        assert!(shared.rack_new.load(Ordering::Acquire));
+        assert!(shared.rack_mailbox.lock().unwrap().is_none());
     }
 
     #[test]
