@@ -1373,24 +1373,6 @@ fn unknown_key(key: &str) -> String {
     format!("unknown preference {key:?}; the keys are {}", KEYS.join(", "))
 }
 
-/// Reset the preferences: move the settings file at `path` aside (to `settings.txt.reset-1`,
-/// `-2`, … in the same folder, never over an earlier one) so the next load gives the defaults.
-/// Returns where it went, or `None` when there was no file.
-pub fn reset_aside(path: &Path) -> io::Result<Option<PathBuf>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "settings.txt".into());
-    for n in 1..10_000u32 {
-        let aside = path.with_file_name(format!("{name}.reset-{n}"));
-        if !aside.exists() {
-            std::fs::rename(path, &aside)?;
-            return Ok(Some(aside));
-        }
-    }
-    Err(io::Error::other("too many earlier reset copies"))
-}
-
 /// `<lo> <hi> [lin|log_partial|log]`: a band that is finite and has a low end below its high end.
 fn parse_view(value: &str) -> Option<FreqAxis> {
     let mut it = value.split_whitespace();
