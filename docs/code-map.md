@@ -341,7 +341,7 @@ Both are in the same fork at the same commit, so adding them as git dependencies
 
 ## Mac, PC and Linux
 
-There is no CI yet (no `.github/workflows/`; adding it on all three systems is #1013), so every check below is run by hand. Run `cargo fmt --check`, `cargo clippy --workspace` and `cargo test --workspace` on your own system before a PR and say which one you used.
+CI exists (`.github/workflows/check.yml`, #1013), on GitHub-hosted runners: `fmt` and `clippy` run on Linux, and `cargo test --workspace` runs on Linux, Windows and macOS. Run the same checks on your own system before a PR too, and say which one you used.
 
 - **Shared:** everything in `crates/core` and the egui app builds and runs the same on all three; audio goes through `cpal` (the `Player`, `rec_input.rs`, `input.rs`), the OS clipboard through `arboard` (`oscb.rs`), and VST3 scanning runs in a worker process (`vst3.rs`).
 - **Windows:** the app asks for DX12 only in `wgpu` (`main.rs`). `win_acl.rs` (compiled only on Windows, `#![allow(unsafe_code)]`) makes the control channel's token file owner-only through the Win32 security API. `windows-sys` is a Windows-only dependency of the app and of the testkit (`wavcraft-bench` memory reading). `store.rs` reads blocks with `seek_read` on Windows and `read_exact_at` elsewhere.
