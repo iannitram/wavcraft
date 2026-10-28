@@ -41,9 +41,9 @@ pub const SETTINGS_FILE: &str = "settings.txt";
 pub const SHORTCUTS_FILE: &str = "shortcuts.txt";
 const WORKSPACES_DIR: &str = "workspaces";
 
-/// The files that are preferences (what a reset puts aside; workspaces are the person's work,
-/// not preferences, so a reset leaves them).
-const PREFERENCE_FILES: [&str; 2] = [SETTINGS_FILE, SHORTCUTS_FILE];
+/// The files that are preferences (what a reset puts aside). Custom keyboard shortcuts are kept
+/// by a reset, and so are workspaces (the person's work, not preferences).
+const PREFERENCE_FILES: [&str; 1] = [SETTINGS_FILE];
 
 /// Whether `name` is a file a bundle may carry: `settings.txt`, `shortcuts.txt`, or
 /// `workspaces/<name>.txt` with a plain name.
@@ -239,20 +239,36 @@ pub fn apply(dir: &Path, bundle: &Bundle) -> Result<Vec<String>, String> {
     Ok(bundle.files.keys().cloned().collect())
 }
 
-/// Put the preference files in `dir` aside as `<name>.old` (replacing an older `.old`), so the
-/// next start uses the defaults. Returns the names moved; workspaces are left where they are.
+/// Reset the preferences in `dir`: `settings.txt` is moved aside as `settings.txt.reset-N`, so
+/// the next start uses the default settings. Custom keyboard shortcuts (`shortcuts.txt`) are kept,
+/// and so are the workspaces. `N` is the first number for which no preference file has a
+/// `.reset-N` yet, so an earlier backup is never overwritten. Returns the names moved (none when
+/// there was nothing to move, which is not an error).
 pub fn reset_preferences(dir: &Path) -> io::Result<Vec<String>> {
-    let mut moved = Vec::new();
-    for name in PREFERENCE_FILES {
-        let path = dir.join(name);
-        if path.is_file() {
-            let old = old_path(&path);
-            let _ = std::fs::remove_file(&old);
-            std::fs::rename(&path, &old)?;
-            moved.push(name.to_string());
-        }
+    let present: Vec<&str> = PREFERENCE_FILES.into_iter().filter(|name| dir.join(name).is_file()).collect();
+    if present.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(moved)
+    let n = (1..10_000u32)
+        .find(|n| PREFERENCE_FILES.iter().all(|name| !dir.join(backup_name(name, *n)).exists()))
+        .ok_or_else(|| io::Error::other("too many earlier reset copies"))?;
+    let mut moved: Vec<&str> = Vec::new();
+    for name in present {
+        if let Err(e) = std::fs::rename(dir.join(name), dir.join(backup_name(name, n))) {
+            // Put back what already moved, so a failed reset leaves the preferences as they were.
+            for done in moved.iter().rev() {
+                let _ = std::fs::rename(dir.join(backup_name(done, n)), dir.join(done));
+            }
+            return Err(e);
+        }
+        moved.push(name);
+    }
+    Ok(moved.into_iter().map(str::to_string).collect())
+}
+
+/// The backup of preference file `name` for reset number `n`: `settings.txt.reset-1`.
+fn backup_name(name: &str, n: u32) -> String {
+    format!("{name}.reset-{n}")
 }
 
 fn old_path(path: &Path) -> std::path::PathBuf {
@@ -358,14 +374,67 @@ mod tests {
         write(&a, "settings.txt", "session_folder = /x\n");
         write(&a, "shortcuts.txt", "a = b\n");
         write(&a, "workspaces/w.txt", "w\n");
-        write(&a, "settings.txt.old", "stale\n");
+        write(&a, "settings.txt.reset-1", "stale\n");
         let moved = reset_preferences(&a).expect("reset");
-        assert_eq!(moved, ["settings.txt", "shortcuts.txt"]);
+        assert_eq!(moved, ["settings.txt"]);
         assert!(!a.join("settings.txt").exists());
-        assert_eq!(std::fs::read_to_string(a.join("settings.txt.old")).expect("r"), "session_folder = /x\n");
-        assert_eq!(std::fs::read_to_string(a.join("shortcuts.txt.old")).expect("r"), "a = b\n");
+        assert_eq!(std::fs::read_to_string(a.join("settings.txt.reset-2")).expect("r"), "session_folder = /x\n");
+        assert_eq!(std::fs::read_to_string(a.join("shortcuts.txt")).expect("r"), "a = b\n");
+        assert!(!a.join("shortcuts.txt.reset-2").exists());
+        assert_eq!(std::fs::read_to_string(a.join("settings.txt.reset-1")).expect("r"), "stale\n");
         assert!(a.join("workspaces/w.txt").is_file());
         assert!(reset_preferences(&a).expect("again").is_empty(), "nothing left to move");
+    }
+
+    #[test]
+    fn two_resets_in_a_row_keep_both_backups() {
+        let a = scratch("two-resets");
+        write(&a, "settings.txt", "session_folder = /first\n");
+        write(&a, "shortcuts.txt", "a = b\n");
+        reset_preferences(&a).expect("first reset");
+        write(&a, "settings.txt", "session_folder = /second\n");
+        write(&a, "shortcuts.txt", "c = d\n");
+        reset_preferences(&a).expect("second reset");
+        assert_eq!(std::fs::read_to_string(a.join("settings.txt.reset-1")).expect("r"), "session_folder = /first\n");
+        assert_eq!(std::fs::read_to_string(a.join("settings.txt.reset-2")).expect("r"), "session_folder = /second\n");
+        assert_eq!(std::fs::read_to_string(a.join("shortcuts.txt")).expect("r"), "c = d\n");
+        assert!(!a.join("shortcuts.txt.reset-1").exists());
+        assert!(!a.join("shortcuts.txt.reset-2").exists());
+    }
+
+    #[test]
+    fn a_reset_keeps_custom_shortcuts() {
+        let a = scratch("keeps-shortcuts");
+        let shortcuts = "edit.undo = Ctrl+U\nnaïve = ünï\n";
+        write(&a, "settings.txt", "session_folder = /x\n");
+        write(&a, "shortcuts.txt", shortcuts);
+        reset_preferences(&a).expect("first reset");
+        assert_eq!(std::fs::read(a.join("shortcuts.txt")).expect("r"), shortcuts.as_bytes());
+        write(&a, "settings.txt", "session_folder = /y\n");
+        reset_preferences(&a).expect("second reset");
+        assert_eq!(std::fs::read(a.join("shortcuts.txt")).expect("r"), shortcuts.as_bytes());
+        assert!(!a.join("shortcuts.txt.reset-1").exists());
+        assert!(!a.join("shortcuts.txt.reset-2").exists());
+    }
+
+    #[test]
+    fn a_reset_never_overwrites_an_earlier_backup() {
+        let a = scratch("no-overwrite");
+        write(&a, "settings.txt.reset-1", "earlier backup\n");
+        write(&a, "settings.txt", "session_folder = /now\n");
+        reset_preferences(&a).expect("reset");
+        assert_eq!(std::fs::read_to_string(a.join("settings.txt.reset-1")).expect("r"), "earlier backup\n");
+        assert_eq!(std::fs::read_to_string(a.join("settings.txt.reset-2")).expect("r"), "session_folder = /now\n");
+    }
+
+    #[test]
+    fn a_reset_with_no_settings_file_does_not_fail() {
+        let a = scratch("no-settings");
+        assert!(reset_preferences(&a).expect("reset with nothing").is_empty());
+        assert!(!a.join("settings.txt.reset-1").exists());
+        write(&a, "workspaces/w.txt", "w\n");
+        assert!(reset_preferences(&a).expect("reset with only a workspace").is_empty());
+        assert!(a.join("workspaces/w.txt").is_file());
     }
 
     #[test]

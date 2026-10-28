@@ -858,7 +858,11 @@ impl WaveApp {
     /// before it is read.
     pub fn new(cc: &eframe::CreationContext<'_>, file: Option<PathBuf>, session_dir: Option<PathBuf>, reset_preferences: bool) -> WaveApp {
         let settings_path = Settings::default_path();
-        let reset_note = if reset_preferences { settings_path.as_deref().map(move_settings_aside) } else { None };
+        // `--reset-preferences`: the same reset as the menu's, before anything is read.
+        let reset_note = match settings_path.as_deref().and_then(Path::parent) {
+            Some(dir) if reset_preferences => Some(reset_preference_files(dir).unwrap_or_else(|e| e)),
+            _ => None,
+        };
         let settings = settings_path.as_deref().map(Settings::load).unwrap_or_default();
         if let Some(code) = settings.language.as_deref()
             && !i18n::set_language(code)
@@ -1463,23 +1467,18 @@ impl WaveApp {
         }
     }
 
-    /// Put every preference back to its default: the settings file is moved aside, not deleted.
-    fn reset_preferences(&mut self) {
-        let note = self.settings_path.as_deref().map(move_settings_aside);
-        self.settings = Settings::default();
-        if self.sessions.source == FolderSource::SettingsFile {
-            self.sessions = SessionFolder { path: default_sessions_root(), source: FolderSource::Default, warning: None };
-            self.mtv.take_dir = self.sessions.path.join("takes");
-        }
-        self.apply_crossfades();
-        self.apply_snap();
-        self.player.set_output(OutputChoice::default());
-        self.player.set_map(ChannelMap::default());
-        self.player.set_quality(self.settings.playback_quality);
-        self.settings.apply_to_spectrogram(&mut self.params);
-        self.spectrum = None;
+    /// Put every preference back to its default: the preference files are moved aside as
+    /// `.reset-N` (see `reset_preference_files`), then the app reloads from them. The one reset for
+    /// Preferences > Reset All, Shift at launch, File > Restore Preference Defaults and `PREF reset`.
+    fn reset_preferences(&mut self) -> Result<String, String> {
+        let msg = match self.settings_path.as_deref().and_then(Path::parent) {
+            Some(dir) => reset_preference_files(dir)?,
+            None => "Preferences reset to their defaults".to_string(),
+        };
         self.error = None;
-        self.notice = Some(note.unwrap_or_else(|| "Preferences reset to their defaults.".to_string()));
+        self.reload_settings();
+        self.notice = Some(msg.clone());
+        Ok(msg)
     }
 
     /// Edit › Preferences…
@@ -1954,10 +1953,7 @@ impl WaveApp {
                 Ok(())
             }
             Some(PrefAction::ClearMaps) => self.pref_set("output_map", "").and_then(|()| self.pref_set("input_map", "")),
-            Some(PrefAction::ResetAll) => {
-                self.reset_preferences();
-                Ok(())
-            }
+            Some(PrefAction::ResetAll) => self.reset_preferences().map(|_| ()),
             Some(PrefAction::AskCleanup) => {
                 self.prefs_confirm_cleanup = true;
                 Ok(())
@@ -4428,22 +4424,6 @@ impl WaveApp {
         }
     }
 
-    /// File › Restore Preference Defaults (after asking): the settings and shortcut files are put
-    /// aside as `.old` and the defaults are used.
-    fn restore_defaults(&mut self) -> Result<String, String> {
-        let dir = self.config_dir()?.to_path_buf();
-        let moved = bundle::reset_preferences(&dir).map_err(|e| format!("could not restore the defaults: {e}"))?;
-        self.reload_settings();
-        let msg = if moved.is_empty() {
-            "Preferences were already the defaults".to_string()
-        } else {
-            format!("Preferences restored to the defaults; the old files are kept as .old ({})", moved.join(", "))
-        };
-        self.error = None;
-        self.notice = Some(msg.clone());
-        Ok(msg)
-    }
-
     /// Read the settings file again and apply the session folder from the next open (the
     /// command-line flag and the environment variable still win, as at start).
     fn reload_settings(&mut self) {
@@ -4479,7 +4459,7 @@ impl WaveApp {
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.label(
-                    "Put your settings and shortcut changes back to the defaults? The old files are kept beside the new ones with the ending .old.",
+                    "Put your settings back to the defaults? Your custom keyboard shortcuts are kept. The old settings file is kept beside the new one as settings.txt.reset-N.",
                 );
                 ui.horizontal(|ui| {
                     if ui.button("Restore Defaults").clicked() {
@@ -4492,7 +4472,7 @@ impl WaveApp {
             });
         if let Some(yes) = choice {
             self.confirm_reset_prefs = false;
-            if yes && let Err(e) = self.restore_defaults() {
+            if yes && let Err(e) = self.reset_preferences() {
                 self.error = Some(e);
             }
         }
@@ -9030,7 +9010,7 @@ impl WaveApp {
                 let value = value.trim();
                 match (verb, key) {
                     // `PREF reset`: Restore Preference Defaults, already confirmed (the menu asks first).
-                    ("reset", "") => self.restore_defaults().map_or_else(|e| format!("ERR {e}"), |m| format!("OK {m}")),
+                    ("reset", "") => self.reset_preferences().map_or_else(|e| format!("ERR {e}"), |m| format!("OK {m}")),
                     // `PREF show`: the session folder now and where it came from (for scripted checks).
                     ("show", "") => format!(
                         "OK session_folder={} source={:?} saved_session_folder={}",
@@ -11742,7 +11722,9 @@ impl eframe::App for WaveApp {
             self.shift_frames -= 1;
             if ctx.input(|i| i.modifiers.shift) {
                 self.shift_frames = 0;
-                self.reset_preferences();
+                if let Err(e) = self.reset_preferences() {
+                    self.error = Some(e);
+                }
             }
         }
         let (dropped, hovering, dropped_without_path) = ctx.input(|i| {
@@ -11961,20 +11943,21 @@ impl eframe::App for WaveApp {
     }
 }
 
-/// Move the settings file aside (`--reset-preferences`, Shift at launch, the dialog's button) and
-/// say what happened.
-fn move_settings_aside(path: &std::path::Path) -> String {
-    match settings::reset_aside(path) {
-        Ok(Some(aside)) => {
-            log::info!(target: "wavcraft", "preferences reset: {} moved to {}", path.display(), aside.display());
-            format!("Preferences reset to their defaults (the old settings were kept as {})", aside.display())
-        }
-        Ok(None) => "Preferences reset to their defaults".to_string(),
-        Err(e) => {
-            log::warn!(target: "wavcraft", "could not move the settings file aside: {e}");
-            format!("Could not move the old settings file aside ({e}); using the defaults, which replace it at the next change")
-        }
+/// The one reset of the preferences on disk, for every path (the dialog's button, Shift at launch,
+/// `--reset-preferences`, File › Restore Preference Defaults and `PREF reset`). The settings and
+/// settings file in `dir` is moved aside as `.reset-N` (see `bundle::reset_preferences`). Custom
+/// keyboard shortcuts are kept: `shortcuts.txt` and the active shortcut set are left as they are.
+/// Returns what to say; an error leaves the files as they were.
+fn reset_preference_files(dir: &Path) -> Result<String, String> {
+    let moved = bundle::reset_preferences(dir).map_err(|e| {
+        log::warn!(target: "wavcraft", "could not reset the preferences in {}: {e}", dir.display());
+        format!("could not reset the preferences: {e}")
+    })?;
+    if moved.is_empty() {
+        return Ok("Preferences were already the defaults".to_string());
     }
+    log::info!(target: "wavcraft", "preferences reset in {}: {}", dir.display(), moved.join(", "));
+    Ok(format!("Preferences reset to their defaults; the old files were kept beside them as .reset-N ({})", moved.join(", ")))
 }
 
 /// The sample formats the Raw Data dialog offers.
@@ -12645,3 +12628,32 @@ mod tests {
 #[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
 mod i3_shortcut_help_tests;
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+
+    /// Every reset path calls `reset_preference_files`; it moves settings.txt aside and leaves the
+    /// custom shortcuts and the active shortcut set as they were.
+    #[test]
+    fn a_reset_keeps_custom_shortcuts_and_the_active_set() {
+        let dir = std::env::temp_dir().join(format!("wavcraft-app-reset-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let shortcuts = "edit.undo = Ctrl+U\n";
+        std::fs::write(dir.join("settings.txt"), "session_folder = /x\n").expect("settings");
+        std::fs::write(dir.join("shortcuts.txt"), shortcuts).expect("shortcuts");
+        let store = SetStore::new(&dir);
+        let set = store.save("Mine", &Keymap::default()).expect("save set");
+        store.set_active(Some(&set)).expect("activate set");
+
+        reset_preference_files(&dir).expect("reset");
+
+        assert!(!dir.join("settings.txt").exists(), "settings.txt was not moved aside");
+        assert!(dir.join("settings.txt.reset-1").is_file());
+        assert_eq!(std::fs::read_to_string(dir.join("shortcuts.txt")).expect("read"), shortcuts);
+        assert!(!dir.join("shortcuts.txt.reset-1").exists());
+        assert_eq!(store.active().as_deref(), Some(set.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

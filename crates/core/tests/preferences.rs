@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use wavcraft_core::bundle;
 use wavcraft_core::settings::{self, Settings};
 
 struct TempDir(PathBuf);
@@ -75,17 +76,18 @@ fn get_and_set_by_key_check_their_values() {
 fn reset_moves_the_file_aside_and_starts_from_defaults() {
     let dir = TempDir::new("reset");
     let file = dir.0.join("settings.txt");
+    let aside = dir.0.join("settings.txt.reset-1");
     let mut s = Settings::default();
     s.set("crossfade_edge_ms", "9").unwrap();
     s.save(&file).unwrap();
-    let aside = settings::reset_aside(&file).unwrap().expect("a file was there");
+    assert_eq!(bundle::reset_preferences(&dir.0).unwrap(), ["settings.txt"]);
     assert!(!file.exists() && aside.exists());
     assert_eq!(Settings::load(&file), Settings::default());
     assert_eq!(Settings::load(&aside).crossfades().1, Duration::from_millis(9), "the old file is kept whole");
-    // Nothing to move: not an error. A second reset does not overwrite the first copy.
-    assert_eq!(settings::reset_aside(&file).unwrap(), None);
+    // Nothing to move: not an error. A second reset keeps the first copy.
+    assert!(bundle::reset_preferences(&dir.0).unwrap().is_empty());
     s.save(&file).unwrap();
-    let again = settings::reset_aside(&file).unwrap().unwrap();
-    assert_ne!(again, aside);
+    assert_eq!(bundle::reset_preferences(&dir.0).unwrap(), ["settings.txt"]);
+    let again = dir.0.join("settings.txt.reset-2");
     assert!(aside.exists() && again.exists());
 }
