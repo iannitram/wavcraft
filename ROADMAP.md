@@ -131,9 +131,3 @@ In use (all from the root `Cargo.toml`):
 - Our own: `craft-log` (self-logging), `craft-stage`, and, for A3, `craft-mp3`.
 
 Candidates: none needed for v1 beyond `craft-mp3`. The clean-room rule stands: no GPL, LGPL or AGPL code or dependency, and Audacity's code is never read.
-
-## Incremental overview follow-up
-
-| Issue | Status | Where |
-|---|---|---|
-| #1036 (I7b: app edit and undo latency) | implemented on branch; Mac acceptance timing pending | `sat/1036-incremental-overviews`, based on #1041: source-aligned waveform block reuse, piece-table diff for every history step, and visible stale spectrogram blocks refreshed on the rendering worker. Tests compare full builds through edit/undo/redo and bound store reads. |
