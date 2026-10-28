@@ -7,6 +7,7 @@
 //! jump in the History panel.
 
 use super::{Channel, DocState};
+use std::sync::Arc;
 
 /// The old frames `[at, at + removed)` became the new frames `[at, at + inserted)`; everything
 /// before `at` and everything after is the same audio, shifted by `inserted - removed`.
@@ -60,7 +61,7 @@ fn common_prefix(a: &Channel, b: &Channel) -> u64 {
     let (pa, pb) = (a.pieces(), b.pieces());
     let (mut i, mut j, mut used_a, mut used_b, mut n) = (0, 0, 0u32, 0u32, 0u64);
     while let (Some(x), Some(y)) = (pa.get(i), pb.get(j)) {
-        if x.block().id() != y.block().id() || x.offset() + used_a != y.offset() + used_b {
+        if !Arc::ptr_eq(x.block(), y.block()) || x.offset() + used_a != y.offset() + used_b {
             break;
         }
         let m = (x.len() - used_a).min(y.len() - used_b);
@@ -85,7 +86,7 @@ fn common_suffix(a: &Channel, b: &Channel) -> u64 {
     let (mut i, mut j, mut used_a, mut used_b, mut n) = (pa.len(), pb.len(), 0u32, 0u32, 0u64);
     while i > 0 && j > 0 {
         let (x, y) = (&pa[i - 1], &pb[j - 1]);
-        if x.block().id() != y.block().id() || x.offset() + x.len() - used_a != y.offset() + y.len() - used_b {
+        if !Arc::ptr_eq(x.block(), y.block()) || x.offset() + x.len() - used_a != y.offset() + y.len() - used_b {
             break;
         }
         let m = (x.len() - used_a).min(y.len() - used_b);

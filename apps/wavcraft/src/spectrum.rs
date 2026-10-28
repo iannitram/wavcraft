@@ -43,6 +43,7 @@ struct Overviews {
     generation: usize,
     params: SpectrogramParams,
     channels: Vec<Overview>,
+    state: DocState,
 }
 
 impl Overviews {
@@ -50,7 +51,7 @@ impl Overviews {
     fn serve(&self, job: &Job) -> bool {
         // Compared as bits, so a scale that is not a number is built for once, not for every picture.
         let analysis = |p: &SpectrogramParams| (p.fft_size, p.window, p.floor_db.to_bits(), p.ceil_db.to_bits());
-        self.generation == job.generation && analysis(&self.params) == analysis(&job.params)
+        analysis(&self.params) == analysis(&job.params)
     }
 }
 
@@ -69,11 +70,24 @@ impl Renderer {
                 }
                 let (job, state) = request;
                 let sources: Vec<StoreChannel> = (0..state.channel_count()).map(|ch| StoreChannel::new(&state, ch)).collect();
-                if !overviews.as_ref().is_some_and(|o| o.serve(&job)) {
+                if !overviews.as_ref().is_some_and(|o| o.serve(&job) && o.channels.len() == state.channel_count()) {
                     // Drop the last file's before building this one's.
                     drop(overviews.take());
                     let channels = sources.iter().map(|samples| Overview::build_from(samples, &job.params)).collect();
-                    overviews = Some(Overviews { generation: job.generation, params: job.params, channels });
+                    overviews = Some(Overviews { generation: job.generation, params: job.params, channels, state: state.clone() });
+                }
+                if let Some(overviews) = &mut overviews {
+                    if overviews.generation != job.generation {
+                        let span = wavcraft_core::doc::span::EditSpan::between(&overviews.state, &state);
+                        for overview in &mut overviews.channels {
+                            overview.after_step(span, state.len_frames() as usize);
+                        }
+                        overviews.state = state.clone();
+                        overviews.generation = job.generation;
+                    }
+                    for (overview, samples) in overviews.channels.iter_mut().zip(&sources) {
+                        overview.refresh_visible(samples, &job.params, job.columns);
+                    }
                 }
                 let cols = job.columns.cols;
                 let images = sources.iter().enumerate().map(|(ch, samples)| {

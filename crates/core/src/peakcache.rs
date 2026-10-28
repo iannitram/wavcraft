@@ -20,10 +20,11 @@ pub const DEFAULT_CAP_BYTES: u64 = 256 << 20;
 /// How much of the source's start is hashed.
 pub const HEADER_HASH_BYTES: usize = 64 << 10;
 
+/// Version 04 also stores the source-aligned block runs after a splice.
 /// Version 03: the payload is [`WavePeaks`] with level 0 at one entry per `PEAK_BLOCK` (256)
 /// samples; 02 had one per 32, so its level 0 is the wrong length. 02 (and 01, which held
 /// soundcraft `Peaks`) is a stale miss, rebuilt and replaced by the next store. Other magic is damaged.
-const MAGIC: &[u8; 8] = b"WCPEAK03";
+const MAGIC: &[u8; 8] = b"WCPEAK04";
 /// The start every version of the format shares; a file with it but another version is a miss.
 const MAGIC_PREFIX: &[u8] = b"WCPEAK";
 const EXT: &str = "peaks";
@@ -103,11 +104,17 @@ fn take_u64(b: &[u8], at: &mut usize) -> Option<u64> {
     Some(v)
 }
 
-type EncodedParts<'a> = Vec<(usize, &'a [Vec<(f32, f32)>])>;
+type EncodedParts<'a> = Vec<(usize, &'a [Vec<(f32, f32)>], &'a [(usize, usize, usize)])>;
 
 /// The cache file's bytes for `peaks` (one per channel, each of `frames` samples) under `key`.
 fn encode(key: &Key, frames: u64, peaks: &[WavePeaks]) -> Option<Vec<u8>> {
-    let parts: EncodedParts<'_> = peaks.iter().map(WavePeaks::to_parts).collect();
+    let parts: EncodedParts<'_> = peaks
+        .iter()
+        .map(|p| {
+            let (len, levels) = p.to_parts();
+            (len, levels, p.layout())
+        })
+        .collect();
     let payload = postcard::to_stdvec(&parts).ok()?;
     let mut out = Vec::with_capacity(payload.len() + 64);
     out.extend_from_slice(MAGIC);
@@ -122,7 +129,7 @@ fn encode(key: &Key, frames: u64, peaks: &[WavePeaks]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-type DecodedParts = Vec<(usize, Vec<Vec<(f32, f32)>>)>;
+type DecodedParts = Vec<(usize, Vec<Vec<(f32, f32)>>, Vec<(usize, usize, usize)>)>;
 
 /// Parse a cache file's bytes against `key`, `channels` and `frames`.
 fn decode(bytes: &[u8], key: &Key, channels: usize, frames: u64) -> Result<Vec<WavePeaks>, Miss> {
@@ -148,7 +155,7 @@ fn decode(bytes: &[u8], key: &Key, channels: usize, frames: u64) -> Result<Vec<W
     }
     let parts: DecodedParts = postcard::from_bytes(payload).map_err(|_| Miss::Corrupt)?;
     let peaks: Vec<WavePeaks> =
-        parts.into_iter().map(|(len, levels)| WavePeaks::from_parts(len, levels)).collect::<Option<_>>().ok_or(Miss::Corrupt)?;
+        parts.into_iter().map(|(len, levels, runs)| WavePeaks::from_layout_parts(len, levels, runs)).collect::<Option<_>>().ok_or(Miss::Corrupt)?;
     if peaks.len() != channels || peaks.iter().any(|p| p.len_samples() as u64 != frames) {
         return Err(Miss::Corrupt);
     }
@@ -409,7 +416,7 @@ mod tests {
         store(&cache, &key, 5_000, &peaks, DEFAULT_CAP_BYTES).unwrap();
         let file = cache.join(key.file_name());
         let current = fs::read(&file).unwrap();
-        for old in [b"WCPEAK02", b"WCPEAK01"] {
+        for old in [b"WCPEAK03", b"WCPEAK02", b"WCPEAK01"] {
             let mut bytes = current.clone();
             bytes[..MAGIC.len()].copy_from_slice(old);
             fs::write(&file, &bytes).unwrap();

@@ -6,8 +6,12 @@
 //! document keeps in RAM besides the store's block cache is the peaks, about 1/24 of a byte a
 //! sample.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::doc::span::EditSpan;
 
 use soundcraft_audio_io::{AudioBuffer, AudioInfo, FileFormat, SampleFormat};
 
@@ -42,33 +46,142 @@ fn finish(acc: (f32, f32)) -> (f32, f32) {
     if acc.0 > acc.1 { (0.0, 0.0) } else { acc }
 }
 
-/// Multi-resolution min/max overview of one channel, for drawing at any zoom. The same layout and
-/// answers as `soundcraft_audio_io::peaks::Peaks` (the tests hold them equal), built from
-/// chunked reads of the store instead of one slice of the whole channel. NaN samples are ignored.
+/// Multi-resolution min/max overview of one channel, built from chunked store reads.
+/// Blocks follow each piece's source grid, with short blocks at splice boundaries, so
+/// an unaligned shift never requires rereading the unchanged suffix. Coarser levels
+/// merge groups of four level-0 blocks. NaN samples are ignored.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WavePeaks {
     len: usize,
-    levels: Vec<Vec<(f32, f32)>>,
+    levels: Arc<Vec<Vec<(f32, f32)>>>,
+    /// (exclusive frame end, exclusive block end, first block length). Runs keep the
+    /// source grid after a splice without an extra frame position per level-0 block.
+    runs: Arc<Vec<(usize, usize, usize)>>,
 }
 
 impl WavePeaks {
     /// Build from channel `ch` of `state`, a chunk at a time.
     pub fn build(state: &DocState, ch: usize) -> std::io::Result<WavePeaks> {
+        Self::updated(state, ch, None)
+    }
+
+    /// Reuse unchanged source-aligned blocks, including a suffix shifted by one frame.
+    fn updated(state: &DocState, ch: usize, previous: Option<(&WavePeaks, &Channel, EditSpan)>) -> std::io::Result<WavePeaks> {
         let frames = usize::try_from(state.len_frames()).map_err(|_| std::io::Error::other("document too long"))?;
-        let mut level0 = Vec::with_capacity(frames.div_ceil(PEAK_BLOCK));
-        let mut chunk = vec![0.0f32; PEAK_CHUNK.min(frames.max(1))];
-        let mut at = 0usize;
-        while at < frames {
-            let want = chunk.len().min(frames - at);
-            let buf = chunk.get_mut(..want).ok_or_else(|| std::io::Error::other("peak buffer"))?;
-            let got = state.read(ch, at as u64, buf)?;
-            if got != want {
-                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "the document ended early"));
+        let channel = state.channel(ch).ok_or_else(|| std::io::Error::other("missing peak channel"))?;
+        let mut level0 = Vec::with_capacity(frames.div_ceil(PEAK_BLOCK) + channel.piece_count());
+        let mut runs = Vec::new();
+        let mut chunk = vec![0.0; PEAK_CHUNK.min(frames.max(1))];
+        // The diff bounds the edit, but a crop (or a paste of existing audio) can also
+        // share pieces inside that bound. Index those by immutable handle identity.
+        let mut sources = HashMap::new();
+        if let Some((_, old_channel, _)) = previous {
+            let mut frame = 0usize;
+            for piece in old_channel.pieces() {
+                sources.entry(Arc::as_ptr(piece.block())).or_insert_with(Vec::new).push((piece, frame));
+                frame += piece.len() as usize;
             }
-            level0.extend(buf.chunks(PEAK_BLOCK).map(|c| finish(c.iter().fold(EMPTY, |acc, &s| merge(acc, (s, s))))));
-            at += want;
         }
-        Ok(WavePeaks::from_level0(frames, level0))
+        let mut at = 0usize;
+        for piece in channel.pieces() {
+            let len = piece.len() as usize;
+            let head = (PEAK_BLOCK - piece.offset() as usize % PEAK_BLOCK).min(len);
+            let end = at + len;
+            let piece_start = at;
+            let shared = sources.get(&Arc::as_ptr(piece.block()));
+            let mut first = true;
+            while at < end {
+                let width = if first { head } else { PEAK_BLOCK.min(end - at) };
+                first = false;
+                let reused = previous.and_then(|(old, _, span)| {
+                    let (old_at, limit) = if at as u64 + width as u64 <= span.at {
+                        (at, end.min(span.at as usize))
+                    } else if at as u64 >= span.at + span.inserted {
+                        (usize::try_from(at as u64 - span.inserted + span.removed).ok()?, end)
+                    } else {
+                        let offset = piece.offset() as usize + at - piece_start;
+                        let &(source, frame) = shared?.iter().find(|(source, _)| {
+                            source.offset() as usize <= offset && source.offset() as usize + source.len() as usize >= offset + width
+                        })?;
+                        let within = offset - source.offset() as usize;
+                        (frame + within, end.min(at + source.len() as usize - within))
+                    };
+                    let (index, start, stop) = old.block_at(old_at)?;
+                    if start != old_at || stop != old_at + width {
+                        return None;
+                    }
+                    let run = old.runs.get(old.runs.partition_point(|run| run.0 <= old_at))?;
+                    let count = if width == PEAK_BLOCK { ((limit - at).min(run.0 - old_at) / PEAK_BLOCK).max(1) } else { 1 };
+                    Some((old.levels.first()?.get(index..index + count)?, width * count))
+                });
+                if let Some((blocks, frames)) = reused {
+                    level0.extend_from_slice(blocks);
+                    at += frames;
+                } else {
+                    // Read new audio in bounded chunks, ending on this piece's source grid.
+                    let limit = previous.map_or(end, |(_, _, span)| {
+                        if at as u64 >= span.at && (at as u64) < span.at + span.inserted {
+                            end.min(usize::try_from(span.at + span.inserted).unwrap_or(end)).max(at + width)
+                        } else {
+                            at + width
+                        }
+                    });
+                    let mut want = chunk.len().min(limit - at);
+                    if want < end - at {
+                        want = width + (want - width) / PEAK_BLOCK * PEAK_BLOCK;
+                    }
+                    let buf = chunk.get_mut(..want).ok_or_else(|| std::io::Error::other("peak buffer"))?;
+                    if state.read(ch, at as u64, buf)? != want {
+                        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "the document ended early"));
+                    }
+                    let (head_samples, rest) = buf.split_at(width);
+                    level0.push(finish(head_samples.iter().fold(EMPTY, |acc, &s| merge(acc, (s, s)))));
+                    level0.extend(rest.chunks(PEAK_BLOCK).map(|c| finish(c.iter().fold(EMPTY, |acc, &s| merge(acc, (s, s))))));
+                    at += want;
+                }
+            }
+            // Merge adjacent runs when no short block separates their grids.
+            let count = level0.len();
+            let mut joined = false;
+            if let Some(&(last_end, last_count, last_head)) = runs.last() {
+                let start = runs.get(runs.len().saturating_sub(2)).filter(|_| runs.len() > 1).map_or(0, |r: &(usize, usize, usize)| r.0);
+                let last_len = last_end - start;
+                let tail = if last_len == last_head { last_head } else { (last_len - last_head - 1) % PEAK_BLOCK + 1 };
+                if tail == PEAK_BLOCK && head == PEAK_BLOCK {
+                    if let Some(last) = runs.last_mut() {
+                        *last = (end, count, last_head);
+                    }
+                    joined = true;
+                }
+                debug_assert!(count >= last_count);
+            }
+            if !joined {
+                runs.push((end, count, head));
+            }
+        }
+        let mut peaks = Self::from_level0(frames, level0);
+        peaks.runs = Arc::new(runs);
+        Ok(peaks)
+    }
+
+    /// The level-0 block containing a frame, with its exact bounds.
+    fn block_at(&self, frame: usize) -> Option<(usize, usize, usize)> {
+        let r = self.runs.partition_point(|run| run.0 <= frame);
+        let &(end, _, head) = self.runs.get(r)?;
+        let (start, first) = if r == 0 {
+            (0, 0)
+        } else {
+            let prev = self.runs.get(r - 1)?;
+            (prev.0, prev.1)
+        };
+        let offset = frame - start;
+        if offset < head {
+            Some((first, start, start + head))
+        } else {
+            let b = (offset - head) / PEAK_BLOCK;
+            let at = start + head + b * PEAK_BLOCK;
+            Some((first + 1 + b, at, (at + PEAK_BLOCK).min(end)))
+        }
     }
 
     /// Build from samples already in memory (tests).
@@ -80,7 +193,7 @@ impl WavePeaks {
     fn from_level0(len: usize, level0: Vec<(f32, f32)>) -> WavePeaks {
         let mut levels = Vec::new();
         if level0.is_empty() {
-            return WavePeaks { len: 0, levels };
+            return WavePeaks { len: 0, levels: Arc::new(levels), runs: Arc::default() };
         }
         levels.push(level0);
         while let Some(last) = levels.last() {
@@ -90,7 +203,8 @@ impl WavePeaks {
             let next: Vec<(f32, f32)> = last.chunks(FANOUT).map(|c| c.iter().fold(EMPTY, |acc, &b| merge(acc, b))).collect();
             levels.push(next);
         }
-        WavePeaks { len, levels }
+        let runs = vec![(len, levels[0].len(), len.min(PEAK_BLOCK))];
+        WavePeaks { len, levels: Arc::new(levels), runs: Arc::new(runs) }
     }
 
     /// Samples the overview was built from.
@@ -106,16 +220,33 @@ impl WavePeaks {
     /// Rebuild from [`to_parts`](Self::to_parts). `None` when the levels cannot be for `len`
     /// samples (a corrupt cache file).
     pub fn from_parts(len: usize, levels: Vec<Vec<(f32, f32)>>) -> Option<WavePeaks> {
-        let level0_ok = match levels.first() {
-            None => len == 0,
-            Some(l0) => l0.len() == len.div_ceil(PEAK_BLOCK),
-        };
-        level0_ok.then_some(WavePeaks { len, levels })
+        let runs = if len == 0 { Vec::new() } else { vec![(len, len.div_ceil(PEAK_BLOCK), len.min(PEAK_BLOCK))] };
+        Self::from_layout_parts(len, levels, runs)
+    }
+
+    pub(crate) fn layout(&self) -> &[(usize, usize, usize)] {
+        &self.runs
+    }
+
+    pub(crate) fn from_layout_parts(len: usize, levels: Vec<Vec<(f32, f32)>>, runs: Vec<(usize, usize, usize)>) -> Option<Self> {
+        let (mut frame, mut block) = (0, 0);
+        for &(end, count, head) in &runs {
+            if end <= frame || head == 0 || head > PEAK_BLOCK || head > end - frame || count != block + 1 + (end - frame - head).div_ceil(PEAK_BLOCK)
+            {
+                return None;
+            }
+            (frame, block) = (end, count);
+        }
+        if frame != len || levels.first().map_or(0, Vec::len) != block {
+            return None;
+        }
+        Some(Self { len, levels: Arc::new(levels), runs: Arc::new(runs) })
     }
 
     /// Bytes held.
     pub fn bytes(&self) -> usize {
-        self.levels.iter().map(|l| l.len() * std::mem::size_of::<(f32, f32)>()).sum()
+        self.levels.iter().map(|l| l.len() * std::mem::size_of::<(f32, f32)>()).sum::<usize>()
+            + self.runs.len() * std::mem::size_of::<(usize, usize, usize)>()
     }
 
     /// (min, max) over `[start, end)`, clamped to the data; blocks at the edges contribute whole,
@@ -125,8 +256,8 @@ impl WavePeaks {
         if start >= end {
             return (0.0, 0.0);
         }
-        let mut lo = start / PEAK_BLOCK;
-        let mut hi = end.div_ceil(PEAK_BLOCK);
+        let mut lo = self.block_at(start).map_or(0, |b| b.0);
+        let mut hi = self.block_at(end - 1).map_or(0, |b| b.0 + 1);
         let mut acc = EMPTY;
         let mut lvl = 0usize;
         while lo < hi {
@@ -276,11 +407,36 @@ impl Document {
         Document::from_state(path.to_path_buf(), state)
     }
 
-    /// The document for `state` (after an edit, or an undo): its peaks are built by reading the
-    /// store a chunk at a time, one thread a channel.
+    /// Fully build a document without a previous overview, reading the store in bounded
+    /// chunks, one thread per channel. Use [`after_step`](Self::after_step) for history changes.
     pub fn from_state(path: PathBuf, state: DocState) -> Result<Document, OpenError> {
         Document::from_state_cached(path, state, None)
     }
+    /// Show a new history state without rereading unchanged audio. The same piece-table
+    /// diff handles edits, undo, redo and arbitrary History panel jumps.
+    pub fn after_step(&self, state: DocState) -> Result<Document, OpenError> {
+        if state.len_frames() == 0 {
+            return Err(OpenError::Empty);
+        }
+        let started = std::time::Instant::now();
+        let span = EditSpan::between(&self.state, &state);
+        let mut peaks = Vec::with_capacity(state.channel_count());
+        for ch in 0..state.channel_count() {
+            let previous = self.peaks.get(ch).zip(self.state.channel(ch)).map(|(p, channel)| (p, channel.as_ref(), span));
+            peaks.push(WavePeaks::updated(&state, ch, previous).map_err(|e| OpenError::Io(e.to_string()))?);
+        }
+        let src = state.source();
+        let info = AudioInfo {
+            format: src.format,
+            sample_format: src.sample_format,
+            sample_rate: state.sample_rate(),
+            channels: u16::try_from(state.channel_count()).unwrap_or(u16::MAX),
+            frames: state.len_frames(),
+            bwf: src.bwf.clone(),
+        };
+        Ok(Document { path: self.path.clone(), info, state, peaks, peak_report: PeakReport::off(started.elapsed().as_secs_f64() * 1000.0) })
+    }
+
     /// [`from_state`](Self::from_state) with a peak cache (folder and key): the overviews are
     /// loaded from it when it holds them for this version of the file, otherwise computed and saved.
     pub fn from_state_cached(path: PathBuf, state: DocState, cache: Option<(&Path, &crate::peakcache::Key)>) -> Result<Document, OpenError> {
