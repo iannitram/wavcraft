@@ -173,6 +173,7 @@ fn gain(db: f64) -> f32 {
 /// another from the same [`RackConfig`] when the settings change.
 pub struct RackProcessor {
     channels: usize,
+    rate: u32,
     streams: Vec<Box<dyn EffectStream>>,
     input_gain: f32,
     output_gain: f32,
@@ -205,6 +206,7 @@ impl RackProcessor {
         let buf = || vec![vec![0.0f32; MAX_BLOCK]; channels];
         Ok(RackProcessor {
             channels,
+            rate,
             streams,
             input_gain: gain(input_db),
             output_gain: gain(output_db),
@@ -217,6 +219,10 @@ impl RackProcessor {
 
     pub fn channels(&self) -> usize {
         self.channels
+    }
+
+    pub fn rate(&self) -> u32 {
+        self.rate
     }
 
     /// The input buffer of channel `ch` for [`run_chunk`](Self::run_chunk): fill its first `n`
