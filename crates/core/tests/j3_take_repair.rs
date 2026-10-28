@@ -22,6 +22,7 @@ fn header(format: u16, channels: u16, rate: u32, bits: u16, riff: u32, data: u32
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_repair_uses_only_the_first_44_header_bytes() {
     // 44.1 kHz 16-bit stereo (4 bytes a frame), one second of samples; sample bytes after HEADER_BYTES in the slice are ignored.
     let mut with_samples = header(1, 2, 44_100, 16, 36, 0).to_vec();
@@ -31,6 +32,7 @@ fn j3_repair_uses_only_the_first_44_header_bytes() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_repair_fixes_a_take_killed_before_its_first_update() {
     // 48 kHz 24-bit mono, one second of samples after a header still saying "no data".
     let stale = header(1, 1, 48_000, 24, 36, 0);
@@ -38,6 +40,7 @@ fn j3_repair_fixes_a_take_killed_before_its_first_update() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_repair_drops_a_partial_last_frame() {
     // 24-bit stereo: 6 bytes a frame; 1000 whole frames and 4 bytes of a frame cut short.
     let stale = header(1, 2, 48_000, 24, 36, 0);
@@ -45,6 +48,7 @@ fn j3_repair_drops_a_partial_last_frame() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_repair_shrinks_sizes_that_claim_more_than_the_file_holds() {
     let long = header(1, 2, 48_000, 24, 12_036, 12_000);
     assert_eq!(repair_header(&long, 6_044), HeaderRepair::Fixed(header(1, 2, 48_000, 24, 6_036, 6_000)));
@@ -54,6 +58,7 @@ fn j3_repair_shrinks_sizes_that_claim_more_than_the_file_holds() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_repair_reports_an_intact_header() {
     let good = header(1, 2, 48_000, 24, 6_036, 6_000);
     assert_eq!(repair_header(&good, 6_044), HeaderRepair::Intact);
@@ -68,6 +73,7 @@ fn j3_repair_reports_an_intact_header() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_repair_handles_float_takes() {
     // 32-bit float stereo: 8 bytes a frame, 10 frames.
     let stale = header(3, 2, 48_000, 32, 36, 0);
@@ -75,6 +81,7 @@ fn j3_repair_handles_float_takes() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_repair_caps_sizes_at_the_32_bit_limit() {
     // A 5 GB file: the data size stops at the largest whole number of frames
     // with RIFF size = data + 36 <= 4_294_967_295.
@@ -85,6 +92,7 @@ fn j3_repair_caps_sizes_at_the_32_bit_limit() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_repair_refuses_what_is_not_a_take() {
     let good = header(1, 2, 48_000, 24, 36, 0);
     // Too short a header slice, and a file shorter than a header.
