@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use soundcraft_audio_io::{AudioBuffer, BitDepth, EncodeOptions, FileFormat, SampleFormat};
 use wavcraft_core::doc::DocState;
-use wavcraft_core::io::{open, OpenError, OpenOptions};
+use wavcraft_core::io::{OpenError, OpenOptions, open};
 use wavcraft_core::store::Encoding;
 use wavcraft_testkit::*;
 
