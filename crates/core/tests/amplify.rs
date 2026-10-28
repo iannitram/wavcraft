@@ -208,3 +208,13 @@ fn amplify_keeps_float_headroom_above_zero_dbfs_until_save() {
     let max_int16 = 32767.0_f32 / 32768.0_f32;
     assert!(content(&reopened_pcm16)[0].iter().all(|&v| (v - max_int16).abs() < 1e-6));
 }
+
+#[test]
+fn effect_amplify_action_resolves_to_the_registry_effect_once() {
+    let action = by_name("effect.amplify").expect("registry Amplify action exists");
+    let wavcraft_core::actions::ActionId::Effect(i) = action.id else {
+        panic!("effect.amplify must resolve to a registry effect action");
+    };
+    assert_eq!(effects::all()[i as usize].id(), "amplify");
+    assert_eq!(wavcraft_core::actions::all_actions().filter(|a| a.name == "effect.amplify").count(), 1);
+}

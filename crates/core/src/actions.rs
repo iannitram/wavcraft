@@ -364,10 +364,11 @@ pub fn zoom_preset_slot(id: ActionId) -> Option<usize> {
 /// registry's effects come through [`all_actions`]) and listed by [`all_actions`] before the registry's.
 pub const ONE_SHOT: &[Action] = &[
     // One-shot effects on the selection (the whole file with none). Amplify uses the editor's
-    // `params` (control verb `PARAM`). Normalize has no row: the registry's Normalize (E3, #29)
-    // owns `effect.normalize`, and `ActionId::Normalize` still runs through `Editor::run`.
+    // `params` (control verb `PARAM`). Amplify has no row: the registry's Amplify (E2, #28) owns
+    // `effect.amplify`, and `ActionId::Amplify` still runs through `Editor::run` with `amplify.db`.
+    // Normalize has no row: the registry's Normalize (E3, #29) owns `effect.normalize`, and
+    // `ActionId::Normalize` still runs through `Editor::run`.
     edit(ActionId::Reverse, "effect.reverse", "Reverse"),
-    edit(ActionId::Amplify, "effect.amplify", "Amplify"),
     edit(ActionId::FadeInLinear, "effect.fadeIn.linear", "Fade In (Linear)"),
     edit(ActionId::FadeInCosine, "effect.fadeIn.cosine", "Fade In (Raised Cosine)"),
     edit(ActionId::FadeOutLinear, "effect.fadeOut.linear", "Fade Out (Linear)"),
@@ -384,7 +385,7 @@ fn effect_rows() -> &'static [Action] {
             .enumerate()
             .filter_map(|(i, e)| {
                 let name = format!("effect.{}", e.id());
-                // A one-shot row keeps its name (Amplify, B002): action names stay unique.
+                // Avoid duplicate action names if a one-shot row shares a registered effect id.
                 if ONE_SHOT.iter().any(|a| a.name == name) {
                     return None;
                 }
