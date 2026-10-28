@@ -110,6 +110,21 @@ fn awkward(channels: usize, frames: usize) -> AudioBuffer {
 /// A WAV written by hand, for layouts audio-io's encoder doesn't make (8-bit, 64-bit float,
 /// extra chunks before and after the data, a fmt that is WAVE_FORMAT_EXTENSIBLE).
 fn hand_wav(tag: u16, bits: u16, channels: u16, data: &[u8], extensible: bool) -> Vec<u8> {
+    hand_wav_with_mask(tag, bits, channels, data, extensible, speaker_mask(channels))
+}
+
+/// The speaker mask that names the channels of a `channels`-channel file: FC for mono, FL and FR
+/// for stereo, FL, FR and FC for 3 channels (f75 keeps a mask only when its speaker count matches).
+fn speaker_mask(channels: u16) -> u32 {
+    match channels {
+        1 => 0x4,
+        2 => 0x3,
+        _ => 0x7,
+    }
+}
+
+/// [`hand_wav`] with the extensible fmt's speaker mask given, for files whose mask does not match.
+fn hand_wav_with_mask(tag: u16, bits: u16, channels: u16, data: &[u8], extensible: bool, mask: u32) -> Vec<u8> {
     let mut fmt = Vec::new();
     fmt.extend((if extensible { 0xFFFEu16 } else { tag }).to_le_bytes());
     fmt.extend(channels.to_le_bytes());
@@ -121,7 +136,7 @@ fn hand_wav(tag: u16, bits: u16, channels: u16, data: &[u8], extensible: bool) -
     if extensible {
         fmt.extend(22u16.to_le_bytes());
         fmt.extend(bits.to_le_bytes());
-        fmt.extend(3u32.to_le_bytes());
+        fmt.extend(mask.to_le_bytes());
         fmt.extend(tag.to_le_bytes());
         fmt.extend([0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71]);
     }
@@ -199,8 +214,8 @@ fn streamed_open_matches_audio_io_for_every_kit_file_and_layout() {
     ] {
         let p = write(&dir.0.join(name), &hand_wav(tag, bits, channels, data, ext));
         let doc = same_as_audio_io(&p, &root.0);
-        // Only an extensible header carries a speaker mask (hand_wav writes 3).
-        assert_eq!(doc.source().channel_mask, ext.then_some(3), "{name}");
+        // Only an extensible header carries a speaker mask (hand_wav writes one for its channel count).
+        assert_eq!(doc.source().channel_mask, ext.then_some(speaker_mask(channels)), "{name}");
         // Chunks the opener skipped are recorded, and where the marker chunks are.
         let skipped: Vec<String> = doc.source().skipped_chunks().iter().map(|c| c.id_str()).collect();
         assert_eq!(skipped, ["iXML", "cue ", "LIST"], "{name}");
@@ -212,6 +227,24 @@ fn streamed_open_matches_audio_io_for_every_kit_file_and_layout() {
     }
     // Every session folder made above was removed when its document dropped.
     assert_eq!(std::fs::read_dir(&root.0).unwrap().count(), 0);
+}
+
+/// An extensible file whose speaker mask names 2 speakers but has 1 channel: the mask is dropped
+/// with a warning, and the file still opens.
+#[test]
+fn a_channel_mask_that_does_not_match_the_channel_count_is_dropped() {
+    let dir = TempDir::new("mask-mismatch");
+    let root = TempDir::new("mask-mismatch-sessions");
+    let bytes: Vec<u8> = (0..60_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
+    let p = write(&dir.0.join("mask-mismatch.wav"), &hand_wav_with_mask(1, 8, 1, &bytes, true, 0x3));
+    let doc = stream(&p, &root.0).unwrap();
+    assert_eq!(doc.source().channel_mask, None);
+    assert!(
+        doc.source().warnings.iter().any(|w| w.contains("names 2 speakers but the file has 1 channels")),
+        "warnings: {:?}",
+        doc.source().warnings
+    );
+    assert_eq!(doc.channel_count(), 1);
 }
 
 /// Task 04b test 2: one file per source format, and the encoding its blocks get.

@@ -393,9 +393,7 @@ mod tests {
     /// whole, so an export of a real setup imports back.
     #[test]
     fn a_settings_file_with_the_merged_keys_is_accepted() {
-        let mut s = Settings::default();
-        s.session_folder = Some(PathBuf::from("D:/sessions"));
-        s.hidden_panels = vec!["levels".to_string()];
+        let mut s = Settings { session_folder: Some(PathBuf::from("D:/sessions")), hidden_panels: vec!["levels".to_string()], ..Default::default() };
         s.set("crossfade_cut_join_ms", "20").expect("cut join");
         s.set("crossfade_edge_ms", "5").expect("edge");
         s.set("output_device", "Speakers").expect("output");

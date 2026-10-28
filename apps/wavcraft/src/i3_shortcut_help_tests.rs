@@ -1,8 +1,26 @@
 //! Locked I3 expectations. The builder must not edit this file.
-use super::{pressed_actions, shortcut_help_content, shortcut_help_rows};
+use super::pressed_commands;
 
 use egui::Key;
 use wavcraft_core::actions::{self, ActionId};
+use wavcraft_core::shortcuts::{Command, Keymap};
+
+/// The Help list's rows: the action table in menu order, one row per bound chord.
+fn shortcut_help_rows(mac: bool) -> Vec<(&'static str, &'static str, String)> {
+    let keymap = Keymap::new();
+    actions::TABLE
+        .iter()
+        .flat_map(|action| keymap.chords(Command::Action(action.id)).map(move |chord| (action.name, action.menu, chord.text(mac))))
+        .collect()
+}
+
+/// Draw the Help list's rows, each label and key as its own text.
+fn shortcut_help_content(ui: &mut egui::Ui, mac: bool) {
+    for (_, label, key) in shortcut_help_rows(mac) {
+        ui.label(label);
+        ui.label(key);
+    }
+}
 
 fn key_action(key: Key, cmd: bool, shift: bool) -> Vec<ActionId> {
     let ctx = egui::Context::default();
@@ -14,10 +32,18 @@ fn key_action(key: Key, cmd: bool, shift: bool) -> Vec<ActionId> {
         modifiers |= egui::Modifiers::SHIFT;
     }
     let events = vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }];
+    let keymap = Keymap::new();
     let mut found = Vec::new();
-    let _ = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-        found = pressed_actions(ui.ctx());
+    let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+        found = pressed_commands(ui.ctx(), &keymap)
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::Action(id) => Some(id),
+                _ => None,
+            })
+            .collect();
     });
+    output.textures_delta.clear();
     found
 }
 
@@ -263,6 +289,12 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("edit.cut", "Cut", "Ctrl+X".to_string()),
         ("edit.copy", "Copy", "Ctrl+C".to_string()),
         ("edit.paste", "Paste", "Ctrl+V".to_string()),
+        ("edit.clipboard.1", "Set Current Clipboard: 1", "Ctrl+1".to_string()),
+        ("edit.clipboard.2", "Set Current Clipboard: 2", "Ctrl+2".to_string()),
+        ("edit.clipboard.3", "Set Current Clipboard: 3", "Ctrl+3".to_string()),
+        ("edit.clipboard.4", "Set Current Clipboard: 4", "Ctrl+4".to_string()),
+        ("edit.clipboard.5", "Set Current Clipboard: 5", "Ctrl+5".to_string()),
+        ("nr.capture_print", "Capture Noise Print", "Shift+P".to_string()),
         ("edit.delete", "Delete", "Delete".to_string()),
         ("edit.delete", "Delete", "Backspace".to_string()),
         ("edit.crop", "Crop", "Ctrl+T".to_string()),
@@ -276,25 +308,38 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("edit.zeroCrossings.leftToRight", "Zero Crossings: Left Side to Right", "Shift+J".to_string()),
         ("edit.zeroCrossings.rightToLeft", "Zero Crossings: Right Side to Left", "Shift+K".to_string()),
         ("edit.zeroCrossings.rightToRight", "Zero Crossings: Right Side to Right", "Shift+L".to_string()),
+        ("edit.convertSampleType", "Convert Sample Type…", "Shift+T".to_string()),
         ("edit.setIn", "Set In Point to Playhead", "I".to_string()),
         ("edit.setOut", "Set Out Point to Playhead", "O".to_string()),
         ("edit.leftChannel", "Left Channel Only", "↑".to_string()),
         ("edit.rightChannel", "Right Channel Only", "↓".to_string()),
         ("view.cursorToStart", "Playhead to Start", "Home".to_string()),
         ("view.cursorToEnd", "Playhead to End", "End".to_string()),
+        ("marker.add", "Add Marker", "M".to_string()),
+        ("marker.prev", "Playhead to Previous Marker", "Ctrl+Alt+ArrowLeft".to_string()),
+        ("marker.next", "Playhead to Next Marker", "Ctrl+Alt+ArrowRight".to_string()),
         ("view.zoomIn", "Zoom In", "=".to_string()),
         ("view.zoomOut", "Zoom Out", "−".to_string()),
         ("view.zoomToSelection", "Zoom to Selection", "Shift+S".to_string()),
         ("view.zoomOutFull", "Zoom Out Full", "Ctrl+\\".to_string()),
+        ("view.zoom.ampIn", "Zoom In Vertically", "Alt+=".to_string()),
+        ("view.zoom.ampOut", "Zoom Out Vertically", "Alt+−".to_string()),
+        ("view.spectral.resolutionUp", "Spectral Resolution Up", "Ctrl+Shift+↑".to_string()),
+        ("view.spectral.resolutionDown", "Spectral Resolution Down", "Ctrl+Shift+↓".to_string()),
         ("tool.select", "Time Selection Tool", "T".to_string()),
         ("tool.hand", "Hand Tool", "H".to_string()),
         ("tool.zoom", "Zoom Tool", "Z".to_string()),
+        ("tool.marquee", "Marquee Selection Tool", "E".to_string()),
+        ("view.gotoTime", "Go to Time…", "Ctrl+J".to_string()),
+        ("view.snap.toggle", "Snapping", "S".to_string()),
+        ("transport.returnOnStop", "Return to Start Position on Stop", "Shift+X".to_string()),
     ]);
 }
 
 fn rendered_text(mac: bool) -> Vec<String> {
     let ctx = egui::Context::default();
-    let output = ctx.run_ui(egui::RawInput::default(), |ui| shortcut_help_content(ui, mac));
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| shortcut_help_content(ui, mac));
+    output.textures_delta.clear();
     let mut labels = Vec::new();
     for shape in &output.shapes {
         if let egui::epaint::Shape::Text(text) = &shape.shape {
