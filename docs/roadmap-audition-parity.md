@@ -403,18 +403,18 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 244 | A332 | T5 | Invert (merged: B113) | Flip polarity of selection | missing |  | dsp::offline::invert upstream; SoundCraft dsp::offline::invert reusable | soundcraft-dsp (MIT/Apache) | S | B001 | #30, #58 |
 | 245 | A333 | T5 | Reverse (merged: B114) | Reverse selection | missing |  | dsp::offline::reverse upstream; SoundCraft dsp::offline::reverse reusable | soundcraft-dsp (MIT/Apache) | S | B001 | #30 |
 | 246 | A335 | T5 | Normalize (merged: B036) | #29 (E3) | missing |  | subnormal-peak fix SoundCraft PR #820; SoundCraft dsp::offline::normalize+remove_dc reusable | soundcraft-dsp (MIT/Apache) | S | B001 | #29 |
-| 247 | B009 | T5 | Default Favorites (Fade In/Out, Normalize to 0 dB, Dynamics presets, etc.) | Ship a starter set of one-click saved effect settings | missing |  |  |  | S | B008 | #27 |
+| 247 | B009 | T5 | Default Favorites (Fade In/Out, Normalize to 0 dB, Dynamics presets, etc.) | Ship a starter set of one-click saved effect settings [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-03.md] | missing |  |  |  | S | B008 | #27 |
 | 248 | B014 | T5 | Rack slot power / bypass | Per-slot enable; bypassed costs nothing | missing |  |  |  | S | B013 | #33 |
 | 249 | B015 | T5 | Slot reorder / drag, replace, remove | Rearrange and swap effects in the chain | missing |  |  |  | S | B013 | #33 |
 | 250 | B016 | T5 | Rack input and output gain | Gain before and after the chain | missing |  |  |  | S | B013 | #33 |
-| 251 | B017 | T5 | Rack Mix (dry/wet) and per-effect wet | Blend processed with dry signal | missing |  |  |  | S | B013 | #33 |
-| 252 | B019 | T5 | Process-with-tail / Apply to extend length | Let reverb/delay tails extend past the selection | missing |  | SoundCraft dsp::offline::apply_plugin_with_tail (reusable) |  | S | B018 |  |
+| 251 | B017 | T5 | Rack Mix (dry/wet) and per-effect wet | Blend processed with dry signal [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-03.md] | missing |  |  |  | S | B013 | #33 |
+| 252 | B019 | T5 | Process-with-tail / Apply to extend length | Let reverb/delay tails extend past the selection [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-03.md] | missing |  | SoundCraft dsp::offline::apply_plugin_with_tail (reusable) |  | S | B018 |  |
 | 253 | B021 | T5 | Rack presets (whole-chain) | Save/load chain with all settings | missing |  |  |  | S | B007, B013 | #35 |
 | 254 | B022 | T5 | Master bypass of rack / A-B compare | Toggle all effects off to compare | missing |  |  |  | S | B013 |  |
-| 255 | B023 | T5 | Rack Favorites / Rack to Favorite | Save a chain as a favorite | missing |  |  |  | S | B008, B013 |  |
+| 255 | B023 | T5 | Rack Favorites / Rack to Favorite | Save a chain as a favorite [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-04.md] | missing |  |  |  | S | B008, B013 |  |
 | 256 | B024 | T5 | Re-edit effect in slot from dialog | Open a slot's dialog from the rack | missing |  |  |  | S | B006, B013 | #33 |
-| 257 | B026 | T5 | Amplify: clip-guard / Calculate Now | Show headroom-safe gain and avoid clipping | missing |  |  |  | S | A334 | #28 |
-| 258 | B041 | T5 | Match Volume (gain, selection to ref) (merged: C144) | Fit levels between clips | missing |  | SoundCraft LoudnessMeter |  | S | B125 | #72 |
+| 257 | B026 | T5 | Amplify: clip-guard / Calculate Now | Show headroom-safe gain and avoid clipping [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-04.md] | missing |  |  |  | S | A334 | #28 |
+| 258 | B041 | T5 | Match Volume (gain, selection to ref) (merged: C144) | Fit levels between clips [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-04.md] | missing |  | SoundCraft LoudnessMeter |  | S | B125 | #72 |
 | 259 | B080 | T5 | Output noise only (monitor residue) | Listen to the removed noise to judge settings | missing | CP |  |  | S | B067 | #37 |
 | 260 | B165 | T5 | Time Shift (Insert delay) | Shift audio later by a number of milliseconds | missing |  | SoundCraft time_shift plugin reusable | soundcraft-dsp (MIT/Apache) | S | B001 |  |
 | 261 | B169 | T5 | A/B compare effect settings | Switch between two settings [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-06.md] | missing |  |  | photocraft EditHistory, filmcraft workspaces (MIT/Apache) | S | B006 |  |
@@ -434,17 +434,17 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 270 | B130 | T6 | Loudness range (LRA) (merged: C067) | Statistical spread of loudness | missing |  | SoundCraft meter does not list LRA; SoundCraft LoudnessMeter lacks LRA (verify) | filmcraft-audio-dsp (MIT/Apache); ebur128 (MIT; test oracle) | M | B125 | #38, #39 |
 | 271 | A309 | T6 | Frequency analysis (FFT graph) (merged: A037, B052, C068) | See p_freq; lines/area/bars, scale, FFT size, window, 0 dB reference, overall note readout | missing |  | SoundCraft dsp::spectrum::magnitude_db; SoundCraft dsp/spectrum.rs | realfft, rustfft (MIT; MIT/Apache) | L | B011 | #72 |
 | 272 | A317 | T6 | Phase meter (merged: A039, C062) | See p_phase_meter | missing |  | no SoundCraft meter | soundcraft-dsp (MIT/Apache) | M | A213 | #72 |
-| 273 | A041 | T6 | Loudness Radar panel (merged: B091, C066) | Radar-style loudness meter (momentary, short-term, integrated, LRA) | missing |  | dsp::meter LoudnessMeter available upstream (code-map.md); SoundCraft dsp::meter LoudnessMeter reusable; none in SC | ebur128 (MIT; test oracle) | L | B125 | #39 |
+| 273 | A041 | T6 | Loudness Radar panel (merged: B091, C066) | Radar-style loudness meter (momentary, short-term, integrated, LRA) [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-01.md] | missing |  | dsp::meter LoudnessMeter available upstream (code-map.md); SoundCraft dsp::meter LoudnessMeter reusable; none in SC | ebur128 (MIT; test oracle) | L | B125 | #39 |
 | 274 | A214 | T6 | Dynamic/static peaks, valleys, LED, gradient, ranges (merged: C054, C057, C072) | Meter display options: peak mode, ranges and colour | missing |  | SoundCraft PeakMeter::peak_hold_db/set_hold_secs; SoundCraft PR #720 | filmcraft meters + fx editors (MIT/Apache) | S | A213 | #18 |
 | 275 | A215 | T6 | Reset clip indicators (merged: C056, C168) | Clear the held clip lights on the meters | missing |  | SoundCraft PeakMeter::clipped/reset_clip; SoundCraft PeakMeter::reset_clip | filmcraft meters + fx editors (MIT/Apache) | S | A213 | #18 |
-| 276 | A217 | T6 | RMS display (merged: C055) | Peak and RMS (#18 asks for both) | missing |  | soundcraft-dsp RmsMeter; SoundCraft RmsMeter | filmcraft meters + fx editors (MIT/Apache) | S | A213 | #18 |
+| 276 | A217 | T6 | RMS display (merged: C055) | Peak and RMS (#18 asks for both) [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-02.md] | missing |  | soundcraft-dsp RmsMeter; SoundCraft RmsMeter | filmcraft meters + fx editors (MIT/Apache) | S | A213 | #18 |
 | 277 | A218 | T6 | Dock horizontally or vertically | Panel layout changes with dock shape | missing |  |  | craft-ui (MIT/Apache) | S | A002, A213 | #18 |
 | 278 | A310 | T6 | Frequency hold snapshots (8) | Frozen overlays | missing |  |  |  | S | A309 |  |
 | 279 | A311 | T6 | Scan selection | Average spectrum over a range | missing |  |  |  | S | A309 |  |
 | 280 | A312 | T6 | Copy graph data | Text report to clipboard | missing |  |  |  | S | A309 |  |
 | 281 | A315 | T6 | RMS settings (sine/square reference, account for DC, window width) | Calibration options | missing |  |  |  | S | A313 |  |
 | 282 | A319 | T6 | Play only selected frequencies toggle | See tr_spectral_only | missing |  |  |  | S |  |  |
-| 283 | A040 | T6 | Phase Analysis panel (merged: B051, C063) | Phase relationship display between channels (older-version panel; not in fetched pages) | missing |  |  |  | M | A317 | #72 |
+| 283 | A040 | T6 | Phase Analysis panel (merged: B051, C063) | Phase relationship display between channels (older-version panel; not in fetched pages) [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-01.md] | missing |  |  |  | M | A317 | #72 |
 | 284 | A314 | T6 | RMS histogram | Graph of prevalence of levels | missing |  |  |  | M | A313 |  |
 | 285 | C069 | T6 | Spectral/spectrogram meter during record | Live spectrogram while recording | missing |  |  |  | M | A309 |  |
 
@@ -467,14 +467,14 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 298 | A055 | T7 | Spot Healing Brush (merged: B079, B139) | Brush over a click or pop in the spectral view to repair it automatically | missing |  |  |  | L | A052, B011, B135 |  |
 | 299 | B077 | T7 | Auto Heal (spectral) (merged: A339, B143) | Selection fixes using surrounding spectrum automatically | missing |  |  | cathar (MIT/Apache; reference only) | L | B011, B135 |  |
 | 300 | B075 | T7 | Sound Remover (merged: A047) | Learn an unwanted sound from selection and remove, with analysis modes/quality | missing |  |  | cathar (MIT/Apache; reference only) | L | A337, B011 |  |
-| 301 | A067 | T7 | Spectral Pitch Display (older versions) (merged: B105, B145) | Alternate view showing pitch tracks; from memory of older Audition, not in fetched pages | missing |  |  | realfft, rustfft (MIT; MIT/Apache) | L |  |  |
+| 301 | A067 | T7 | Spectral Pitch Display (older versions) (merged: B105, B145) | Alternate view showing pitch tracks; from memory of older Audition, not in fetched pages [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-01.md] | missing |  |  | realfft, rustfft (MIT; MIT/Apache) | L |  |  |
 | 302 | A115 | T7 | Move selection by dragging inside it | For spectral selections | missing |  |  |  | S | A052 |  |
 | 303 | B141 | T7 | Spectral selection feather edges | Smooth selection edges to avoid clicks | missing |  |  | realfft, rustfft (MIT; MIT/Apache) | S | B135 | #23 |
 | 304 | A056 | T7 | Add/subtract spectral selection (Shift/Alt drag) | Add to or remove from a spectral selection with a modifier key | missing |  |  |  | M | A053 |  |
 | 305 | B076 | T7 | Automatic Phase Correction | Fix time/phase drift between channels with auto/rate/size/global | missing |  |  | cathar (MIT/Apache; reference only) | M | B011 |  |
 | 306 | B147 | T7 | Spectral Display fast refresh after edit | Picture updates within 0.5 s | missing |  |  |  | M |  | #16, #68 |
 | 307 | A054 | T7 | Paintbrush selection (merged: B138) | Brush selection with size and opacity setting; intensity scales effect | missing |  |  |  | L | A052, B135 | #23 |
-| 308 | A068 | T7 | Spectral Phase Display (older versions) | Alternate view showing inter-channel phase; from memory, not in fetched pages | missing |  |  | realfft, rustfft (MIT; MIT/Apache) | L |  |  |
+| 308 | A068 | T7 | Spectral Phase Display (older versions) | Alternate view showing inter-channel phase; from memory, not in fetched pages [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-01.md] | missing |  |  | realfft, rustfft (MIT; MIT/Apache) | L |  |  |
 | 309 | A204 | T7 | Play spectral selection only | Plays only chosen frequencies; toggleable via Play button menu | missing |  |  | soundcraft-model/mix/playback (MIT/Apache) | L | A052 | #23 |
 | 310 | B054 | T7 | FFT Filter | Draw a response curve (log/linear, precision, windows) applied by FFT | missing |  |  | filmcraft-audio-dsp (MIT/Apache); realfft, rustfft (MIT; MIT/Apache) | L | B011 |  |
 | 311 | B070 | T7 | Adaptive Noise Reduction | Tracks varying broadband noise without a print | missing |  |  |  | L | B005, B011 |  |
@@ -502,7 +502,7 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 328 | B158 | T8 | Batch Process panel (merged: A259, C231) | Run a favorite/effect over a list of files with output format and naming | missing | CP |  |  | L | A224, B008, B159 | #72 |
 | 329 | A036 | T8 | Metadata panel (merged: C249) | BWF, ID3, RIFF and XMP tabs to view and edit file metadata, with schema display settings | missing |  | SoundCraft PR #644 iXML read; SoundCraft audio-io wav bext | lofty (MIT/Apache) | L | A265 | #14 |
 | 330 | A268 | T8 | XMP metadata with schemas and custom schemas | Edit and search XMP; sidecar files where format cannot hold it | missing | CP |  | quick-xml, xmp_writer (MIT; MIT/Apache) | L | A036 |  |
-| 331 | A345 | T8 | Windows, Linux, macOS builds (merged: C300) | Cross-platform | partial |  | SoundCraft mac signing PR #793 | filmcraft crash hook, photocraft crash_guard, pdfcraft updates (MIT/Apache) | M |  | #48, #70 |
+| 331 | A345 | T8 | Windows, Linux, macOS builds (merged: C300) | Cross-platform [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-03.md] | partial |  | SoundCraft mac signing PR #793 | filmcraft crash hook, photocraft crash_guard, pdfcraft updates (MIT/Apache) | M |  | #48, #70 |
 | 332 | A135 | T8 | Channel names (iXML, labels) | Show channel names from iXML metadata | missing |  | SoundCraft PR #644 (iXML read) in audio-io | bwavfile (MIT) | S | A265 |  |
 | 333 | A254 | T8 | AIFF options: byte order, AIFC | Little vs big endian | missing | CP |  |  | S | A246 |  |
 | 334 | A255 | T8 | Audio-only MOV | PCM in QuickTime | missing |  |  | filmcraft-aac + craft-media (MIT/Apache; patent check) | S |  |  |
@@ -537,8 +537,8 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 363 | B163 | T8 | Scripting / macro recording of effect sequences (merged: C238) | Record command steps | missing | CP |  |  | L | B008 | #72 |
 | 364 | C258 | T8 | AAC/M4A export | Write M4A AAC | missing |  | SoundCraft gap G-21; no encoder in SC | filmcraft-aac + craft-media (MIT/Apache; patent check) | L |  | #72 |
 | 365 | C275 | T8 | Immersive/ADM export | Atmos or ADM BWF | missing |  | SoundCraft gap G-12, issue #217 | bwavfile (MIT) | L |  |  |
-| 366 | A229 | T8 | AAC gapless trimming and edit list | Correct AAC length and start | upstream-in-progress |  | wait for upstream: SoundCraft PRs #814, #713, #753 (MP3 length), issues #707, #712; usable via audio-io if WavCraft's pin is bumped | filmcraft-aac + craft-media (MIT/Apache; patent check) | S |  |  |
-| 367 | A230 | T8 | iXML field-recorder metadata (merged: C289) | Read iXML chunks | upstream-in-progress |  | wait for upstream: SoundCraft PR #644 (audio-io ixml.rs); SoundCraft PR #644 open | bwavfile (MIT); quick-xml, xmp_writer (MIT; MIT/Apache) | S | A265 |  |
+| 366 | A229 | T8 | AAC gapless trimming and edit list | Correct AAC length and start [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-02.md] | upstream-in-progress |  | wait for upstream: SoundCraft PRs #814, #713, #753 (MP3 length), issues #707, #712; usable via audio-io if WavCraft's pin is bumped | filmcraft-aac + craft-media (MIT/Apache; patent check) | S |  |  |
+| 367 | A230 | T8 | iXML field-recorder metadata (merged: C289) | Read iXML chunks [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-02.md] | upstream-in-progress |  | wait for upstream: SoundCraft PR #644 (audio-io ixml.rs); SoundCraft PR #644 open | bwavfile (MIT); quick-xml, xmp_writer (MIT; MIT/Apache) | S | A265 |  |
 | 637 | C324 | T8 | Crash-safe export finalize step | Write export to a temp file, fsync, then rename into place so a crash never leaves a half-written output | missing | CP | added 2026-10-20 from reuse research | craft-atomic (MIT/Apache); atomic-write-file, tempfile (BSD-3-Clause; MIT/Apache) | M |  |  |
 | 638 | C325 | T8 | FLAC, Opus and AAC metadata round-trips | Read and write tags, pictures and chapters in FLAC, Opus and AAC/M4A files without damaging the audio | missing | CP | added 2026-10-20 from reuse research | flac-codec (MIT/Apache); lofty (MIT/Apache) | M |  |  |
 
@@ -604,7 +604,7 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 423 | C217 | T9 | Dialogue: Repair (reduce noise, rumble, DeHum, DeEss, reverb) | One-slider repairs for common problems | missing |  |  | nnnoiseless (BSD-3-Clause) | L | C215 | #37, #72 |
 | 424 | A044 | T9 | Session Properties / Mixer / Playlist panels | Mixer and session properties belong to multitrack; Playlist is waveform-side | missing |  |  |  | S |  |  |
 | 425 | A168 | T9 | Edit Tempo | Set tempo and time signature of the file for Bars and Beats | missing |  |  |  | S | A101 |  |
-| 426 | A187 | T9 | CD track markers (merged: C242) | Removed from Audition in 26.3 | missing |  |  |  | S | C084 | #40, #72 |
+| 426 | A187 | T9 | CD track markers (merged: C242) | Removed from Audition in 26.3 [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-01.md] | missing |  |  |  | S | C084 | #40, #72 |
 | 427 | A190 | T9 | Reorder and remove playlist items | Drag to reorder; remove | missing |  |  |  | S | A188 |  |
 | 428 | A191 | T9 | Save playlist in WAV | Stored in WAV file | missing |  |  | bwavfile (MIT) | S | A183, A188 |  |
 | 429 | A283 | T9 | Multitrack / Multitrack Clips (merged: C016) | Multitrack only | missing |  |  |  | S | A273 |  |
@@ -621,12 +621,12 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 440 | B063 | T9 | Flanger | Short swept delay with feedback | missing |  | SoundCraft flanger plugin reusable |  | S | B001, B002 |  |
 | 441 | B064 | T9 | Phaser | Allpass stage sweep | missing |  | SoundCraft phaser plugin reusable |  | S | B001, B002 |  |
 | 442 | B083 | T9 | Studio Reverb | Lighter reverb with fewer controls | missing |  | SoundCraft room_reverb |  | S | B081 |  |
-| 443 | B086 | T9 | Plate reverb | Plate-style preset | missing |  | SoundCraft plate_reverb |  | S | B081 |  |
+| 443 | B086 | T9 | Plate reverb | Plate-style preset [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-05.md] | missing |  | SoundCraft plate_reverb |  | S | B081 |  |
 | 444 | B095 | T9 | Bass Enhancer / Exciter | Low frequency enhancement | missing |  |  |  | S | B088 |  |
 | 445 | B100 | T9 | Mid/Side conversion | M/S encode/decode helper | missing |  |  |  | S | B027 |  |
 | 446 | B101 | T9 | Pan/Expand (waveform) | Pan a stereo or mono selection | missing |  |  |  | S | B027 |  |
 | 447 | B110 | T9 | Varispeed | Change speed and pitch together via resampling | missing |  | SoundCraft dsp::offline::resample reusable |  | S | B108 |  |
-| 448 | B111 | T9 | Pitch presets (octave, formant shift) | Predefined settings | missing |  |  | signalsmith-stretch (MIT; submodule licence unverified) | S | B107 |  |
+| 448 | B111 | T9 | Pitch presets (octave, formant shift) | Predefined settings [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-05.md] | missing |  |  | signalsmith-stretch (MIT; submodule licence unverified) | S | B107 |  |
 | 449 | B112 | T9 | Time-stretch to fit duration | Target a given length | missing |  |  | signalsmith-stretch (MIT; submodule licence unverified) | S | B108 |  |
 | 450 | C041 | T9 | Punch Again | Repeat the same punch quickly for another take [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-07.md] | missing |  |  |  | S | C039 |  |
 | 451 | C047 | T9 | Record-enable key and transport keys | Shortcuts for record/arm | missing |  |  |  | S | C036 |  |
@@ -677,8 +677,8 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 496 | A231 | T9 | Open audio of video files (AVI, MOV, MP4, MPEG, 3GP, FLV, WMV...) (merged: A320, C287, C213) | Opens soundtrack only | partial |  | SoundCraft issues #728,#658,#758; SoundCraft video demux |  | M | C101, C284 |  |
 | 497 | B020 | T9 | Pre/post fader positioning of slots | Slot ordering relative to track fader (Multitrack-style); mostly relevant when multitrack exists | missing |  |  |  | M | B013 | #72 |
 | 498 | B039 | T9 | Tube-modeled Compressor | Compressor with tube-like saturation and bias/character | missing |  | SoundCraft saturator+compressor could compose |  | M | B037, B088 |  |
-| 499 | B040 | T9 | Sidechain / key input for dynamics | Detector driven from another source | missing |  | SoundCraft issue #502 open (not a PR) |  | M | B037 |  |
-| 500 | B044 | T9 | Dynamic Delay / Echo Chamber | Delay with room-style echoes from a chosen chamber size | missing |  |  |  | M | B042, B081 |  |
+| 499 | B040 | T9 | Sidechain / key input for dynamics | Detector driven from another source [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-04.md] | missing |  | SoundCraft issue #502 open (not a PR) |  | M | B037 |  |
+| 500 | B044 | T9 | Dynamic Delay / Echo Chamber | Delay with room-style echoes from a chosen chamber size [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-04.md] | missing |  |  |  | M | B042, B081 |  |
 | 501 | B059 | T9 | Scientific Filter | Bessel/Butterworth/Chebyshev/Elliptic LP/HP/BP/BS of chosen order | missing |  | SoundCraft biquad.rs partial building block |  | M | B002 |  |
 | 502 | B082 | T9 | Full Reverb | Convolution-style quality algorithmic reverb with early-reflection controls | missing |  | SoundCraft FDN reverb partial |  | M | B081 |  |
 | 503 | B087 | T9 | Distortion | Transfer-curve editor distortion with DC and harmonic controls | missing |  | SoundCraft saturator/lofi partial |  | M | B001, B088 |  |
@@ -742,16 +742,16 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 561 | C297 | T9 | Surround meters | Meter per speaker | missing |  |  |  | M | C060, C293 |  |
 | 562 | A015 | T9 | Waveform / Multitrack editor switch (key 1) | Toggle between single-file and multitrack views | missing |  |  | soundcraft ui-egui patterns (MIT/Apache) | L |  |  |
 | 563 | A166 | T9 | Frequency Band Splitter | Split selection into up to 8 band copies with crossovers (multitrack tracks) | missing |  |  |  | L |  |  |
-| 564 | A232 | T9 | Import Premiere sequence (.prproj) | Imports sequences referencing media (multitrack) | missing |  |  |  | L |  |  |
+| 564 | A232 | T9 | Import Premiere sequence (.prproj) | Imports sequences referencing media (multitrack) [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-02.md] | missing |  |  |  | L |  |  |
 | 565 | A233 | T9 | Open session files (sesx, Audition XML, Premiere XML, FCP XML, OMF) | Opens in multitrack | missing |  |  |  | L |  |  |
 | 566 | A279 | T9 | Control Surface (FaderPort V1, HUI) | MIDI control surface setup | missing |  |  |  | L | A273 |  |
 | 567 | A305 | T9 | Generate Speech (OS voices) | Text-to-speech inserted as audio | missing |  |  |  | L |  |  |
-| 568 | A353 | T9 | Accessibility (screen reader, high-contrast) (merged: C305) | Not in Audition docs fetched | missing |  |  |  | L |  |  |
+| 568 | A353 | T9 | Accessibility (screen reader, high-contrast) (merged: C305) | Not in Audition docs fetched [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-03.md] | missing |  |  |  | L |  |  |
 | 569 | B084 | T9 | Convolution Reverb | Impulse-response reverb with IR loading, mix, EQ | missing |  | no convolution in SoundCraft dsp | fft-convolver (MIT) | L | B001 |  |
 | 570 | B085 | T9 | Surround Reverb | Multichannel reverb for 5.1 | missing |  |  | fft-convolver (MIT) | L | B081 |  |
 | 571 | B090 | T9 | Guitar Suite | Chain of guitar effects (compressor, filter, modeling) | missing |  |  |  | L | B037, B057, B088 |  |
 | 572 | B092 | T9 | Mastering effect | EQ/compress/limit/exciter/widener chain | missing |  |  |  | L | B034, B037, B057, B098 |  |
-| 573 | B096 | T9 | Dynamic EQ (band-limited dynamic) | EQ with level-dependent bands; not in Audition core but Studio EQ | missing |  |  |  | L | B037, B057 |  |
+| 573 | B096 | T9 | Dynamic EQ (band-limited dynamic) | EQ with level-dependent bands; not in Audition core but Studio EQ [Audition check 2026-10-28: differs; see logs/2026-10-23/feature-verification/batch-05.md] | missing |  |  |  | L | B037, B057 |  |
 | 574 | B097 | T9 | Center Channel Extractor | Extract/attenuate center-panned content with frequency range and EQ | missing |  |  |  | L | B011 |  |
 | 575 | B102 | T9 | Automatic Pitch Correction | Retune toward scale/key with attack, sensitivity, reference and presets | missing |  | SoundCraft dsp::pitch_detect YIN reusable for tracking |  | L | B103, B107 |  |
 | 576 | B104 | T9 | Manual Pitch Correction (graphical) | Draw/edit pitch curve of a waveform | missing |  |  |  | L | A067, B103 |  |
@@ -808,7 +808,7 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 627 | C279 | T9 | AAF import/export | Exchange sessions with Avid etc. | upstream-in-progress |  | wait for upstream: SoundCraft PR #799 (external-WAV AAF import), issue #40 |  | L | C074 |  |
 | 628 | C290 | T9 | Pro Tools session read | Open PTX | upstream-in-progress |  | wait for upstream: SoundCraft issue #528 |  | L | C074 |  |
 | 629 | C314 | T9 | AI features (generative, Enhance Speech, tagging) | AI-assisted audio | upstream-in-progress |  | wait for upstream: SoundCraft PR #603 Craft AI, #676 |  | L |  | #72 |
-| 630 | A234 | T9 | Legacy ASND handling | Instruct user to unzip | missing |  | Adobe-specific; replace or skip |  | S |  |  |
+| 630 | A234 | T9 | Legacy ASND handling | Instruct user to unzip [Audition check 2026-10-28: not in Audition; see logs/2026-10-23/feature-verification/batch-02.md] | missing |  | Adobe-specific; replace or skip |  | S |  |  |
 | 631 | A264 | T9 | Export with Adobe Media Encoder (merged: C270) | Multitrack export route; not applicable (no AME) | missing |  | Adobe-specific; replace or skip |  | S | C185 |  |
 | 632 | C310 | T9 | Share / upload (Creative Cloud, social) | Share to cloud or social | missing |  | Adobe-specific; replace or skip: SoundCraft PR #774 CollabCraft share |  | M |  |  |
 | 633 | C281 | T9 | Premiere Pro round trip (Edit in Audition) (merged: A325) | Send Premiere sequence/clips and send mix back | missing |  | Adobe-specific; replace or skip |  | L | C278 | #72 |
