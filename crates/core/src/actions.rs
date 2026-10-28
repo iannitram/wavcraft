@@ -382,11 +382,13 @@ fn effect_rows() -> &'static [Action] {
         effects::all()
             .iter()
             .enumerate()
-            .map(|(i, e)| Action {
-                id: ActionId::Effect(i as u16),
-                name: Box::leak(format!("effect.{}", e.id()).into_boxed_str()),
-                menu: e.name(),
-                kind: Kind::Edit,
+            .filter_map(|(i, e)| {
+                let name = format!("effect.{}", e.id());
+                // A one-shot row keeps its name (Amplify, B002): action names stay unique.
+                if ONE_SHOT.iter().any(|a| a.name == name) {
+                    return None;
+                }
+                Some(Action { id: ActionId::Effect(i as u16), name: Box::leak(name.into_boxed_str()), menu: e.name(), kind: Kind::Edit })
             })
             .collect()
     })

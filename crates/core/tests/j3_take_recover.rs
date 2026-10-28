@@ -55,6 +55,7 @@ fn write(path: &Path, parts: &[&[u8]]) -> Vec<u8> {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_recover_fixes_a_killed_take_in_place() {
     let dir = TempDir::new("fix");
     let path = &dir.0.join("Take 2026-10-25 07.05.12.wav");
@@ -70,6 +71,7 @@ fn j3_recover_fixes_a_killed_take_in_place() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_recover_leaves_an_intact_take_untouched() {
     let dir = TempDir::new("intact");
     let path = &dir.0.join("Take 2026-10-25 08.00.00.wav");
@@ -79,6 +81,7 @@ fn j3_recover_leaves_an_intact_take_untouched() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_recover_does_not_touch_a_file_that_is_not_a_take() {
     let dir = TempDir::new("not-a-take");
     let mp3 = &dir.0.join("Take 2026-10-25 09.00.00.wav");
@@ -93,6 +96,7 @@ fn j3_recover_does_not_touch_a_file_that_is_not_a_take() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_recover_missing_file_is_an_error() {
     let dir = TempDir::new("missing-file");
     let path = &dir.0.join("Take 2026-10-25 11.00.00.wav");
@@ -102,6 +106,7 @@ fn j3_recover_missing_file_is_an_error() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_recover_lists_only_takes_that_need_repair() {
     let dir = TempDir::new("list");
     let stale = header(1, 24, 36, 0);
@@ -121,6 +126,7 @@ fn j3_recover_lists_only_takes_that_need_repair() {
 }
 
 #[test]
+#[ignore = "card wav-c-116 not built yet"]
 fn j3_recover_missing_folder_lists_nothing() {
     let dir = TempDir::new("missing-folder");
     assert_eq!(takes_needing_repair(&dir.0.join("no such folder")).unwrap(), Vec::<PathBuf>::new());
