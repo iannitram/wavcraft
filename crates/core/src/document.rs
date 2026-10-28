@@ -3,7 +3,7 @@
 //! A file is opened by streaming it into the session store ([`crate::io::open`]). Since task 05
 //! nothing reads it back whole: the waveform, the spectrogram and the player read frames through
 //! [`DocState::read`] in bounded chunks, so memory stays flat however long the file is. What a
-//! document keeps in RAM besides the store's block cache is the peaks, about a third of a byte a
+//! document keeps in RAM besides the store's block cache is the peaks, about 1/24 of a byte a
 //! sample.
 
 use std::path::{Path, PathBuf};
@@ -18,13 +18,19 @@ use crate::spectrogram::Samples;
 use crate::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 /// Samples per level-0 block of the peaks.
-pub const PEAK_BLOCK: usize = 32;
+///
+/// Sized for a 3 h stereo 48 kHz file (518.4 M frames). Level 0 is one `(f32, f32)` (8 bytes) per
+/// block: 518.4 M / 256 = 2.025 M blocks = 16.2 MB a channel. The coarser levels add a third
+/// (`FANOUT` 4): 21.6 MB a channel, 43.2 MB for two, under the 64 MB budget. At 32 it was 346 MB.
+pub const PEAK_BLOCK: usize = 256;
 /// Blocks of one level merged into a block of the next.
 const FANOUT: usize = 4;
 /// Frames read at a time to build the peaks (a multiple of [`PEAK_BLOCK`]).
 const PEAK_CHUNK: usize = BLOCK_FRAMES;
+const _: () = assert!(PEAK_CHUNK.is_multiple_of(PEAK_BLOCK));
 /// Columns a span of at least this many frames is drawn from the peaks; closer in, from samples.
-const PEAK_MIN_SPAN: f64 = 64.0;
+/// Eight blocks: a column's edge slack (at most one block on each side) is at most an eighth of it.
+const PEAK_MIN_SPAN: f64 = (8 * PEAK_BLOCK) as f64;
 
 const EMPTY: (f32, f32) = (f32::INFINITY, f32::NEG_INFINITY);
 
@@ -453,8 +459,13 @@ impl Document {
     }
 
     /// `(min, max)` per pixel column for drawing channel `ch` over the frame range
-    /// `[start, end)`. Zoomed in past the overview's resolution it reads just the frames on
-    /// screen from the store, so single samples stay visible.
+    /// `[start, end)`.
+    ///
+    /// A column of at least [`PEAK_MIN_SPAN`] frames comes from the overview: it contains the
+    /// column's own range and is within one [`PEAK_BLOCK`] of it on each side. Narrower columns
+    /// (zoomed in) are computed from the samples, read from the store: only the frames on screen,
+    /// at most `cols * PEAK_MIN_SPAN + 1` frames per call, so single samples stay visible and
+    /// exact.
     pub fn waveform_columns(&self, ch: usize, start: f64, end: f64, cols: usize) -> Vec<(f32, f32)> {
         let silent = || vec![(0.0, 0.0); cols];
         let Some(peaks) = self.peaks.get(ch) else { return silent() };
@@ -466,7 +477,7 @@ impl Document {
             return peaks.columns(start, end, cols);
         }
         let len = self.frames();
-        // Only the frames this view shows are read: at most `cols * 64 + 1` of them.
+        // Only the frames this view shows are read: at most `cols * PEAK_MIN_SPAN + 1` of them.
         let first_frame = start.max(0.0).floor() as usize;
         let last_frame = (end.ceil().max(0.0) as usize).min(len);
         if first_frame >= last_frame {
@@ -665,5 +676,109 @@ mod tests {
         assert_eq!(doc.waveform_columns(0, f64::NAN, 100.0, 4), vec![(0.0, 0.0); 4]);
         assert_eq!(doc.waveform_columns(0, 100.0, 50.0, 4), vec![(0.0, 0.0); 4]);
         assert!(doc.waveform_columns(0, 0.0, 100.0, 0).is_empty());
+    }
+
+    /// Two channels of a sine, noise and sparse spikes, so single samples and sharp peaks matter.
+    fn spiky(frames: usize) -> AudioBuffer {
+        let mut seed = 0x2545_f491u32;
+        let mut channels: Vec<Vec<f32>> = (0..2).map(|_| Vec::with_capacity(frames)).collect();
+        for (c, out) in channels.iter_mut().enumerate() {
+            for i in 0..frames {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+                let sine = 0.5 * (i as f32 * 0.002 * (c + 1) as f32).sin();
+                let spike = if i % 99_991 == 1_234 * (c + 1) {
+                    0.99
+                } else if i % 65_521 == 7 {
+                    -0.97
+                } else {
+                    0.0
+                };
+                out.push((sine + 0.3 * noise + spike).clamp(-1.0, 1.0));
+            }
+        }
+        AudioBuffer { sample_rate: 48_000, channels }
+    }
+
+    /// (min, max) of a slice, `(0, 0)` when empty: the same answer as a column of silence.
+    fn range_of(s: &[f32]) -> (f32, f32) {
+        if s.is_empty() {
+            return (0.0, 0.0);
+        }
+        s.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |m, &v| (m.0.min(v), m.1.max(v)))
+    }
+
+    /// The frames column `c` of a view `[start, start + per_col * cols)` covers, as
+    /// `waveform_columns` takes them: `floor(a)..ceil(b)`, clamped to the data. `None` outside it.
+    fn column_frames(len: usize, start: f64, per_col: f64, c: usize) -> Option<std::ops::Range<usize>> {
+        let a = start + per_col * c as f64;
+        let b = a + per_col;
+        if b <= 0.0 || a >= len as f64 {
+            return None;
+        }
+        let first = a.max(0.0).floor() as usize;
+        let last = (b.ceil() as usize).clamp(first + 1, len);
+        Some(first..last)
+    }
+
+    /// Every column of a view matches the samples: exactly where it is drawn from the store (a
+    /// column narrower than `PEAK_MIN_SPAN`), and otherwise containing the column's own range and
+    /// within one block of it on each side.
+    fn assert_columns_match(doc: &Document, samples: &[f32], ch: usize, start: usize, spp: usize, cols: usize) {
+        let per_col = spp as f64;
+        let out = doc.waveform_columns(ch, start as f64, (start + spp * cols) as f64, cols);
+        assert_eq!(out.len(), cols);
+        let from_store = per_col < PEAK_MIN_SPAN;
+        for (c, &got) in out.iter().enumerate() {
+            let own = column_frames(samples.len(), start as f64, per_col, c);
+            let exact = own.clone().map_or((0.0, 0.0), |r| range_of(&samples[r]));
+            let ctx = format!("channel {ch}, start {start}, {spp} samples a column, column {c}");
+            if from_store {
+                assert_eq!(got, exact, "{ctx}: read from the store, so exact");
+                continue;
+            }
+            assert!(got.0 <= exact.0 && got.1 >= exact.1, "{ctx}: {got:?} does not contain the exact {exact:?}");
+            if let Some(r) = own {
+                let wide = r.start.saturating_sub(PEAK_BLOCK)..(r.end + PEAK_BLOCK).min(samples.len());
+                let outer = range_of(&samples[wide]);
+                assert!(got.0 >= outer.0 && got.1 <= outer.1, "{ctx}: {got:?} is wider than one block around {exact:?} (outer {outer:?})");
+            }
+        }
+    }
+
+    /// Zoomed detail at any zoom, at offsets in the middle and the last tenth of a file longer than
+    /// the second-coarsest level's blocks, matches the samples: exactly from the store, within one
+    /// overview block otherwise.
+    #[test]
+    fn zoomed_columns_match_the_samples_at_every_zoom_and_offset() {
+        const FRAMES: usize = 4_500_000;
+        let audio = spiky(FRAMES);
+        let doc = Document::from_buffer(audio.clone()).unwrap();
+        // The file is longer than the span of the second-coarsest level's blocks.
+        let levels = doc.peaks[0].to_parts().1.len();
+        assert!(FRAMES > PEAK_BLOCK * FANOUT.pow(levels.saturating_sub(2) as u32), "{levels} levels");
+        // Offsets: 2,000,003 (middle, not block-aligned), 4,100,011 (last tenth, not aligned).
+        for ch in 0..2 {
+            let samples = &audio.channels[ch];
+            for &spp in &[1usize, 7, 64, 300, 2_048, 50_000] {
+                for &start in &[2_000_003usize, 4_100_011] {
+                    let cols = ((FRAMES - start) / spp).min(1_000);
+                    assert_columns_match(&doc, samples, ch, start, spp, cols);
+                }
+            }
+            // The whole file in 1,000 columns, from the start.
+            assert_columns_match(&doc, samples, ch, 0, FRAMES / 1_000, 1_000);
+        }
+    }
+
+    /// The overview of a 3 h stereo 48 kHz file, by the arithmetic of its levels, is under 64 MB.
+    #[test]
+    fn a_three_hour_stereo_overview_fits_in_64_mb() {
+        let frames = 3 * 3600 * 48_000usize;
+        let level0 = frames.div_ceil(PEAK_BLOCK);
+        // Level 0 plus the coarser levels, a third more with FANOUT 4, per channel, 8 bytes each.
+        let per_channel = level0 * std::mem::size_of::<(f32, f32)>() * FANOUT / (FANOUT - 1);
+        let total = 2 * per_channel;
+        assert!(total <= 64_000_000, "{total} bytes");
     }
 }

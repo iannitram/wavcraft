@@ -20,9 +20,12 @@ pub const DEFAULT_CAP_BYTES: u64 = 256 << 20;
 /// How much of the source's start is hashed.
 pub const HEADER_HASH_BYTES: usize = 64 << 10;
 
-/// Version 02: the payload is [`WavePeaks`] (since task 05; 01 held soundcraft `Peaks`). An old file
-/// fails the magic check and is replaced by the next store.
-const MAGIC: &[u8; 8] = b"WCPEAK02";
+/// Version 03: the payload is [`WavePeaks`] with level 0 at one entry per `PEAK_BLOCK` (256)
+/// samples; 02 had one per 32, so its level 0 is the wrong length. 02 (and 01, which held
+/// soundcraft `Peaks`) is a stale miss, rebuilt and replaced by the next store. Other magic is damaged.
+const MAGIC: &[u8; 8] = b"WCPEAK03";
+/// The start every version of the format shares; a file with it but another version is a miss.
+const MAGIC_PREFIX: &[u8] = b"WCPEAK";
 const EXT: &str = "peaks";
 
 /// What identifies a source file's peaks.
@@ -124,7 +127,8 @@ type DecodedParts = Vec<(usize, Vec<Vec<(f32, f32)>>)>;
 /// Parse a cache file's bytes against `key`, `channels` and `frames`.
 fn decode(bytes: &[u8], key: &Key, channels: usize, frames: u64) -> Result<Vec<WavePeaks>, Miss> {
     if bytes.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
-        return Err(Miss::Corrupt);
+        // Another version of this format is not damage: it is a miss, rebuilt by the next store.
+        return Err(if bytes.starts_with(MAGIC_PREFIX) { Miss::Stale } else { Miss::Corrupt });
     }
     let mut at = MAGIC.len();
     let size = take_u64(bytes, &mut at).ok_or(Miss::Corrupt)?;
@@ -391,6 +395,28 @@ mod tests {
         assert!(info(&cache).1 <= one, "{:?}", info(&cache));
         let n = info(&cache).0;
         assert_eq!(clear(&cache), n);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A file in an older version's format (its own magic, otherwise intact) is a stale miss, not
+    /// damage, and the next store replaces it.
+    #[test]
+    fn an_old_version_file_is_a_miss_and_is_rebuilt() {
+        let dir = scratch("old-version");
+        let cache = dir.join("cache");
+        let key = key_for(&dir, "a.wav", b"RIFF-x");
+        let peaks = sample_peaks(5_000);
+        store(&cache, &key, 5_000, &peaks, DEFAULT_CAP_BYTES).unwrap();
+        let file = cache.join(key.file_name());
+        let current = fs::read(&file).unwrap();
+        for old in [b"WCPEAK02", b"WCPEAK01"] {
+            let mut bytes = current.clone();
+            bytes[..MAGIC.len()].copy_from_slice(old);
+            fs::write(&file, &bytes).unwrap();
+            assert_eq!(load(&cache, &key, 2, 5_000).unwrap_err(), Miss::Stale, "{}", String::from_utf8_lossy(old));
+            store(&cache, &key, 5_000, &peaks, DEFAULT_CAP_BYTES).unwrap();
+            assert_eq!(load(&cache, &key, 2, 5_000).unwrap(), peaks);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
