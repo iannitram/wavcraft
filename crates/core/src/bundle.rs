@@ -387,4 +387,25 @@ mod tests {
             assert!(!is_bundle_name(bad), "{bad}");
         }
     }
+
+    /// A settings file with the keys this build writes beyond session_folder (the merged
+    /// preferences: panels, crossfades, devices, time display, language and presets) is accepted
+    /// whole, so an export of a real setup imports back.
+    #[test]
+    fn a_settings_file_with_the_merged_keys_is_accepted() {
+        let mut s = Settings::default();
+        s.session_folder = Some(PathBuf::from("D:/sessions"));
+        s.hidden_panels = vec!["levels".to_string()];
+        s.set("crossfade_cut_join_ms", "20").expect("cut join");
+        s.set("crossfade_edge_ms", "5").expect("edge");
+        s.set("output_device", "Speakers").expect("output");
+        s.set("time_display", "smpte_25").expect("time display");
+        s.set("dither", "on").expect("dither");
+        let text = s.to_text();
+        assert!(Settings::validate(&text).is_ok(), "{:?}", Settings::validate(&text));
+        assert_eq!(Settings::parse(&text).time_display, s.time_display);
+        assert!(Settings::validate("crossfade_edge_ms = 99999").is_err());
+        assert!(Settings::validate("no_such_key = 1").is_err());
+        assert!(Settings::validate("color.nope = #ffffff").is_err());
+    }
 }
