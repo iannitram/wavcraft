@@ -1062,10 +1062,10 @@ impl Settings {
             if !known {
                 return Err(format!("line {} has a setting this version does not know ({key:?})", i + 1));
             }
-            if let Err(e) = probe {
-                if e != unknown_key(key) {
-                    return Err(format!("line {}: {e}", i + 1));
-                }
+            if let Err(e) = probe
+                && e != unknown_key(key)
+            {
+                return Err(format!("line {}: {e}", i + 1));
             }
         }
         Ok(())

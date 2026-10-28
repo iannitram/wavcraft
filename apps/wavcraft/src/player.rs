@@ -543,7 +543,7 @@ impl Player {
         if self.has_output() {
             self.shared.device_rate.store(self.out_rate, Ordering::Release);
             let sounds = ClickSounds { accent: click_sound(self.out_rate, true), normal: click_sound(self.out_rate, false) };
-            let old = std::mem::replace(&mut *self.shared.clicks.lock().unwrap_or_else(|e| e.into_inner()), Some(sounds));
+            let old = self.shared.clicks.lock().unwrap_or_else(|e| e.into_inner()).replace(sounds);
             drop(old);
             let _ = self.commands.send(Command::Rebuild);
         }
@@ -1362,7 +1362,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
         }
         let n = (since / beat).floor();
         let into = (since - n * beat).max(0.0) * device_rate / f64::from(rate);
-        let sound = if (n as u64) % numerator == 0 { &c.accent } else { &c.normal };
+        let sound = if (n as u64).is_multiple_of(numerator) { &c.accent } else { &c.normal };
         sound.get(into as usize).map_or(0.0, |s| s * volume)
     };
     let end = playback.end;
@@ -1432,7 +1432,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
             // An explicit map: each device channel plays the document channels mapped to it
             // (summed), and nothing else.
             for (c, slot) in frame.iter_mut().enumerate() {
-                let sum: f32 = map.sources(c).filter(|src| *src < file_channels).map(|src| interp(src)).sum();
+                let sum: f32 = map.sources(c).filter(|src| *src < file_channels).map(interp).sum();
                 *slot = T::from_sample(sum);
             }
         } else if file_channels > 2 {
@@ -1459,7 +1459,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
         } else if channels == 1 && file_channels > 1 {
             // A one-channel device gets the average of the file's channels, not just the left
             // one (a host-left, guest-right recording would lose the guest).
-            let sum: f32 = (0..file_channels).map(|c| interp(c)).sum();
+            let sum: f32 = (0..file_channels).map(interp).sum();
             if let Some(slot) = frame.first_mut() {
                 *slot = T::from_sample(sum / file_channels as f32);
             }

@@ -883,18 +883,18 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 fn decode_ints(encoding: Encoding, raw: &[u8], out: &mut [f32]) {
     match encoding {
         Encoding::I16 => {
-            for (o, s) in out.iter_mut().zip(raw.chunks_exact(2)) {
-                *o = i16_to_f32(i16::from_le_bytes([s[0], s[1]]));
+            for (o, s) in out.iter_mut().zip(raw.as_chunks::<2>().0) {
+                *o = i16_to_f32(i16::from_le_bytes(*s));
             }
         }
         Encoding::I24 => {
-            for (o, s) in out.iter_mut().zip(raw.chunks_exact(3)) {
+            for (o, s) in out.iter_mut().zip(raw.as_chunks::<3>().0) {
                 *o = i24_to_f32(i32::from_le_bytes([0, s[0], s[1], s[2]]) >> 8);
             }
         }
         Encoding::F32 => {
-            for (o, s) in out.iter_mut().zip(raw.chunks_exact(4)) {
-                *o = f32::from_le_bytes([s[0], s[1], s[2], s[3]]);
+            for (o, s) in out.iter_mut().zip(raw.as_chunks::<4>().0) {
+                *o = f32::from_le_bytes(*s);
             }
         }
     }
@@ -906,8 +906,8 @@ const PACK_SAMPLES: usize = 4_096;
 fn write_i16(out: &mut BufWriter<File>, samples: &[i16]) -> io::Result<()> {
     let mut buf = [0u8; PACK_SAMPLES * 2];
     for chunk in samples.chunks(PACK_SAMPLES) {
-        for (b, v) in buf.chunks_exact_mut(2).zip(chunk) {
-            b.copy_from_slice(&v.to_le_bytes());
+        for (b, v) in buf.as_chunks_mut::<2>().0.iter_mut().zip(chunk) {
+            *b = v.to_le_bytes();
         }
         out.write_all(&buf[..chunk.len() * 2])?;
     }
@@ -917,7 +917,7 @@ fn write_i16(out: &mut BufWriter<File>, samples: &[i16]) -> io::Result<()> {
 fn write_i24(out: &mut BufWriter<File>, samples: &[i32]) -> io::Result<()> {
     let mut buf = [0u8; PACK_SAMPLES * 3];
     for chunk in samples.chunks(PACK_SAMPLES) {
-        for (b, v) in buf.chunks_exact_mut(3).zip(chunk) {
+        for (b, v) in buf.as_chunks_mut::<3>().0.iter_mut().zip(chunk) {
             let le = v.to_le_bytes();
             b.copy_from_slice(&le[..3]);
         }

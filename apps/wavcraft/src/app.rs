@@ -11451,10 +11451,10 @@ impl WaveApp {
         if let Some(scale) = chosen_scale {
             self.set_amp_scale(scale);
         }
-        if let Some(ch) = toggled {
-            if let Err(why) = self.run_action(ActionId::ToggleChannel(ch as u8), ui.ctx()) {
-                self.error = Some(why);
-            }
+        if let Some(ch) = toggled
+            && let Err(why) = self.run_action(ActionId::ToggleChannel(ch as u8), ui.ctx())
+        {
+            self.error = Some(why);
         }
         // Each editor panel's ≡ menu sits in the top right corner of its area.
         let mut chosen = None;
