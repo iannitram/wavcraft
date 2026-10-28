@@ -80,7 +80,7 @@ How to read it:
 
 The owner's ruling, 2026-10-26: "Stage 0, finish on the build machine (Recommended)". The merge plan is finished on the build machine's scratch clone, where it can build and test; then the result is pushed as one branch and merged through the Project Manager's review chain (pipeline rule R25). Nothing new is built for v1 until stage 0 is merged.
 
-- **Where it stands (2026-10-27):** done. The merge plan went into `main` as 44 merge commits; the old PRs are closed or merged and the remote branches swept (archive tags for unmerged ones); the review findings are filed as #987-#1011. Left over: `main` does not pass its own checks (#1012, #1010) and there is no CI (#1013); these are taken first in Dev Loop.
+- **Where it stands (2026-10-27):** done. The merge plan went into `main` as 44 merge commits; the old PRs are closed or merged and the remote branches swept (archive tags for unmerged ones); the review findings are filed as #987-#1011. Left over: `main` does not pass its own checks (#1012, #1010) and CI (#1013) is added (`.github/workflows/check.yml`); these are taken first in Dev Loop.
 - **Then:** the 30 open PRs are triaged against v1 (merge, or close as superseded), and the remaining remote branches are swept (archive tags for unmerged ones, R33). Issues are v2-normalized (in progress, 2026-10-26).
 - **Done when:** the stage-0 branch is merged into `main`, CI (once added) or the full local checks pass on it, the open PRs and branches are triaged, and PIPELINE.md moves to Dev Loop.
 
@@ -120,7 +120,7 @@ I5, I7 and J6 on the Mac (the 8 GB target), the notices file I6, A3 working, the
 - **Memory target:** an 8 GB Mac. All audio lives in the on-disk store; RAM holds a bounded cache; undo costs disk, not RAM (I7, [docs/v1/architecture.md](docs/v1/architecture.md)).
 - **Platform-specific code:** audio output and input through `cpal` (WASAPI on Windows, CoreAudio on macOS, ALSA/PipeWire on Linux), including recording devices and their unplug handling (J5) and the macOS microphone permission prompt (J6); file dialogs through `rfd`; free disk space through `sysinfo` and `rustix` `statvfs` on Unix; folder access rules on Windows (`apps/wavcraft/src/win_acl.rs`); file reveal (`apps/wavcraft/src/reveal.rs`).
 - **Machines:** Windows (the build machine; no mic, so recording is tested with a fake input), Linux (the SteamOS handhelds, Desktop Mode; the real mic tests), macOS Apple Silicon (a Mac mini first, then the 8 GB Mac).
-- **CI:** none yet (no `.github/workflows`). Adding a workflow that runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` on Linux, Windows and macOS is part of stage 0's follow-up, before Dev Loop.
+- **CI:** exists (`.github/workflows/check.yml`, #1013): on every push to `main` and every pull request it runs `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` on Linux, and `cargo test --workspace` on Linux, Windows and macOS, all on GitHub-hosted runners.
 
 ## Open-source pieces
 
