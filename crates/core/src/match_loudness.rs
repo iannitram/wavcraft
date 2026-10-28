@@ -331,3 +331,71 @@ impl Limiter {
         Ok(out)
     }
 }
+
+/// The arithmetic of card wav-c-38-a, ported onto [`plan`] (the one Match Loudness
+/// implementation). Card-38's `match_gain_db`/`within_tolerance`/`PRESETS` were dropped with its
+/// duplicate module; the cases that map onto this file's semantics are kept here.
+#[cfg(test)]
+mod card38_arithmetic_tests {
+    use super::*;
+
+    fn lo(lufs: f64, true_peak: f64) -> Loudness {
+        Loudness { frames: 480_000, integrated_lufs: lufs, range_lu: 0.0, true_peak_dbtp: true_peak, sample_peak_dbfs: true_peak, max_momentary_lufs: lufs }
+    }
+
+    fn near(got: f64, want: f64) {
+        assert!((got - want).abs() <= 1e-9, "got {got}, want {want}");
+    }
+
+    const OWNER: Target = Target::PODCAST;
+    const LIMIT_OFF: Target = Target { limit: false, ..Target::PODCAST };
+
+    #[test]
+    fn presets_are_the_owner_default_and_the_broadcast_default() {
+        assert_eq!(PRESETS[0].1, Target::PODCAST);
+        assert_eq!(PRESETS[1].1, Target::BROADCAST);
+        assert_eq!(Target::PODCAST.lufs, -16.0);
+        assert_eq!(Target::BROADCAST.lufs, -23.0);
+        assert_eq!(Target::PODCAST.max_true_peak_dbtp, -1.0);
+    }
+
+    #[test]
+    fn gain_raises_a_quiet_file_to_the_target() {
+        let p = plan(&lo(-20.0, -6.0), &OWNER).unwrap();
+        near(p.gain_db, 4.0);
+        assert!(!p.limiter && !p.capped);
+        near(plan(&lo(-30.0, -12.0), &Target::BROADCAST).unwrap().gain_db, 7.0);
+    }
+
+    #[test]
+    fn gain_lowers_a_loud_file_to_the_target() {
+        near(plan(&lo(-12.5, -0.5), &OWNER).unwrap().gain_db, -3.5);
+    }
+
+    #[test]
+    fn broadcast_matches_to_minus_23() {
+        near(plan(&lo(-20.0, -9.0), &Target::BROADCAST).unwrap().gain_db, -3.0);
+    }
+
+    #[test]
+    fn limiting_off_caps_the_gain_at_max_true_peak() {
+        let p = plan(&lo(-20.0, -3.0), &LIMIT_OFF).unwrap();
+        near(p.gain_db, 2.0);
+        assert!(p.capped && !p.limiter);
+        near(plan(&lo(-20.0, -8.0), &LIMIT_OFF).unwrap().gain_db, 4.0);
+        near(plan(&lo(-12.0, -3.0), &LIMIT_OFF).unwrap().gain_db, -4.0);
+    }
+
+    #[test]
+    fn limiting_on_does_not_cap_the_gain() {
+        let p = plan(&lo(-20.0, -3.0), &OWNER).unwrap();
+        near(p.gain_db, 4.0);
+        assert!(p.limiter && !p.capped);
+    }
+
+    #[test]
+    fn no_loudness_means_no_plan() {
+        assert!(plan(&lo(f64::NAN, -6.0), &OWNER).is_none());
+        assert!(plan(&lo(f64::NEG_INFINITY, -6.0), &OWNER).is_none());
+    }
+}
