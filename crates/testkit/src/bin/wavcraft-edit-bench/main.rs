@@ -165,7 +165,12 @@ fn run() -> Result<(), String> {
         }
         for (label, mut times) in by {
             times.sort();
-            println!("  {label:>14}: {:3}, median {}, slowest {}", times.len(), ms(times[times.len() / 2]), ms(*times.last().unwrap_or(&Duration::ZERO)));
+            println!(
+                "  {label:>14}: {:3}, median {}, slowest {}",
+                times.len(),
+                ms(times[times.len() / 2]),
+                ms(*times.last().unwrap_or(&Duration::ZERO))
+            );
         }
         let mut push: Vec<Duration> = done.iter().map(|e| e.push).collect();
         push.sort();

@@ -137,7 +137,6 @@ fn deesser_reduces_energy_in_its_band() {
     assert!((db(level_at(&soft[tail.clone()], 8000.0)) - db(level_at(&out[0][tail], 8000.0))).abs() < 0.5);
 }
 
-
 #[test]
 fn processing_one_chunk_alone_is_refused() {
     let e = effects::find("deesser").unwrap();

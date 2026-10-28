@@ -18,8 +18,8 @@
 
 use std::path::{Path, PathBuf};
 
-use soundcraft_model::{Session, SourceId};
 use soundcraft_audio_io::{BitDepth, EncodeOptions};
+use soundcraft_model::{Session, SourceId};
 
 use crate::multitrack::{MtError, Multitrack, read_audio_file};
 use crate::save::write_file_atomic;
@@ -201,8 +201,8 @@ impl Multitrack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundcraft_model::BitDepthSetting;
     use soundcraft_audio_io::AudioBuffer;
+    use soundcraft_model::BitDepthSetting;
 
     fn tone(rate: u32, secs: f32, ch: usize, hz: f32) -> AudioBuffer {
         let n = (rate as f32 * secs) as usize;

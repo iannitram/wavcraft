@@ -49,7 +49,16 @@ pub struct SpectrogramParams {
 
 impl Default for SpectrogramParams {
     fn default() -> Self {
-        SpectrogramParams { fft_size: 2048, min_hz: 40.0, max_hz: 24_000.0, log_freq: true, partial_log: false, floor_db: -100.0, ceil_db: 0.0, window: SpecWindow::Hann }
+        SpectrogramParams {
+            fft_size: 2048,
+            min_hz: 40.0,
+            max_hz: 24_000.0,
+            log_freq: true,
+            partial_log: false,
+            floor_db: -100.0,
+            ceil_db: 0.0,
+            window: SpecWindow::Hann,
+        }
     }
 }
 

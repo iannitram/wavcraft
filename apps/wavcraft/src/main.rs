@@ -9,40 +9,40 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
-mod convert_ui;
 mod batch_panel;
 mod cd_ui;
 mod control;
+mod convert_ui;
 mod diagnostics_panel;
+mod display;
+mod doclist;
 mod effect_dialog;
 mod files;
-mod input;
-mod recording;
-mod rec_input;
-mod multitrack_ui;
-mod mixer;
-mod meters_ui;
 mod freq_panel;
-mod oscb;
+mod input;
 mod markers_panel;
 mod match_ui;
-mod mixpaste;
 mod menus;
-mod doclist;
-mod display;
+mod meters_ui;
+mod mixer;
+mod mixpaste;
+mod multitrack_ui;
 mod notices;
+mod oscb;
 mod player;
 mod playlist_panel;
+mod rec_input;
+mod recording;
 // Not called yet: the Reveal in file manager menu item will use it.
-#[allow(dead_code)]
-mod reveal;
 mod rack_panel;
 mod recovery;
+#[allow(dead_code)]
+mod reveal;
 mod selflog;
 mod shortcut_editor;
 mod spectrum;
-mod video;
 mod statspanel;
+mod video;
 #[cfg(windows)]
 mod win_acl;
 

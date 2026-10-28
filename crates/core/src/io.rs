@@ -459,7 +459,14 @@ impl Builder {
             planes.push(v);
         }
 
-        Ok(Builder { store: store.clone(), channels: (0..channels).map(|_| Channel::new()).collect(), planes, encoding, i16s: Vec::new(), i24s: Vec::new() })
+        Ok(Builder {
+            store: store.clone(),
+            channels: (0..channels).map(|_| Channel::new()).collect(),
+            planes,
+            encoding,
+            i16s: Vec::new(),
+            i24s: Vec::new(),
+        })
     }
 
     /// Append what the planes hold as one block per channel, and empty them.

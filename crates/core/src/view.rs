@@ -565,7 +565,6 @@ impl Selection {
     }
 }
 
-
 impl Selection {
     /// Type a new start. A cursor moves; a range keeps its end (and swaps if passed).
     pub fn with_start(&self, frame: usize, total: usize) -> Selection {
