@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use crate::dsp::fade::{curve_from_drag, FadeCurve};
+use crate::dsp::fade::{FadeCurve, curve_from_drag};
 use crate::view::{Selection, Viewport};
 
 /// How close (in pixels) the pointer must be to a top corner of the waveform to grab its fade handle.

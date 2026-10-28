@@ -6,7 +6,7 @@ use std::io;
 use std::ops::Range;
 
 use super::{Effect, ParamDesc, Run, RunContext};
-use crate::dsp::fade::{fade_in_gain, fade_out_gain, FadeCurve};
+use crate::dsp::fade::{FadeCurve, fade_in_gain, fade_out_gain};
 
 /// Curve choices for [`FadeIn`] and [`FadeOut`], in [`FadeCurve`] order.
 pub const CURVE_NAMES: &[&str] = &["Linear", "Logarithmic", "Cosine"];
