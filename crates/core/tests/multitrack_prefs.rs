@@ -7,6 +7,7 @@ use wavcraft_core::settings::multitrack::{
     COMMENT, ClipColorMode, DEFAULT_CLIP_CROSSFADE_MS, DEFAULT_TRACK_HEIGHT, KEYS, MAX_CLIP_CROSSFADE_MS, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT,
     MultitrackPrefs,
 };
+use wavcraft_core::settings::video::VideoPrefs;
 
 struct TempDir(PathBuf);
 
@@ -312,6 +313,24 @@ fn save_keeps_the_settings_lines_and_replaces_its_own() {
     assert!(text.contains("session_folder = /home/user/s\n"));
     assert_eq!(MultitrackPrefs::load(&file), MultitrackPrefs::default());
     assert_eq!(Settings::load(&file), before);
+}
+
+#[test]
+fn settings_save_keeps_multitrack_and_video_preferences() {
+    let dir = TempDir::new("settings-keep-lines");
+    let file = dir.0.join("settings.txt");
+    custom().save(&file).unwrap();
+    let mut video = VideoPrefs::default();
+    video.set("video_overlay_size", "12").unwrap();
+    std::fs::write(&file, video.serialize(&std::fs::read_to_string(&file).unwrap())).unwrap();
+
+    Settings::default().save(&file).unwrap();
+
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("multitrack_track_height = 200\n"));
+    assert!(text.contains("multitrack_clip_crossfade_ms = 40\n"));
+    assert!(text.contains("multitrack_clip_color = clip\n"));
+    assert!(text.contains("video_overlay_size = 12\n"));
 }
 
 #[test]
