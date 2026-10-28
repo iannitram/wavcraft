@@ -4,7 +4,7 @@
 
 use std::io;
 
-use super::{Effect, ParamDesc, Run, RunContext};
+use super::{Effect, EffectStream, ParamDesc, Run, RunContext};
 
 /// Lowest gain setting in decibels.
 pub const MIN_GAIN_DB: f64 = -80.0;
@@ -41,6 +41,40 @@ pub fn amplify_gains(left_db: f64, right_db: f64, link: bool, channels: &[usize]
         .collect()
 }
 
+/// The settings as `(left_db, right_db, link)`, read from `params` in parameter order. A missing
+/// value takes its default, so a short list cannot panic.
+fn settings(params: &[f64]) -> (f64, f64, bool) {
+    let at = |i: usize, default: f64| params.get(i).copied().unwrap_or(default);
+    (at(0, DEFAULT_GAIN_DB), at(1, DEFAULT_GAIN_DB), at(2, 1.0) >= 0.5)
+}
+
+/// Scale each channel by its gain, in f64, writing f32. No clamping: the document keeps headroom
+/// above 0 dBFS until save.
+fn scale(gains: &[f64], input: &[&[f32]], output: &mut [&mut [f32]]) {
+    for ((i, o), g) in input.iter().zip(output.iter_mut()).zip(gains) {
+        for (a, b) in i.iter().zip(o.iter_mut()) {
+            *b = (f64::from(*a) * g) as f32;
+        }
+    }
+}
+
+/// The linear gains for a run or a stream, fixed when it starts (so the audio path allocates
+/// nothing).
+struct Gains(Vec<f64>);
+
+impl Run for Gains {
+    fn process(&mut self, _first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()> {
+        scale(&self.0, input, output);
+        Ok(())
+    }
+}
+
+impl EffectStream for Gains {
+    fn process_block(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
+        scale(&self.0, input, output);
+    }
+}
+
 /// Amplify effect (`effect.amplify`).
 pub struct Amplify;
 
@@ -54,15 +88,30 @@ impl Effect for Amplify {
     }
 
     fn parameters(&self) -> &'static [ParamDesc] {
-        &[]
+        const P: &[ParamDesc] = &[
+            ParamDesc::db("left_db", "Left", MIN_GAIN_DB, MAX_GAIN_DB, DEFAULT_GAIN_DB),
+            ParamDesc::db("right_db", "Right", MIN_GAIN_DB, MAX_GAIN_DB, DEFAULT_GAIN_DB),
+            ParamDesc::choice("link", "Link Sliders", &["off", "on"], 1),
+        ];
+        P
     }
 
-    fn begin(&self, _params: &[f64], _ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
-        Ok(None)
+    fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
+        let (left, right, link) = settings(params);
+        Ok(Some(Box::new(Gains(amplify_gains(left, right, link, &ctx.channels)))))
     }
 
-    fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "Amplify is not built yet"))
+    fn process(&self, params: &[f64], _first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()> {
+        let (left, right, link) = settings(params);
+        let channels: Vec<usize> = (0..input.len()).collect();
+        scale(&amplify_gains(left, right, link, &channels), input, output);
+        Ok(())
+    }
+
+    fn stream(&self, params: &[f64], channels: usize, _rate: u32) -> Option<Box<dyn EffectStream>> {
+        let (left, right, link) = settings(params);
+        let channels: Vec<usize> = (0..channels).collect();
+        Some(Box::new(Gains(amplify_gains(left, right, link, &channels))))
     }
 }
 
