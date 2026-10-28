@@ -20,8 +20,10 @@ mod tests {
         assert!(TEXT.len() > 100_000, "the full texts are in, not a stub");
     }
 
-    #[test]
-    fn every_library_in_the_lock_file_is_listed() {
+    /// The lock file's libraries that have no `name version` line in `notices`. Windows checks
+    /// the notices out with CRLF endings, so they are normalised to LF before matching.
+    fn libraries_missing_from(notices: &str) -> Vec<String> {
+        let text = notices.replace("\r\n", "\n");
         let lock = include_str!("../../../Cargo.lock");
         let mut name = "";
         let mut missing = Vec::new();
@@ -30,11 +32,25 @@ mod tests {
                 name = n.trim_end_matches('"');
             } else if let Some(v) = line.strip_prefix("version = \"") {
                 let entry = format!("\n{name} {}\n", v.trim_end_matches('"'));
-                if !name.starts_with("wavcraft") && !name.starts_with("craft-") && !TEXT.contains(&entry) {
+                if !name.starts_with("wavcraft") && !name.starts_with("craft-") && !text.contains(&entry) {
                     missing.push(entry.trim().to_string());
                 }
             }
         }
+        missing
+    }
+
+    #[test]
+    fn every_library_in_the_lock_file_is_listed() {
+        let missing = libraries_missing_from(TEXT);
         assert!(missing.is_empty(), "not in THIRD-PARTY-NOTICES.txt (run tools/notices.py --write): {missing:?}");
+    }
+
+    #[test]
+    fn the_lock_check_also_passes_with_crlf_line_endings() {
+        let crlf = TEXT.replace('\n', "\r\n");
+        assert!(crlf.contains("\r\n"), "the copy really has CRLF endings");
+        let missing = libraries_missing_from(&crlf);
+        assert!(missing.is_empty(), "CRLF notices should match too: {missing:?}");
     }
 }
