@@ -7,6 +7,7 @@ use wavcraft_core::settings::multitrack::{
     COMMENT, ClipColorMode, DEFAULT_CLIP_CROSSFADE_MS, DEFAULT_TRACK_HEIGHT, KEYS, MAX_CLIP_CROSSFADE_MS, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT,
     MultitrackPrefs,
 };
+use wavcraft_core::settings::video::VideoPrefs;
 
 struct TempDir(PathBuf);
 
@@ -315,10 +316,53 @@ fn save_keeps_the_settings_lines_and_replaces_its_own() {
 }
 
 #[test]
+fn settings_save_keeps_multitrack_and_video_preferences() {
+    let dir = TempDir::new("settings-keep-lines");
+    let file = dir.0.join("settings.txt");
+    custom().save(&file).unwrap();
+    let mut video = VideoPrefs::default();
+    video.set("video_overlay_size", "12").unwrap();
+    std::fs::write(&file, video.serialize(&std::fs::read_to_string(&file).unwrap())).unwrap();
+
+    Settings::default().save(&file).unwrap();
+
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("multitrack_track_height = 200\n"));
+    assert!(text.contains("multitrack_clip_crossfade_ms = 40\n"));
+    assert!(text.contains("multitrack_clip_color = clip\n"));
+    assert!(text.contains("video_overlay_size = 12\n"));
+}
+
+#[test]
 fn save_over_an_unreadable_file_just_writes_ours() {
     let dir = TempDir::new("over");
     let file = dir.0.join("settings.txt");
     std::fs::write(&file, [0xff, 0xfe, 0x00]).unwrap();
     custom().save(&file).unwrap();
     assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{COMMENT}\n{CUSTOM_BLOCK}"));
+}
+
+#[test]
+fn settings_save_twice_keeps_each_comment_once_and_the_file_unchanged() {
+    let dir = TempDir::new("settings-save-twice");
+    let file = dir.0.join("settings.txt");
+    custom().save(&file).unwrap();
+    let mut video = VideoPrefs::default();
+    video.set("video_overlay_size", "12").unwrap();
+    std::fs::write(&file, video.serialize(&std::fs::read_to_string(&file).unwrap())).unwrap();
+    let mut settings = Settings::default();
+    settings.set("session_folder", "/home/user/s").unwrap();
+
+    settings.save(&file).unwrap();
+    let first = std::fs::read_to_string(&file).unwrap();
+    settings.save(&file).unwrap();
+    let second = std::fs::read_to_string(&file).unwrap();
+
+    assert_eq!(first, second);
+    let text = second;
+    assert_eq!(text.lines().filter(|l| l.starts_with("# WavCraft settings")).count(), 1);
+    assert_eq!(text.matches("# session_folder:").count(), 1);
+    assert_eq!(text.matches(COMMENT).count(), 1);
+    assert!(text.contains("multitrack_track_height = 200\n"));
+    assert!(text.contains("video_overlay_size = 12\n"));
 }

@@ -1265,7 +1265,7 @@ impl Settings {
         out
     }
 
-    /// Write the settings to `path` (its folder made if missing), replacing the file whole.
+    /// Write the settings to `path` (its folder made if missing), keeping lines for other groups.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -1278,13 +1278,15 @@ impl Settings {
     }
 
     fn save_with_names(&self, path: &Path, mut next_name: impl FnMut() -> String) -> io::Result<()> {
+        let existing = std::fs::read_to_string(path).unwrap_or_default();
+        let text = self.merge_into(&existing);
         // Create the temp file exclusively (O_EXCL: never follows a symlink, never truncates)
         // under a unique name; if the name is taken, try another.
         for _ in 0..16 {
             let tmp = path.with_file_name(next_name());
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
                 Ok(mut file) => {
-                    let written = io::Write::write_all(&mut file, self.to_text().as_bytes());
+                    let written = io::Write::write_all(&mut file, text.as_bytes());
                     drop(file);
                     if let Err(error) = written {
                         let _ = std::fs::remove_file(&tmp);
@@ -1302,7 +1304,53 @@ impl Settings {
         }
         Err(io::Error::new(io::ErrorKind::AlreadyExists, "no unused temporary file name found"))
     }
+
+    /// Replace settings keys and the comments `to_text` writes, retaining every line owned by another preferences group.
+    fn merge_into(&self, existing: &str) -> String {
+        let mut out = String::new();
+        for segment in existing.split_inclusive('\n') {
+            let line = segment.trim();
+            let ours = line.split_once('=').is_some_and(|(key, _)| {
+                let key = key.trim();
+                KEYS.contains(&key) || FILE_ONLY_KEYS.contains(&key)
+            });
+            if !ours && !OWN_COMMENTS.iter().any(|c| line.starts_with(c)) {
+                out.push_str(segment);
+            }
+        }
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&self.to_text());
+        out
+    }
 }
+
+/// The start of every comment line `Settings::to_text` can write. `merge_into` drops the old
+/// file's copies of these, so each save leaves one copy; other modules' comments are kept.
+const OWN_COMMENTS: [&str; 21] = [
+    "# WavCraft settings.",
+    "# session_folder:",
+    "# language:",
+    "# status_fields:",
+    "# spectral_view:",
+    "# right_click:",
+    "# hidden_panels:",
+    "# crossfade_*_ms:",
+    "# save_include_metadata:",
+    "# time_display:",
+    "# sync_selection, sync_zoom, sync_playhead",
+    "# tempo:",
+    "# zoom_presets:",
+    "# custom_fps:",
+    "# panel_layout:",
+    "# workspace:",
+    "# snap_*:",
+    "# marker_columns:",
+    "# metadata_fields:",
+    "# Preferences pages (",
+    "# dither:",
+];
 
 fn parse_bool(key: &str, v: &str) -> Result<bool, String> {
     match v {
