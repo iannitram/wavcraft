@@ -25,6 +25,7 @@ mod oscb;
 mod markers_panel;
 mod mixpaste;
 mod menus;
+mod doclist;
 mod player;
 mod playlist_panel;
 // Not called yet: the Reveal in file manager menu item will use it.

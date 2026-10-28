@@ -1110,6 +1110,70 @@ pub fn select_to_end(selection: &Range<u64>, total_frames: u64) -> Range<u64> {
     selection.end.min(total_frames)..total_frames
 }
 
+/// Which parts of the view follow the owner from one open document to another (View menu,
+/// kept in the settings file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SyncOptions {
+    /// The time selection.
+    pub selection: bool,
+    /// Zoom and scroll: the same seconds on screen at the same scale.
+    pub zoom: bool,
+    /// The playhead / cursor.
+    pub playhead: bool,
+}
+
+impl SyncOptions {
+    /// Whether anything is carried over.
+    pub fn any(&self) -> bool {
+        self.selection || self.zoom || self.playhead
+    }
+}
+
+/// What a document shows: where, what is selected, and the file it is a view of.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DocView {
+    pub view: Viewport,
+    pub selection: Selection,
+    pub sample_rate: u32,
+    pub frames: usize,
+}
+
+/// `frame` at `from_rate` as the nearest frame at `to_rate` (the same instant in seconds).
+/// A rate of 0 keeps the number.
+pub fn convert_frame(frame: usize, from_rate: u32, to_rate: u32) -> usize {
+    if from_rate == 0 || to_rate == 0 || from_rate == to_rate {
+        return frame;
+    }
+    let (num, den) = (frame as u128 * u128::from(to_rate), u128::from(from_rate));
+    usize::try_from((num + den / 2) / den).unwrap_or(usize::MAX)
+}
+
+/// The same instant as a fractional frame count at another rate (for the view's edge).
+fn convert_pos(pos: f64, from_rate: u32, to_rate: u32) -> f64 {
+    if from_rate == 0 || to_rate == 0 { pos } else { pos * f64::from(to_rate) / f64::from(from_rate) }
+}
+
+/// What `to` should show after the owner switched to it from `from`, carrying over what `opts`
+/// asks for by time in seconds, converted between the files' sample rates and clamped to
+/// `to`'s length. What is not carried over stays as `to` had it. `width_px` is the editor's width.
+pub fn carry_over(from: &DocView, to: &DocView, opts: SyncOptions, width_px: f32) -> (Viewport, Selection) {
+    let mut view = to.view;
+    let mut selection = to.selection;
+    let map = |f: usize| convert_frame(f, from.sample_rate, to.sample_rate).min(to.frames);
+    if opts.selection {
+        selection = Selection { anchor: map(from.selection.anchor), head: map(from.selection.head) };
+    } else if opts.playhead {
+        // The cursor (the selection's start) moves; the target keeps no range then.
+        selection = Selection::at(map(from.selection.start()));
+    }
+    if opts.zoom {
+        view.frames_per_px = convert_pos(from.view.frames_per_px, from.sample_rate, to.sample_rate);
+        view.start = convert_pos(from.view.start, from.sample_rate, to.sample_rate);
+        view.clamp(width_px, to.frames);
+    }
+    (view, selection)
+}
+
 /// `frame` at `sample_rate` as `m:ss.mmm`, or `h:mm:ss.mmm` from one hour up.
 pub fn format_time(frame: usize, sample_rate: u32) -> String {
     if sample_rate == 0 {
@@ -1799,5 +1863,82 @@ mod tests {
         let d = ZoomPresets::default();
         assert_eq!(ZoomPresets::parse("2, x, 0"), ZoomPresets([2.0, d.0[1], d.0[2], d.0[3], d.0[4]]));
         assert_eq!(ZoomPresets::parse(""), d);
+    }
+
+    fn dv(rate: u32, frames: usize, start: f64, fpp: f64, sel: (usize, usize)) -> DocView {
+        DocView { view: Viewport { start, frames_per_px: fpp }, selection: Selection { anchor: sel.0, head: sel.1 }, sample_rate: rate, frames }
+    }
+    const ALL: SyncOptions = SyncOptions { selection: true, zoom: true, playhead: true };
+
+    #[test]
+    fn frames_convert_by_time_between_rates() {
+        assert_eq!(convert_frame(48_000, 48_000, 44_100), 44_100);
+        assert_eq!(convert_frame(44_100, 44_100, 96_000), 96_000);
+        assert_eq!(convert_frame(1, 48_000, 44_100), 1);
+        assert_eq!(convert_frame(7, 8_000, 48_000), 42);
+        assert_eq!(convert_frame(5, 0, 48_000), 5);
+        assert_eq!(convert_frame(usize::MAX, 1, 48_000), usize::MAX);
+    }
+
+    #[test]
+    fn selection_carries_by_seconds_and_clamps_to_the_length() {
+        let from = dv(48_000, 480_000, 0.0, 400.0, (96_000, 240_000)); // 2 s .. 5 s
+        let to = dv(44_100, 176_400, 0.0, 200.0, (0, 0)); // 4 s long
+        let (_, sel) = carry_over(&from, &to, SyncOptions { selection: true, ..Default::default() }, 1000.0);
+        assert_eq!((sel.anchor, sel.head), (88_200, 176_400));
+    }
+
+    #[test]
+    fn a_reversed_selection_keeps_its_direction() {
+        let from = dv(48_000, 480_000, 0.0, 400.0, (96_000, 48_000));
+        let to = dv(24_000, 480_000, 0.0, 200.0, (0, 0));
+        let (_, sel) = carry_over(&from, &to, SyncOptions { selection: true, ..Default::default() }, 1000.0);
+        assert_eq!((sel.anchor, sel.head), (48_000, 24_000));
+    }
+
+    #[test]
+    fn zoom_keeps_the_same_seconds_on_screen() {
+        // 1 s from 10 s across 1000 px at 48 kHz.
+        let from = dv(48_000, 48_000 * 60, 480_000.0, 48.0, (0, 0));
+        let to = dv(44_100, 44_100 * 60, 0.0, 1000.0, (0, 0));
+        let (v, _) = carry_over(&from, &to, SyncOptions { zoom: true, ..Default::default() }, 1000.0);
+        assert!((v.start - 441_000.0).abs() < 1e-6);
+        assert!((v.frames_per_px - 44.1).abs() < 1e-9);
+        assert!((v.end(1000.0) - 485_100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zoom_is_clamped_to_a_shorter_file() {
+        let from = dv(48_000, 48_000 * 60, 48_000.0 * 50.0, 48.0, (0, 0)); // 50..51 s
+        let to = dv(48_000, 48_000 * 10, 0.0, 480.0, (0, 0)); // 10 s
+        let (v, _) = carry_over(&from, &to, SyncOptions { zoom: true, ..Default::default() }, 1000.0);
+        assert!(v.start >= 0.0 && v.end(1000.0) <= 480_000.0 + 1e-6, "{v:?}");
+        assert!((v.start - (480_000.0 - 48.0 * 1000.0)).abs() < 1e-6, "scrolled to the end: {v:?}");
+    }
+
+    #[test]
+    fn playhead_alone_moves_the_cursor_not_the_range() {
+        let from = dv(48_000, 480_000, 0.0, 400.0, (96_000, 240_000));
+        let to = dv(96_000, 960_000, 100.0, 300.0, (5, 50));
+        let (v, sel) = carry_over(&from, &to, SyncOptions { playhead: true, ..Default::default() }, 1000.0);
+        assert_eq!((sel.anchor, sel.head), (192_000, 192_000));
+        assert_eq!(v, to.view);
+    }
+
+    #[test]
+    fn nothing_on_leaves_the_target_as_it_was() {
+        let from = dv(48_000, 480_000, 0.0, 400.0, (96_000, 240_000));
+        let to = dv(96_000, 960_000, 100.0, 300.0, (5, 50));
+        assert_eq!(carry_over(&from, &to, SyncOptions::default(), 1000.0), (to.view, to.selection));
+        assert!(!SyncOptions::default().any() && ALL.any());
+    }
+
+    #[test]
+    fn all_three_together() {
+        let from = dv(48_000, 480_000, 48_000.0, 48.0, (96_000, 96_000));
+        let to = dv(8_000, 40_000, 0.0, 40.0, (0, 0)); // 5 s at 8 kHz
+        let (v, sel) = carry_over(&from, &to, ALL, 1000.0);
+        assert_eq!((sel.anchor, sel.head), (16_000, 16_000));
+        assert!((v.frames_per_px - 8.0).abs() < 1e-9 && (v.start - 8_000.0).abs() < 1e-6, "{v:?}");
     }
 }

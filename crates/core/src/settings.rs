@@ -49,6 +49,9 @@ const KEY_SNAP_FINE: &str = "snap_ruler_fine";
 const KEY_SNAP_EDGES: &str = "snap_edges";
 const KEY_RIGHT_CLICK: &str = "right_click";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
+const KEY_SYNC_SELECTION: &str = "sync_selection";
+const KEY_SYNC_ZOOM: &str = "sync_zoom";
+const KEY_SYNC_PLAYHEAD: &str = "sync_playhead";
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 const KEY_CUT_JOIN: &str = "crossfade_cut_join_ms";
 const KEY_EDGE: &str = "crossfade_edge_ms";
@@ -449,6 +452,8 @@ pub struct Settings {
     pub input_device: Option<String>,
     /// View › Time Display.
     pub time_display: crate::view::TimeFormat,
+    /// What follows the owner when switching between open documents (View menu).
+    pub sync: crate::view::SyncOptions,
     /// Tempo and time signature per document, keyed by the document's path (Bars and Beats, A101).
     pub tempos: std::collections::BTreeMap<String, crate::tempo::Tempo>,
     /// Where the panels are docked, as `crate::panels::Layout::encode` writes it (empty: default).
@@ -555,6 +560,7 @@ impl Default for Settings {
             output_device: None,
             input_device: None,
             time_display: crate::view::TimeFormat::default(),
+            sync: crate::view::SyncOptions::default(),
             tempos: std::collections::BTreeMap::new(),
             panel_layout: String::new(),
             zone_sizes: String::new(),
@@ -683,6 +689,9 @@ impl Settings {
                 }
                 KEY_STATUS_FIELDS => s.status_fields = StatusFields::parse_list(value),
                 KEY_SPECTRAL_VIEW => s.spectral_view = parse_view(value),
+                KEY_SYNC_SELECTION => s.sync.selection = value.eq_ignore_ascii_case("true"),
+                KEY_SYNC_ZOOM => s.sync.zoom = value.eq_ignore_ascii_case("true"),
+                KEY_SYNC_PLAYHEAD => s.sync.playhead = value.eq_ignore_ascii_case("true"),
                 // A value that doesn't fit its key leaves the default, as an unknown key is ignored.
                 other => {
                     let _ = s.set(other, value);
@@ -1034,6 +1043,15 @@ impl Settings {
 ");
             out.push_str(&format!("{KEY_TIME_DISPLAY} = {}
 ", self.time_display.name()));
+        }
+        // The sync lines are written only when one is on, so a file without them keeps its old format.
+        if self.sync.any() {
+            out.push_str("# sync_selection, sync_zoom, sync_playhead (true/false): carry the selection, the zoom and scroll, or the cursor over when switching documents.
+");
+            out.push_str(&format!("{KEY_SYNC_SELECTION} = {}
+{KEY_SYNC_ZOOM} = {}
+{KEY_SYNC_PLAYHEAD} = {}
+", self.sync.selection, self.sync.zoom, self.sync.playhead));
         }
         // Tempo lines are written only for documents that have one (Bars and Beats), so a file without them keeps its old format.
         if !self.tempos.is_empty() {

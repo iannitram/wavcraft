@@ -509,3 +509,11 @@ fn the_status_bar_fields_and_the_spectral_band_are_kept_in_the_file() {
         Some(FreqAxis { min_hz: 100.0, max_hz: 2000.0, log: true, partial: false })
     );
 }
+
+#[test]
+fn sync_options_round_trip_and_default_off() {
+    use wavcraft_core::SyncOptions;
+    assert_eq!(Settings::parse("").sync, SyncOptions::default());
+    let s = Settings { sync: SyncOptions { selection: true, zoom: false, playhead: true }, ..Default::default() };
+    assert_eq!(Settings::parse(&s.to_text()), s);
+}

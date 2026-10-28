@@ -131,7 +131,12 @@
 //! - `AUDIOINFO` → `OK host=<h> hosts=<a|b> buffer=<frames|default> buffer_range=<min-max|unknown> out_channels=<n> output_map=<1:3,2:4> input_map=<..> device=<name>`
 //! - `AUDIOPROFILE list` → `OK active=<key> count=<n> setups=<key=label;..>`; `AUDIOPROFILE simulate <devices...>` (`_` is a space) treats those as the devices on offer and restores that setup's hardware settings → `OK outcome=<..> active=<key>`; `AUDIOINFO` also reports `profile=<key>`
 //! - `CHANMAP out <file ch> <output ch|off>` / `CHANMAP in <input ch> <record ch|off>` / `CHANMAP reset` → `OK output_map=.. input_map=..` (channels count from 1)
-//! - `QUIT` → `OK`, then the window closes; with unsaved changes `ERR …` unless `QUIT discard`
+//! - `DOCS` → `OK count=<n> current=<i> | <i> unsaved=<0|1> frames=<n> <name> | …` (the open documents, in the order opened)
+//! - `SWITCH <i>` → `OK current=<i>` (every other verb acts on the current document; the View sync options carry the view over)
+//! - `CLOSE` → `OK count=<n>` (closes the current document); with unsaved changes `ERR …` unless `CLOSE discard`
+//! - `VIEWPORT <start frame> <frames per pixel>` → `OK view=…` (set the zoom and scroll, for scripted checks)
+//! - `ACTION view.sync.selection|zoom|playhead` toggles that View option (shown in `STATE` as `sync=`)
+//! - `QUIT` → `OK`, then the window closes; with unsaved changes in any document `ERR …` unless `QUIT discard`
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
 

@@ -57,6 +57,9 @@ pub enum ActionId {
     ZoomOut,
     ZoomToSelection,
     ZoomOutFull,
+    ViewSyncSelection,
+    ViewSyncZoom,
+    ViewSyncPlayhead,
     ToolSelect,
     ToolHand,
     ToolZoom,
@@ -262,6 +265,10 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomOut, "view.zoomOut", "Zoom Out"),
     window(ActionId::ZoomToSelection, "view.zoomToSelection", "Zoom to Selection"),
     window(ActionId::ZoomOutFull, "view.zoomOutFull", "Zoom Out Full"),
+    // Toggles (View menu checkboxes): what follows the owner when switching between documents.
+    window(ActionId::ViewSyncSelection, "view.sync.selection", "Synchronise Selection Across Files"),
+    window(ActionId::ViewSyncZoom, "view.sync.zoom", "Synchronise Zoom and Scroll Across Files"),
+    window(ActionId::ViewSyncPlayhead, "view.sync.playhead", "Synchronise Playhead Across Files"),
     window(ActionId::ZoomAmpIn, "view.zoom.ampIn", "Zoom In Vertically"),
     window(ActionId::ZoomAmpOut, "view.zoom.ampOut", "Zoom Out Vertically"),
     window(ActionId::ZoomAmpReset, "view.zoom.ampReset", "Reset Vertical Zoom"),
@@ -697,6 +704,7 @@ impl Editor {
             | ActionId::FadeInCosine
             | ActionId::FadeOutLinear
             | ActionId::FadeOutCosine => self.len() > 0,
+            ActionId::ViewSyncSelection | ActionId::ViewSyncZoom | ActionId::ViewSyncPlayhead => true,
             ActionId::RepeatLast | ActionId::RepeatLastDialog => match self.last {
                 Some(Repeat::Action(last)) => self.enabled(last, selection),
                 Some(Repeat::InsertSilence(_) | Repeat::Effect(..) | Repeat::DeClip(_) | Repeat::DeClick(_) | Repeat::AutoClick(_)) => self.len() > 0,
@@ -1270,6 +1278,9 @@ impl Editor {
             | ActionId::ZoomOut
             | ActionId::ZoomToSelection
             | ActionId::ZoomOutFull
+            | ActionId::ViewSyncSelection
+            | ActionId::ViewSyncZoom
+            | ActionId::ViewSyncPlayhead
             | ActionId::ExtractChannels
             | ActionId::ExportRanges
             | ActionId::ToolSelect

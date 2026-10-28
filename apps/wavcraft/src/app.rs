@@ -40,13 +40,14 @@ use wavcraft_core::view::{self, Band, SpectralSelection, nav_hit};
 mod spectral;
 use wavcraft_core::workspaces::{self, Snapshot, Workspaces};
 use wavcraft_core::{
-    AmpScale, AmpZoom, ChannelLayout, DocState, Document, GRAB_PX, History, NavPart, OpenError, Selection, SpectrogramParams, TimeFormat,
+    AmpScale, AmpZoom, ChannelLayout, DocState, DocView, Document, GRAB_PX, History, NavPart, OpenError, Selection, SpectrogramParams, TimeFormat,
     Viewport, channel_color, tempo::Tempo,
 };
 
 use crate::batch_panel::BatchPanel;
 use crate::cd_ui::CdView;
 use crate::control;
+use crate::doclist::{DocList, Where};
 use crate::diagnostics_panel::{self, Ask, DiagPanel};
 use crate::effect_dialog::{Answer, EffectDialog};
 use crate::freq_panel::{self, FreqPanel};
@@ -319,6 +320,34 @@ struct Saving {
     started: Instant,
 }
 
+/// An open document that is not the current one: the per-document fields of [`WaveApp`], parked
+/// until it is switched to (the current document's own live in the window's fields).
+struct DocSlot {
+    doc: Option<Document>,
+    editor: Option<Editor>,
+    doc_path: PathBuf,
+    doc_id: u64,
+    saved: Option<Arc<DocState>>,
+    view: Viewport,
+    selection: Selection,
+    rebuilding: Option<Receiver<Result<Document, OpenError>>>,
+    tempo: Tempo,
+    include_meta: bool,
+}
+
+/// Whether `editor`'s current step differs from `saved`, the one on disk.
+fn is_unsaved(editor: &Option<Editor>, saved: &Option<Arc<DocState>>) -> bool {
+    match (editor, saved) {
+        (Some(e), Some(saved)) => !Arc::ptr_eq(e.history.current(), saved),
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn path_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned())
+}
+
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
 struct SpectrumCache {
     job: Job,
@@ -446,8 +475,14 @@ pub struct WaveApp {
     editor: Option<Editor>,
     /// Where the open file came from (kept while an edit leaves the document empty).
     doc_path: PathBuf,
-    /// Counts the files opened in this window: names the document a save belongs to.
+    /// Names the current document (the save in flight belongs to one).
     doc_id: u64,
+    /// Counts the files opened in this window; the next `doc_id`.
+    doc_serial: u64,
+    /// The other open documents; the fields above and below hold the current one.
+    docs: DocList<DocSlot>,
+    /// The "save changes?" prompt is for closing the current document, not the window.
+    closing_doc: bool,
     /// "Include markers and other metadata" for the open document (A262): starts as the setting,
     /// changed from File > Save As or `SAVE <path> meta=0|1`.
     include_meta: bool,
@@ -736,6 +771,9 @@ impl WaveApp {
             editor: None,
             doc_path: PathBuf::new(),
             doc_id: 0,
+            doc_serial: 0,
+            docs: DocList::new(),
+            closing_doc: false,
             include_meta: true,
             rebuilding: None,
             saved: None,
@@ -1813,6 +1851,10 @@ impl WaveApp {
         match result {
             Ok(doc) => {
                 self.last_op = Some(("Open".to_string(), took));
+                // The document that was open stays open, parked; this one is added at the end.
+                let path = path.clone();
+                let old = self.editor.is_some().then(|| self.take_slot());
+                self.docs.add(old);
                 let r = &doc.peak_report;
                 log::info!(target: "wavcraft", "peaks for {}: {} in {:.1} ms", path.display(), r.result, r.ms);
                 if let Some(e) = &r.write_error {
@@ -1828,7 +1870,8 @@ impl WaveApp {
                 self.saved = if fresh { None } else { self.editor.as_ref().map(|e| e.history.current().clone()) };
                 self.doc_path = doc.path.clone();
                 self.tempo = self.settings.tempo_for(&self.doc_path);
-                self.doc_id += 1;
+                self.doc_serial += 1;
+                self.doc_id = self.doc_serial;
                 self.include_meta = self.settings.save_include_metadata;
                 self.stats.forget();
                 self.playlist_ui.reset();
@@ -1934,6 +1977,168 @@ impl WaveApp {
         }
     }
 
+    /// Park the current document's fields (the window's are left empty).
+    fn take_slot(&mut self) -> DocSlot {
+        DocSlot {
+            doc: self.doc.take(),
+            editor: self.editor.take(),
+            doc_path: std::mem::take(&mut self.doc_path),
+            doc_id: self.doc_id,
+            saved: self.saved.take(),
+            view: self.view,
+            selection: self.selection,
+            rebuilding: self.rebuilding.take(),
+            tempo: std::mem::take(&mut self.tempo),
+            include_meta: self.include_meta,
+        }
+    }
+
+    /// What the current document shows (for carrying it over to another).
+    fn doc_view(&self) -> Option<DocView> {
+        let doc = self.editor.as_ref()?.history.current();
+        Some(DocView { view: self.view, selection: self.selection, sample_rate: doc.sample_rate(), frames: doc.len_frames() as usize })
+    }
+
+    /// After a switch: the new current document takes over what the View options ask for
+    /// (selection, zoom and scroll, cursor) from the one just left, by time.
+    fn carry_view_over(&mut self, from: Option<DocView>) {
+        let sync = self.settings.sync;
+        let (Some(from), Some(to)) = (from, self.doc_view()) else { return };
+        if sync.any() {
+            (self.view, self.selection) = wavcraft_core::carry_over(&from, &to, sync, self.editor_width.max(1.0));
+        }
+    }
+
+    /// The sync options that are on, for `STATE` (`selection,zoom,playhead` or `-`).
+    fn sync_text(&self) -> String {
+        let s = self.settings.sync;
+        let on: Vec<&str> =
+            [(s.selection, "selection"), (s.zoom, "zoom"), (s.playhead, "playhead")].iter().filter(|(b, _)| *b).map(|(_, n)| *n).collect();
+        if on.is_empty() { "-".to_string() } else { on.join(",") }
+    }
+
+    /// Toggle a View › Synchronise option and keep it in the settings file.
+    fn toggle_sync(&mut self, id: ActionId) {
+        let sync = &mut self.settings.sync;
+        match id {
+            ActionId::ViewSyncSelection => sync.selection = !sync.selection,
+            ActionId::ViewSyncZoom => sync.zoom = !sync.zoom,
+            _ => sync.playhead = !sync.playhead,
+        }
+        if let Some(file) = &self.settings_path
+            && let Err(e) = self.settings.save(file)
+        {
+            log::warn!(target: "wavcraft", "could not save the setting to {}: {e}", file.display());
+        }
+    }
+
+    /// Make a parked document the current one.
+    fn put_slot(&mut self, s: DocSlot) {
+        self.halt_play();
+        (self.doc, self.editor, self.doc_path, self.doc_id) = (s.doc, s.editor, s.doc_path, s.doc_id);
+        (self.saved, self.view, self.selection, self.rebuilding) = (s.saved, s.view, s.selection, s.rebuilding);
+        (self.tempo, self.include_meta) = (s.tempo, s.include_meta);
+        self.set_audio(self.doc.as_ref().map(|d| d.state.clone()));
+        // The per-file panels and pictures of the document left are not carried to this one.
+        self.stats.forget();
+        self.drop_video();
+        self.effect_dialog = None;
+        self.previewing = false;
+        self.freq.reset();
+        self.playlist_ui.reset();
+        self.meters.new_file();
+        self.generation += 1;
+        self.spectrum = None;
+    }
+
+    /// Switch to open document `i` (0 is the first opened).
+    fn switch_doc(&mut self, i: usize) -> Result<(), String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        if self.editor.is_none() || i >= self.docs.len(true) {
+            return Err(format!("no document {i}"));
+        }
+        if i == self.docs.current() {
+            return Ok(());
+        }
+        // One set of clipboards for all documents: a clip copied here can be pasted there.
+        let clips = self.editor.as_mut().map(|e| (std::mem::take(&mut e.clipboards), e.current_clipboard));
+        let from = self.doc_view();
+        let old = self.take_slot();
+        let next = self.docs.switch(i, old).unwrap_or_else(|old| old);
+        self.put_slot(next);
+        self.carry_view_over(from);
+        if let (Some((clips, current)), Some(e)) = (clips, self.editor.as_mut()) {
+            (e.clipboards, e.current_clipboard) = (clips, current);
+        }
+        Ok(())
+    }
+
+    /// Close the current document without asking; the next one (or the last) takes its place.
+    fn remove_current(&mut self) {
+        self.halt_play();
+        drop(self.take_slot());
+        match self.docs.close_current() {
+            Some(next) => self.put_slot(next),
+            None => {
+                self.set_audio(None);
+                self.generation += 1;
+                self.spectrum = None;
+                self.selection = Selection::default();
+            }
+        }
+    }
+
+    /// File › Close: close the current document, asking first when it has unsaved changes.
+    fn close_doc(&mut self) -> Result<(), String> {
+        if self.editor.is_none() {
+            return Err("no file is open".to_string());
+        }
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        if self.unsaved() {
+            self.closing_doc = true;
+            self.confirm_close = true;
+        } else {
+            self.remove_current();
+        }
+        Ok(())
+    }
+
+    /// Name, unsaved mark and length of open document `i`.
+    fn doc_info(&self, i: usize) -> (String, bool, u64) {
+        let frames = |e: &Option<Editor>| e.as_ref().map_or(0, |e| e.history.current().len_frames());
+        match self.docs.locate(i) {
+            Where::Current => (path_name(&self.doc_path), self.unsaved(), frames(&self.editor)),
+            Where::Parked(p) => self
+                .docs
+                .parked()
+                .get(p)
+                .map_or_else(|| (String::new(), false, 0), |s| (path_name(&s.doc_path), is_unsaved(&s.editor, &s.saved), frames(&s.editor))),
+        }
+    }
+
+    /// The tab strip above the editor, when more than one document is open.
+    fn doc_tabs(&mut self, ui: &mut egui::Ui) {
+        let (n, cur, mut go) = (self.docs.len(self.editor.is_some()), self.docs.current(), None);
+        ui.horizontal_wrapped(|ui| {
+            for i in 0..n {
+                let (name, unsaved, _) = self.doc_info(i);
+                let label = if unsaved { format!("*{name}") } else { name };
+                if ui.selectable_label(i == cur, label).clicked() && i != cur {
+                    go = Some(i);
+                }
+            }
+        });
+        if let Some(i) = go
+            && let Err(e) = self.switch_doc(i)
+        {
+            self.error = Some(e);
+        }
+    }
+
     fn pick_file(&mut self, ctx: &egui::Context) {
         let picked = rfd::FileDialog::new()
             .add_filter("Audio", &["wav", "wave", "bwf", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "mp4", "mov", "caf", "w64", "au", "snd"])
@@ -2003,7 +2208,8 @@ impl WaveApp {
         self.editor = Some(Editor::new(history));
         self.apply_snap();
         self.saved = None;
-        self.doc_id += 1;
+        self.doc_serial += 1;
+        self.doc_id = self.doc_serial;
         self.doc = None;
         self.set_audio(None);
         self.selection = Selection::default();
@@ -3454,6 +3660,10 @@ impl WaveApp {
     /// The actions the window carries out itself: zoom, In/Out points at the playhead, and the
     /// Insert Silence dialog.
     fn run_window_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
+        if matches!(id, ActionId::ViewSyncSelection | ActionId::ViewSyncZoom | ActionId::ViewSyncPlayhead) {
+            self.toggle_sync(id);
+            return Ok(false);
+        }
         // The input meter needs no open file.
         match id {
             ActionId::MeterInputToggle => {
@@ -5015,11 +5225,12 @@ impl WaveApp {
 
     /// Whether the current step differs from the one on disk.
     fn unsaved(&self) -> bool {
-        match (&self.editor, &self.saved) {
-            (Some(e), Some(saved)) => !Arc::ptr_eq(e.history.current(), saved),
-            (Some(_), None) => true,
-            _ => false,
-        }
+        is_unsaved(&self.editor, &self.saved)
+    }
+
+    /// Whether any open document has unsaved changes.
+    fn any_unsaved(&self) -> bool {
+        self.unsaved() || self.docs.parked().iter().any(|s| is_unsaved(&s.editor, &s.saved))
     }
 
     /// File › Save: to the file's own path when it is a format a save writes (WAV, AIFF, FLAC),
@@ -5231,8 +5442,17 @@ impl WaveApp {
             // written, but the open document is not the one saved, so its path, saved mark and
             // close request stay as they are.
             Ok(()) if doc_id != self.doc_id => {
-                log::info!(target: "wavcraft", "a save of an earlier file finished after another was opened: {}", path.display());
-                self.notice = Some(format!("Saved {} ({} {}), the file open before this one", path.display(), ty.describe(), label));
+                if let Some(slot) = self.docs.parked_mut().iter_mut().find(|s| s.doc_id == doc_id) {
+                    slot.saved = Some(state);
+                    slot.doc_path = path.clone();
+                    if let Some(doc) = slot.doc.as_mut() {
+                        doc.path = path.clone();
+                    }
+                    self.notice = Some(format!("Saved {} ({} {})", path.display(), ty.describe(), label));
+                } else {
+                    log::info!(target: "wavcraft", "a save of a closed file finished: {}", path.display());
+                    self.notice = Some(format!("Saved {} ({} {}), a file closed meanwhile", path.display(), ty.describe(), label));
+                }
             }
             Ok(()) => {
                 self.saved = Some(state);
@@ -5246,8 +5466,10 @@ impl WaveApp {
                 }
                 self.error = None;
                 self.notice = Some(format!("Saved {} ({} {})", path.display(), ty.describe(), label));
-                if then_close {
-                    self.allow_close = true;
+                if then_close && std::mem::take(&mut self.closing_doc) {
+                    self.remove_current();
+                } else if then_close {
+                    // Not allow_close: another document may still have unsaved changes.
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
@@ -5502,9 +5724,16 @@ impl WaveApp {
 
     /// The "save changes?" prompt when the window is closed with unsaved changes.
     fn close_prompt(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.unsaved() {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.any_unsaved() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm_close = true;
+            self.closing_doc = false;
+            // Ask about the current document first; else bring the first unsaved one up.
+            if !self.unsaved()
+                && let Some(p) = self.docs.parked().iter().position(|s| is_unsaved(&s.editor, &s.saved))
+            {
+                let _ = self.switch_doc(if p < self.docs.current() { p } else { p + 1 });
+            }
         }
         if !self.confirm_close {
             return;
@@ -5533,14 +5762,22 @@ impl WaveApp {
                 self.confirm_close = false;
                 if let Err(e) = self.save(ctx, false, None, true) {
                     self.error = Some(e);
+                    self.closing_doc = false;
                 }
             }
+            // Drop this document's changes; closing the window goes on to the next unsaved one.
             Some(1) => {
                 self.confirm_close = false;
-                self.allow_close = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                let only_doc = std::mem::take(&mut self.closing_doc);
+                self.remove_current();
+                if !only_doc {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
-            Some(_) => self.confirm_close = false,
+            Some(_) => {
+                self.confirm_close = false;
+                self.closing_doc = false;
+            }
             None => {}
         }
     }
@@ -5779,11 +6016,12 @@ impl WaveApp {
         let zfactor = f64::from(self.settings.zoom_factor);
                 let spectral = format!("{} {} {}{}", self.spectral_state(), self.freq_band_state(), self.status_state(), self.op_state());
                 let view = format!(
-                    "tool={} right_click={} view={:.0}-{:.0}",
+                    "tool={} right_click={} view={:.0}-{:.0} sync={}",
                     self.tool.name(),
                     if self.settings.right_click_menu { "menu" } else { "extend" },
                     self.view.start,
-                    self.view.end(width)
+                    self.view.end(width),
+                    self.sync_text()
                 );
                 self.poll_transport();
                 let t = &self.transport;
@@ -7006,6 +7244,40 @@ impl WaveApp {
             "BATCH" => self.batch.control(rest, &self.sessions.path, ctx),
             "SPECTRAL" => self.control_spectral(rest),
             "STATUSBAR" => self.control_statusbar(rest),
+            // The open documents, in the order opened, and the current one.
+            "DOCS" => {
+                let n = self.docs.len(self.editor.is_some());
+                let mut out = format!("OK count={n} current={}", self.docs.current());
+                for i in 0..n {
+                    let (name, unsaved, frames) = self.doc_info(i);
+                    out.push_str(&format!(" | {i} unsaved={} frames={frames} {name}", u8::from(unsaved)));
+                }
+                out
+            }
+            "SWITCH" => match rest.trim().parse::<usize>().map_err(|_| "SWITCH <index>, from DOCS".to_string()).and_then(|i| self.switch_doc(i)) {
+                Ok(()) => format!("OK current={}", self.docs.current()),
+                Err(e) => format!("ERR {e}"),
+            },
+            // Close the current document; with unsaved changes `ERR …` unless `CLOSE discard`.
+            "CLOSE" if self.unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or CLOSE discard".to_string(),
+            "CLOSE" if self.editor.is_none() => "ERR no file is open".to_string(),
+            "CLOSE" if self.saving.is_some() => "ERR wait for the save to finish".to_string(),
+            "CLOSE" => {
+                self.remove_current();
+                format!("OK count={}", self.docs.len(self.editor.is_some()))
+            }
+            // The zoom and scroll, for scripted checks: the start frame and frames per pixel.
+            "VIEWPORT" => {
+                let mut it = rest.split_whitespace().map(str::parse::<f64>);
+                match (it.next(), it.next(), self.doc.as_ref().map(Document::frames)) {
+                    (Some(Ok(start)), Some(Ok(fpp)), Some(frames)) if start.is_finite() && fpp.is_finite() && fpp > 0.0 => {
+                        self.view = Viewport { start, frames_per_px: fpp };
+                        self.view.clamp(self.editor_width.max(1.0), frames);
+                        format!("OK view={:.3}+{:.6}", self.view.start, self.view.frames_per_px)
+                    }
+                    _ => "ERR VIEWPORT <start frame> <frames per pixel>, with a file open".to_string(),
+                }
+            }
             "SAVE" => {
                 // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10] [meta=0|1]`: the options end the line.
                 let meta = match take_meta(rest) {
@@ -7099,7 +7371,7 @@ impl WaveApp {
                         .to_string(),
                 }
             }
-            "QUIT" if self.unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
+            "QUIT" if self.any_unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
             "QUIT" => {
                 self.finish_recording(false, ctx);
                 self.allow_close = true;
@@ -7366,6 +7638,11 @@ impl WaveApp {
                 {
                     self.error = Some(e);
                 }
+                if ui.add_enabled(has_doc, egui::Button::new("Close")).clicked()
+                    && let Err(e) = self.close_doc()
+                {
+                    self.error = Some(e);
+                }
                 ui.menu_button("Import", |ui| {
                     if ui.button("Raw Data…").on_hover_text("Open a file with no header: say its rate, channels and sample format").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
@@ -7576,6 +7853,22 @@ impl WaveApp {
                 }
                 ui.checkbox(&mut self.show_time_panel, "Time panel");
                 ui.checkbox(&mut self.show_metadata, "Metadata panel");
+                ui.separator();
+                for (id, label) in [
+                    (ActionId::ViewSyncSelection, "Synchronise Selection Across Files"),
+                    (ActionId::ViewSyncZoom, "Synchronise Zoom and Scroll Across Files"),
+                    (ActionId::ViewSyncPlayhead, "Synchronise Playhead Across Files"),
+                ] {
+                    let s = self.settings.sync;
+                    let mut on = match id {
+                        ActionId::ViewSyncSelection => s.selection,
+                        ActionId::ViewSyncZoom => s.zoom,
+                        _ => s.playhead,
+                    };
+                    if ui.checkbox(&mut on, label).changed() {
+                        self.toggle_sync(id);
+                    }
+                }
             });
             ui.menu_button("Video", |ui| {
                 if ui.add_enabled(self.editor.is_some(), egui::Button::new("Attach video file…")).clicked() {
@@ -9042,6 +9335,9 @@ impl eframe::App for WaveApp {
         }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
+        if self.docs.len(self.editor.is_some()) > 1 {
+            egui::Panel::top("docs").show(ui, |ui| self.doc_tabs(ui));
+        }
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::top("tools").show(ui, |ui| self.tools_bar(ui));
         egui::Panel::top("zoom").show(ui, |ui| self.zoom_panel(ui));
