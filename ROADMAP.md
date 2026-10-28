@@ -80,7 +80,7 @@ How to read it:
 
 The owner's ruling, 2026-10-26: "Stage 0, finish on the build machine (Recommended)". The merge plan is finished on the build machine's scratch clone, where it can build and test; then the result is pushed as one branch and merged through the Project Manager's review chain (pipeline rule R25). Nothing new is built for v1 until stage 0 is merged.
 
-- **Where it stands:** 94 branches planned, 76 to merge and 18 to archive. 38 are merged in the scratch clone (not pushed). 43 are left, starting with `feat/ap-f94-appearance`, and ending with the integration branch (#89) and the late branches after it (#90-#94). 9 archives are upheld; 4 are not checked yet (`fleet/wav-c-186-a`, `fleet/api-recut-snap-and-tools-note`, `fleet/wav-c-22-a`, `wip/api-recut-zoom-time`). The review of the 38 found 16 issues (14 Easy, 2 Medium), drafted but not filed: file them as issues after the push.
+- **Where it stands (2026-10-27):** done. The merge plan went into `main` as 44 merge commits; the old PRs are closed or merged and the remote branches swept (archive tags for unmerged ones); the review findings are filed as #987-#1011. Left over: `main` does not pass its own checks (#1012, #1010) and there is no CI (#1013); these are taken first in Dev Loop.
 - **Then:** the 30 open PRs are triaged against v1 (merge, or close as superseded), and the remaining remote branches are swept (archive tags for unmerged ones, R33). Issues are v2-normalized (in progress, 2026-10-26).
 - **Done when:** the stage-0 branch is merged into `main`, CI (once added) or the full local checks pass on it, the open PRs and branches are triaged, and PIPELINE.md moves to Dev Loop.
 
