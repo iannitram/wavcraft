@@ -6743,8 +6743,13 @@ impl WaveApp {
         let Some(editor) = &self.editor else { return };
         let (tx, rx) = channel();
         let (state, path, ctx) = (editor.history.current().as_ref().clone(), self.doc_path.clone(), ctx.clone());
+        let previous = self.doc.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(Document::from_state(path, state));
+            let result = match previous {
+                Some(doc) => doc.after_step(state),
+                None => Document::from_state(path, state),
+            };
+            let _ = tx.send(result);
             ctx.request_repaint();
         });
         // Playback goes on with the old audio until the edited one is ready, and then moves on
@@ -6967,7 +6972,7 @@ impl WaveApp {
                 }
                 self.doc = Some(doc);
                 self.generation += 1;
-                self.spectrum = None;
+                // Keep the last picture while the spectral worker refreshes stale visible blocks.
             }
             Err(OpenError::Empty) => {
                 self.set_audio(None);

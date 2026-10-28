@@ -8,46 +8,19 @@ use std::ops::Range;
 /// analysis uses `fft_len` frames per FFT. Returns the first dirty block up to one past the last,
 /// or exactly `0..0` when no block is dirty.
 pub fn dirty_blocks(fft_len: usize, start: usize, removed: usize, inserted: usize, frames_after: usize) -> Range<usize> {
-    // Step 1: Calculate hop and blocks
-    let fft_len = i64::try_from(fft_len).unwrap_or(i64::MAX);
-    let start = i64::try_from(start).unwrap_or(i64::MAX);
-    let removed = i64::try_from(removed).unwrap_or(i64::MAX);
-    let inserted = i64::try_from(inserted).unwrap_or(i64::MAX);
-    let frames_after = i64::try_from(frames_after).unwrap_or(i64::MAX);
-
+    let fft_len = fft_len as i128;
     let hop = (fft_len / 2).max(1);
-    let blocks = (frames_after / hop + 2) / 16;
-
-    // If no blocks, return empty range
-    if blocks == 0 {
+    let blocks = ((frames_after as i128 / hop + 2) / 16) as usize;
+    if blocks == 0 || (removed == 0 && inserted == 0) {
         return 0..0;
     }
-
-    // If no change, return empty range
-    if removed == 0 && inserted == 0 {
-        return 0..0;
-    }
-
-    // Determine the affected span
-    let end = if removed == inserted { start + inserted } else { i64::MAX };
-
-    // Find dirty blocks
-    let mut lowest = blocks;
-    let mut highest = -1;
-
-    for b in 0..blocks {
-        let first = 16 * b * hop - hop / 2;
-        let last = (16 * b + 15) * hop - hop / 2 + fft_len;
-
-        // A block is dirty if it overlaps with the edit
-        if first < end && last > start {
-            lowest = lowest.min(b);
-            highest = highest.max(b);
-        }
-    }
-
-    // Return the range of dirty blocks
-    if highest >= 0 { (lowest as usize)..(highest as usize + 1) } else { 0..0 }
+    // Block b reads [16*b*hop - hop/2, (16*b+15)*hop - hop/2 + fft_len).
+    // Solve the two strict overlap inequalities, without walking every block.
+    let first = ((start as i128 + hop / 2 - fft_len - 15 * hop).div_euclid(16 * hop) + 1).max(0) as usize;
+    let last = if removed == inserted { ((start as i128 + inserted as i128 + hop / 2 + 16 * hop - 1) / (16 * hop)).max(0) as usize } else { blocks };
+    let first = first.min(blocks);
+    let last = last.min(blocks);
+    if first < last { first..last } else { 0..0 }
 }
 
 #[cfg(test)]

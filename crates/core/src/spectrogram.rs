@@ -281,6 +281,8 @@ pub struct Overview {
     bins: usize,
     /// One level per bin, block after block. Only whole blocks are kept.
     levels: Vec<u8>,
+    /// False blocks must be refreshed before contributing to a new picture.
+    fresh: Vec<bool>,
 }
 
 impl Overview {
@@ -311,7 +313,106 @@ impl Overview {
                 }
             },
         );
-        Overview { fft_len: p.fft_len(), floor_db: p.floor_db, ceil_db: p.ceil_db, window: p.window, frames: samples.len(), bins, levels }
+        Overview {
+            fft_len: p.fft_len(),
+            floor_db: p.floor_db,
+            ceil_db: p.ceil_db,
+            window: p.window,
+            frames: samples.len(),
+            bins,
+            levels,
+            fresh: vec![true; blocks],
+        }
+    }
+
+    /// Carry this overview to another history state without reading samples. Unaligned
+    /// shifts invalidate the suffix's frame-zero FFT grid. The app retains its previous
+    /// picture while the rendering worker refreshes visible stale blocks.
+    pub fn after_step(&mut self, span: crate::doc::span::EditSpan, frames: usize) {
+        let hop = (self.fft_len / 2).max(1);
+        let blocks = (frames / hop + 2) / BLOCK_HOPS;
+        let dirty = crate::spectral_dirty::dirty_blocks(
+            self.fft_len,
+            usize::try_from(span.at).unwrap_or(usize::MAX),
+            usize::try_from(span.removed).unwrap_or(usize::MAX),
+            usize::try_from(span.inserted).unwrap_or(usize::MAX),
+            frames,
+        );
+        let mut levels = vec![0; blocks * self.bins];
+        let mut fresh = vec![false; blocks];
+        let shift = span.inserted as i128 - span.removed as i128;
+        let stride = (BLOCK_HOPS * hop) as i128;
+        for (b, clean) in fresh.iter_mut().enumerate() {
+            let first = b as i128 * stride - (hop / 2) as i128;
+            let old = if !dirty.contains(&b) {
+                Some(b)
+            } else if first >= span.at as i128 + span.inserted as i128 && shift % stride == 0 {
+                usize::try_from(b as i128 - shift / stride).ok()
+            } else {
+                None
+            };
+            // For unchanged-length edits this also keeps clean blocks beyond the edit.
+            if let Some(old) = old.filter(|old| self.fresh.get(*old).copied().unwrap_or(false))
+                && let (Some(src), Some(dst)) =
+                    (self.levels.get(old * self.bins..(old + 1) * self.bins), levels.get_mut(b * self.bins..(b + 1) * self.bins))
+            {
+                dst.copy_from_slice(src);
+                *clean = true;
+            }
+        }
+        self.levels = levels;
+        self.fresh = fresh;
+        self.frames = frames;
+    }
+
+    /// Freshness and levels are exposed together; levels of stale blocks must not be
+    /// used as analysis of the current samples.
+    pub fn blocks(&self) -> impl Iterator<Item = (bool, &[u8])> {
+        self.fresh.iter().copied().zip(self.levels.chunks(self.bins.max(1)))
+    }
+
+    /// Refresh stale blocks intersecting the view, on the spectral rendering worker. A
+    /// whole-file view can require a background suffix refresh after an unaligned shift;
+    /// applying the edit and handing audio to the player never waits for it.
+    pub fn refresh_visible<S: Samples + ?Sized>(&mut self, samples: &S, p: &SpectrogramParams, columns: Columns) {
+        if !self.serves(samples.len(), p) || (columns.end - columns.start) / columns.cols.max(1) as f64 <= self.fft_len as f64 {
+            return;
+        }
+        let stride = (BLOCK_HOPS * (self.fft_len / 2).max(1)) as f64;
+        let first = (columns.start / stride).floor().max(0.0) as usize;
+        let last = (columns.end / stride).ceil().max(0.0) as usize;
+        self.refresh_blocks(samples, p, first..last);
+    }
+
+    /// Refresh a requested range of blocks; work and reads are proportional to stale blocks.
+    pub fn refresh_blocks<S: Samples + ?Sized>(&mut self, samples: &S, p: &SpectrogramParams, range: Range<usize>) {
+        if !self.serves(samples.len(), p) {
+            return;
+        }
+        let first = range.start.min(self.fresh.len());
+        let last = range.end.min(self.fresh.len()).max(first);
+        let analysis = Analysis::new(p);
+        let hop = analysis.hop() as i64;
+        let fresh = &self.fresh;
+        self.levels.par_chunks_mut(self.bins).enumerate().skip(first).take(last - first).for_each_init(
+            || analysis.analyser(),
+            |analyser, (block, levels)| {
+                if fresh.get(block).copied().unwrap_or(false) {
+                    return;
+                }
+                analyser.peaks.fill(0.0);
+                let first = (block * BLOCK_HOPS) as i64;
+                for g in first..first + BLOCK_HOPS as i64 {
+                    analyser.add(samples, g * hop - hop / 2);
+                }
+                for (level, peak) in levels.iter_mut().zip(&analyser.peaks) {
+                    *level = analysis.level(*peak);
+                }
+            },
+        );
+        if let Some(fresh) = self.fresh.get_mut(first..last) {
+            fresh.fill(true);
+        }
     }
 
     /// Memory held, in bytes.
@@ -331,6 +432,9 @@ impl Overview {
         let first = from.saturating_add(per - 1).div_euclid(per).max(0);
         let last = to.div_euclid(per);
         let held = usize::try_from(first).ok().zip(usize::try_from(last).ok()).filter(|(first, last)| first < last);
+        if held.is_some_and(|(first, last)| self.fresh.get(first..last).is_none_or(|blocks| blocks.iter().any(|fresh| !fresh))) {
+            return from..from;
+        }
         let Some(blocks) = held.and_then(|(first, last)| self.levels.get(first * self.bins..last * self.bins)) else { return from..from };
         for block in blocks.chunks_exact(self.bins.max(1)) {
             for (level, held) in into.iter_mut().zip(block) {
