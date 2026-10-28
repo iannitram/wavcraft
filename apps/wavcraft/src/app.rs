@@ -11,6 +11,7 @@ use std::time::Instant;
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
 use wavcraft_core::appearance;
+use wavcraft_core::bundle;
 use wavcraft_core::convert::{self, ConvertSettings, PresetFile};
 use wavcraft_core::chanmap::ChannelMap;
 use wavcraft_core::doc::append::{self, AppendReport, NewReport};
@@ -823,6 +824,10 @@ pub struct WaveApp {
     peak_dir: PathBuf,
     /// How the open file's overviews were made (cache hit or computed), for `PEAKCACHE info`.
     peak_report: Option<wavcraft_core::PeakReport>,
+    /// Help › About is open (it shows the third-party notices).
+    show_about: bool,
+    /// Restore Preference Defaults asks first.
+    confirm_reset_prefs: bool,
 }
 
 /// A clip's source open in the Waveform editor (f116).
@@ -1073,6 +1078,8 @@ impl WaveApp {
             playlist_ui: PlaylistUi::default(),
             peak_dir: std::env::var_os("WAVCRAFT_PEAK_CACHE_DIR").map_or_else(wavcraft_core::peakcache::default_dir, PathBuf::from),
             peak_report: None,
+            show_about: false,
+            confirm_reset_prefs: false,
             control: {
                 let ctx = cc.egui_ctx.clone();
                 control::start_from_env(move || ctx.request_repaint())
@@ -4375,6 +4382,127 @@ impl WaveApp {
     fn quick_record(&mut self) -> Result<PathBuf, String> {
         let fmt = self.rec.last_format();
         self.start_recording(fmt)
+    }
+
+    /// The folder the settings files live in.
+    fn config_dir(&self) -> Result<&Path, String> {
+        self.settings_path.as_deref().and_then(Path::parent).ok_or_else(|| "this system has no settings folder".to_string())
+    }
+
+    /// File › Export Application Settings: the settings, shortcut overrides and workspaces in
+    /// one file at `path`.
+    fn export_settings(&mut self, path: &Path) -> Result<String, String> {
+        let dir = self.config_dir()?.to_path_buf();
+        bundle::export(&dir, path).map_err(|e| format!("could not export the settings to {}: {e}", path.display()))?;
+        let msg = format!("Settings exported to {}", path.display());
+        self.error = None;
+        self.notice = Some(msg.clone());
+        Ok(msg)
+    }
+
+    /// File › Import Application Settings: check the file at `path` whole, then replace the
+    /// settings with it (the old files stay beside the new as `.old`).
+    fn import_settings(&mut self, path: &Path) -> Result<String, String> {
+        let dir = self.config_dir()?.to_path_buf();
+        match bundle::import(&dir, path) {
+            Ok(names) => {
+                self.reload_settings();
+                let msg = format!("Settings imported from {} ({}); the old ones are kept as .old files", path.display(), names.join(", "));
+                self.error = None;
+                self.notice = Some(msg.clone());
+                Ok(msg)
+            }
+            Err(e) => {
+                let why = format!("Settings not imported, nothing was changed: {e}");
+                self.error = Some(why.clone());
+                Err(why)
+            }
+        }
+    }
+
+    /// File › Restore Preference Defaults (after asking): the settings and shortcut files are put
+    /// aside as `.old` and the defaults are used.
+    fn restore_defaults(&mut self) -> Result<String, String> {
+        let dir = self.config_dir()?.to_path_buf();
+        let moved = bundle::reset_preferences(&dir).map_err(|e| format!("could not restore the defaults: {e}"))?;
+        self.reload_settings();
+        let msg = if moved.is_empty() {
+            "Preferences were already the defaults".to_string()
+        } else {
+            format!("Preferences restored to the defaults; the old files are kept as .old ({})", moved.join(", "))
+        };
+        self.error = None;
+        self.notice = Some(msg.clone());
+        Ok(msg)
+    }
+
+    /// Read the settings file again and apply the session folder from the next open (the
+    /// command-line flag and the environment variable still win, as at start).
+    fn reload_settings(&mut self) {
+        self.settings = self.settings_path.as_deref().map(Settings::load).unwrap_or_default();
+        // Everything `WaveApp::new` derives from the settings, applied now rather than at the next start.
+        self.panels = PanelSet::from_hidden(&self.settings.hidden_panels);
+        self.time_format = self.settings.time_display;
+        self.apply_crossfades();
+        self.apply_snap();
+        self.player.set_output(output_choice(&self.settings));
+        self.player.set_map(self.settings.output_map.clone());
+        self.player.set_quality(self.settings.playback_quality);
+        self.settings.apply_to_spectrogram(&mut self.params);
+        self.spectrum = None;
+        if matches!(self.sessions.source, FolderSource::CommandLine | FolderSource::Environment) {
+            return;
+        }
+        self.sessions = settings::resolve_session_folder(None, None, &self.settings, default_sessions_root(), settings::check_folder);
+        self.mtv.take_dir = self.sessions.path.join("takes");
+        if let Some(w) = self.sessions.warning.clone() {
+            self.error = Some(w);
+        }
+    }
+
+    fn reset_prefs_prompt(&mut self, ctx: &egui::Context) {
+        if !self.confirm_reset_prefs {
+            return;
+        }
+        let mut choice = None;
+        egui::Window::new("Restore Preference Defaults")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(
+                    "Put your settings and shortcut changes back to the defaults? The old files are kept beside the new ones with the ending .old.",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Restore Defaults").clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(false);
+                    }
+                });
+            });
+        if let Some(yes) = choice {
+            self.confirm_reset_prefs = false;
+            if yes && let Err(e) = self.restore_defaults() {
+                self.error = Some(e);
+            }
+        }
+    }
+
+    fn about_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_about;
+        egui::Window::new("About WavCraft").open(&mut open).default_size(vec2(640.0, 480.0)).show(ctx, |ui| {
+            ui.heading("WavCraft");
+            ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+            ui.label("WavCraft is free software built on the open-source libraries below, each under its own licence.");
+            ui.separator();
+            ui.strong("Third-party notices");
+            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(crate::notices::TEXT).monospace().size(11.0)).wrap_mode(egui::TextWrapMode::Extend));
+            });
+        });
+        self.show_about = open;
     }
 
     fn toggle_play(&mut self) {
@@ -8191,6 +8319,21 @@ impl WaveApp {
                 }
                 _ => "ERR WINDOW minimize|restore".to_string(),
             },
+            // Application settings as one file: `SETTINGS export <path>` / `SETTINGS import <path>`.
+            "SETTINGS" => match rest.split_once(' ') {
+                Some(("export", p)) if !p.trim().is_empty() => {
+                    self.export_settings(Path::new(p.trim())).map_or_else(|e| format!("ERR {e}"), |m| format!("OK {m}"))
+                }
+                Some(("import", p)) if !p.trim().is_empty() => {
+                    self.import_settings(Path::new(p.trim())).map_or_else(|e| format!("ERR {e}"), |m| format!("OK {m}"))
+                }
+                _ => "ERR SETTINGS export|import <path>".to_string(),
+            },
+            // Open Help › About; answers with the size of the notices it shows.
+            "ABOUT" => {
+                self.show_about = true;
+                format!("OK notices_bytes={}", crate::notices::TEXT.len())
+            }
             "NOISE_PRINT" => match wavcraft_core::noise::current() {
                 Some(p) => format!("OK frames={} channels={} rate={}", p.frames, p.density.len(), p.sample_rate),
                 None => "OK none".to_string(),
@@ -8850,6 +8993,15 @@ impl WaveApp {
                 let (key, value) = args.trim().split_once(' ').unwrap_or((args.trim(), ""));
                 let value = value.trim();
                 match (verb, key) {
+                    // `PREF reset`: Restore Preference Defaults, already confirmed (the menu asks first).
+                    ("reset", "") => self.restore_defaults().map_or_else(|e| format!("ERR {e}"), |m| format!("OK {m}")),
+                    // `PREF show`: the session folder now and where it came from (for scripted checks).
+                    ("show", "") => format!(
+                        "OK session_folder={} source={:?} saved_session_folder={}",
+                        self.sessions.path.display(),
+                        self.sessions.source,
+                        self.settings.session_folder.as_deref().map_or_else(String::new, |p| p.display().to_string())
+                    ),
                     ("set", "language") if i18n::is_language(value) => {
                         self.set_language(value);
                         format!("OK language={}", i18n::language())
@@ -8875,7 +9027,7 @@ impl WaveApp {
                     _ => match verb {
                         "get" => self.settings.get(key).map_or_else(|e| format!("ERR {e}"), |v| format!("OK {v}")),
                         "set" => self.pref_set(key, value).map_or_else(|e| format!("ERR {e}"), |()| "OK".to_string()),
-                        _ => "ERR PREF get <key> | PREF set <key> <value>".to_string(),
+                        _ => "ERR PREF get <key> | PREF set <key> <value> | PREF reset | PREF show".to_string(),
                     },
                 }
             }
@@ -9853,6 +10005,21 @@ impl WaveApp {
                     self.set_session_folder(None);
                 }
                 ui.separator();
+                if ui.button("Export Application Settings…").on_hover_text("Settings, shortcut changes and workspaces in one file").clicked()
+                    && let Some(path) = rfd::FileDialog::new().set_file_name("wavcraft-settings.wavset").save_file()
+                    && let Err(e) = self.export_settings(&path)
+                {
+                    self.error = Some(e);
+                }
+                if ui.button("Import Application Settings…").on_hover_text("The file is checked whole before anything is replaced").clicked()
+                    && let Some(path) = rfd::FileDialog::new().add_filter("WavCraft settings", &["wavset"]).pick_file()
+                {
+                    let _ = self.import_settings(&path);
+                }
+                if ui.button("Restore Preference Defaults…").clicked() {
+                    self.confirm_reset_prefs = true;
+                }
+                ui.separator();
                 if ui.button(tr("file.quit")).clicked() {
                     ui.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -10052,6 +10219,11 @@ impl WaveApp {
                     self.drop_video();
                 }
                 ui.checkbox(&mut self.show_video, "Video panel");
+            });
+            ui.menu_button("Help", |ui| {
+                if ui.button("About WavCraft…").clicked() {
+                    self.show_about = true;
+                }
             });
             let label = if self.player.is_playing() { tr("transport.stop") } else if self.transport.mode == Mode::Paused { "▶ Resume".to_string() } else { tr("transport.play") };
             if ui.add_enabled(!self.rec.is_active(), egui::Button::new(label)).on_hover_text("Space").clicked() {
@@ -11715,6 +11887,8 @@ impl eframe::App for WaveApp {
         self.mix_paste_dialog(&ctx);
         self.custom_fps_dialog(&ctx);
         self.clear_history_prompt(&ctx);
+        self.reset_prefs_prompt(&ctx);
+        self.about_window(&ctx);
         self.metadata_display_dialog(&ctx);
         self.batch.ui(&ctx);
         self.draw_hud(&ctx);

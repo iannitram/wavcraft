@@ -159,6 +159,9 @@
 //!   poll `STATE` until `busy=0`, then `LOUDNESS` reads the result back)
 //! - `XMP get [<ns>:<prop>]` / `XMP set <ns>:<prop> <value>` → `OK status=<ok|none|malformed> props=<n> …` / `OK <value>` / `OK changed=<0|1>` (`<ns>` is a namespace URI or a prefix such as `dc`; one undo step "Edit Metadata" per set; an empty value removes the property)
 //! - `PRESET list` | `PRESET save <name> | <settings>` | `PRESET delete <name>` → `OK …` (conversion presets)
+//! - `SETTINGS export <path>` / `SETTINGS import <path>` → `OK …` (the settings as one file; an import is checked whole first, `ERR …` changes nothing)
+//! - `PREF reset` → `OK …` (Restore Preference Defaults; the old files stay as `.old`); `PREF show` → `OK session_folder=… source=… saved_session_folder=…`
+//! - `ABOUT` → `OK notices_bytes=<n>` (opens Help › About)
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
 

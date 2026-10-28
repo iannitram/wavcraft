@@ -20,6 +20,7 @@
 //! - [`record`]: recording a take: the ring buffer, the crash-safe WAV writer, the fake input.
 //! - [`take_recovery`]: finding and repairing takes a crash left unfinished.
 //! - [`take_recovery`]: finding and repairing takes a crash left unfinished.
+//! - [`bundle`]: export/import of the settings files as one file, and the preference reset.
 //! - [`settings`]: the settings file and where the session folder is.
 //! - [`Document`]: the open file as the app sees it: the document in the store, read in
 //!   chunks (no whole-file copy since task 05), and its waveform peaks.
@@ -41,6 +42,7 @@ pub mod atomic;
 pub mod autosave;
 pub mod batch;
 pub mod batch_cli;
+pub mod bundle;
 pub mod cd;
 pub mod chanmap;
 pub mod channels;

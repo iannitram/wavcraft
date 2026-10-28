@@ -162,6 +162,37 @@ pub const KEYS: [&str; 46] = [
     KEY_IN_MAP,
 ];
 
+/// The keys a settings file may carry that [`Settings::set`] does not take on its own: a list, a
+/// switch group, a tempo, the appearance presets. [`Settings::validate`] accepts these by name.
+const FILE_ONLY_KEYS: &[&str] = &[
+    KEY_LANGUAGE,
+    KEY_DITHER,
+    KEY_RIGHT_CLICK,
+    KEY_CUSTOM_FPS,
+    KEY_AMP_SCALE,
+    KEY_CHANNEL_LAYOUT,
+    KEY_STATUS_FIELDS,
+    KEY_SPECTRAL_VIEW,
+    KEY_SNAP,
+    KEY_SNAP_ZERO,
+    KEY_SNAP_COARSE,
+    KEY_SNAP_FINE,
+    KEY_SNAP_EDGES,
+    KEY_SNAP_MARKERS,
+    KEY_HIDDEN_PANELS,
+    KEY_SYNC_SELECTION,
+    KEY_SYNC_ZOOM,
+    KEY_SYNC_PLAYHEAD,
+    KEY_PANEL_LAYOUT,
+    KEY_ZONE_SIZES,
+    KEY_WORKSPACE,
+    KEY_METADATA_FIELDS,
+    KEY_MARKER_COLUMNS,
+    KEY_ZOOM_PRESETS,
+    KEY_TEMPO,
+    KEY_PRESET,
+];
+
 /// Spectral display resolutions (FFT lengths in frames) the page offers, and the default.
 pub const SPEC_RESOLUTIONS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 pub const DEFAULT_SPEC_RESOLUTION: u32 = 2048;
@@ -1007,6 +1038,38 @@ impl Settings {
         let at = self.presets.iter().position(|p| p.name == name.trim()).ok_or_else(|| format!("no preset named {:?}", name.trim()))?;
         self.presets.remove(at);
         Ok(())
+    }
+
+    /// Check settings text strictly (an import uses this): every line is blank, a `#` comment,
+    /// or `key = value` with a key this version knows, and a value this version accepts for a
+    /// scalar key. The error names the line.
+    pub fn validate(text: &str) -> Result<(), String> {
+        for (i, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else { return Err(format!("line {} is not \"key = value\"", i + 1)) };
+            let (key, value) = (key.trim(), value.trim());
+            // `set` refuses a value that does not fit a scalar key; a key it does not know is still
+            // fine when the file carries it on its own line (a list, a switch group, a preset).
+            let probe = Settings::default().set(key, value);
+            let known = KEYS.contains(&key) || FILE_ONLY_KEYS.contains(&key) || (key.starts_with("color.") && probe.is_ok());
+            if !known {
+                return Err(format!("line {} has a setting this version does not know ({key:?})", i + 1));
+            }
+            if let Err(e) = probe {
+                if e != unknown_key(key) {
+                    return Err(format!("line {}: {e}", i + 1));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The config folder the settings file lives in (`<config dir>/wavcraft`).
+    pub fn default_dir() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("wavcraft"))
     }
 
     /// The file's text for these settings.
