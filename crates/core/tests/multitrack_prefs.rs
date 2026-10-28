@@ -341,3 +341,28 @@ fn save_over_an_unreadable_file_just_writes_ours() {
     custom().save(&file).unwrap();
     assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{COMMENT}\n{CUSTOM_BLOCK}"));
 }
+
+#[test]
+fn settings_save_twice_keeps_each_comment_once_and_the_file_unchanged() {
+    let dir = TempDir::new("settings-save-twice");
+    let file = dir.0.join("settings.txt");
+    custom().save(&file).unwrap();
+    let mut video = VideoPrefs::default();
+    video.set("video_overlay_size", "12").unwrap();
+    std::fs::write(&file, video.serialize(&std::fs::read_to_string(&file).unwrap())).unwrap();
+    let mut settings = Settings::default();
+    settings.set("session_folder", "/home/user/s").unwrap();
+
+    settings.save(&file).unwrap();
+    let first = std::fs::read_to_string(&file).unwrap();
+    settings.save(&file).unwrap();
+    let second = std::fs::read_to_string(&file).unwrap();
+
+    assert_eq!(first, second);
+    let text = second;
+    assert_eq!(text.lines().filter(|l| l.starts_with("# WavCraft settings")).count(), 1);
+    assert_eq!(text.matches("# session_folder:").count(), 1);
+    assert_eq!(text.matches(COMMENT).count(), 1);
+    assert!(text.contains("multitrack_track_height = 200\n"));
+    assert!(text.contains("video_overlay_size = 12\n"));
+}

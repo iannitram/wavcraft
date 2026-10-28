@@ -1305,7 +1305,7 @@ impl Settings {
         Err(io::Error::new(io::ErrorKind::AlreadyExists, "no unused temporary file name found"))
     }
 
-    /// Replace settings keys while retaining every line owned by another preferences group.
+    /// Replace settings keys and the comments `to_text` writes, retaining every line owned by another preferences group.
     fn merge_into(&self, existing: &str) -> String {
         let mut out = String::new();
         for segment in existing.split_inclusive('\n') {
@@ -1314,7 +1314,7 @@ impl Settings {
                 let key = key.trim();
                 KEYS.contains(&key) || FILE_ONLY_KEYS.contains(&key)
             });
-            if !ours {
+            if !ours && !OWN_COMMENTS.iter().any(|c| line.starts_with(c)) {
                 out.push_str(segment);
             }
         }
@@ -1325,6 +1325,32 @@ impl Settings {
         out
     }
 }
+
+/// The start of every comment line `Settings::to_text` can write. `merge_into` drops the old
+/// file's copies of these, so each save leaves one copy; other modules' comments are kept.
+const OWN_COMMENTS: [&str; 21] = [
+    "# WavCraft settings.",
+    "# session_folder:",
+    "# language:",
+    "# status_fields:",
+    "# spectral_view:",
+    "# right_click:",
+    "# hidden_panels:",
+    "# crossfade_*_ms:",
+    "# save_include_metadata:",
+    "# time_display:",
+    "# sync_selection, sync_zoom, sync_playhead",
+    "# tempo:",
+    "# zoom_presets:",
+    "# custom_fps:",
+    "# panel_layout:",
+    "# workspace:",
+    "# snap_*:",
+    "# marker_columns:",
+    "# metadata_fields:",
+    "# Preferences pages (",
+    "# dither:",
+];
 
 fn parse_bool(key: &str, v: &str) -> Result<bool, String> {
     match v {
