@@ -517,3 +517,15 @@ fn sync_options_round_trip_and_default_off() {
     let s = Settings { sync: SyncOptions { selection: true, zoom: false, playhead: true }, ..Default::default() };
     assert_eq!(Settings::parse(&s.to_text()), s);
 }
+
+#[test]
+fn the_language_is_saved_and_read_back_and_unset_means_english() {
+    let dir = TempDir::new("language");
+    let file = dir.0.join("settings.txt");
+    assert_eq!(Settings::load(&file).language, None);
+    let s = Settings { language: Some("pseudo".into()), ..Settings::default() };
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file).language.as_deref(), Some("pseudo"));
+    Settings::default().save(&file).unwrap();
+    assert_eq!(Settings::load(&file).language, None);
+}

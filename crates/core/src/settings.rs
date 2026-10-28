@@ -40,6 +40,7 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_LANGUAGE: &str = "language";
 const KEY_STATUS_FIELDS: &str = "status_fields";
 const KEY_SPECTRAL_VIEW: &str = "spectral_view";
 const KEY_SNAP: &str = "snap";
@@ -439,6 +440,9 @@ const KEY_CHANNEL_LAYOUT: &str = "channel_layout";
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// The interface language's code (`None`: English). Written only when set, so a file without
+    /// it keeps its old format.
+    pub language: Option<String>,
     /// Right-click in the waveform opens a context menu instead of moving the nearest selection
     /// edge to the click (Audition's preference; off is its default).
     pub right_click_menu: bool,
@@ -558,6 +562,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             session_folder: None,
+            language: None,
             right_click_menu: false,
             hidden_panels: Vec::new(),
             dither: false,
@@ -844,6 +849,7 @@ impl Settings {
         };
         match key {
             KEY_SESSION_FOLDER => self.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+            KEY_LANGUAGE => self.language = (!value.is_empty()).then(|| value.to_string()),
             // Only exactly `on` turns it on; the last line in the file wins.
             KEY_DITHER => self.dither = value == "on",
             KEY_CUT_JOIN => self.cut_join_ms = ms(value)?,
@@ -1009,6 +1015,10 @@ impl Settings {
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
         let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        if let Some(language) = &self.language {
+            out.push_str("# language: the interface language's code (en, pseudo; absent: English).\n");
+            out.push_str(&format!("{KEY_LANGUAGE} = {language}\n"));
+        }
         if self.status_fields != StatusFields::default() {
             out.push_str("# status_fields: the status bar's fields that are shown, comma separated.\n");
             out.push_str(&format!("{KEY_STATUS_FIELDS} = {}\n", self.status_fields.to_list()));

@@ -81,6 +81,8 @@
 //!   for this save (`sowt`: AIFF-C little-endian); `quality` is the Ogg Vorbis VBR quality (5 until given; it stays for later saves);
 //!   `meta` sets "Include markers and other metadata" for this document first (A262); poll `STATE` until `busy=0`)
 //! - `PREF set record_offset_ms <ms>` / `PREF set monitor_input true|false` (the recording offset and input monitoring, saved)
+//! - `PREF set language <code>` / `PREF get language` → `OK language=<code>` (saved in the settings)
+//! - `I18N missing` → `OK <n> <keys>`; `I18N get <key>` → `OK <text now>` (e.g. a menu title)
 //! - `RECORD start [mode=… monitor=1|0 …]` etc. (see `recording.rs`); `STATE` carries `mon_*` and `rec_offset_*`
 //! - `SAVE_CANCEL` → `OK` (stops the running save: temp file removed, target untouched, still unsaved)
 //! - `SAVEOPTS estimate <wav|aiff|flac> <16|24|32|float> [aiff=<kind>]` → `OK bytes=<n> exact=<0|1>` (the file size a save

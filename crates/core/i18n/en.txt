@@ -1,0 +1,194 @@
+# English: the source catalogue. One `key = text` per line; `{0}`, `{1}` are filled in by the caller.
+# Add a key here whenever the code calls tr("key"); a test checks every key the code uses is present.
+
+# Menu titles
+menu.file = File
+menu.edit = Edit
+menu.view = View
+menu.language = Language
+
+# File menu
+file.open = Open…  Ctrl+O
+file.save = Save
+file.save_as = Save As…
+file.session_folder = Session Folder…
+file.session_folder_tip = Where opened files are kept while you work on them. Now: {0}
+file.default_session_folder = Use the Default Session Folder
+file.quit = Quit
+
+# View menu and transport
+view.waveform = Waveform
+view.spectrum = Spectral frequency display
+view.log_freq = Logarithmic frequency axis
+view.history_panel = History panel
+transport.stop = ■ Stop
+transport.play = ▶ Play
+
+# Languages (shown in the Language menu)
+language.en = English
+language.pseudo = Pseudo-locale (accented, longer)
+
+# Edit and View menu items (the action table's menu text)
+action.edit.undo = Undo
+action.edit.redo = Redo
+action.edit.repeatLast = Repeat Last Command
+action.edit.repeatLastDialog = Repeat Last Command…
+action.edit.cut = Cut
+action.edit.copy = Copy
+action.edit.paste = Paste
+action.edit.delete = Delete
+action.edit.silence = Silence
+action.edit.insertSilence = Insert Silence…
+action.edit.crop = Crop
+action.edit.selectAll = Select All
+action.edit.deselectAll = Deselect All
+action.edit.clearTimeSelection = Clear Time Selection
+action.edit.zeroCrossings.inward = Zero Crossings: Adjust Selection Inward
+action.edit.zeroCrossings.outward = Zero Crossings: Adjust Selection Outward
+action.edit.zeroCrossings.leftToLeft = Zero Crossings: Left Side to Left
+action.edit.zeroCrossings.leftToRight = Zero Crossings: Left Side to Right
+action.edit.zeroCrossings.rightToLeft = Zero Crossings: Right Side to Left
+action.edit.zeroCrossings.rightToRight = Zero Crossings: Right Side to Right
+action.edit.setIn = Set In Point to Playhead
+action.edit.setOut = Set Out Point to Playhead
+action.edit.leftChannel = Left Channel Only
+action.edit.rightChannel = Right Channel Only
+action.view.cursorToStart = Playhead to Start
+action.view.cursorToEnd = Playhead to End
+action.view.zoomIn = Zoom In
+action.view.zoomOut = Zoom Out
+action.view.zoomToSelection = Zoom to Selection
+action.view.zoomOutFull = Zoom Out Full
+
+# Edit menu items that name a step
+action.undo_step = Undo {0}
+action.redo_step = Redo {0}
+action.repeat_step = Repeat {0}
+action.repeat_insert_silence = Repeat Insert Silence
+action.both_channels = Both Channels
+
+# Status bar
+status.opening = Opening {0}… {1}%
+status.saving = Saving {0}… {1}%
+status.updating = Updating the view…
+status.format = {0} {1} · {2} Hz · {3} ch · {4}
+status.warning = Warning: {0}
+status.cursor = Cursor {0}
+status.selection = Selection {0} – {1}  ({2})
+status.no_sound = No sound: {0}
+status.no_sound_stopped = No sound: the output device stopped (Play tries it again)
+status.out = Out: {0}
+status.hint = File › Open, or drop an audio file here.
+
+# Dialogs
+dialog.insert_silence = Insert Silence
+dialog.insert_silence.duration = Duration (seconds):
+dialog.clear_history = Clear History
+dialog.clear_history.body = Remove every step but the current one? This can't be undone.
+dialog.unsaved = Unsaved changes
+dialog.unsaved.body = Save changes to {0} before closing?
+button.ok = OK
+button.cancel = Cancel
+button.clear = Clear
+button.save = Save
+button.dont_save = Don't Save
+
+# History panel
+history.title = History
+history.no_file = No file open.
+history.dropped = Oldest {0} steps removed to stay under {1} GB
+history.session = Session: {0} MB · free {1}
+history.unknown = unknown
+history.clear = Clear History…
+
+# The menu text of each table action (the English the menus show; a test checks each).
+action.edit.copy_to_new = Copy to New
+action.edit.paste_to_new = Paste to New
+action.file.close_all = Close All
+action.file.save_all = Save All
+action.edit.clipboard.1 = Set Current Clipboard: 1
+action.edit.clipboard.2 = Set Current Clipboard: 2
+action.edit.clipboard.3 = Set Current Clipboard: 3
+action.edit.clipboard.4 = Set Current Clipboard: 4
+action.edit.clipboard.5 = Set Current Clipboard: 5
+action.nr.capture_print = Capture Noise Print
+action.edit.insertFile = Insert Audio from File…
+action.edit.deleteSilence = Delete Silence
+action.diagnostics.declip = DeClipper
+action.diagnostics.declick = DeClicker
+action.diagnostics.autoClickRemover = Automatic Click Remover
+action.edit.convertSampleType = Convert Sample Type…
+action.edit.interpretSampleRate = Interpret Sample Rate…
+action.edit.bothChannels = Both Channels
+action.select.currentView = Select Current View
+action.select.toStart = Select from Cursor to Start of File
+action.select.toEnd = Select from Cursor to End of File
+action.marker.add = Add Marker
+action.marker.prev = Playhead to Previous Marker
+action.marker.next = Playhead to Next Marker
+action.marker.delete = Delete Marker
+action.marker.toRange = Convert Marker to Range
+action.marker.toPoint = Convert Marker to Point
+action.edit.extract_channels = Extract Channels to Mono Files…
+action.marker.exportRanges = Export Audio of Range Markers…
+action.view.sync.selection = Synchronise Selection Across Files
+action.view.sync.zoom = Synchronise Zoom and Scroll Across Files
+action.view.sync.playhead = Synchronise Playhead Across Files
+action.view.zoom.ampIn = Zoom In Vertically
+action.view.zoom.ampOut = Zoom Out Vertically
+action.view.zoom.ampReset = Reset Vertical Zoom
+action.view.zoom.in_at_in = Zoom In at In Point
+action.view.zoom.in_at_out = Zoom In at Out Point
+action.view.zoom.preset.1 = Zoom to Time: Slot 1
+action.view.zoom.preset.2 = Zoom to Time: Slot 2
+action.view.zoom.preset.3 = Zoom to Time: Slot 3
+action.view.zoom.preset.4 = Zoom to Time: Slot 4
+action.view.zoom.preset.5 = Zoom to Time: Slot 5
+action.view.spectral.resolutionUp = Spectral Resolution Up
+action.view.spectral.resolutionDown = Spectral Resolution Down
+action.view.channels.layered = Layer Channels
+action.view.channels.stacked = Stack Channels
+action.meter.input.toggle = Meter Input Signal
+action.meter.input.arm = Test Input Levels (Monitor)
+action.meter.input.micCheck = Mic Check...
+action.tool.select = Time Selection Tool
+action.tool.hand = Hand Tool
+action.tool.zoom = Zoom Tool
+action.tool.marquee = Marquee Selection Tool
+action.stats.show = Sample Statistics
+action.stats.goto_peak = Go to Peak
+action.stats.next_clip = Next Possibly Clipped Run
+action.stats.prev_clip = Previous Possibly Clipped Run
+action.view.time_display.decimal = Decimal (mm:ss.ddd)
+action.view.time_display.compact = Compact
+action.view.time_display.samples = Samples
+action.view.gotoTime = Go to Time…
+action.view.time_display.smpte_24 = SMPTE 24 fps
+action.view.time_display.smpte_25 = SMPTE 25 fps
+action.view.time_display.smpte_2997df = SMPTE 29.97 fps drop
+action.view.time_display.smpte_2997ndf = SMPTE 29.97 fps non-drop
+action.view.time_display.smpte_30 = SMPTE 30 fps
+action.view.time_display.smpte_5994 = SMPTE 59.94 fps
+action.view.time_display.custom = Custom frame rate…
+action.view.time_display.cd75 = Compact Disc (mm:ss:ff, 75 fps)
+action.view.time_display.bars_beats = Bars and Beats
+action.view.editTempo = Edit Tempo…
+action.view.snap_frames.toggle = Snap to Frames
+action.view.snap.toggle = Snapping
+action.view.snap.zero.toggle = Snap to Zero Crossings
+action.view.snap.ruler_coarse.toggle = Snap to Ruler (Coarse)
+action.view.snap.ruler_fine.toggle = Snap to Ruler (Fine)
+action.view.snap.edges.toggle = Snap to Selection Edges and Cursor
+action.view.snap.markers.toggle = Snap to Markers
+action.transport.play = Play
+action.transport.pause = Pause
+action.transport.stop = Stop
+action.transport.loop = Loop Playback
+action.transport.skipSelection = Skip Selection
+action.transport.returnOnStop = Return to Start Position on Stop
+action.transport.autoScroll = Auto-Scroll
+action.transport.followPage = Auto-Scroll Pagewise
+action.transport.followCenter = Auto-Scroll Centered
+action.transport.rewind = Rewind
+action.transport.fastForward = Fast Forward
+action.transport.roll = Pre/Post-Roll

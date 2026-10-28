@@ -21,6 +21,7 @@ use wavcraft_core::export::{self, DEFAULT_CHANNEL_PATTERN, DEFAULT_RANGE_PATTERN
 use wavcraft_core::export_presets::{ExportChoice, ExportPresets};
 use wavcraft_core::freq_axis::FreqAxis;
 use wavcraft_core::hwprofile::{Hardware, Outcome, ProfileStore};
+use wavcraft_core::i18n::{self, tr, tr_args};
 use wavcraft_core::input_meter::InputStats;
 use wavcraft_core::io::{OpenOptions, RawEncoding, RawSpec};
 use wavcraft_core::jobs::{self, JobPoll};
@@ -854,6 +855,11 @@ impl WaveApp {
         let settings_path = Settings::default_path();
         let reset_note = if reset_preferences { settings_path.as_deref().map(move_settings_aside) } else { None };
         let settings = settings_path.as_deref().map(Settings::load).unwrap_or_default();
+        if let Some(code) = settings.language.as_deref()
+            && !i18n::set_language(code)
+        {
+            log::warn!(target: "wavcraft", "the settings file names language {code:?}, which is not built in; using English");
+        }
         let metadata = MetadataDisplay::from_ids(settings.metadata_fields.as_deref());
         let profiles_path = settings_path.as_deref().map(ProfileStore::default_path);
         let env = std::env::var_os(settings::ENV_SESSION_DIR);
@@ -5304,7 +5310,7 @@ impl WaveApp {
         let time_format = self.time_format;
         let Some(text) = self.insert_silence.as_mut() else { return };
         let mut choice = None;
-        egui::Window::new("Insert Silence").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+        egui::Window::new(tr("dialog.insert_silence")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!("Duration ({}):", time_format.menu()));
                 let r = ui.text_edit_singleline(text);
@@ -5314,10 +5320,10 @@ impl WaveApp {
                 r.request_focus();
             });
             ui.horizontal(|ui| {
-                if ui.button("OK").clicked() {
+                if ui.button(tr("button.ok")).clicked() {
                     choice = Some(true);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr("button.cancel")).clicked() {
                     choice = Some(false);
                 }
             });
@@ -5764,14 +5770,14 @@ impl WaveApp {
             self.notice = Some(e);
         }
         let Some(editor) = self.editor.as_ref() else {
-            ui.label("No file open.");
+            ui.label(tr("history.no_file"));
             return;
         };
         let (cursor, dropped) = (editor.history.cursor(), editor.history.dropped_total());
         let labels: Vec<String> = editor.history.steps().iter().map(|s| s.label().to_string()).collect();
         let (held, dir) = (editor.history.held_bytes(), editor.history.current().store().dir().to_path_buf());
         if dropped > 0 {
-            ui.label(format!("Oldest {dropped} steps removed to stay under {:.1} GB", editor.history.cap_disk_bytes() as f64 / 1e9));
+            ui.label(tr_args("history.dropped", &[&dropped.to_string(), &format!("{:.1}", editor.history.cap_disk_bytes() as f64 / 1e9)]));
         }
         let mut go = None;
         let mut delete = None;
@@ -5798,8 +5804,8 @@ impl WaveApp {
         });
         self.history_focus = focus || refocus.is_some();
         ui.separator();
-        let free = wavcraft_core::space::free_space(&dir).map_or_else(|| "unknown".to_string(), |b| format!("{:.1} GB", b as f64 / 1e9));
-        ui.label(format!("Session: {:.1} MB · free {free}", held as f64 / 1e6));
+        let free = wavcraft_core::space::free_space(&dir).map_or_else(|| tr("history.unknown"), |b| format!("{:.1} GB", b as f64 / 1e9));
+        ui.label(tr_args("history.session", &[&format!("{:.1}", held as f64 / 1e6), &free]));
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(cursor > 0, egui::Button::new("Delete State"))
@@ -5808,7 +5814,7 @@ impl WaveApp {
             {
                 delete = Some(cursor);
             }
-            if ui.add_enabled(labels.len() > 1, egui::Button::new("Clear History…")).clicked() {
+            if ui.add_enabled(labels.len() > 1, egui::Button::new(tr("history.clear"))).clicked() {
                 self.confirm_clear_history = true;
             }
         });
@@ -6454,17 +6460,20 @@ impl WaveApp {
             return;
         }
         let mut choice = None;
-        egui::Window::new("Clear History").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
-            ui.label("Remove every step but the current one? This can't be undone.");
-            ui.horizontal(|ui| {
-                if ui.button("Clear").clicked() {
-                    choice = Some(true);
-                }
-                if ui.button("Cancel").clicked() {
-                    choice = Some(false);
-                }
-            });
-        });
+        egui::Window::new(tr("dialog.clear_history")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+            ctx,
+            |ui| {
+                ui.label(tr("dialog.clear_history.body"));
+                ui.horizontal(|ui| {
+                    if ui.button(tr("button.clear")).clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button(tr("button.cancel")).clicked() {
+                        choice = Some(false);
+                    }
+                });
+            },
+        );
         match choice {
             Some(true) => {
                 let idle = self.running.is_none();
@@ -7343,18 +7352,18 @@ impl WaveApp {
         }
         let name = path_name(&self.doc_path);
         let mut choice = None;
-        egui::Window::new("Unsaved changes").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+        egui::Window::new(tr("dialog.unsaved")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
             ctx,
             |ui| {
-                ui.label(format!("Save changes to {name} before closing?"));
+                ui.label(tr_args("dialog.unsaved.body", &[&name]));
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
+                    if ui.button(tr("button.save")).clicked() {
                         choice = Some(0);
                     }
-                    if ui.button("Don't Save").clicked() {
+                    if ui.button(tr("button.dont_save")).clicked() {
                         choice = Some(1);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr("button.cancel")).clicked() {
                         choice = Some(2);
                     }
                 });
@@ -8841,6 +8850,12 @@ impl WaveApp {
                 let (key, value) = args.trim().split_once(' ').unwrap_or((args.trim(), ""));
                 let value = value.trim();
                 match (verb, key) {
+                    ("set", "language") if i18n::is_language(value) => {
+                        self.set_language(value);
+                        format!("OK language={}", i18n::language())
+                    }
+                    ("set", "language") => format!("ERR no language {value:?}; built in: {}", i18n::language_codes().join(", ")),
+                    ("get", "language") => format!("OK language={}", i18n::language()),
                     ("set", "tempo") => match value.parse::<f64>().ok().and_then(|b| Tempo::new(b, self.tempo.numerator, self.tempo.denominator)) {
                         Some(t) => {
                             self.set_tempo(t);
@@ -9208,6 +9223,15 @@ impl WaveApp {
                         .to_string(),
                 }
             }
+            // `I18N missing` lists the keys the current language lacks; `I18N get <key>` is a key's text now.
+            "I18N" => match rest.split_once(' ').unwrap_or((rest, "")) {
+                ("missing", "") => {
+                    let m = i18n::missing();
+                    format!("OK {} {}", m.len(), m.join(","))
+                }
+                ("get", key) if !key.is_empty() => format!("OK {}", i18n::tr(key)),
+                _ => "ERR I18N missing | I18N get <key>".to_string(),
+            },
             "QUIT" if self.any_unsaved() && rest != "discard" => "ERR unsaved changes: SAVE first, or QUIT discard".to_string(),
             "QUIT" => {
                 self.finish_recording(false, ctx);
@@ -9329,7 +9353,8 @@ impl WaveApp {
             ) {
                 ui.separator();
             }
-            let (enabled, label) = self.editor.as_ref().map_or((false, a.menu.to_string()), |e| (e.enabled(a.id, &sel), e.label(a.id)));
+            let (enabled, label) =
+                self.editor.as_ref().map_or((false, tr(&format!("action.{}", a.name))), |e| (e.enabled(a.id, &sel), Self::action_text(e, a)));
             let enabled = enabled && self.saving.is_none() && self.running.is_none();
             let keys = self.keymap.menu_text(Command::Action(a.id), mac);
             let tip = self.keymap.tooltip(Command::Action(a.id), &label, mac);
@@ -9644,9 +9669,54 @@ impl WaveApp {
         }
     }
 
+    /// Switch the interface language and keep it in the settings file.
+    fn set_language(&mut self, code: &str) {
+        if !i18n::set_language(code) {
+            return;
+        }
+        self.settings.language = (code != i18n::ENGLISH).then(|| code.to_string());
+        match &self.settings_path {
+            Some(file) => {
+                if let Err(e) = self.settings.save(file) {
+                    log::warn!(target: "wavcraft", "could not save the language to {}: {e}", file.display());
+                }
+            }
+            None => log::warn!(target: "wavcraft", "this system has no settings folder, so the language lasts until WavCraft closes"),
+        }
+    }
+
+    /// An Edit-menu item's text in the current language: the table's text, or the step-naming
+    /// forms ("Undo Cut", "Repeat Paste", "Both Channels") built from translated parts. The
+    /// history step's own name stays as the history gives it.
+    fn action_text(e: &actions::Editor, a: &actions::Action) -> String {
+        let plain = tr(&format!("action.{}", a.name));
+        let label = e.label(a.id);
+        if label == a.menu {
+            return plain;
+        }
+        if label == "Both Channels" {
+            return tr("action.both_channels");
+        }
+        if label == "Repeat Insert Silence" {
+            return tr("action.repeat_insert_silence");
+        }
+        if let Some(step) = label.strip_prefix("Undo ") {
+            return tr_args("action.undo_step", &[step]);
+        }
+        if let Some(step) = label.strip_prefix("Redo ") {
+            return tr_args("action.redo_step", &[step]);
+        }
+        if let Some(menu) = label.strip_prefix("Repeat ")
+            && let Some(done) = TABLE.iter().find(|t| t.menu == menu)
+        {
+            return tr_args("action.repeat_step", &[&tr(&format!("action.{}", done.name))]);
+        }
+        label
+    }
+
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
+            ui.menu_button(tr("menu.file"), |ui| {
                 let open = format!("Open…  {}", self.keymap.menu_text(Command::Open, cfg!(target_os = "macos")));
                 if ui.button(open).clicked() {
                     self.pick_file(ui.ctx());
@@ -9672,12 +9742,12 @@ impl WaveApp {
                 let mac = cfg!(target_os = "macos");
                 let has_doc = self.editor.is_some() && self.saving.is_none();
                 let (save, save_as) = (self.keymap.menu_text(Command::Save, mac), self.keymap.menu_text(Command::SaveAs, mac));
-                if ui.add_enabled(has_doc, egui::Button::new("Save").shortcut_text(save)).clicked()
+                if ui.add_enabled(has_doc, egui::Button::new(tr("file.save")).shortcut_text(save)).clicked()
                     && let Err(e) = self.save(ui.ctx(), false, None, false)
                 {
                     self.error = Some(e);
                 }
-                if ui.add_enabled(has_doc, egui::Button::new("Save As…").shortcut_text(save_as)).clicked() {
+                if ui.add_enabled(has_doc, egui::Button::new(tr("file.save_as")).shortcut_text(save_as)).clicked() {
                     self.open_export_dialog();
                     ui.close();
                 }
@@ -9775,19 +9845,19 @@ impl WaveApp {
                     let _ = self.quick_record();
                 }
                 ui.separator();
-                let now = format!("Where opened files are kept while you work on them. Now: {}", self.sessions.path.display());
-                if ui.button("Session Folder…").on_hover_text(&now).clicked() {
+                let now = tr_args("file.session_folder_tip", &[&self.sessions.path.display().to_string()]);
+                if ui.button(tr("file.session_folder")).on_hover_text(&now).clicked() {
                     self.pick_session_folder();
                 }
-                if ui.button("Use the Default Session Folder").on_hover_text(default_sessions_root().display().to_string()).clicked() {
+                if ui.button(tr("file.default_session_folder")).on_hover_text(default_sessions_root().display().to_string()).clicked() {
                     self.set_session_folder(None);
                 }
                 ui.separator();
-                if ui.button("Quit").clicked() {
+                if ui.button(tr("file.quit")).clicked() {
                     ui.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
-            ui.menu_button("Edit", |ui| self.edit_menu(ui));
+            ui.menu_button(tr("menu.edit"), |ui| self.edit_menu(ui));
             ui.menu_button("Multitrack", |ui| {
                 let has = self.mtv.mt.as_ref().is_some_and(|m| m.clip_count() > 0);
                 let norm = self.mtv.mix_normalize.then_some(-1.0);
@@ -9849,7 +9919,7 @@ impl WaveApp {
             });
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
             ui.menu_button("Generate", |ui| self.generate_menu(ui));
-            ui.menu_button("View", |ui| {
+            ui.menu_button(tr("menu.view"), |ui| {
                 if ui.radio_value(&mut self.mtv.show, false, "Waveform editor").clicked()
                     | ui.radio_value(&mut self.mtv.show, true, "Multitrack editor").clicked()
                 {
@@ -9888,7 +9958,7 @@ impl WaveApp {
                 {
                     let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel));
                     let keys = self.keymap.menu_text(Command::Action(a.id), mac);
-                    if ui.add_enabled(enabled, egui::Button::new(a.menu).shortcut_text(keys)).clicked() {
+                    if ui.add_enabled(enabled, egui::Button::new(tr(&format!("action.{}", a.name))).shortcut_text(keys)).clicked() {
                         chosen = Some(a.id);
                     }
                 }
@@ -9960,6 +10030,19 @@ impl WaveApp {
                         self.toggle_sync(id);
                     }
                 }
+                ui.separator();
+                let mut chosen_language = None;
+                ui.menu_button(tr("menu.language"), |ui| {
+                    for code in i18n::language_codes() {
+                        if ui.selectable_label(i18n::language() == code, tr(&format!("language.{code}"))).clicked() {
+                            chosen_language = Some(code);
+                            ui.close();
+                        }
+                    }
+                });
+                if let Some(code) = chosen_language {
+                    self.set_language(code);
+                }
             });
             ui.menu_button("Video", |ui| {
                 if ui.add_enabled(self.editor.is_some(), egui::Button::new("Attach video file…")).clicked() {
@@ -9970,7 +10053,7 @@ impl WaveApp {
                 }
                 ui.checkbox(&mut self.show_video, "Video panel");
             });
-            let label = if self.player.is_playing() { "■ Stop" } else if self.transport.mode == Mode::Paused { "▶ Resume" } else { "▶ Play" };
+            let label = if self.player.is_playing() { tr("transport.stop") } else if self.transport.mode == Mode::Paused { "▶ Resume".to_string() } else { tr("transport.play") };
             if ui.add_enabled(!self.rec.is_active(), egui::Button::new(label)).on_hover_text("Space").clicked() {
                 self.toggle_play();
             }
@@ -10048,7 +10131,7 @@ impl WaveApp {
             } else if let Some(o) = &self.opening {
                 ui.spinner();
                 let permille = o.progress.load(Ordering::Relaxed);
-                ui.label(format!("Opening {}… {}%", o.path.display(), permille / 10));
+                ui.label(tr_args("status.opening", &[&o.path.display().to_string(), &(permille / 10).to_string()]));
             } else if let Some(r) = &self.running {
                 ui.spinner();
                 ui.label(format!("{}… {}%", r.job.label(), r.job.permille() / 10));
@@ -10060,7 +10143,7 @@ impl WaveApp {
                 ui.label(format!("Inserting {}… {}%", i.path.display(), i.progress.load(Ordering::Relaxed) / 10));
             } else if let Some(s) = &self.saving {
                 ui.spinner();
-                ui.label(format!("Saving {}… {}%", s.path.display(), s.progress.load(Ordering::Relaxed) / 10));
+                ui.label(tr_args("status.saving", &[&s.path.display().to_string(), &(s.progress.load(Ordering::Relaxed) / 10).to_string()]));
                 if let Some(cancel) = &s.cancel
                     && ui.button("Cancel").on_hover_text("Stop saving: the file on disk stays as it was").clicked()
                 {
@@ -10080,7 +10163,7 @@ impl WaveApp {
                 ui.label(format!("{}… {}%", m.what, m.progress.load(Ordering::Relaxed) / 10));
             } else if self.rebuilding.is_some() {
                 ui.spinner();
-                ui.label("Updating the view…");
+                ui.label(tr("status.updating"));
             } else if let Some(e) = &self.error {
                 ui.colored_label(CURSOR, e);
             } else if let Some(n) = &self.notice {
@@ -10117,7 +10200,7 @@ impl WaveApp {
                             Some(bytes) => format!("{} free", wavcraft_core::space::format_bytes(bytes)),
                             None => "free space unknown".to_string(),
                         },
-                        StatusField::Selection if self.selection.is_empty() => format!("Cursor {}", self.fmt_time(self.selection.start())),
+                        StatusField::Selection if self.selection.is_empty() => tr_args("status.cursor", &[&self.fmt_time(self.selection.start())]),
                         StatusField::Selection => {
                             format!("Selection {} – {}", self.fmt_time(self.selection.start()), self.fmt_time(self.selection.end()))
                         }
@@ -10126,14 +10209,14 @@ impl WaveApp {
                         StatusField::Output => {
                             gap(ui);
                             match &self.player.error {
-                                Some(e) => ui.colored_label(CURSOR, format!("No sound: {e}")),
-                                None if self.player.failed() => ui.colored_label(CURSOR, "No sound: the output device stopped (Play tries it again)"),
+                                Some(e) => ui.colored_label(CURSOR, tr_args("status.no_sound", &[e])),
+                                None if self.player.failed() => ui.colored_label(CURSOR, tr("status.no_sound_stopped")),
                                 None => {
                                     let i = self.player.info();
                                     if i.resampling {
                                         ui.label(format!("Out: {} ({} → {} Hz, {})", self.player.device, i.doc_rate, i.device_rate, i.quality.as_str()))
                                     } else {
-                                        ui.label(format!("Out: {}", self.player.device))
+                                        ui.label(tr_args("status.out", &[&self.player.device]))
                                     }
                                 }
                             };
@@ -10178,7 +10261,7 @@ impl WaveApp {
             } else if self.editor.is_some() {
                 ui.label(format!("{} (no audio yet): paste into it, or File › Save As once it has some", path_name(&self.doc_path)));
             } else {
-                ui.label("File › Open, or drop an audio file here.");
+                ui.label(tr("status.hint"));
             }
         });
         if convert {

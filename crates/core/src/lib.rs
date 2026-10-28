@@ -8,6 +8,7 @@
 //! - [`autosave`]: the journal of the piece table and history, and crash recovery from it.
 //! - [`batch`]: the Batch Process runner (a list of files through a chain of operations to WAV).
 //! - [`cd`]: the CD layout (track order, pauses, ISRC), and its single-WAV-plus-CUE export.
+//! - [`i18n`]: the interface text catalogue (English source, pseudo-locale, fallback).
 //! - [`io`]: streamed open into the store.
 //! - [`peakcache`]: saved waveform overviews, so a long file reopens fast.
 //! - [`probe`]: a file's format, length and title from its header alone (no store).
@@ -60,6 +61,7 @@ pub mod generate;
 pub mod hwprofile;
 pub mod input_meter;
 pub mod freq_axis;
+pub mod i18n;
 pub mod io;
 pub mod jobs;
 pub mod keyboard;
