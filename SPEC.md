@@ -1,8 +1,8 @@
 # Spec
 
-**1.0 means:** the owner can clean a real podcast episode from start to finish in WavCraft and would rather use it than the tool used today, judged by ear ([docs/v1/v1.md](docs/v1/v1.md), "What v1 is"). All 55 items in sections A to J are done, including MP3 export (A3) and recording (J), and it runs within the memory of an 8 GB Mac (I7).
+**1.0 means:** the owner can clean a real podcast episode from start to finish in WavCraft and would rather use it than the tool used today, judged by ear ([docs/v1/v1.md](docs/v1/v1.md), "What v1 is"). All 70 items in sections A to M are done, including MP3 export (A3) and recording (J), and it runs within the memory of an 8 GB Mac (I7).
 
-**Approval:** 2026-10-15 (v1 list approved with changes, [docs/v1/questions-and-answers.md](docs/v1/questions-and-answers.md)); re-confirmed 2026-10-26, the owner: "v1.md unchanged (Recommended)".
+**Approval:** 2026-11-01: sections K (Episode Check), L (Edit by transcript) and M (Studio and Podcast faces) added to v1 by my decision and their rows approved as drafted ("Approve as drafted (Recommended)"). Before that: 2026-10-15 (v1 list approved with changes, [docs/v1/questions-and-answers.md](docs/v1/questions-and-answers.md)); re-confirmed 2026-10-26, the owner: "v1.md unchanged (Recommended)".
 
 A changed Must or Won't sets the approval back to "not yet" until the owner approves again. The full "Done looks like" text for each Must lives in [docs/v1/v1.md](docs/v1/v1.md) and is not copied here, so there is one copy.
 
@@ -67,6 +67,21 @@ Each Must is one row of the v1 list. Its "Done looks like" and its check (a test
 | J5 | Input device chosen and remembered; unplug stops cleanly | [v1.md J](docs/v1/v1.md#j-recording-added-2026-10-15-my-decision), row J5 | the check in that row |
 | J6 | Recording checked on every machine | [v1.md J](docs/v1/v1.md#j-recording-added-2026-10-15-my-decision), row J6 | the check in that row |
 | J7 | After Stop, the take opens in the editor | [v1.md J](docs/v1/v1.md#j-recording-added-2026-10-15-my-decision), row J7 | the check in that row |
+| K1 | Run Episode Check (whole file, cancellable) | [v1.md K](docs/v1/v1.md#k-episode-check-added-2026-11-01-my-decision), row K1 | the check in that row |
+| K2 | Episode Check findings (clipping, true peak, dead air, drift, hum, DC, plosives) | [v1.md K](docs/v1/v1.md#k-episode-check-added-2026-11-01-my-decision), row K2 | the check in that row |
+| K3 | Findings panel and timeline pins | [v1.md K](docs/v1/v1.md#k-episode-check-added-2026-11-01-my-decision), row K3 | the check in that row |
+| K4 | Suggested fix with before/after | [v1.md K](docs/v1/v1.md#k-episode-check-added-2026-11-01-my-decision), row K4 | the check in that row |
+| K5 | Ready to publish summary | [v1.md K](docs/v1/v1.md#k-episode-check-added-2026-11-01-my-decision), row K5 | the check in that row |
+| L1 | Transcribe locally (cancellable, saved with the session) | [v1.md L](docs/v1/v1.md#l-edit-by-transcript-added-2026-11-01-my-decision), row L1 | the check in that row |
+| L2 | Transcript panel and lane, word timings | [v1.md L](docs/v1/v1.md#l-edit-by-transcript-added-2026-11-01-my-decision), row L2 | the check in that row |
+| L3 | Select text to select audio; text edits are audio edits | [v1.md L](docs/v1/v1.md#l-edit-by-transcript-added-2026-11-01-my-decision), row L3 | the check in that row |
+| L4 | Filler and pause finder | [v1.md L](docs/v1/v1.md#l-edit-by-transcript-added-2026-11-01-my-decision), row L4 | the check in that row |
+| L5 | Transcript search and text/SRT export | [v1.md L](docs/v1/v1.md#l-edit-by-transcript-added-2026-11-01-my-decision), row L5 | the check in that row |
+| M1 | Studio / Podcast face switch, four-step Podcast flow | [v1.md M](docs/v1/v1.md#m-two-faces-studio-and-podcast-added-2026-11-01-my-decision), row M1 | the check in that row |
+| M2 | Episode Map | [v1.md M](docs/v1/v1.md#m-two-faces-studio-and-podcast-added-2026-11-01-my-decision), row M2 | the check in that row |
+| M3 | One theme from named design values, dark and light | [v1.md M](docs/v1/v1.md#m-two-faces-studio-and-podcast-added-2026-11-01-my-decision), row M3 | the check in that row |
+| M4 | Large controls for the handhelds | [v1.md M](docs/v1/v1.md#m-two-faces-studio-and-podcast-added-2026-11-01-my-decision), row M4 | the check in that row |
+| M5 | Out-of-v1 panels hidden in release builds | [v1.md M](docs/v1/v1.md#m-two-faces-studio-and-podcast-added-2026-11-01-my-decision), row M5 | the check in that row |
 
 ## Won'ts
 
@@ -75,7 +90,7 @@ Everything in [v1.md, "Deliberately not in v1"](docs/v1/v1.md#deliberately-not-i
 - Multitrack (a later phase of WavCraft itself; never SoundCraft's UI).
 - Spot Healing Brush and spectral auto-heal.
 - Adaptive Noise Reduction, DeNoise, Hiss Reduction, DeHummer, Click/Pop Eliminator, DeClipper; Sound Remover, DeReverb, Automatic Click Remover.
-- AI speech enhancement (a v1.x feature, after a licence check of the model weights).
+- AI speech enhancement, meaning changing how the voice sounds (a v1.x feature, after a licence check of the model weights). Transcription (section L) is in v1.
 - Batch processing and Match Loudness on a list of files.
 - Video, CD burning, the Diagnostics, Essential Sound and frequency analysis panels, the phase meter.
 - AAC/M4A, OGG and Opus export (read-only where the decoder already reads them).

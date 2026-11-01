@@ -71,8 +71,23 @@ How to read it:
 | J5 | Input device | #55 | built | `core/settings.rs`; tests `j5_input_device.rs`; the unplug check by hand is not done |
 | J6 | Every machine | #56 | not started | needs a mic on each machine; nothing recorded yet |
 | J7 | Take opens in the editor | #57 | not started | not found on main |
+| K1 | Run Episode Check | #1049 | not started | added 2026-11-01 |
+| K2 | Episode Check findings | #1047, #1048 | not started | added 2026-11-01 |
+| K3 | Findings panel and pins | #1053 | not started | added 2026-11-01 |
+| K4 | Suggested fix, Before/After | #1054 | not started | added 2026-11-01 |
+| K5 | Ready to publish | #1055 | not started | added 2026-11-01 |
+| L1 | Transcribe locally | #1057 (licence and model: #1056) | not started | added 2026-11-01 |
+| L2 | Transcript panel and lane | #1058 | not started | added 2026-11-01 |
+| L3 | Text edits are audio edits | #1059 | not started | added 2026-11-01 |
+| L4 | Filler and pause finder | #1060 | not started | added 2026-11-01 |
+| L5 | Search, text/SRT export | #1061 | not started | added 2026-11-01 |
+| M1 | Studio / Podcast faces | #1063 | not started | added 2026-11-01 |
+| M2 | Episode Map | #1052 | not started | added 2026-11-01 |
+| M3 | One theme | #1050 | not started | added 2026-11-01 |
+| M4 | Large controls | #1062 | not started | added 2026-11-01 |
+| M5 | Out-of-v1 panels hidden | #1051 | not started | added 2026-11-01 |
 
-**Totals (55):** built 20 · partial 17 · on branch only 13 · not started 5. No item has its Done check recorded yet.
+**Totals (70):** built 20 · partial 17 · on branch only 13 · not started 20 (K, L and M added 2026-11-01, all not started). No item has its Done check recorded yet.
 
 ## Stages
 
@@ -106,6 +121,10 @@ E1-E6, G4, G3, G1, G2, F1-F3, then A4. **Done when** the owner cleans a real epi
 ### Stage 4: Feel (v1 order 4)
 
 B3, B4, B5, C4, C6, I1, I2, I3, I4, A5. **Done when** the owner works without hunting for things.
+
+### Stage 4b: Episode Check, transcript and faces (added 2026-11-01)
+
+The owner's ruling, 2026-11-01: "Into v1", queued "After main is green (Recommended)". Everything here is blocked by #1012. Order: M3 (#1050) and M5 (#1051) first; K2 (#1047, #1048) and L0 (#1056) can start alongside; K3-K5 after Stage 3's tools exist; M1 (#1063) last, since it needs the map, the findings panel and the transcript panel. **Done when** Lani cleans a real episode in the Podcast face without help.
 
 ### Alongside: the MP3 encoder
 
