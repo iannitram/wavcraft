@@ -1738,7 +1738,7 @@ impl WaveApp {
                                 if ui.add(egui::DragValue::new(&mut off).range(-max..=max).suffix(" ms")).changed() {
                                     action = Some(PrefAction::Set("record_offset_ms", off.to_string()));
                                 }
-                                ui.label("Record offset (placeholder until recording lands)");
+                                ui.label("Record offset");
                             });
                         }
                         PrefPage::Appearance => {
@@ -11709,7 +11709,7 @@ impl eframe::App for WaveApp {
             self.close_panel(id);
         }
         // Shift+Space: record now (C031); while recording it stops the take.
-        if !typing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::Space)) {
+        if !typing && consume_record_now(&ctx) {
             if self.rec.is_active() {
                 self.finish_recording(true, &ctx);
             } else if self.rec.is_armed() {
@@ -12086,6 +12086,23 @@ fn dropped_path(files: &[Arc<dyn egui::DroppedFile + Send + Sync>]) -> Option<Pa
 fn split_paths(s: &str) -> Vec<PathBuf> {
     let parts: Vec<&str> = if s.contains('\t') { s.split('\t').collect() } else { s.split_whitespace().collect() };
     parts.into_iter().map(str::trim).filter(|p| !p.is_empty()).map(PathBuf::from).collect()
+}
+
+/// Consume Shift+Space events, returning true only for the first press (not repeat).
+/// This is used to ensure quick_record() is called exactly once per fresh press.
+fn consume_record_now(ctx: &egui::Context) -> bool {
+    ctx.input_mut(|i| {
+        // Check if there's a fresh Shift+Space press (pressed: true, repeat: false)
+        let fresh_press = i.events.iter().any(|e| {
+            matches!(e, egui::Event::Key { key: Key::Space, pressed: true, repeat: false, modifiers, .. } 
+                    if modifiers.shift && !modifiers.ctrl && !modifiers.alt && !modifiers.command)
+        });
+
+        // Consume ALL Shift+Space events (including repeats) to prevent them from being processed elsewhere
+        i.consume_key(egui::Modifiers::SHIFT, Key::Space);
+
+        fresh_press
+    })
 }
 
 /// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
@@ -12866,3 +12883,7 @@ mod reset_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "issue1000_tests.rs"]
+mod issue1000_tests;
