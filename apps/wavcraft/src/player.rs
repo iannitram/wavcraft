@@ -1798,23 +1798,27 @@ mod tests {
         play(shared, &state, 0.0, 1000.0);
         let mut out = vec![0.0f32; 64];
         let (reached, hook_reached) = mpsc::channel::<()>();
+        // The render runs on its own thread (the output stream makes `Player` itself unsendable on
+        // macOS) and stop() is called from here, once the render sits between check and commit.
         std::thread::scope(|scope| {
-            let player = &player;
-            let stop = scope.spawn(move || {
-                hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
-                player.stop();
+            let render_thread = scope.spawn(move || {
+                render_with(
+                    shared,
+                    &mut out,
+                    1,
+                    48_000.0,
+                    || {},
+                    move || {
+                        let _ = reached.send(());
+                    },
+                );
             });
-            render_with(
-                shared,
-                &mut out,
-                1,
-                48_000.0,
-                || {},
-                move || {
-                    let _ = reached.send(());
-                },
-            );
-            stop.join().unwrap();
+            let hooked = hook_reached.recv_timeout(HANDSHAKE_WAIT);
+            if hooked.is_ok() {
+                player.stop();
+            }
+            render_thread.join().unwrap();
+            hooked.expect("render_with never reached its after_check hook");
         });
         assert!(!playback(shared).playing);
         assert!(!player.is_playing());
