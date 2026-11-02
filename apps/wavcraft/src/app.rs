@@ -12629,11 +12629,7 @@ mod tests {
 
     fn test_app(dir: &Path, settings: Settings) -> WaveApp {
         let ctx = egui::Context::default();
-        let sessions = SessionFolder {
-            path: dir.to_path_buf(),
-            source: FolderSource::Default,
-            warning: None,
-        };
+        let sessions = SessionFolder { path: dir.to_path_buf(), source: FolderSource::Default, warning: None };
         let settings_path = Some(dir.join("settings.txt"));
         let player = Player::new(output_choice(&settings), settings.output_map.clone(), settings.playback_quality);
         let include_meta = settings.save_include_metadata;
