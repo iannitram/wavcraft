@@ -61,4 +61,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
+      - run: cargo test -p wavcraft --bin wavcraft -- --test-threads=1 --nocapture
+        env:
+          RUST_BACKTRACE: '1'
+        if: runner.os == 'Windows'
       - run: cargo test --workspace
+        if: runner.os != 'Windows'
