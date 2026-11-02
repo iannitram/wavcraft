@@ -1818,7 +1818,6 @@ mod tests {
         let mut out = vec![0.0f32; 64];
         let (reached, hook_reached) = mpsc::channel::<()>();
         let (stopping, about_to_stop) = mpsc::channel::<()>();
-        let (stopped, stop_done) = mpsc::channel::<()>();
         // The render runs on its own thread (the output stream makes `Player` itself unsendable on
         // macOS) and stop() is called from here, once the render sits between check and commit.
         std::thread::scope(|scope| {
@@ -1833,7 +1832,6 @@ mod tests {
                         // Hold the render between check and commit until stop() is under way.
                         let _ = reached.send(());
                         about_to_stop.recv_timeout(HANDSHAKE_WAIT).expect("the test thread never got to stop()");
-                        let _ = stop_done.recv_timeout(RACE_WINDOW);
                     },
                 );
             });
@@ -1841,7 +1839,6 @@ mod tests {
             if hooked.is_ok() {
                 let _ = stopping.send(());
                 player.stop();
-                let _ = stopped.send(());
             }
             render_thread.join().unwrap();
             hooked.expect("render_with never reached its after_check hook");
