@@ -10586,9 +10586,17 @@ impl WaveApp {
     /// The tools bar above the editor: the pointer's tools with the current one marked, and the
     /// current tool's options (the Marquee's feather; the Select tool's right-click setting).
     fn tools_bar(&mut self, ui: &mut egui::Ui) {
-        let tools = [(Tool::Select, "Time Selection (V)"), (Tool::Hand, "Hand (H)"), (Tool::Zoom, "Zoom (Z)"), (Tool::Marquee, "Marquee (E)")];
+        let mac = cfg!(target_os = "macos");
+        let tools = [(Tool::Select, ActionId::ToolSelect, "Time Selection"), (Tool::Hand, ActionId::ToolHand, "Hand"), (Tool::Zoom, ActionId::ToolZoom, "Zoom"), (Tool::Marquee, ActionId::ToolMarquee, "Marquee")];
+        let labels: Vec<(Tool, String)> = tools
+            .iter()
+            .map(|&(tool, id, name)| {
+                let keys = self.keymap.menu_text(Command::Action(id), mac);
+                (tool, if keys.is_empty() { name.to_string() } else { format!("{name} ({keys})") })
+            })
+            .collect();
         ui.horizontal(|ui| {
-            for (tool, label) in tools {
+            for (tool, label) in labels {
                 if ui.selectable_label(self.tool == tool, label).clicked() {
                     self.tool = tool;
                 }
