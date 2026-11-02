@@ -46,6 +46,8 @@ The rest of this table matches Audition's "Default Set" (checked in Audition 26.
 
 **Checked (checked in Audition 26.5.0.82, 2026-10-15):** every key in the paragraph above is in Audition's Default Set, none wrong. Second keys Audition adds: Redo also Ctrl+Y; Delete also Backspace; Deselect All also Ctrl+D; spectral display also F9. Zoom to Selection is **Shift+S**; Zoom Out Full (All Axes) is **Ctrl+\\**. Also: Record (Toggle Recording) **Shift+Space**; Export File Ctrl+Shift+E; Copy to New Alt+Shift+C; Mix Paste Ctrl+Shift+V; Noise Reduction (process) Ctrl+Shift+P; Match Loudness panel Alt+5; zero crossings Adjust Selection Inward / Outward Shift+I / Shift+O. **Silence, Insert Silence and the History panel have no default key.**
 
+**Ruling (the owner, 2026-11-01): Space always plays, except in text fields.** A focused button, checkbox or slider does not swallow Space; it still starts and stops playback. This matches Audition. Decided on issue #434, shipped in PR #1075.
+
 *Sources: keyboard-shortcuts/default-keyboard-shortcuts.html; importing-recording-and-playing/navigating-time-playing-audio.html; editing-audio-files/undo-redo-history.html; workspace-and-setup/customizing-workspaces.html, viewing-zooming-navigating-audio.html*
 
 ## 3. Selecting
@@ -107,6 +109,7 @@ The rest of this table matches Audition's "Default Set" (checked in Audition 26.
 - A power button on each effect and a main power button (A/B compare).
 - **Process** (selection or entire file) and **Apply**, which writes the rack into the audio. *(Exact menu wording unconfirmed.)*
 - Playback previews the rack live. Presets exist for the whole rack and for each effect. Ctrl+C / Ctrl+V copy effects between racks.
+- *WavCraft:* a seek or a restart starts the rack clean. The old position's delay, reverb, filter and envelope state is cleared, so no tail rings into the new position (hard cut, decided 2026-11-01, #931). A hosted VST3 plugin is flushed with `Vst3Plugin::reactivate()` on a worker thread, never the audio thread, and is bypassed until the flush finishes.
 - **"(process)" effects** (Noise Reduction, Hiss Reduction, Normalize) are offline, Waveform-only, and **cannot go in the rack**. They run from the Effects menu.
 - **One-shot effects** from the Effects menu open a dialog with Preview (play), a power button for A/B, and Apply. While previewing you can still move the selection and playhead (not for Normalize).
 

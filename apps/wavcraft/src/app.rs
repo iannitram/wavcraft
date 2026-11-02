@@ -852,6 +852,20 @@ struct Scrub {
 /// Pixels of vertical drag for one step of the digit group.
 const SCRUB_PX_PER_STEP: f32 = 6.0;
 
+/// Whether a newly opened document saves its markers and other metadata: the preference.
+fn starting_include_meta(settings: &Settings) -> bool {
+    settings.save_include_metadata
+}
+
+/// Make `on` the save-metadata preference and write the settings file (`None`: no settings folder).
+fn keep_include_meta(settings: &mut Settings, file: Option<&Path>, on: bool) -> Result<(), String> {
+    settings.save_include_metadata = on;
+    match file {
+        Some(file) => settings.save(file).map_err(|e| format!("could not save the settings to {}: {e}", file.display())),
+        None => Err("this system has no settings folder, so the setting lasts until WavCraft closes".to_string()),
+    }
+}
+
 impl WaveApp {
     /// `session_dir`: the `--session-dir` flag, which wins over the environment variable and the
     /// settings file for this run.
@@ -968,6 +982,7 @@ impl WaveApp {
             tempo: Tempo::default(),
             tempo_dialog: None,
             sessions,
+            include_meta: starting_include_meta(&settings),
             settings,
             settings_path,
             fit_on_next_frame: false,
@@ -978,7 +993,6 @@ impl WaveApp {
             doc_serial: 0,
             docs: DocList::new(),
             closing_doc: false,
-            include_meta: true,
             rebuilding: None,
             saved: None,
             saving: None,
@@ -1660,15 +1674,9 @@ impl WaveApp {
                         }
                         PrefPage::MarkersMetadata => {
                             ui.label("Saved files: what goes in by default (the save options dialog can override it).");
-                            ui.label("Stored only for now: the save options that read these are not on this branch.");
-                            for (label, key, on) in [
-                                ("Include markers when saving", "save_markers", self.settings.save_markers),
-                                ("Include metadata when saving", "save_metadata", self.settings.save_metadata),
-                            ] {
-                                let mut v = on;
-                                if ui.checkbox(&mut v, label).changed() {
-                                    action = Some(PrefAction::Set(key, v.to_string()));
-                                }
+                            let mut v = self.settings.save_include_metadata;
+                            if ui.checkbox(&mut v, "Include markers and other metadata").changed() {
+                                action = Some(PrefAction::Set("save_include_metadata", v.to_string()));
                             }
                             ui.add_space(6.0);
                             ui.label("Marker name pattern ({n} is the marker's number):");
@@ -2101,7 +2109,7 @@ impl WaveApp {
                 self.tempo = self.settings.tempo_for(&self.doc_path);
                 self.doc_serial += 1;
                 self.doc_id = self.doc_serial;
-                self.include_meta = self.settings.save_include_metadata;
+                self.include_meta = starting_include_meta(&self.settings);
                 self.stats.forget();
                 self.playlist_ui.reset();
                 self.rebuilding = None;
@@ -7172,8 +7180,7 @@ impl WaveApp {
     /// for the files opened next (A262).
     fn set_include_meta(&mut self, on: bool) {
         self.include_meta = on;
-        self.settings.save_include_metadata = on;
-        if let Err(e) = self.save_settings() {
+        if let Err(e) = keep_include_meta(&mut self.settings, self.settings_path.as_deref(), on) {
             log::warn!(target: "wavcraft", "could not keep the save option: {e}");
         }
     }
@@ -9323,7 +9330,7 @@ impl WaveApp {
                             self.vorbis_quality = q;
                         }
                         if let Some(m) = meta {
-                            self.include_meta = m;
+                            self.set_include_meta(m);
                         }
                         let to = (!path.is_empty()).then(|| PathBuf::from(path));
                         // `aiff=` is for this save only.
@@ -10989,7 +10996,10 @@ impl WaveApp {
         // Selection gestures: the Select tool's, and the Marquee tool's outside a marquee drag.
         let select = (self.tool == Tool::Select || (marquee_tool && self.marquee.is_none() && !marquee_starts)) && !freq_busy && !on_freq_click;
         let shift = ui.input(|i| i.modifiers.shift);
-        if response.drag_started()
+        let marker_drag_button = [egui::PointerButton::Primary, egui::PointerButton::Secondary, egui::PointerButton::Middle]
+            .into_iter()
+            .find(|b| response.drag_started_by(*b));
+        if marker_drag_button.is_some_and(|b| marker_drag_may_start(b, self.tool))
             && let Some(e) = &self.editor
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
             && let markers = e.history.current().markers()
@@ -11011,7 +11021,7 @@ impl WaveApp {
             if let Some(pos) = response.interact_pointer_pos() {
                 self.markers_ui.drag_to(frame_at(&self.view, pos) as u64);
             }
-            if response.drag_stopped()
+            if response.drag_stopped_by(egui::PointerButton::Primary)
                 && let (Some(d), Some(e)) = (self.markers_ui.drag.take(), self.editor.as_mut())
                 && e.move_marker(d.id, d.start)
                 && let Some(i) = e.history.current().markers().index_of(d.id)
@@ -11535,6 +11545,10 @@ impl eframe::App for WaveApp {
         self.run_scrub();
         // Follow a change of the system's default output device (f48): reopen at the same place.
         self.player.maintain();
+        // A VST3 plugin whose tail could not be cleared on a seek or restart (#931): say so.
+        if let Some(why) = wavcraft_core::vst3::take_flush_errors().into_iter().next() {
+            self.error = Some(why);
+        }
         self.diag.poll();
         self.sync_input();
         let peaks = self.meter_peaks();
@@ -12456,8 +12470,28 @@ fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffK
     Ok((path, ty, aiff))
 }
 
+/// Whether a drag that starts on a marker flag may grab the marker: the primary button only, and not
+/// with the Hand or Zoom tool (their drags scroll and zoom; right and middle drags do those too).
+fn marker_drag_may_start(button: egui::PointerButton, tool: Tool) -> bool {
+    button == egui::PointerButton::Primary && !matches!(tool, Tool::Hand | Tool::Zoom)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn marker_flag_is_grabbed_only_by_a_primary_drag_with_a_marker_tool() {
+        use super::{Tool, marker_drag_may_start as may};
+        use egui::PointerButton::{Middle, Primary, Secondary};
+        assert!(may(Primary, Tool::Select));
+        assert!(may(Primary, Tool::Marquee));
+        assert!(!may(Primary, Tool::Hand));
+        assert!(!may(Primary, Tool::Zoom));
+        for tool in [Tool::Select, Tool::Hand, Tool::Zoom, Tool::Marquee] {
+            assert!(!may(Secondary, tool));
+            assert!(!may(Middle, tool));
+        }
+    }
+
     #[test]
     fn history_arrows_stop_at_the_ends() {
         use super::history_arrow_target as t;
@@ -12683,6 +12717,46 @@ mod tests {
         assert!(parse_save_args("x.wav bits=20").is_err());
         assert!(parse_save_args("x.wav bits=24 float=1").is_err());
         assert!(parse_save_args("x.wav float=2").is_err());
+    }
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let dir = std::env::temp_dir().join(format!("wavcraft-app-meta-test-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_documents_include_meta_starts_from_the_preference_and_the_choice_persists() {
+        let temp = TempDir::new("meta-pref");
+        let file = temp.0.join("settings.txt");
+        let mut settings = Settings { save_include_metadata: false, ..Default::default() };
+
+        // A newly opened document starts from the preference.
+        assert!(!starting_include_meta(&settings));
+
+        // Ticking Save As's checkbox (or `SAVE meta=1`) turns it on and keeps it in the settings file.
+        keep_include_meta(&mut settings, Some(&file), true).unwrap();
+        assert!(settings.save_include_metadata);
+        assert!(starting_include_meta(&settings), "the next document starts from the new choice");
+        assert!(Settings::load(&file).save_include_metadata, "persisted on");
+
+        // `SAVE meta=0` turns it off again.
+        keep_include_meta(&mut settings, Some(&file), false).unwrap();
+        assert!(!starting_include_meta(&settings));
+        assert!(!Settings::load(&file).save_include_metadata, "persisted off");
+
+        // With no settings folder the choice holds until close, and the caller is told.
+        assert!(keep_include_meta(&mut settings, None, true).is_err());
+        assert!(settings.save_include_metadata);
     }
 }
 

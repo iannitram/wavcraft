@@ -240,6 +240,9 @@ pub trait Effect: Sync {
 pub trait EffectStream: Send {
     /// Process one block: `input` and `output` hold one slice per channel, all the same length.
     fn process_block(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]);
+    /// Clear the state a play leaves behind (delay lines, filter memory, envelopes, counters), as
+    /// a freshly made stream has it. Allocation-free, so it is safe on the audio thread.
+    fn reset(&mut self);
 }
 
 /// The stream of an effect that keeps no state between blocks: each block goes through
@@ -258,6 +261,10 @@ impl EffectStream for Stateless {
             }
         }
         self.frame += input.first().map_or(0, |c| c.len() as u64);
+    }
+
+    fn reset(&mut self) {
+        self.frame = 0;
     }
 }
 
@@ -368,4 +375,44 @@ pub fn apply(
         Some(run) => run.process(at, input, output),
         None => effect.process(params, at, input, output),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writes the document frame into every sample, so the stream's frame counter shows.
+    struct Frames;
+
+    impl Effect for Frames {
+        fn id(&self) -> &'static str {
+            "test_frames"
+        }
+        fn name(&self) -> &'static str {
+            "Test Frames"
+        }
+        fn process(&self, _: &[f64], first_frame: u64, _: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()> {
+            for o in output {
+                for (i, b) in o.iter_mut().enumerate() {
+                    *b = (first_frame + i as u64) as f32;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_stateless_stream_counts_its_frames_from_zero_again_after_reset() {
+        static FRAMES: Frames = Frames;
+        let mut stream = open_stream(&FRAMES, &[], 1, 48_000).unwrap();
+        let input = [0.0f32; 4];
+        let mut out = [0.0f32; 4];
+        stream.process_block(&[&input], &mut [&mut out]);
+        assert_eq!(out, [0.0, 1.0, 2.0, 3.0]);
+        stream.process_block(&[&input], &mut [&mut out]);
+        assert_eq!(out, [4.0, 5.0, 6.0, 7.0]);
+        stream.reset();
+        stream.process_block(&[&input], &mut [&mut out]);
+        assert_eq!(out, [0.0, 1.0, 2.0, 3.0], "reset starts the frame count over");
+    }
 }

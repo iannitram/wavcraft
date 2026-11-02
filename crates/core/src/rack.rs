@@ -221,6 +221,18 @@ impl RackProcessor {
         self.channels
     }
 
+    /// Clear every effect's state (delay lines, reverb buffers, filter memory, envelopes) and the
+    /// rack's own buffers, as a newly built processor has it. Allocation-free: safe on the audio
+    /// thread, so a seek or restart can start from a clean position with no tail from the old one.
+    pub fn reset(&mut self) {
+        for stream in &mut self.streams {
+            stream.reset();
+        }
+        for buf in self.dry.iter_mut().chain(self.a.iter_mut()).chain(self.b.iter_mut()) {
+            buf.fill(0.0);
+        }
+    }
+
     pub fn rate(&self) -> u32 {
         self.rate
     }
