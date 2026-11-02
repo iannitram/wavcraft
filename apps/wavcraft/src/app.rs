@@ -11231,6 +11231,8 @@ impl WaveApp {
             // Layered: one lane holds every channel (multichannel files only); stacked: a lane each.
             let layered = self.settings.channel_layout == ChannelLayout::Layered && channels > 1;
             let lanes = if layered { 1 } else { channels };
+            let mask = self.editor.as_ref().and_then(|e| e.history.current().source().channel_mask);
+            let fallback = wavcraft_core::channels::labels(mask, channels);
             for lane_index in 0..lanes {
                 let lane = lane(area, lane_index, lanes);
                 let mid = lane.center().y;
@@ -11240,6 +11242,7 @@ impl WaveApp {
                 );
                 let half = lane.height() * 0.5 - 2.0;
                 let (first, last) = if layered { (0, channels) } else { (lane_index, lane_index + 1) };
+                let mut chip_to_paint = None;
                 if !layered {
                     let name = chnames.get(lane_index).filter(|n| !n.is_empty());
                     if channels > 1 {
@@ -11250,16 +11253,7 @@ impl WaveApp {
                         let chip = Rect::from_min_size(pos2(lane.left() + 2.0, lane.top() + 1.0), vec2(34.0, 14.0)).intersect(lane);
                         let hit = ui.interact(chip, ui.id().with(("lane-label", ch)), Sense::click());
                         let lit = editing.contains(ch);
-                        painter.rect_filled(chip, 2.0, Color32::from_black_alpha(if lit { 170 } else { 90 }));
-                        if let Some(name) = name {
-                            painter.text(
-                                chip.center(),
-                                egui::Align2::CENTER_CENTER,
-                                name,
-                                egui::FontId::monospace(10.0),
-                                if lit { Color32::WHITE } else { Color32::GRAY },
-                            );
-                        }
+                        chip_to_paint = Some((chip, lit, chip_label(name.map(String::as_str), &fallback[ch])));
                         if hit.clicked() {
                             let multi = ui.input(|i| i.modifiers.shift || i.modifiers.command);
                             if let Some(e) = self.editor.as_mut() {
@@ -11301,6 +11295,16 @@ impl WaveApp {
                         let (top, bottom) = (mid - (hi * zoom).clamp(-1.0, 1.0) * half, mid - (lo * zoom).clamp(-1.0, 1.0) * half);
                         painter.line_segment([pos2(x, top.min(bottom - hair)), pos2(x, bottom)], Stroke::new(hair, wave_color));
                     }
+                }
+                if let Some((chip, lit, label)) = chip_to_paint {
+                    painter.rect_filled(chip, 2.0, Color32::from_black_alpha(if lit { 170 } else { 90 }));
+                    painter.text(
+                        chip.center(),
+                        egui::Align2::CENTER_CENTER,
+                        label,
+                        egui::FontId::monospace(10.0),
+                        if lit { Color32::WHITE } else { Color32::GRAY },
+                    );
                 }
                 let ruler_lane = Rect::from_min_max(pos2(amp_col.left(), lane.top()), pos2(amp_col.right(), lane.bottom()));
                 draw_amp_ruler(&painter, ruler_lane, scale, self.amp_zoom);
@@ -12192,6 +12196,11 @@ fn slot_text(secs: f64) -> String {
     }
 }
 
+/// A document name takes precedence over the mask's speaker label or channel number.
+fn chip_label(user_or_ixml: Option<&str>, mask_label: &str) -> String {
+    user_or_ixml.filter(|name| !name.is_empty()).unwrap_or(mask_label).to_string()
+}
+
 /// The vertical slice of `area` for channel `ch` of `channels`.
 fn lane(area: Rect, ch: usize, channels: usize) -> Rect {
     let h = area.height() / channels.max(1) as f32;
@@ -12486,6 +12495,29 @@ fn marker_drag_may_start(button: egui::PointerButton, tool: Tool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn channel_chips_prefer_document_names() {
+        assert_eq!(super::chip_label(Some("Renamed"), "FL"), "Renamed");
+        assert_eq!(super::chip_label(Some("iXML boom"), "1"), "iXML boom");
+    }
+
+    #[test]
+    fn unnamed_channel_chips_use_speaker_labels_or_numbers() {
+        for (mask, channels, expected) in [
+            (None, 2, vec!["1", "2"]),
+            (None, 6, vec!["1", "2", "3", "4", "5", "6"]),
+            (Some(0), 2, vec!["1", "2"]),
+            (Some(0x3F), 2, vec!["1", "2"]),
+            (Some(0x3F), 6, vec!["FL", "FR", "FC", "LFE", "BL", "BR"]),
+        ] {
+            let fallback = wavcraft_core::channels::labels(mask, channels);
+            for name in [None, Some("")] {
+                let labels: Vec<_> = fallback.iter().map(|label| super::chip_label(name, label)).collect();
+                assert_eq!(labels, expected);
+            }
+        }
+    }
+
     #[test]
     fn marker_flag_is_grabbed_only_by_a_primary_drag_with_a_marker_tool() {
         use super::{Tool, marker_drag_may_start as may};
