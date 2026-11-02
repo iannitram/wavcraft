@@ -89,11 +89,18 @@ def main():
             proc.kill()
 
     def run1(c):
+        print("startup PANELS:", c.ask("PANELS"))
+        z = zones(c)
+        check("fresh: History and Selection/View are both in front",
+              z["front.right"] == "history" and z["front.bottom"] == "selection", z)
+        # Keep the original two-panel docking fixture as the registry grows.
+        for panel in ("freq", "markers", "playlist", "properties", "transport", "time", "zoom", "tools", "files", "match"):
+            c.ask("PANEL close " + panel)
         z = zones(c)
         check("default: History on the right, Selection below, editor in the centre",
               z["zone.right"] == "history" and z["zone.left"] == "-" and z["zone.bottom"] == "selection"
-              and z["zone.center"] == "editor,waveform,spectral" and z["front.right"] == "history" and z["maximized"] == "-", z)
-        c.ask("PANEL move history left")
+              and z["front.bottom"] == "selection" and z["zone.center"] == "editor,waveform,spectral" and z["front.right"] == "history" and z["maximized"] == "-", z)
+        c.ask("PANEL move history left 0")
         z = zones(c)
         check("PANEL move history left", z["zone.left"] == "history" and z["zone.right"] == "-" and z["zone.bottom"] == "selection", z)
         c.ask("PANEL move selection left")
@@ -105,7 +112,7 @@ def main():
         check("an unknown zone is refused", c.ask("PANEL move history moon").startswith("ERR"))
         check("the centre is refused", c.ask("PANEL move history center").startswith("ERR"))
         check("an unknown panel is refused", c.ask("PANEL close nothere").startswith("ERR"))
-        c.ask("PANEL move selection bottom")
+        c.ask("PANEL move selection bottom 0")
         z = zones(c)
         check("PANEL move selection bottom", z["zone.bottom"] == "selection" and z["zone.left"] == "history", z)
         c.ask("PANEL maximize history")
@@ -121,10 +128,13 @@ def main():
         c.ask("PANEL move selection right")
         s = state(c)
         check("moving a closed panel shows it in its new zone", s["selection"] == "1" and s["zone.right"] == "selection", s)
-        c.ask("PANEL move selection bottom")
+        c.ask("PANEL move selection bottom 0")
         found = [os.path.join(d, f) for d, _, fs in os.walk(home) for f in fs if f == "settings.txt"]
         text = open(found[0]).read() if found else ""
-        check("settings.txt holds the layout and sizes", "panel_layout = left:history" in text and "bottom:selection" in text and "zone_sizes = left:" in text, text.replace("\n", " | ")[-200:])
+        layout = next((line.removeprefix("panel_layout = ") for line in text.splitlines() if line.startswith("panel_layout = ")), "")
+        tabs = dict(part.split(":", 1) for part in layout.split(";") if ":" in part)
+        check("settings.txt holds the layout and sizes", "history" in tabs.get("left", "").replace("*", "").split(",")
+              and "selection" in tabs.get("bottom", "").replace("*", "").split(",") and "zone_sizes = left:" in text, text.replace("\n", " | ")[-200:])
 
     def run2(c):
         z = zones(c)

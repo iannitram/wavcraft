@@ -326,8 +326,8 @@ mod tests {
             (zone("Default", "history"), zone("Editing", "history"), zone("Repair", "history")),
             (Some(DockSide::Right), Some(DockSide::Left), Some(DockSide::Bottom))
         );
-        // main's registry docks Selection/View on the right (A001 put it below; main's layout won).
-        assert_eq!(zone("Default", "selection"), Some(DockSide::Right));
+        // The default workspace keeps Selection/View below the editor.
+        assert_eq!(zone("Default", "selection"), Some(DockSide::Bottom));
         for b in BUILTIN {
             assert!(is_builtin(&b.to_uppercase()));
             assert!(w.save(&b.to_lowercase(), &snaps[0]).is_err(), "{b} can't be replaced");
