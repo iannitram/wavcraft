@@ -2107,6 +2107,7 @@ impl WaveApp {
                 self.note_recent(&doc.path);
                 self.imports.retain(|i| !same_file(&i.path, &doc.path));
                 self.tempo = self.settings.tempo_for(&self.doc_path);
+                self.player.set_metronome(self.player.metronome(), self.tempo);
                 self.doc_serial += 1;
                 self.doc_id = self.doc_serial;
                 self.include_meta = starting_include_meta(&self.settings);
@@ -3995,6 +3996,7 @@ impl WaveApp {
     /// Keep `tempo` for the open document (View › Edit Tempo…, `PREF set tempo`), in the settings.
     fn set_tempo(&mut self, tempo: Tempo) {
         self.tempo = tempo;
+        self.player.set_metronome(self.player.metronome(), tempo);
         if self.doc_path.as_os_str().is_empty() {
             return;
         }
