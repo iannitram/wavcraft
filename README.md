@@ -149,8 +149,8 @@ screen is short. The overview does not depend on the frequency axis or the pictu
 `soundcraft-audio-io` is a git dependency pinned to one commit in the root `Cargo.toml`.
 Every `soundcraft-*` crate (audio-io, dsp, video, model, time, mix, playback) names that same
 commit, so the tree holds one copy of each crate and one audio-io version (the model's
-`Source::format` and our decoder share one `FileFormat`). Today that commit is 274f788, the head
-of the fork's `feat/streamed-readahead` branch: upstream plus our merged fixes (long-file handling,
+`Source::format` and our decoder share one `FileFormat`). Today that commit is e3c5c67 (soundcraft main; it was 274f788, the head
+of the fork's `feat/streamed-readahead` branch, until 2026-11-01): upstream plus our merged fixes (long-file handling,
 parallel WAV/AIFF decode, the session model, the disk-backed `SampleSource` trait, the mix engine's
 `ReadAheadSource`). The older tag `wavecraft-pin-2026-10-12` keeps the app's old name on purpose; it
 lives on another repo, so it stays as it is.
