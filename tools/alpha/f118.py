@@ -3,7 +3,7 @@
 
     python3 tools/alpha/f118.py --exe <path to the release wavcraft> [--keep]
 
-Checked through SESSION state: a stereo session has a stereo master and refuses a 5.1 track;
+Checked through SESSION state: a stereo session has a stereo master; a 5.1 track is allowed beside any master;
 MASTER vol and mute are kept; SESSION new master=5.1 makes a 6-channel master and accepts a 5.1
 track; bad master arguments are refused; then QUIT. Fails on any ERROR line in the app's log.
 """
@@ -84,12 +84,12 @@ def main():
         check("SESSION new Stereo (default master)", c.ask("SESSION new Stereo rate=48000") == "OK")
         m = c.state()["master"]
         check("the default master is stereo, 0 dB, unmuted", (m["format"], m["channels"], m["volume_db"], m["mute"]) == ("Stereo", 2, 0.0, False), m)
-        check("a 5.1 track is refused in a stereo session", c.ask("TRACK add Surr 5.1").startswith("ERR"))
+        check("a 5.1 track is allowed in a stereo session", c.ask("TRACK add Surr 5.1") == "OK tracks=1")
         check("MASTER vol=-6 mute=1", c.ask("MASTER vol=-6 mute=1") == "OK")
         m = c.state()["master"]
         check("the master keeps -6 dB and mute", (m["volume_db"], m["mute"]) == (-6.0, True), m)
         check("MASTER mute=0", c.ask("MASTER mute=0") == "OK" and c.state()["master"]["mute"] is False)
-        check("the master is not listed as a track", c.state()["tracks"] == [])
+        check("the master is not listed as a track", [t["name"] for t in c.state()["tracks"]] == ["Surr"])
         check("a bad master argument is refused", c.ask("MASTER vol=loud").startswith("ERR") and c.ask("SESSION new Bad master=quad").startswith("ERR"))
         check("SESSION new Surround master=5.1", c.ask("SESSION new Surround rate=48000 master=5.1") == "OK")
         m = c.state()["master"]

@@ -1388,17 +1388,13 @@ mod tests {
         assert!((crate::mtplay::render(&m, 0, 100)[0][10] - g * db(-6.0)).abs() < 1e-6, "track and master faders multiply");
     }
 
-    /// The master mute is a flag on the master track, and the mix engine at soundcraft 274f788
-    /// does not act on it: the master strip's buffer is replaced by the main sum before the
-    /// master's fader and mute are applied (`soundcraft-mix` `lib.rs`, the "Master faders process
-    /// the main mix" block). This stays ignored until the engine honours it.
     #[test]
-    #[ignore = "soundcraft-mix at 274f788 ignores the master mute in render and playback (upstream)"]
     fn master_mute_silences_a_render() {
         let (mut m, a, _) = two_tracks();
         m.add_clip_buffer(a, "dc", "dc.wav", dc(48_000, 1000, 2, 0.5), 0.0).unwrap_or_else(|e| panic!("{e}"));
         m.set_master_mute(true).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(crate::mtplay::render(&m, 0, 100)[0][10], 0.0);
+        assert!(crate::mtplay::render(&m, 0, 100).iter().flatten().all(|&sample| sample == 0.0));
+        assert_eq!(m.session.master().map(|t| t.mixer.volume_db), Some(0.0));
     }
 
     #[test]
