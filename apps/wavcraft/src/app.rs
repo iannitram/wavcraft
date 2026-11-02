@@ -2083,7 +2083,7 @@ impl WaveApp {
                 // The document that was open stays open, parked; this one is added at the end.
                 let path = path.clone();
                 // The clipboards outlive the document they were copied from.
-                let clips = self.editor.as_mut().map(|e| std::mem::take(&mut e.clipboards));
+                let clips = self.editor.as_mut().map(|e| (std::mem::take(&mut e.clipboards), e.current_clipboard));
                 let old = self.editor.is_some().then(|| self.take_slot());
                 self.docs.add(old);
                 let r = &doc.peak_report;
@@ -2097,8 +2097,8 @@ impl WaveApp {
                 self.matcher.new_file();
                 let cap = History::default_cap(&self.sessions.path);
                 self.editor = Some(Editor::new(History::new(doc.state.clone(), cap)));
-                if let (Some(clips), Some(e)) = (clips, self.editor.as_mut()) {
-                    e.clipboards = clips;
+                if let (Some((clips, current)), Some(e)) = (clips, self.editor.as_mut()) {
+                    (e.clipboards, e.current_clipboard) = (clips, current);
                 }
                 self.apply_crossfades();
                 self.apply_snap();
@@ -2451,13 +2451,13 @@ impl WaveApp {
     fn remove_current(&mut self) {
         self.halt_play();
         // The clipboard outlives the document it was copied from.
-        let clips = self.editor.as_mut().map(|e| std::mem::take(&mut e.clipboards));
+        let clips = self.editor.as_mut().map(|e| (std::mem::take(&mut e.clipboards), e.current_clipboard));
         drop(self.take_slot());
         match self.docs.close_current() {
             Some(next) => {
                 self.put_slot(next);
-                if let (Some(clips), Some(e)) = (clips, self.editor.as_mut()) {
-                    e.clipboards = clips;
+                if let (Some((clips, current)), Some(e)) = (clips, self.editor.as_mut()) {
+                    (e.clipboards, e.current_clipboard) = (clips, current);
                 }
             }
             None => {
