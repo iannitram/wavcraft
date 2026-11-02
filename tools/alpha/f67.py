@@ -10,11 +10,11 @@ Each run ends with QUIT discard and must leave no ERROR line in the app's log.
 """
 import argparse, os, shutil, socket, subprocess, sys, tempfile, time, wave, struct, math
 
-DEFAULTS = {"src_quality": "high", "save_markers": "true", "save_metadata": "true", "marker_name_pattern": "Marker {n}",
+DEFAULTS = {"src_quality": "high", "save_include_metadata": "true", "marker_name_pattern": "Marker {n}",
             "autoscroll": "pagewise", "jkl_speed_steps": "0.5,1,2,4", "preroll_s": "2", "postroll_s": "2", "record_offset_ms": "0"}
-CHANGED = {"src_quality": "best", "save_markers": "false", "save_metadata": "false", "marker_name_pattern": "Cue = {n} (take)",
+CHANGED = {"src_quality": "best", "save_include_metadata": "false", "marker_name_pattern": "Cue = {n} (take)",
            "autoscroll": "centred", "jkl_speed_steps": "0.25,1,3.5,8", "preroll_s": "1.5", "postroll_s": "0", "record_offset_ms": "-35"}
-BAD = [("src_quality", "ultra"), ("save_markers", "maybe"), ("marker_name_pattern", ""), ("autoscroll", "sideways"),
+BAD = [("src_quality", "ultra"), ("save_include_metadata", "maybe"), ("marker_name_pattern", ""), ("autoscroll", "sideways"),
        ("jkl_speed_steps", "2,1"), ("jkl_speed_steps", "1,abc"), ("preroll_s", "61"), ("postroll_s", "nan"), ("record_offset_ms", "5000")]
 
 
