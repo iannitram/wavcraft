@@ -262,6 +262,9 @@ impl Samples for [f32] {
 /// are nearly all a far view costs. So blocks twice as long would halve the memory and double the
 /// time of every far view (measured: 6 to 20 ms for three hours against 4 to 10 ms).
 pub const BLOCK_HOPS: usize = 16;
+/// Blocks per chunk of an [`Overview`]'s levels. Chunks are fixed-size and shared by `Arc`, so an
+/// edit allocates the chunks it changes and not the whole file's levels again.
+const CHUNK_BLOCKS: usize = 64;
 
 /// One channel's spectrogram at a coarse time step, for drawing views far zoomed out without
 /// analysing all the audio on screen again.
@@ -279,8 +282,9 @@ pub struct Overview {
     frames: usize,
     /// Frequency bins per block: 0 Hz to Nyquist.
     bins: usize,
-    /// One level per bin, block after block. Only whole blocks are kept.
-    levels: Vec<u8>,
+    /// One level per bin, block after block, in chunks of [`CHUNK_BLOCKS`] blocks (the last may be
+    /// shorter). Only whole blocks are kept. A step shares the chunks it does not change.
+    levels: Vec<Arc<Vec<u8>>>,
     /// False blocks must be refreshed before contributing to a new picture.
     fresh: Vec<bool>,
 }
@@ -299,20 +303,27 @@ impl Overview {
         let hop = analysis.hop() as i64;
         let bins = analysis.window.len() / 2 + 1;
         let blocks = analysis.grid_end(samples.len()) as usize / BLOCK_HOPS;
-        let mut levels = vec![0u8; blocks * bins];
-        levels.par_chunks_mut(bins).enumerate().for_each_init(
-            || analysis.analyser(),
-            |analyser, (block, levels)| {
-                analyser.peaks.fill(0.0);
-                let first = (block * BLOCK_HOPS) as i64;
-                for g in first..first + BLOCK_HOPS as i64 {
-                    analyser.add(samples, g * hop - hop / 2);
-                }
-                for (level, peak) in levels.iter_mut().zip(&analyser.peaks) {
-                    *level = analysis.level(*peak);
-                }
-            },
-        );
+        let levels: Vec<Arc<Vec<u8>>> = (0..blocks.div_ceil(CHUNK_BLOCKS))
+            .into_par_iter()
+            .map_init(
+                || analysis.analyser(),
+                |analyser, chunk| {
+                    let first_block = chunk * CHUNK_BLOCKS;
+                    let mut levels = vec![0u8; chunk_blocks(blocks, chunk) * bins];
+                    for (i, levels) in levels.chunks_mut(bins).enumerate() {
+                        analyser.peaks.fill(0.0);
+                        let first = ((first_block + i) * BLOCK_HOPS) as i64;
+                        for g in first..first + BLOCK_HOPS as i64 {
+                            analyser.add(samples, g * hop - hop / 2);
+                        }
+                        for (level, peak) in levels.iter_mut().zip(&analyser.peaks) {
+                            *level = analysis.level(*peak);
+                        }
+                    }
+                    Arc::new(levels)
+                },
+            )
+            .collect();
         Overview {
             fft_len: p.fft_len(),
             floor_db: p.floor_db,
@@ -338,11 +349,11 @@ impl Overview {
             usize::try_from(span.inserted).unwrap_or(usize::MAX),
             frames,
         );
-        let mut levels = vec![0; blocks * self.bins];
-        let mut fresh = vec![false; blocks];
         let shift = span.inserted as i128 - span.removed as i128;
         let stride = (BLOCK_HOPS * hop) as i128;
-        for (b, clean) in fresh.iter_mut().enumerate() {
+        // The block of the old overview that new block `b` is copied from, if it is fresh there.
+        // For unchanged-length edits this also keeps clean blocks beyond the edit.
+        let source = |b: usize| -> Option<usize> {
             let first = b as i128 * stride - (hop / 2) as i128;
             let old = if !dirty.contains(&b) {
                 Some(b)
@@ -351,14 +362,34 @@ impl Overview {
             } else {
                 None
             };
-            // For unchanged-length edits this also keeps clean blocks beyond the edit.
-            if let Some(old) = old.filter(|old| self.fresh.get(*old).copied().unwrap_or(false))
-                && let (Some(src), Some(dst)) =
-                    (self.levels.get(old * self.bins..(old + 1) * self.bins), levels.get_mut(b * self.bins..(b + 1) * self.bins))
-            {
-                dst.copy_from_slice(src);
-                *clean = true;
+            old.filter(|old| self.fresh.get(*old).copied().unwrap_or(false))
+        };
+        let mut fresh = vec![false; blocks];
+        let mut levels = Vec::with_capacity(blocks.div_ceil(CHUNK_BLOCKS));
+        for chunk in 0..blocks.div_ceil(CHUNK_BLOCKS) {
+            let first = chunk * CHUNK_BLOCKS;
+            let n = chunk_blocks(blocks, chunk);
+            // A chunk whose blocks are all copied, in order, from one whole chunk of the old overview
+            // is that chunk: shared, not copied.
+            let shared = source(first).filter(|old0| old0 % CHUNK_BLOCKS == 0).and_then(|old0| {
+                let old = self.levels.get(old0 / CHUNK_BLOCKS)?;
+                let same = (0..n).all(|i| source(first + i) == Some(old0 + i));
+                (same && old.len() == n * self.bins).then(|| Arc::clone(old))
+            });
+            if let Some(old) = shared {
+                fresh[first..first + n].fill(true);
+                levels.push(old);
+                continue;
             }
+            let mut out = vec![0u8; n * self.bins];
+            for (i, dst) in out.chunks_mut(self.bins).enumerate() {
+                let b = first + i;
+                if let Some(src) = source(b).and_then(|old| self.block(old)) {
+                    dst.copy_from_slice(src);
+                    fresh[b] = true;
+                }
+            }
+            levels.push(Arc::new(out));
         }
         self.levels = levels;
         self.fresh = fresh;
@@ -368,7 +399,14 @@ impl Overview {
     /// Freshness and levels are exposed together; levels of stale blocks must not be
     /// used as analysis of the current samples.
     pub fn blocks(&self) -> impl Iterator<Item = (bool, &[u8])> {
-        self.fresh.iter().copied().zip(self.levels.chunks(self.bins.max(1)))
+        self.fresh.iter().enumerate().map(move |(b, &fresh)| (fresh, self.block(b).unwrap_or_default()))
+    }
+
+    /// The levels of block `b`, one per bin.
+    fn block(&self, b: usize) -> Option<&[u8]> {
+        let chunk = self.levels.get(b / CHUNK_BLOCKS)?;
+        let at = (b % CHUNK_BLOCKS) * self.bins;
+        chunk.get(at..at + self.bins)
     }
 
     /// Refresh stale blocks intersecting the view, on the spectral rendering worker. A
@@ -393,23 +431,33 @@ impl Overview {
         let last = range.end.min(self.fresh.len()).max(first);
         let analysis = Analysis::new(p);
         let hop = analysis.hop() as i64;
+        let bins = self.bins;
         let fresh = &self.fresh;
-        self.levels.par_chunks_mut(self.bins).enumerate().skip(first).take(last - first).for_each_init(
-            || analysis.analyser(),
-            |analyser, (block, levels)| {
-                if fresh.get(block).copied().unwrap_or(false) {
-                    return;
-                }
-                analyser.peaks.fill(0.0);
-                let first = (block * BLOCK_HOPS) as i64;
-                for g in first..first + BLOCK_HOPS as i64 {
-                    analyser.add(samples, g * hop - hop / 2);
-                }
-                for (level, peak) in levels.iter_mut().zip(&analyser.peaks) {
-                    *level = analysis.level(*peak);
-                }
-            },
-        );
+        for (chunk, levels) in self.levels.iter_mut().enumerate() {
+            let (lo, hi) = (chunk * CHUNK_BLOCKS, chunk * CHUNK_BLOCKS + CHUNK_BLOCKS);
+            if lo >= last || hi <= first || (lo..hi.min(last)).all(|b| b < first || fresh.get(b).copied().unwrap_or(true)) {
+                continue;
+            }
+            // Copy-on-write: a chunk still shared with an earlier step is copied here, once.
+            let levels = Arc::make_mut(levels);
+            levels.par_chunks_mut(bins).enumerate().for_each_init(
+                || analysis.analyser(),
+                |analyser, (i, levels)| {
+                    let block = lo + i;
+                    if block < first || block >= last || fresh.get(block).copied().unwrap_or(false) {
+                        return;
+                    }
+                    analyser.peaks.fill(0.0);
+                    let first = (block * BLOCK_HOPS) as i64;
+                    for g in first..first + BLOCK_HOPS as i64 {
+                        analyser.add(samples, g * hop - hop / 2);
+                    }
+                    for (level, peak) in levels.iter_mut().zip(&analyser.peaks) {
+                        *level = analysis.level(*peak);
+                    }
+                },
+            );
+        }
         if let Some(fresh) = self.fresh.get_mut(first..last) {
             fresh.fill(true);
         }
@@ -417,7 +465,7 @@ impl Overview {
 
     /// Memory held, in bytes.
     pub fn bytes(&self) -> usize {
-        self.levels.len()
+        self.levels.iter().map(|c| c.len()).sum()
     }
 
     /// Whether this overview can stand in for FFTs of `frames` frames of audio analysed with `p`.
@@ -435,14 +483,20 @@ impl Overview {
         if held.is_some_and(|(first, last)| self.fresh.get(first..last).is_none_or(|blocks| blocks.iter().any(|fresh| !fresh))) {
             return from..from;
         }
-        let Some(blocks) = held.and_then(|(first, last)| self.levels.get(first * self.bins..last * self.bins)) else { return from..from };
-        for block in blocks.chunks_exact(self.bins.max(1)) {
+        let Some((held_first, held_last)) = held else { return from..from };
+        for b in held_first..held_last {
+            let Some(block) = self.block(b) else { return from..from };
             for (level, held) in into.iter_mut().zip(block) {
                 *level = (*level).max(*held);
             }
         }
         first * per..last * per
     }
+}
+
+/// Blocks in chunk `chunk` of an overview of `blocks` blocks (every chunk but the last is full).
+fn chunk_blocks(blocks: usize, chunk: usize) -> usize {
+    blocks.saturating_sub(chunk * CHUNK_BLOCKS).min(CHUNK_BLOCKS)
 }
 
 /// One FFT after another over the same scratch memory, keeping the loudest level per bin.
