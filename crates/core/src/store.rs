@@ -1102,6 +1102,14 @@ mod tests {
         }
     }
 
+    struct HookGuard;
+
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            *lock(&CREATE_HOOK) = None;
+        }
+    }
+
     #[test]
     fn sweep_between_held_creation_and_lock_keeps_new_session() {
         let _guard = lock(&TEST_LOCK);
@@ -1113,6 +1121,7 @@ mod tests {
                 sweep_stale_sessions(Some(root));
             }
         }));
+        let _hook = HookGuard;
 
         let res = Store::create_session(Some(&root), StoreOptions::default());
         assert!(res.is_ok());
@@ -1121,6 +1130,5 @@ mod tests {
         assert!(dir.exists());
         assert!(dir.join(HELD_FILE).exists());
         assert!(dir.join(LOCK_FILE).exists());
-        *lock(&CREATE_HOOK) = None;
     }
 }
