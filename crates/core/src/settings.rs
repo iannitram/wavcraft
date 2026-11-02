@@ -578,7 +578,7 @@ pub struct Settings {
     pub channel_layout: crate::channels::ChannelLayout,
     /// Which fields the status bar shows (`status_fields = name,format,…`).
     pub status_fields: StatusFields,
-    /// The spectral display's frequency band and scale (`spectral_view = <lo_hz> <hi_hz> log|lin`);
+    /// The spectral display's frequency band and scale (`spectral_view = <lo_hz> <hi_hz> lin|log_partial|log`);
     /// `None`: the whole range on the logarithmic scale.
     pub spectral_view: Option<FreqAxis>,
 }
