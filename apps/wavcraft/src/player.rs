@@ -1640,6 +1640,7 @@ fn read_ahead(shared: &Shared, inbox: &Receiver<Command>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Barrier;
     use wavcraft_core::{AudioBuffer, Document};
 
     /// A document holding `audio` in the store, as the app opens it.
@@ -1730,7 +1731,12 @@ mod tests {
         let shared = shared_with(&state);
         play(&shared, &state, 0.0, 1000.0);
         let mut out = vec![0.0f32; 64];
+        let barrier = Barrier::new(2);
         std::thread::scope(|scope| {
+            let restart = scope.spawn(|| {
+                barrier.wait();
+                shared.start(500.0, 1000.0);
+            });
             render_with(
                 &shared,
                 &mut out,
@@ -1738,10 +1744,10 @@ mod tests {
                 48_000.0,
                 || {},
                 || {
-                    scope.spawn(|| shared.start(500.0, 1000.0));
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    barrier.wait();
                 },
             );
+            restart.join().unwrap();
         });
         assert_eq!(playback(&shared).pos, 500.0);
         assert!(playback(&shared).playing);
@@ -1753,7 +1759,12 @@ mod tests {
         let shared = shared_with(&state);
         play(&shared, &state, 10.0, 20.0);
         let mut out = vec![0.0f32; 64];
+        let barrier = Barrier::new(2);
         std::thread::scope(|scope| {
+            let restart = scope.spawn(|| {
+                barrier.wait();
+                shared.start(500.0, 1000.0);
+            });
             render_with(
                 &shared,
                 &mut out,
@@ -1761,13 +1772,43 @@ mod tests {
                 48_000.0,
                 || {},
                 || {
-                    scope.spawn(|| shared.start(500.0, 1000.0));
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    barrier.wait();
                 },
             );
+            restart.join().unwrap();
         });
         assert!(playback(&shared).playing);
         assert_eq!(playback(&shared).pos, 500.0);
+    }
+
+    #[test]
+    fn stop_during_render_is_safe() {
+        let ramp: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        let shared = shared_with(&state);
+        play(&shared, &state, 0.0, 1000.0);
+        let mut out = vec![0.0f32; 64];
+        let barrier = Barrier::new(2);
+        std::thread::scope(|scope| {
+            let stop = scope.spawn(|| {
+                barrier.wait();
+                shared.halt();
+            });
+            render_with(
+                &shared,
+                &mut out,
+                1,
+                48_000.0,
+                || {},
+                || {
+                    barrier.wait();
+                },
+            );
+            stop.join().unwrap();
+        });
+        assert!(!playback(&shared).playing);
+        let mut again = vec![0.0f32; 64];
+        render(&shared, &mut again, 1, 48_000.0);
     }
 
     #[test]
