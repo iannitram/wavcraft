@@ -12614,31 +12614,29 @@ mod tests {
     }
 
     #[test]
-    fn space_in_a_text_field_in_a_floated_viewport_does_not_toggle_playback() {
+    fn space_with_a_float_text_field_focused_does_not_toggle_playback() {
+        // The root window has no focused widget: the text field lives in a floated viewport, so
+        // only `in_float` (set from that viewport) tells the gate that the keyboard is taken.
+        let press = egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        assert_eq!(press_with_float_flag(true, press), Vec::<Command>::new());
+    }
+
+    #[test]
+    fn cmd_s_with_a_float_text_field_focused_still_saves() {
+        let press = egui::Event::Key { key: Key::S, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        assert_eq!(press_with_float_flag(true, press), vec![Command::Save]);
+    }
+
+    /// One frame with `press` and no focused widget in the root window; `in_float` is passed as is.
+    fn press_with_float_flag(in_float: bool, press: egui::Event) -> Vec<Command> {
         let ctx = egui::Context::default();
         let keymap = Keymap::new();
-        let vid = egui::ViewportId::from_hash_of("float-test");
-        let mut text = String::from("10");
-        let mut frame = |events: Vec<egui::Event>, ask_focus: bool| -> Vec<Command> {
-            let mut child_typing = false;
-            let mut found = Vec::new();
-            let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-                ui.ctx().show_viewport_immediate(vid, egui::ViewportBuilder::default(), |ui, _| {
-                    let r = ui.text_edit_singleline(&mut text);
-                    if ask_focus {
-                        r.request_focus();
-                    }
-                    child_typing = ui.ctx().egui_wants_keyboard_input();
-                });
-                found = pressed_commands(ui.ctx(), &keymap, child_typing);
-            });
-            output.textures_delta.clear();
-            found
-        };
-        let _ = frame(Vec::new(), true);
-        let _ = frame(Vec::new(), false);
-        let press = egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
-        assert_eq!(frame(vec![press], false), Vec::<Command>::new());
+        let mut got = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput { events: vec![press], ..Default::default() }, |ui| {
+            got = pressed_commands(ui.ctx(), &keymap, in_float);
+        });
+        output.textures_delta.clear();
+        got
     }
 
     #[test]
