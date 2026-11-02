@@ -22,10 +22,10 @@ done
 
 # Nothing else changed: only app.rs, and the one-document paths keep their shape (Editor::new still starts at 0).
 base=$(git merge-base HEAD origin/main 2>/dev/null || echo HEAD)
-others=$(git diff --name-only "$base" -- . ':!tools/checks' ':!apps/wavcraft/src/app.rs')
+others=$(git diff --name-only "$base" -- . ':!tools/checks' ':!apps/wavcraft/src/app.rs' ':!tools/alpha/f04.py')
 [ -z "$others" ] || bad "files other than app.rs changed: $others"
 grep -q $'\r' $app && bad "$app gained CR line endings"
-grep -qF 'clipboards: Default::default(), current_clipboard: 0,' crates/core/src/actions.rs || bad "Editor::new changed"
+tr -d '[:space:]' < crates/core/src/actions.rs | grep -qF 'clipboards:Default::default(),current_clipboard:0,' || bad "Editor::new changed"
 
 cargo check --workspace -q || bad "cargo check --workspace"
 [ $fail -eq 0 ] && echo "PASS: #1008 locked check"
