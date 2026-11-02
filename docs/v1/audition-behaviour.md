@@ -46,6 +46,8 @@ The rest of this table matches Audition's "Default Set" (checked in Audition 26.
 
 **Checked (checked in Audition 26.5.0.82, 2026-10-15):** every key in the paragraph above is in Audition's Default Set, none wrong. Second keys Audition adds: Redo also Ctrl+Y; Delete also Backspace; Deselect All also Ctrl+D; spectral display also F9. Zoom to Selection is **Shift+S**; Zoom Out Full (All Axes) is **Ctrl+\\**. Also: Record (Toggle Recording) **Shift+Space**; Export File Ctrl+Shift+E; Copy to New Alt+Shift+C; Mix Paste Ctrl+Shift+V; Noise Reduction (process) Ctrl+Shift+P; Match Loudness panel Alt+5; zero crossings Adjust Selection Inward / Outward Shift+I / Shift+O. **Silence, Insert Silence and the History panel have no default key.**
 
+**Ruling (the owner, 2026-11-01): Space always plays, except in text fields.** A focused button, checkbox or slider does not swallow Space; it still starts and stops playback. This matches Audition. Decided on issue #434, shipped in PR #1075.
+
 *Sources: keyboard-shortcuts/default-keyboard-shortcuts.html; importing-recording-and-playing/navigating-time-playing-audio.html; editing-audio-files/undo-redo-history.html; workspace-and-setup/customizing-workspaces.html, viewing-zooming-navigating-audio.html*
 
 ## 3. Selecting
