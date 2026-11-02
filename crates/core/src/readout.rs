@@ -7,8 +7,8 @@ use crate::spectrogram::SpectrogramParams;
 use crate::view::{Viewport, format_time};
 
 /// The editor's geometry: the ruler on top, then the waveform lanes (if shown) over the spectral
-/// lanes (if shown), one lane per channel. Must match how the app paints (`lane()` there splits
-/// an area evenly between channels; the spectral picture is inset one pixel top and bottom, the
+/// lanes (if shown). Layered waveforms share one lane; spectral lanes stay per channel.
+/// Must match how the app paints (`lane()` there splits an area evenly between channels; the spectral picture is inset one pixel top and bottom, the
 /// waveform keeps two pixels of margin above and below full scale).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EditorLayout {
@@ -18,6 +18,12 @@ pub struct EditorLayout {
     pub show_waveform: bool,
     pub show_spectrum: bool,
     pub channels: usize,
+    /// Fraction of the body occupied by the waveform when both displays are shown.
+    pub split_fraction: f32,
+    /// All waveform channels share a lane (spectral channels remain stacked).
+    pub layered: bool,
+    /// The painter multiplies samples by this vertical zoom.
+    pub amp_zoom: f32,
 }
 
 /// Pixels between a waveform lane's edge and full scale.
@@ -30,9 +36,10 @@ const SPECTRUM_INSET: f32 = 1.0;
 pub enum Pane {
     Outside,
     Ruler,
-    /// A waveform lane: `amplitude` is the level at the pointer's height, -1 to 1 (clamped).
+    /// A waveform lane: `amplitude` is the level at the pointer's height, clamped to ±1 / zoom.
     Wave {
-        channel: usize,
+        /// No single channel when the waveform is Layered.
+        channel: Option<usize>,
         amplitude: f32,
     },
     /// A spectral lane: `hz` is the frequency at the pointer's height.
@@ -53,28 +60,33 @@ impl EditorLayout {
             return Pane::Ruler;
         }
         let body_top = self.ruler_height;
-        let body_h = (self.height - body_top).max(1.0);
+        let body_h = self.height - body_top;
+        let split = if self.split_fraction.is_finite() { self.split_fraction.clamp(0.0, 1.0) } else { 0.5 };
+        let wave_h = body_h * split;
         let (wave, spectrum) = match (self.show_waveform, self.show_spectrum) {
-            (true, true) => (Some((body_top, body_h * 0.5)), Some((body_top + body_h * 0.5, body_h * 0.5))),
+            (true, true) => (Some((body_top, wave_h)), Some((body_top + wave_h, body_h - wave_h))),
             (true, false) => (Some((body_top, body_h)), None),
             (false, true) => (None, Some((body_top, body_h))),
             (false, false) => (None, None),
         };
         let channels = self.channels.max(1);
-        let in_area = |area: Option<(f32, f32)>| -> Option<(usize, f32, f32)> {
+        let layered = self.layered && channels > 1;
+        let in_area = |area: Option<(f32, f32)>, lanes: usize| -> Option<(usize, f32, f32)> {
             let (top, h) = area?;
-            if y < top || y >= top + h {
+            if h <= 0.0 || y < top || y >= top + h {
                 return None;
             }
-            let lane_h = h / channels as f32;
-            let channel = (((y - top) / lane_h) as usize).min(channels - 1);
+            let lane_h = h / lanes as f32;
+            let channel = (((y - top) / lane_h) as usize).min(lanes - 1);
             Some((channel, y - top - lane_h * channel as f32, lane_h))
         };
-        if let Some((channel, ly, lane_h)) = in_area(wave) {
-            let half = (lane_h * 0.5 - WAVE_MARGIN).max(1.0);
-            return Pane::Wave { channel, amplitude: ((lane_h * 0.5 - ly) / half).clamp(-1.0, 1.0) };
+        if let Some((channel, ly, lane_h)) = in_area(wave, if layered { 1 } else { channels }) {
+            let half = lane_h * 0.5 - WAVE_MARGIN;
+            let zoom = if self.amp_zoom.is_finite() && self.amp_zoom > 0.0 { self.amp_zoom } else { 1.0 };
+            let amplitude = if half != 0.0 { ((lane_h * 0.5 - ly) / half).clamp(-1.0, 1.0) / zoom } else { 0.0 };
+            return Pane::Wave { channel: (!layered).then_some(channel), amplitude };
         }
-        if let Some((channel, ly, lane_h)) = in_area(spectrum) {
+        if let Some((channel, ly, lane_h)) = in_area(spectrum, channels) {
             let picture_h = (lane_h - 2.0 * SPECTRUM_INSET).max(1.0);
             let t = 1.0 - ((ly - SPECTRUM_INSET) / picture_h).clamp(0.0, 1.0);
             return Pane::Spectrum { channel, hz: params.hz_at(t, sample_rate) };
@@ -86,9 +98,8 @@ impl EditorLayout {
 impl SpectrogramParams {
     /// The frequency a fraction `t` of the way up the picture (0 bottom, 1 top).
     pub fn hz_at(&self, t: f32, sample_rate: u32) -> f32 {
-        let (lo, hi) = self.range_hz(sample_rate);
         let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 };
-        if self.log_freq { lo * (hi / lo).powf(t) } else { lo + (hi - lo) * t }
+        crate::freq_axis::FreqAxis::from_params(self).clamped(sample_rate).hz_at_fraction(t)
     }
 }
 
@@ -124,7 +135,8 @@ impl Readout {
     /// The channel the pointer is over, when it is over a lane.
     pub fn channel(&self) -> Option<usize> {
         match self.pane {
-            Pane::Wave { channel, .. } | Pane::Spectrum { channel, .. } => Some(channel),
+            Pane::Wave { channel, .. } => channel,
+            Pane::Spectrum { channel, .. } => Some(channel),
             _ => None,
         }
     }
@@ -153,7 +165,8 @@ impl Readout {
         let mut s = format_time(self.frame, sample_rate);
         match self.pane {
             Pane::Wave { channel, amplitude } => {
-                s += &format!("  ch {}  {amplitude:+.4} ({})", channel + 1, dbfs_text(amplitude));
+                let channel = channel.map_or_else(|| "all channels".to_string(), |ch| format!("ch {}", ch + 1));
+                s += &format!("  {channel}  {amplitude:+.4} ({})", dbfs_text(amplitude));
                 if let Some(v) = sample {
                     s += &format!("  sample {v:+.6}");
                 }
@@ -183,7 +196,17 @@ mod tests {
     use super::*;
 
     fn layout(wave: bool, spectrum: bool, channels: usize) -> EditorLayout {
-        EditorLayout { width: 1000.0, height: 622.0, ruler_height: 22.0, show_waveform: wave, show_spectrum: spectrum, channels }
+        EditorLayout {
+            width: 1000.0,
+            height: 622.0,
+            ruler_height: 22.0,
+            show_waveform: wave,
+            show_spectrum: spectrum,
+            channels,
+            split_fraction: 0.5,
+            layered: false,
+            amp_zoom: 1.0,
+        }
     }
 
     #[test]
@@ -203,7 +226,7 @@ mod tests {
         let l = layout(true, false, 2);
         let p = SpectrogramParams::default();
         let amp = |y| match l.locate(0.0, y, &p, 48_000) {
-            Pane::Wave { channel, amplitude } => (channel, amplitude),
+            Pane::Wave { channel, amplitude } => (channel.unwrap(), amplitude),
             other => panic!("{other:?}"),
         };
         assert_eq!(amp(172.0), (0, 0.0));
@@ -240,13 +263,67 @@ mod tests {
     }
 
     #[test]
+    fn split_thirty_percent_uses_the_painted_boundary_and_picture_insets() {
+        let l = EditorLayout { split_fraction: 0.3, ..layout(true, true, 2) };
+        let p = SpectrogramParams { log_freq: false, min_hz: 0.0, max_hz: 24_000.0, ..SpectrogramParams::default() };
+        // Waveform 22..202, lanes 90 px; spectral 202..622, lanes 210 px.
+        assert!(matches!(l.locate(5.0, 201.5, &p, 48_000), Pane::Wave { channel: Some(1), .. }));
+        assert_eq!(l.locate(5.0, 202.0, &p, 48_000), Pane::Spectrum { channel: 0, hz: 24_000.0 });
+        assert_eq!(l.locate(5.0, 203.0, &p, 48_000), Pane::Spectrum { channel: 0, hz: 24_000.0 });
+        assert_eq!(l.locate(5.0, 307.0, &p, 48_000), Pane::Spectrum { channel: 0, hz: 12_000.0 });
+        assert_eq!(l.locate(5.0, 411.0, &p, 48_000), Pane::Spectrum { channel: 0, hz: 0.0 });
+        assert_eq!(l.locate(5.0, 413.0, &p, 48_000), Pane::Spectrum { channel: 1, hz: 24_000.0 });
+    }
+
+    #[test]
+    fn layered_waveforms_share_one_lane_and_zoom_two_halves_the_readout_level() {
+        let l = EditorLayout { split_fraction: 0.3, layered: true, amp_zoom: 2.0, ..layout(true, true, 2) };
+        let p = SpectrogramParams::default();
+        // One waveform lane 22..202, centre 112, drawable half 88.
+        for (y, amplitude) in [(24.0, 0.5), (68.0, 0.25), (112.0, 0.0), (156.0, -0.25), (200.0, -0.5), (201.0, -0.5)] {
+            let pane = l.locate(5.0, y, &p, 48_000);
+            assert_eq!(pane, Pane::Wave { channel: None, amplitude });
+            let r = Readout { frame: 0, pane };
+            assert_eq!(r.channel(), None);
+            assert!(r.text(48_000, None).contains("all channels"));
+        }
+        let r = Readout { frame: 0, pane: l.locate(5.0, 24.0, &p, 48_000) };
+        assert_eq!(r.text(48_000, None), "0:00.000  all channels  +0.5000 (-6.02 dBFS)");
+        // Layered applies only to the waveform, as in the painter.
+        assert!(matches!(l.locate(5.0, 500.0, &p, 48_000), Pane::Spectrum { channel: 1, .. }));
+        let mono = EditorLayout { channels: 1, ..l };
+        assert_eq!(mono.locate(5.0, 24.0, &p, 48_000), Pane::Wave { channel: Some(0), amplitude: 0.5 });
+        let stacked = EditorLayout { layered: false, ..l };
+        assert_eq!(stacked.locate(5.0, 24.0, &p, 48_000), Pane::Wave { channel: Some(0), amplitude: 0.5 });
+        assert_eq!(stacked.locate(5.0, 114.0, &p, 48_000), Pane::Wave { channel: Some(1), amplitude: 0.5 });
+    }
+
+    #[test]
+    fn partial_log_readout_follows_the_axis_across_the_knee() {
+        let l = layout(false, true, 2);
+        let p = SpectrogramParams { log_freq: true, partial_log: true, min_hz: 0.0, max_hz: 24_000.0, ..SpectrogramParams::default() };
+        let axis = crate::freq_axis::FreqAxis::from_params(&p).clamped(48_000);
+        for hz in [0.0, 500.0, 1_000.0, 8_000.0, 24_000.0] {
+            for channel in 0..2 {
+                // Each 300 px lane's picture has a 1 px inset at both ends.
+                let y = 321.0 + channel as f32 * 300.0 - axis.fraction_of_hz(hz) * 298.0;
+                let Pane::Spectrum { channel: found, hz: actual } = l.locate(5.0, y, &p, 48_000) else { panic!("missing spectral lane") };
+                assert_eq!(found, channel);
+                assert!((actual - hz).abs() < 0.1, "{actual} vs {hz}");
+            }
+        }
+    }
+
+    #[test]
     fn hz_at_agrees_with_the_picture_rows() {
         for log_freq in [true, false] {
-            let p = SpectrogramParams { log_freq, ..SpectrogramParams::default() };
-            for row in [0usize, 10, 128, 256] {
-                let t = 1.0 - row as f32 / 256.0;
-                let (a, b) = (p.hz_at(t, 44_100), p.row_edge_hz(row, 256, 44_100));
-                assert!((a - b).abs() <= b * 1e-4, "row {row}: {a} vs {b}");
+            for partial_log in [false, true] {
+                let p = SpectrogramParams { log_freq, partial_log, ..SpectrogramParams::default() };
+                for row in [0usize, 10, 128, 256] {
+                    let t = 1.0 - row as f32 / 256.0;
+                    let (a, b) = (p.hz_at(t, 44_100), p.row_edge_hz(row, 256, 44_100));
+                    assert!((a - b).abs() <= b * 1e-4, "row {row}: {a} vs {b}");
+                }
             }
         }
     }
@@ -277,7 +354,7 @@ mod tests {
 
     #[test]
     fn the_readout_line_names_time_channel_level_and_frequency() {
-        let w = Readout { frame: 24_000, pane: Pane::Wave { channel: 1, amplitude: 0.5 } };
+        let w = Readout { frame: 24_000, pane: Pane::Wave { channel: Some(1), amplitude: 0.5 } };
         assert_eq!(w.text(48_000, Some(0.25)), "0:00.500  ch 2  +0.5000 (-6.02 dBFS)  sample +0.250000");
         let s = Readout { frame: 0, pane: Pane::Spectrum { channel: 0, hz: 1500.0 } };
         assert_eq!(s.text(48_000, None), "0:00.000  ch 1  1.50 kHz");

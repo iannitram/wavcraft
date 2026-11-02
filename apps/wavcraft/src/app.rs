@@ -4006,7 +4006,6 @@ impl WaveApp {
         }
     }
 
-    /// `frame` in the chosen time format at the open file's rate.
     /// The stored sample at `frame` of channel `ch` in the current step.
     fn sample_at(&self, ch: usize, frame: usize) -> Option<f32> {
         let state = self.editor.as_ref()?.history.current();
@@ -4027,7 +4026,7 @@ impl WaveApp {
                     readout::Pane::Outside => ("outside", String::new()),
                     readout::Pane::Wave { channel, amplitude } => {
                         let db = readout::dbfs(amplitude).map_or_else(|| "-inf".to_string(), |d| format!("{d:.2}"));
-                        let sample = self.sample_at(channel, r.frame).map_or_else(|| "-".to_string(), |v| format!("{v:.6}"));
+                        let sample = channel.and_then(|ch| self.sample_at(ch, r.frame)).map_or_else(|| "-".to_string(), |v| format!("{v:.6}"));
                         ("wave", format!(" amp={amplitude:.4} dbfs={db} sample={sample}"))
                     }
                     readout::Pane::Spectrum { hz, .. } => ("spectrum", format!(" hz={hz:.1}")),
@@ -4059,6 +4058,7 @@ impl WaveApp {
         )
     }
 
+    /// `frame` in the chosen time format at the open file's rate.
     fn fmt_time(&self, frame: usize) -> String {
         self.time_format.format_with(frame, self.doc.as_ref().map_or(0, |d| d.sample_rate()), &self.tempo)
     }
@@ -10799,20 +10799,6 @@ impl WaveApp {
             self.view = Viewport::fit(frames, width);
             self.fit_on_next_frame = false;
         }
-        // The editor's geometry as painted, and what is under the pointer (A079).
-        self.editor_layout = Some(EditorLayout {
-            width,
-            height: rect.height(),
-            ruler_height: RULER_HEIGHT,
-            show_waveform: self.editor_shows("waveform"),
-            show_spectrum: self.editor_shows("spectral"),
-            channels,
-        });
-        self.pointer = response.hover_pos().and_then(|p| {
-            let layout = self.editor_layout?;
-            Readout::at(&layout, &self.view, &self.params, rate, frames, p.x - rect.left(), p.y - rect.top())
-        });
-
         // The frequency ruler: a strip down the left of the spectral display, if it has room.
         let spectrum_zone = {
             let top = rect.top() + RULER_HEIGHT;
@@ -11182,14 +11168,19 @@ impl WaveApp {
 
         let mut show_spec = self.panels.is_shown("spectral");
         let mut split_pct = self.settings.spec_split_pct;
-        let divider = spectral::divider(ui, body, self.editor_shows("waveform"), &mut show_spec, &mut split_pct);
+        let mut divider = spectral::divider(ui, body, self.editor_shows("waveform"), &mut show_spec, &mut split_pct);
         if show_spec != self.panels.is_shown("spectral") {
             self.panels.set("spectral", show_spec);
             self.spectral_dirty = true;
         }
         self.settings.spec_split_pct = split_pct;
         self.spectral_dirty |= divider.changed;
-        let split = divider.y;
+        // The divider updates the setting during a drag; paint and read out that same split.
+        let split_fraction = self.settings.spec_split_pct as f32 / 100.0;
+        let split = body.top() + body.height() * split_fraction;
+        if self.editor_shows("waveform") && self.editor_shows("spectral") {
+            divider.y = split;
+        }
         let (wave_area, spectrum_area) = match (self.editor_shows("waveform"), self.editor_shows("spectral")) {
             (true, true) => {
                 (Some(Rect::from_min_max(body.min, pos2(body.right(), split))), Some(Rect::from_min_max(pos2(body.left(), split), body.max)))
@@ -11198,6 +11189,23 @@ impl WaveApp {
             (false, true) => (None, Some(body)),
             (false, false) => (None, None),
         };
+
+        // The editor's geometry as painted, and what is under the pointer (A079).
+        self.editor_layout = Some(EditorLayout {
+            width,
+            height: rect.height(),
+            ruler_height: RULER_HEIGHT,
+            show_waveform: self.editor_shows("waveform"),
+            show_spectrum: self.editor_shows("spectral"),
+            channels,
+            split_fraction,
+            layered: self.settings.channel_layout == ChannelLayout::Layered,
+            amp_zoom: self.amp_zoom.get(),
+        });
+        self.pointer = response.hover_pos().and_then(|p| {
+            let layout = self.editor_layout?;
+            Readout::at(&layout, &self.view, &self.params, rate, frames, p.x - rect.left(), p.y - rect.top())
+        });
 
         if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
             if wave_area.is_some_and(|a| a.contains(pos)) {
