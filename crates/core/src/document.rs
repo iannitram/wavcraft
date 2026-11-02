@@ -29,6 +29,12 @@ use crate::store::{BLOCK_FRAMES, BlockHandle, BlockId, Store, StoreOptions};
 pub const PEAK_BLOCK: usize = 256;
 /// Blocks of one level merged into a block of the next.
 const FANOUT: usize = 4;
+/// Entries per chunk of an overview level (32 KB of `(f32, f32)`). A power of four, so a chunk of
+/// a coarser level is made of exactly [`FANOUT`] whole chunks of the level below and the two line
+/// up. Chunks are fixed-size and shared by `Arc`: an edit allocates only the chunks it changes,
+/// and freed chunks of one size are reused by the allocator, which a whole-file `Vec` per step is not.
+const CHUNK: usize = 4096;
+const _: () = assert!(CHUNK.is_multiple_of(FANOUT) && CHUNK.is_power_of_two());
 /// Frames read at a time to build the peaks (a multiple of [`PEAK_BLOCK`]).
 const PEAK_CHUNK: usize = BLOCK_FRAMES;
 const _: () = assert!(PEAK_CHUNK.is_multiple_of(PEAK_BLOCK));
@@ -126,6 +132,122 @@ impl PeakBlockCache {
     }
 }
 
+/// One level of an overview: its entries in chunks of [`CHUNK`] (only the last may be shorter).
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Level {
+    chunks: Vec<Arc<Vec<(f32, f32)>>>,
+    len: usize,
+}
+
+impl Level {
+    fn get(&self, i: usize) -> Option<(f32, f32)> {
+        self.chunks.get(i / CHUNK)?.get(i % CHUNK).copied()
+    }
+
+    fn from_flat(entries: &[(f32, f32)]) -> Level {
+        Level { chunks: entries.chunks(CHUNK).map(|c| Arc::new(c.to_vec())).collect(), len: entries.len() }
+    }
+
+    fn to_flat(&self) -> Vec<(f32, f32)> {
+        self.chunks.iter().flat_map(|c| c.iter().copied()).collect()
+    }
+
+    fn bytes(&self) -> usize {
+        self.len * std::mem::size_of::<(f32, f32)>()
+    }
+}
+
+/// Appends entries to a [`Level`], one chunk at a time. Runs of entries that are whole chunks of an
+/// earlier level are shared by `Arc` instead of copied.
+struct LevelBuilder<'a> {
+    chunks: Vec<Arc<Vec<(f32, f32)>>>,
+    pending: Vec<(f32, f32)>,
+    len: usize,
+    /// The earlier level that `reuse` takes from, and the run of its entries not yet appended.
+    old: Option<&'a Level>,
+    run: (usize, usize),
+}
+
+impl<'a> LevelBuilder<'a> {
+    fn new(old: Option<&'a Level>) -> Self {
+        LevelBuilder { chunks: Vec::new(), pending: Vec::new(), len: 0, old, run: (0, 0) }
+    }
+
+    /// Append entry `index..index + count` of the earlier level. Runs that continue each other
+    /// are appended together, so whole chunks inside them are shared. `false` if there is no
+    /// such level or range.
+    fn reuse(&mut self, index: usize, count: usize) -> bool {
+        let Some(old) = self.old else { return false };
+        if index.checked_add(count).is_none_or(|end| end > old.len) {
+            return false;
+        }
+        if self.run.1 > 0 && self.run.0 + self.run.1 == index {
+            self.run.1 += count;
+        } else {
+            self.flush();
+            self.run = (index, count);
+        }
+        // Counted now, though the entries are appended by the next flush: `len` is the length so far.
+        self.len += count;
+        true
+    }
+
+    fn flush(&mut self) {
+        let (start, count) = std::mem::take(&mut self.run);
+        let Some(old) = self.old else { return };
+        let (mut at, end) = (start, start + count);
+        while at < end {
+            let (chunk, off) = (at / CHUNK, at % CHUNK);
+            if self.pending.is_empty() && off == 0 && end - at >= CHUNK {
+                // Whole chunks of the earlier level: the same chunks, with no copy.
+                if let Some(shared) = old.chunks.get(chunk) {
+                    self.chunks.push(Arc::clone(shared));
+                    at += CHUNK;
+                    continue;
+                }
+                break;
+            }
+            let Some(source) = old.chunks.get(chunk) else { break };
+            let n = (end - at).min(source.len() - off).min(CHUNK - self.pending.len());
+            self.room();
+            self.pending.extend_from_slice(&source[off..off + n]);
+            at += n;
+            if self.pending.len() == CHUNK {
+                self.seal();
+            }
+        }
+    }
+
+    fn push(&mut self, value: (f32, f32)) {
+        self.flush();
+        self.room();
+        self.pending.push(value);
+        self.len += 1;
+        if self.pending.len() == CHUNK {
+            self.seal();
+        }
+    }
+
+    fn room(&mut self) {
+        if self.pending.capacity() < CHUNK {
+            self.pending.reserve_exact(CHUNK - self.pending.len());
+        }
+    }
+
+    fn seal(&mut self) {
+        let full = std::mem::take(&mut self.pending);
+        self.chunks.push(Arc::new(full));
+    }
+
+    fn finish(mut self) -> Level {
+        self.flush();
+        if !self.pending.is_empty() {
+            self.seal();
+        }
+        Level { chunks: self.chunks, len: self.len }
+    }
+}
+
 /// Multi-resolution min/max overview of one channel, built from chunked store reads.
 /// Blocks follow each piece's source grid, with short blocks at splice boundaries, so
 /// an unaligned shift never requires rereading the unchanged suffix. Coarser levels
@@ -133,7 +255,7 @@ impl PeakBlockCache {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WavePeaks {
     len: usize,
-    levels: Arc<Vec<Vec<(f32, f32)>>>,
+    levels: Arc<Vec<Level>>,
     /// (exclusive frame end, exclusive block end, first block length). Runs keep the
     /// source grid after a splice without an extra frame position per level-0 block.
     runs: Arc<Vec<(usize, usize, usize)>>,
@@ -160,7 +282,8 @@ impl WavePeaks {
     ) -> std::io::Result<WavePeaks> {
         let frames = usize::try_from(state.len_frames()).map_err(|_| std::io::Error::other("document too long"))?;
         let channel = state.channel(ch).ok_or_else(|| std::io::Error::other("missing peak channel"))?;
-        let mut level0 = Vec::with_capacity(frames.div_ceil(PEAK_BLOCK) + channel.piece_count());
+        let old0 = previous.and_then(|(old, _, _)| old.levels.first());
+        let mut level0 = LevelBuilder::new(old0);
         let mut runs = Vec::new();
         let mut chunk = vec![0.0; PEAK_CHUNK.min(frames.max(1))];
         // The diff bounds the edit, but a crop (or a paste of existing audio) can also
@@ -212,10 +335,14 @@ impl WavePeaks {
                     }
                     let run = old.runs.get(old.runs.partition_point(|run| run.0 <= old_at))?;
                     let count = if width == PEAK_BLOCK { ((limit - at).min(run.0 - old_at) / PEAK_BLOCK).max(1) } else { 1 };
-                    Some((old.levels.first()?.get(index..index + count)?, width * count))
+                    // Only if the earlier level really holds those blocks.
+                    old.levels.first().filter(|l| index.checked_add(count).is_some_and(|end| end <= l.len))?;
+                    Some((index, count, width * count))
                 });
-                if let Some((blocks, frames)) = reused {
-                    level0.extend_from_slice(blocks);
+                if let Some((index, count, frames)) = reused {
+                    if !level0.reuse(index, count) {
+                        return Err(std::io::Error::other("peak overview reuse"));
+                    }
                     at += frames;
                 } else if let Some(value) = cached_value {
                     level0.push(value);
@@ -264,7 +391,7 @@ impl WavePeaks {
                 }
             }
             // Merge adjacent runs when no short block separates their grids.
-            let count = level0.len();
+            let count = level0.len;
             let mut joined = false;
             if let Some(&(last_end, last_count, last_head)) = runs.last() {
                 let start = runs.get(runs.len().saturating_sub(2)).filter(|_| runs.len() > 1).map_or(0, |r: &(usize, usize, usize)| r.0);
@@ -282,7 +409,7 @@ impl WavePeaks {
                 runs.push((end, count, head));
             }
         }
-        let mut peaks = Self::from_level0(frames, level0);
+        let mut peaks = Self::from_level0(frames, level0.finish(), previous.map(|(old, _, _)| old));
         peaks.runs = Arc::new(runs);
         Ok(peaks)
     }
@@ -309,24 +436,31 @@ impl WavePeaks {
 
     /// Build from samples already in memory (tests).
     pub fn from_samples(samples: &[f32]) -> WavePeaks {
-        let level0 = samples.chunks(PEAK_BLOCK).map(|c| finish(c.iter().fold(EMPTY, |acc, &s| merge(acc, (s, s))))).collect();
-        WavePeaks::from_level0(samples.len(), level0)
+        let mut level0 = LevelBuilder::new(None);
+        for c in samples.chunks(PEAK_BLOCK) {
+            level0.push(finish(c.iter().fold(EMPTY, |acc, &s| merge(acc, (s, s)))));
+        }
+        WavePeaks::from_level0(samples.len(), level0.finish(), None)
     }
 
-    fn from_level0(len: usize, level0: Vec<(f32, f32)>) -> WavePeaks {
-        let mut levels = Vec::new();
-        if level0.is_empty() {
-            return WavePeaks { len: 0, levels: Arc::new(levels), runs: Arc::default() };
+    /// The levels above level 0, each built from the level below. `old` is the previous overview
+    /// of the same channel: a chunk whose source chunks are the very same `Arc`s as before, and
+    /// whose old counterpart exists, is shared rather than merged again.
+    fn from_level0(len: usize, level0: Level, old: Option<&WavePeaks>) -> WavePeaks {
+        if level0.len == 0 {
+            return WavePeaks { len: 0, levels: Arc::default(), runs: Arc::default() };
         }
-        levels.push(level0);
+        let runs = vec![(len, level0.len, len.min(PEAK_BLOCK))];
+        let mut levels = vec![level0];
         while let Some(last) = levels.last() {
-            if last.len() <= 1 {
+            if last.len <= 1 {
                 break;
             }
-            let next: Vec<(f32, f32)> = last.chunks(FANOUT).map(|c| c.iter().fold(EMPTY, |acc, &b| merge(acc, b))).collect();
+            let at = levels.len();
+            let old_pair = old.and_then(|o| Some((o.levels.get(at.checked_sub(1)?)?, o.levels.get(at)?)));
+            let next = coarser(last, old_pair);
             levels.push(next);
         }
-        let runs = vec![(len, levels[0].len(), len.min(PEAK_BLOCK))];
         WavePeaks { len, levels: Arc::new(levels), runs: Arc::new(runs) }
     }
 
@@ -336,8 +470,9 @@ impl WavePeaks {
     }
 
     /// The overview as plain data (samples, then each level's (min, max)), for the peak cache.
-    pub fn to_parts(&self) -> (usize, &[Vec<(f32, f32)>]) {
-        (self.len, &self.levels)
+    /// The levels are copied out flat; the cache file's bytes do not depend on the chunking.
+    pub fn to_parts(&self) -> (usize, Vec<Vec<(f32, f32)>>) {
+        (self.len, self.levels.iter().map(Level::to_flat).collect())
     }
 
     /// Rebuild from [`to_parts`](Self::to_parts). `None` when the levels cannot be for `len`
@@ -360,7 +495,8 @@ impl WavePeaks {
             }
             (frame, block) = (end, count);
         }
-        if frame != len || levels.first().map_or(0, Vec::len) != block {
+        let levels: Vec<Level> = levels.iter().map(|l| Level::from_flat(l)).collect();
+        if frame != len || levels.first().map_or(0, |l| l.len) != block {
             return None;
         }
         Some(Self { len, levels: Arc::new(levels), runs: Arc::new(runs) })
@@ -368,8 +504,7 @@ impl WavePeaks {
 
     /// Bytes held.
     pub fn bytes(&self) -> usize {
-        self.levels.iter().map(|l| l.len() * std::mem::size_of::<(f32, f32)>()).sum::<usize>()
-            + self.runs.len() * std::mem::size_of::<(usize, usize, usize)>()
+        self.levels.iter().map(Level::bytes).sum::<usize>() + self.runs.len() * std::mem::size_of::<(usize, usize, usize)>()
     }
 
     /// (min, max) over `[start, end)`, clamped to the data; blocks at the edges contribute whole,
@@ -387,18 +522,18 @@ impl WavePeaks {
             let Some(level) = self.levels.get(lvl) else { break };
             let has_parent = lvl + 1 < self.levels.len();
             if !has_parent || hi - lo < 2 * FANOUT {
-                for b in level.get(lo..hi.min(level.len())).unwrap_or_default() {
-                    acc = merge(acc, *b);
+                for i in lo..hi.min(level.len) {
+                    acc = merge(acc, level.get(i).unwrap_or(EMPTY));
                 }
                 break;
             }
             while !lo.is_multiple_of(FANOUT) && lo < hi {
-                acc = merge(acc, level.get(lo).copied().unwrap_or(EMPTY));
+                acc = merge(acc, level.get(lo).unwrap_or(EMPTY));
                 lo += 1;
             }
             while !hi.is_multiple_of(FANOUT) && hi > lo {
                 hi -= 1;
-                acc = merge(acc, level.get(hi).copied().unwrap_or(EMPTY));
+                acc = merge(acc, level.get(hi).unwrap_or(EMPTY));
             }
             lo /= FANOUT;
             hi /= FANOUT;
@@ -429,6 +564,33 @@ impl WavePeaks {
         }
         out
     }
+}
+
+/// The level above `prev`: entry `i` merges entries `4i..4i + 4` of `prev`. Chunk `j` of the new
+/// level merges chunks `4j..4j + 4` of `prev`. When `old` (the previous `prev` and the previous
+/// level above it) holds chunk `j` and the same chunks of `prev`, that chunk is shared instead.
+fn coarser(prev: &Level, old: Option<(&Level, &Level)>) -> Level {
+    let len = prev.len.div_ceil(FANOUT);
+    let mut chunks = Vec::with_capacity(len.div_ceil(CHUNK));
+    for j in 0..len.div_ceil(CHUNK) {
+        let entries = (len - j * CHUNK).min(CHUNK);
+        let sources = j * FANOUT..(j * FANOUT + FANOUT).min(prev.chunks.len());
+        let shared = old.and_then(|(old_prev, old_next)| {
+            let same = sources.clone().all(|k| old_prev.chunks.get(k).is_some_and(|o| Arc::ptr_eq(o, &prev.chunks[k])));
+            old_next.chunks.get(j).filter(|c| c.len() == entries && same)
+        });
+        if let Some(chunk) = shared {
+            chunks.push(Arc::clone(chunk));
+            continue;
+        }
+        let mut out = Vec::with_capacity(entries);
+        for i in j * CHUNK..j * CHUNK + entries {
+            let group = (i * FANOUT..((i + 1) * FANOUT).min(prev.len)).fold(EMPTY, |acc, k| merge(acc, prev.get(k).unwrap_or(EMPTY)));
+            out.push(group);
+        }
+        chunks.push(Arc::new(out));
+    }
+    Level { chunks, len }
 }
 
 /// One channel of a [`DocState`] as [`Samples`] for the spectrogram: reads go through the store's
@@ -832,6 +994,9 @@ fn bit_depth_text(f: SampleFormat) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::doc::edit::{self, ChannelMask, Crossfades};
+
+    const NONE: Crossfades = Crossfades::NONE;
     use soundcraft_audio_io::{BitDepth, EncodeOptions};
 
     fn ramp(frames: usize, channels: usize) -> AudioBuffer {
@@ -1088,5 +1253,91 @@ mod tests {
         let per_channel = level0 * std::mem::size_of::<(f32, f32)>() * FANOUT / (FANOUT - 1);
         let total = 2 * per_channel;
         assert!(total <= 64_000_000, "{total} bytes");
+    }
+
+    /// After a small edit in the middle of a long file, the overview chunks wholly before the edit
+    /// are the same allocations as before: an edit allocates only the chunks it changes.
+    #[test]
+    fn an_edit_in_the_middle_shares_the_overview_chunks_before_it() {
+        const FRAMES: usize = 4_500_000;
+        let doc = Document::from_buffer(spiky(FRAMES)).unwrap();
+        let at = 3_000_000u64;
+        let edited = edit::delete(&doc.state, at..at + 500, ChannelMask::ALL, NONE).unwrap();
+        let next = doc.after_step(edited.state).unwrap();
+        // A chunk of level 0 covers CHUNK * PEAK_BLOCK frames, so the chunks before frame `at` are 0 and 1.
+        let before = at as usize / (CHUNK * PEAK_BLOCK);
+        assert_eq!(before, 2);
+        for ch in 0..2 {
+            let (old, new) = (&doc.peaks[ch].levels[0], &next.peaks[ch].levels[0]);
+            assert!(new.chunks.len() > before, "channel {ch}: {} chunks", new.chunks.len());
+            for k in 0..before {
+                assert!(Arc::ptr_eq(&old.chunks[k], &new.chunks[k]), "channel {ch}, chunk {k} was copied");
+            }
+            assert_eq!(next.peaks[ch], WavePeaks::build(&next.state, ch).unwrap(), "channel {ch}");
+        }
+    }
+
+    /// Each edited overview equals a full build of the new state: inserts, deletes and same-length
+    /// replaces, at the start, at the end and either side of a chunk boundary, one after another.
+    #[test]
+    fn edited_overviews_equal_full_builds_at_the_ends_and_chunk_boundaries() {
+        const FRAMES: usize = 2_600_003;
+        let boundary = (CHUNK * PEAK_BLOCK) as u64;
+        fn gain(_: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> std::io::Result<()> {
+            for (source, dest) in input.iter().zip(output.iter_mut()) {
+                for (s, d) in source.iter().zip(dest.iter_mut()) {
+                    *d = *s * 0.37;
+                }
+            }
+            Ok(())
+        }
+        type Step = (&'static str, Box<dyn Fn(&DocState) -> edit::Edit>);
+        let steps: Vec<Step> = vec![
+            ("delete at the start", Box::new(|s: &DocState| edit::delete(s, 10..300, ChannelMask::ALL, NONE).unwrap())),
+            (
+                "delete at the end",
+                Box::new(|s: &DocState| {
+                    let n = s.len_frames();
+                    edit::delete(s, n - 300..n, ChannelMask::ALL, NONE).unwrap()
+                }),
+            ),
+            (
+                "delete across a chunk boundary",
+                Box::new(move |s: &DocState| edit::delete(s, boundary - 40..boundary + 60, ChannelMask::ALL, NONE).unwrap()),
+            ),
+            ("insert on a chunk boundary", Box::new(move |s: &DocState| edit::insert_silence(s, boundary, 777, NONE).unwrap())),
+            (
+                "insert at the end",
+                Box::new(|s: &DocState| {
+                    let n = s.len_frames();
+                    edit::insert_silence(s, n, 5_000, NONE).unwrap()
+                }),
+            ),
+            (
+                "replace across a chunk boundary, same length",
+                Box::new(move |s: &DocState| {
+                    edit::replace_range(s, boundary - 500..boundary + 500, ChannelMask::ALL, "Gain", NONE, &AtomicBool::new(false), gain).unwrap()
+                }),
+            ),
+            (
+                "replace at the start, same length",
+                Box::new(|s: &DocState| edit::replace_range(s, 0..1_000, ChannelMask::only(1), "Gain", NONE, &AtomicBool::new(false), gain).unwrap()),
+            ),
+            (
+                "replace at the end, same length",
+                Box::new(|s: &DocState| {
+                    let n = s.len_frames();
+                    edit::replace_range(s, n - 1_000..n, ChannelMask::ALL, "Gain", NONE, &AtomicBool::new(false), gain).unwrap()
+                }),
+            ),
+        ];
+        let mut doc = Document::from_buffer(spiky(FRAMES)).unwrap();
+        for (what, make) in &steps {
+            let edited = make(&doc.state);
+            doc = doc.after_step(edited.state).unwrap();
+            for ch in 0..doc.channels() {
+                assert_eq!(doc.peaks[ch], WavePeaks::build(&doc.state, ch).unwrap(), "{what}, channel {ch}");
+            }
+        }
     }
 }
