@@ -10587,7 +10587,12 @@ impl WaveApp {
     /// current tool's options (the Marquee's feather; the Select tool's right-click setting).
     fn tools_bar(&mut self, ui: &mut egui::Ui) {
         let mac = cfg!(target_os = "macos");
-        let tools = [(Tool::Select, ActionId::ToolSelect, "Time Selection"), (Tool::Hand, ActionId::ToolHand, "Hand"), (Tool::Zoom, ActionId::ToolZoom, "Zoom"), (Tool::Marquee, ActionId::ToolMarquee, "Marquee")];
+        let tools = [
+            (Tool::Select, ActionId::ToolSelect, "Time Selection"),
+            (Tool::Hand, ActionId::ToolHand, "Hand"),
+            (Tool::Zoom, ActionId::ToolZoom, "Zoom"),
+            (Tool::Marquee, ActionId::ToolMarquee, "Marquee"),
+        ];
         let labels: Vec<(Tool, String)> = tools
             .iter()
             .map(|&(tool, id, name)| {
@@ -12102,7 +12107,7 @@ fn consume_record_now(ctx: &egui::Context) -> bool {
     ctx.input_mut(|i| {
         // Check if there's a fresh Shift+Space press (pressed: true, repeat: false)
         let fresh_press = i.events.iter().any(|e| {
-            matches!(e, egui::Event::Key { key: Key::Space, pressed: true, repeat: false, modifiers, .. } 
+            matches!(e, egui::Event::Key { key: Key::Space, pressed: true, repeat: false, modifiers, .. }
                     if modifiers.shift && !modifiers.ctrl && !modifiers.alt && !modifiers.command)
         });
 
