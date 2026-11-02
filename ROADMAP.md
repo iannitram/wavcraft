@@ -1,6 +1,6 @@
 # Roadmap (pipeline v2)
 
-The plan from here to 1.0. The spec is [SPEC.md](SPEC.md) (the 55 items of [docs/v1/v1.md](docs/v1/v1.md)); the code map is [docs/code-map.md](docs/code-map.md); the stage is in [PIPELINE.md](PIPELINE.md). The old fleet tracker (Qwen run log, 106 merged / 338 PR / 241 unwritten parity rows) is kept unchanged as history in [docs/archive/roadmap-v1-fleet.md](docs/archive/roadmap-v1-fleet.md); its rows outside v1 are after 1.0.
+The plan from here to 1.0. The spec is [SPEC.md](SPEC.md) (the 70 items of [docs/v1/v1.md](docs/v1/v1.md), sections A-M); the code map is [docs/code-map.md](docs/code-map.md); the stage is in [PIPELINE.md](PIPELINE.md). The old fleet tracker (Qwen run log, 106 merged / 338 PR / 241 unwritten parity rows) is kept unchanged as history in [docs/archive/roadmap-v1-fleet.md](docs/archive/roadmap-v1-fleet.md); its rows outside v1 are after 1.0.
 
 Written 2026-10-26 from `origin/main` at `a03cfa3` and the merge plan of 2026-10-26 (paused at 7:40 pm, on the build machine's scratch clone).
 
