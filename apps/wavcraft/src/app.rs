@@ -10996,7 +10996,10 @@ impl WaveApp {
         // Selection gestures: the Select tool's, and the Marquee tool's outside a marquee drag.
         let select = (self.tool == Tool::Select || (marquee_tool && self.marquee.is_none() && !marquee_starts)) && !freq_busy && !on_freq_click;
         let shift = ui.input(|i| i.modifiers.shift);
-        if response.drag_started()
+        let marker_drag_button = [egui::PointerButton::Primary, egui::PointerButton::Secondary, egui::PointerButton::Middle]
+            .into_iter()
+            .find(|b| response.drag_started_by(*b));
+        if marker_drag_button.is_some_and(|b| marker_drag_may_start(b, self.tool))
             && let Some(e) = &self.editor
             && let Some(origin) = ui.input(|i| i.pointer.press_origin())
             && let markers = e.history.current().markers()
@@ -11018,7 +11021,7 @@ impl WaveApp {
             if let Some(pos) = response.interact_pointer_pos() {
                 self.markers_ui.drag_to(frame_at(&self.view, pos) as u64);
             }
-            if response.drag_stopped()
+            if response.drag_stopped_by(egui::PointerButton::Primary)
                 && let (Some(d), Some(e)) = (self.markers_ui.drag.take(), self.editor.as_mut())
                 && e.move_marker(d.id, d.start)
                 && let Some(i) = e.history.current().markers().index_of(d.id)
@@ -12463,8 +12466,28 @@ fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffK
     Ok((path, ty, aiff))
 }
 
+/// Whether a drag that starts on a marker flag may grab the marker: the primary button only, and not
+/// with the Hand or Zoom tool (their drags scroll and zoom; right and middle drags do those too).
+fn marker_drag_may_start(button: egui::PointerButton, tool: Tool) -> bool {
+    button == egui::PointerButton::Primary && !matches!(tool, Tool::Hand | Tool::Zoom)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn marker_flag_is_grabbed_only_by_a_primary_drag_with_a_marker_tool() {
+        use super::{Tool, marker_drag_may_start as may};
+        use egui::PointerButton::{Middle, Primary, Secondary};
+        assert!(may(Primary, Tool::Select));
+        assert!(may(Primary, Tool::Marquee));
+        assert!(!may(Primary, Tool::Hand));
+        assert!(!may(Primary, Tool::Zoom));
+        for tool in [Tool::Select, Tool::Hand, Tool::Zoom, Tool::Marquee] {
+            assert!(!may(Secondary, tool));
+            assert!(!may(Middle, tool));
+        }
+    }
+
     #[test]
     fn history_arrows_stop_at_the_ends() {
         use super::history_arrow_target as t;
