@@ -805,6 +805,12 @@ impl TimeFormat {
     /// (steps by its power of ten). `None` when `text` has no digit there or the rate is 0. At
     /// least 1 frame.
     pub fn unit_at(self, text: &str, char_idx: usize, sample_rate: u32) -> Option<usize> {
+        self.unit_at_with(text, char_idx, sample_rate, &Tempo::default())
+    }
+
+    /// [`unit_at`](Self::unit_at) with the document's tempo for Bars and Beats: a bar, a beat or
+    /// one tick at that tempo.
+    pub fn unit_at_with(self, text: &str, char_idx: usize, sample_rate: u32, tempo: &Tempo) -> Option<usize> {
         let rate = u64::from(sample_rate);
         let chars: Vec<char> = text.chars().collect();
         if rate == 0 || chars.is_empty() {
@@ -817,6 +823,21 @@ impl TimeFormat {
         } else {
             (idx + 1..chars.len()).find(|i| chars[*i].is_ascii_digit()).or_else(|| (0..idx).rev().find(|i| chars[*i].is_ascii_digit()))?
         };
+        if self == TimeFormat::BarsBeats {
+            let is_sep = |c: &char| matches!(c, ':' | '.');
+            let group_start = (0..=idx).rev().find(|i| is_sep(&chars[*i])).map_or(0, |i| i + 1);
+            let secs = f64::from(sample_rate);
+            let frames = match group_start.checked_sub(1).map(|i| chars[i]) {
+                // The tick: a beat is 960 * 4 / denominator ticks.
+                Some('.') => {
+                    let ticks_per_beat = 960.0 * 4.0 / f64::from(tempo.denominator.max(1));
+                    (tempo.beat_seconds() * secs / ticks_per_beat).round().max(1.0)
+                }
+                Some(':') => (tempo.beat_seconds() * secs).round().max(1.0),
+                _ => (tempo.bar_seconds() * secs).round().max(1.0),
+            };
+            return usize::try_from(frames as u64).ok();
+        }
         if self == TimeFormat::Samples {
             let from_right = chars[idx + 1..].iter().filter(|c| c.is_ascii_digit()).count() as u32;
             return usize::try_from(10u64.checked_pow(from_right)?).ok();
@@ -1379,6 +1400,19 @@ mod tests {
         assert_eq!(TimeFormat::Decimal.unit_at("", 0, r), None);
         assert_eq!(TimeFormat::Decimal.unit_at(t, 0, 0), None);
         assert_eq!(TimeFormat::Decimal.unit_at(t, 99, r), Some(48), "past the end is the last group");
+    }
+
+    #[test]
+    fn bars_and_beats_scrub_at_the_tempo() {
+        let r = 48_000u32;
+        // "2:3.480": the bar at 0, the beat at 2, the tick group at 4 to 6.
+        let t = Tempo::default(); // 120 bpm 4/4: a bar is 2 s, a beat 0.5 s, 960 ticks a beat
+        assert_eq!(TimeFormat::BarsBeats.unit_at_with("2:3.480", 0, r, &t), Some(96_000), "bar");
+        assert_eq!(TimeFormat::BarsBeats.unit_at_with("2:3.480", 2, r, &t), Some(24_000), "beat");
+        assert_eq!(TimeFormat::BarsBeats.unit_at_with("2:3.480", 5, r, &t), Some(25), "tick: 24,000 / 960");
+        let waltz = Tempo::new(60.0, 3, 4).unwrap(); // a bar is 3 s, a beat 1 s
+        assert_eq!(TimeFormat::BarsBeats.unit_at_with("3:2.000", 0, r, &waltz), Some(144_000));
+        assert_eq!(TimeFormat::BarsBeats.unit_at_with("3:2.000", 2, r, &waltz), Some(48_000));
     }
 
     #[test]

@@ -5601,7 +5601,7 @@ impl WaveApp {
         if r.drag_started() {
             let char_w = (r.rect.width() / text.chars().count().max(1) as f32).max(1.0);
             let x = r.interact_pointer_pos().map_or(0.0, |p| p.x - r.rect.left());
-            let unit = self.time_format.unit_at(text, (x / char_w).floor().max(0.0) as usize, rate);
+            let unit = self.time_format.unit_at_with(text, (x / char_w).floor().max(0.0) as usize, rate, &self.tempo);
             self.scrub = unit.map(|unit| Scrub { name, unit, pending: 0.0 });
         }
         if !r.dragged() {
