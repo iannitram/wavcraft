@@ -138,6 +138,7 @@ pub(super) fn open_w64(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat)
         return Err(malformed("Wave64 declares zero channels"));
     }
     check_rate(fmt.sample_rate, "Wave64")?;
+    job.check_expected_rate(fmt.sample_rate)?;
     src.sample_rate = fmt.sample_rate;
     src.channels = fmt.channels;
     let channels = usize::from(fmt.channels);
@@ -212,6 +213,7 @@ pub(super) fn open_caf(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat)
     }
     let sample_rate = rate.round() as u32;
     check_rate(sample_rate, "CAF")?;
+    job.check_expected_rate(sample_rate)?;
     let channels = u16::try_from(ch).ok().filter(|&c| c > 0).ok_or_else(|| malformed("CAF declares no channels or too many"))?;
     let little = flags & 2 != 0;
     let (kind, sample_format) = match (flags & 1 != 0, bits) {
@@ -243,6 +245,7 @@ pub(super) fn open_au(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) 
         return Err(malformed("AU header too short"));
     };
     check_rate(rate, "AU")?;
+    job.check_expected_rate(rate)?;
     let channels = u16::try_from(ch).ok().filter(|&c| c > 0).ok_or_else(|| malformed("AU declares no channels or too many"))?;
     let (kind, sample_format) = match enc {
         2 => (PcmKind::Int { bytes: 1, big_endian: true, unsigned: false }, SampleFormat::Int8),
