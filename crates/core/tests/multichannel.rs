@@ -53,6 +53,16 @@ fn content(doc: &DocState) -> Vec<Vec<f32>> {
         .collect()
 }
 
+fn clip_content(clip: &edit::Clip) -> Vec<Vec<f32>> {
+    (0..clip.channel_count())
+        .map(|c| {
+            let mut v = vec![f32::NAN; clip.len_frames() as usize];
+            assert_eq!(clip.read(c, 0, &mut v).unwrap(), v.len());
+            v
+        })
+        .collect()
+}
+
 fn reopen(path: &Path, sessions: &Path) -> DocState {
     let opts = OpenOptions { sessions_root: Some(sessions.to_path_buf()), ..OpenOptions::default() };
     open(path, &opts, &mut |_| {}, &AtomicBool::new(false)).unwrap()
@@ -163,4 +173,23 @@ fn a_mask_that_disagrees_with_the_channel_count_gives_numbers_and_a_warning() {
     assert_eq!(back.source().channel_mask, None);
     assert!(back.source().warnings.iter().any(|w| w.contains("channel mask")), "{:?}", back.source().warnings);
     assert_eq!(content(&back), data(6, 50));
+}
+
+#[test]
+fn all_channels_edits_reach_past_channel_sixty_four() {
+    let t = TempDir::new("sixty-five");
+    let d = data(65, 300);
+    let doc = doc_from(&t.0.join("store"), &d, None);
+    let range = 50u64..120;
+    let deleted = edit::delete(&doc, range.clone(), ChannelMask::ALL, Crossfades::NONE).unwrap();
+    assert_eq!(deleted.state.len_frames(), 230, "Delete shortens the document");
+    assert_eq!(deleted.label, edit::DELETE, "every channel means Delete, not Delete Audio");
+    for (c, (channel, want)) in content(&deleted.state).iter().zip(&d).enumerate() {
+        let want: Vec<f32> = want[..50].iter().chain(&want[120..]).copied().collect();
+        assert_eq!(channel, &want, "channel {c} lost the range, not its audio");
+    }
+    let clip = edit::copy(&doc, range, ChannelMask::ALL).unwrap();
+    assert_eq!(clip.channel_count(), 65, "Copy takes every channel");
+    let want: Vec<Vec<f32>> = d.iter().map(|c| c[50..120].to_vec()).collect();
+    assert_eq!(clip_content(&clip), want, "every channel copied");
 }

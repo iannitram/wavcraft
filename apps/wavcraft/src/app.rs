@@ -560,6 +560,9 @@ pub struct WaveApp {
     /// How the last floating window was made: "os" (own operating-system window) or "embedded"
     /// (an egui window inside the main one); reported by `PANELS`.
     float_kind: Option<&'static str>,
+    /// A text field has keyboard focus inside a floated panel. Keyboard focus is kept per
+    /// viewport, so the root window cannot see it; `floating_windows` records it each frame.
+    float_typing: bool,
     /// The monitors, when they are faked (`MONITORS simulate`, `WAVCRAFT_MONITORS`); `None` means
     /// the real ones, which this build cannot list (egui reports only the size of the one
     /// monitor), so floating windows are then neither tagged nor moved.
@@ -801,8 +804,6 @@ pub struct WaveApp {
     /// the ruler land on frame boundaries. (PR #95 adds the general snapping switch; once both
     /// are merged this is "snapping is on" there, and `TimeFormat::snap_to_frame` is the call.)
     snap_frames: bool,
-    /// View › Time panel.
-    show_time_panel: bool,
     /// The Selection/View box being typed in: its name and its text.
     panel_edit: Option<(&'static str, String)>,
     /// The Effects Rack panel and its settings (f31).
@@ -937,6 +938,7 @@ impl WaveApp {
             zone_rects: Vec::new(),
             layout_dirty: false,
             float_kind: None,
+            float_typing: false,
             monitors: std::env::var("WAVCRAFT_MONITORS").ok().and_then(|t| match monitors::parse(&t) {
                 Ok(m) => Some(m),
                 Err(e) => {
@@ -1005,7 +1007,6 @@ impl WaveApp {
             show_mixer: false,
             mixer: MixerModel::new(),
             snap_frames: true,
-            show_time_panel: true,
             panel_edit: None,
             batch: BatchPanel::default(),
             goto: None,
@@ -3605,6 +3606,8 @@ impl WaveApp {
             "history" => self.history_panel(ui),
             "tools" => self.tools_panel(ui),
             "selection" => self.selection_view_panel(ui),
+            "time" => self.time_panel(ui),
+            "zoom" => self.zoom_panel(ui),
             // Window › Frequency Analysis: a docked panel like the others (Window menu, zones, tabs).
             "freq" => {
                 let doc = self.editor.as_ref().map(|e| e.history.current().clone());
@@ -3737,6 +3740,7 @@ impl WaveApp {
     fn floating_windows(&mut self, ctx: &egui::Context) {
         let floats: Vec<panels::Float> = self.layout.floats(&self.panels).into_iter().cloned().collect();
         let mut dock_back: Vec<String> = Vec::new();
+        self.float_typing = false;
         for f in floats {
             let title = panels::by_id(&f.id).map_or("Panel", |p| p.title);
             let vid = egui::ViewportId::from_hash_of(("float", f.id.as_str()));
@@ -3748,6 +3752,7 @@ impl WaveApp {
             let mut dock = false;
             let mut kind = "os";
             let mut rect: Option<([f32; 2], [f32; 2])> = None;
+            let mut typing = false;
             ctx.show_viewport_immediate(vid, builder, |ui, class| {
                 let mut body = |ui: &mut egui::Ui| {
                     ui.horizontal(|ui| {
@@ -3775,7 +3780,10 @@ impl WaveApp {
                         rect = Some(([o.min.x, o.min.y], [i.width(), i.height()]));
                     }
                 }
+                // This viewport's own focus: a text field in this float has the keyboard.
+                typing = ui.ctx().egui_wants_keyboard_input();
             });
+            self.float_typing |= typing;
             self.float_kind = Some(kind);
             if dock {
                 dock_back.push(f.id.clone());
@@ -5170,7 +5178,7 @@ impl WaveApp {
             if frames == 0 {
                 return Err("no file is open".to_string());
             }
-            self.show_time_panel = true;
+            self.set_panel("time", true);
             self.goto = Some(self.fmt_time(self.selection.start()));
             return Ok(false);
         }
@@ -10192,7 +10200,6 @@ impl WaveApp {
                 if open_custom {
                     let _ = self.run_action(ActionId::TimeCustom, ui.ctx());
                 }
-                ui.checkbox(&mut self.show_time_panel, "Time panel");
                 ui.checkbox(&mut self.show_metadata, "Metadata panel");
                 ui.separator();
                 for (id, label) in [
@@ -11647,7 +11654,7 @@ impl eframe::App for WaveApp {
             }
         }
         // ` maximises the panel under the pointer (and restores); Ctrl+W closes it.
-        let typing = ctx.egui_wants_keyboard_input();
+        let typing = ctx.egui_wants_keyboard_input() || self.float_typing;
         let (grave, close) =
             ctx.input_mut(|i| (!typing && i.consume_key(egui::Modifiers::NONE, Key::Backtick), i.consume_key(egui::Modifiers::COMMAND, Key::W)));
         if grave {
@@ -11661,7 +11668,7 @@ impl eframe::App for WaveApp {
             self.close_panel(id);
         }
         // Shift+Space: record now (C031); while recording it stops the take.
-        if !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::Space)) {
+        if !typing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, Key::Space)) {
             if self.rec.is_active() {
                 self.finish_recording(true, &ctx);
             } else if self.rec.is_armed() {
@@ -11674,7 +11681,7 @@ impl eframe::App for WaveApp {
         // are not commands (f46).
         let keys_for_dialog =
             self.shortcut_dialog.as_ref().is_some_and(|d| d.capturing()) || (self.shortcut_dialog.is_some() && ctx.egui_wants_keyboard_input());
-        let pressed = if keys_for_dialog { Vec::new() } else { pressed_commands(&ctx, &self.keymap) };
+        let pressed = if keys_for_dialog { Vec::new() } else { pressed_commands(&ctx, &self.keymap, self.float_typing) };
         for command in pressed {
             if let Err(e) = self.run_command(command, &ctx) {
                 // A key that can't act now (no file open, a save running) is not an error to show,
@@ -11761,7 +11768,6 @@ impl eframe::App for WaveApp {
         }
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::top("tools").show(ui, |ui| self.tools_bar(ui));
-        egui::Panel::top("zoom").show(ui, |ui| self.zoom_panel(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.meters.show_levels {
             egui::Panel::bottom("levels").show(ui, |ui| {
@@ -11802,9 +11808,6 @@ impl eframe::App for WaveApp {
                 }
                 egui::Panel::right("video").default_size(360.0).show(ui, |ui| v.ui(ui));
             }
-        }
-        if self.show_time_panel {
-            egui::Panel::bottom("time_panel").show(ui, |ui| self.time_panel(ui));
         }
         if self.show_metadata {
             egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));
@@ -12046,21 +12049,28 @@ fn split_paths(s: &str) -> Vec<PathBuf> {
 
 /// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
 /// so Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
-fn pressed_commands(ctx: &egui::Context, keymap: &Keymap) -> Vec<Command> {
-    // A text field being edited owns the keyboard: Backspace, Delete and Cmd+Z there edit the text, not the audio (#368).
-    if ctx.text_edit_focused() {
-        return Vec::new();
-    }
+fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec<Command> {
+    // A text field being edited owns the keyboard: Space types a space, and Backspace, Delete and
+    // Cmd+Z edit the text, not the audio (#368, #434). Cmd+S and Cmd+O keep working. `in_float` is
+    // a text field focused in a floated panel's own viewport, which this window cannot see.
+    let typing = in_float || ctx.egui_wants_keyboard_input();
     let mut rows: Vec<(Command, Shortcut)> = keymap.bindings().iter().map(|b| (b.command, b.chord)).collect();
     rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
         // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
-        let mut pressed: Vec<Command> = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
-            .into_iter()
-            .enumerate()
-            .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(n as u8))))
-            .collect();
+        let mut pressed: Vec<Command> = if typing {
+            Vec::new()
+        } else {
+            [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
+                .into_iter()
+                .enumerate()
+                .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(n as u8))))
+                .collect()
+        };
         pressed.extend(rows.iter().filter_map(|(command, k)| {
+            if typing && !matches!(command, Command::Save | Command::SaveAs | Command::Open) {
+                return None;
+            }
             let key = Key::from_name(k.key)?;
             let mut mods = egui::Modifiers::NONE;
             if k.cmd {
@@ -12474,7 +12484,7 @@ mod tests {
                 if ask_focus {
                     r.request_focus();
                 }
-                found = pressed_commands(ui.ctx(), &keymap);
+                found = pressed_commands(ui.ctx(), &keymap, false);
             });
             output.textures_delta.clear();
             found
@@ -12594,6 +12604,57 @@ mod tests {
     fn cmd_shift_z_without_a_focused_text_field_runs_redo_only() {
         let got = commands_for_key(false, Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
         assert_eq!(got, vec![Command::Action(ActionId::Redo)]);
+    }
+
+    #[test]
+    fn space_in_a_focused_text_field_does_not_toggle_playback() {
+        // commands_for_key draws a real text_edit_singleline and gives it focus before the press.
+        let got = commands_for_key(true, Key::Space, egui::Modifiers::NONE);
+        assert_eq!(got, Vec::<Command>::new());
+    }
+
+    #[test]
+    fn space_with_a_float_text_field_focused_does_not_toggle_playback() {
+        // The root window has no focused widget: the text field lives in a floated viewport, so
+        // only `in_float` (set from that viewport) tells the gate that the keyboard is taken.
+        let press = egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        assert_eq!(press_with_float_flag(true, press), Vec::<Command>::new());
+    }
+
+    #[test]
+    fn cmd_s_with_a_float_text_field_focused_still_saves() {
+        let press = egui::Event::Key { key: Key::S, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        assert_eq!(press_with_float_flag(true, press), vec![Command::Save]);
+    }
+
+    /// One frame with `press` and no focused widget in the root window; `in_float` is passed as is.
+    fn press_with_float_flag(in_float: bool, press: egui::Event) -> Vec<Command> {
+        let ctx = egui::Context::default();
+        let keymap = Keymap::new();
+        let mut got = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput { events: vec![press], ..Default::default() }, |ui| {
+            got = pressed_commands(ui.ctx(), &keymap, in_float);
+        });
+        output.textures_delta.clear();
+        got
+    }
+
+    #[test]
+    fn space_without_a_focused_text_field_toggles_playback() {
+        let got = commands_for_key(false, Key::Space, egui::Modifiers::NONE);
+        assert_eq!(got, vec![Command::PlayStop]);
+    }
+
+    #[test]
+    fn cmd_s_in_a_focused_text_field_saves() {
+        let got = commands_for_key(true, Key::S, egui::Modifiers::COMMAND);
+        assert_eq!(got, vec![Command::Save]);
+    }
+
+    #[test]
+    fn cmd_o_in_a_focused_text_field_opens() {
+        let got = commands_for_key(true, Key::O, egui::Modifiers::COMMAND);
+        assert_eq!(got, vec![Command::Open]);
     }
 
     #[test]

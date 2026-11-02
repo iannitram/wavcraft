@@ -438,6 +438,12 @@ struct Held {
     grain: bool,
 }
 
+/// The name a device is listed and saved under. cpal 0.18 dropped `Device::name()`; its
+/// `description().name()` is the same human-readable name, so a saved choice still matches.
+pub(crate) fn device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_string())
+}
+
 /// The audio hosts this build offers (more than one on Windows with ASIO compiled in, or Linux
 /// with JACK; one elsewhere).
 pub fn host_names() -> Vec<String> {
@@ -973,7 +979,7 @@ fn map_plan(plan: Plan, span: &EditSpan) -> Plan {
 
 /// The name of the system's default output device, if there is one.
 fn default_device_name() -> Option<String> {
-    cpal::default_host().default_output_device().and_then(|d| d.name().ok())
+    cpal::default_host().default_output_device().and_then(|d| device_name(&d))
 }
 
 /// Look at the system's default output device once a second and flag a change to the player (which
@@ -1092,7 +1098,7 @@ pub fn list_devices_in_background(host: Option<String>) -> std::sync::mpsc::Rece
         let probe_host = host.clone();
         let _ = std::thread::Builder::new().name("audio device probe".into()).spawn(move || {
             let host = host_for(probe_host.as_deref());
-            let names = |devices: Vec<cpal::Device>| -> Vec<String> { devices.iter().filter_map(|d| d.name().ok()).collect() };
+            let names = |devices: Vec<cpal::Device>| -> Vec<String> { devices.iter().filter_map(device_name).collect() };
             let _ = probe_tx.send(Devices {
                 output: names(host.output_devices().map(Iterator::collect).unwrap_or_default()),
                 input: names(host.input_devices().map(Iterator::collect).unwrap_or_default()),
@@ -1100,7 +1106,7 @@ pub fn list_devices_in_background(host: Option<String>) -> std::sync::mpsc::Rece
         });
         let devices = probe_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or_else(|_| {
             log::warn!("the audio system is slow to list output and input devices; listing every device under both");
-            let all: Vec<String> = host_for(host.as_deref()).devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+            let all: Vec<String> = host_for(host.as_deref()).devices().map(|d| d.filter_map(|d| device_name(&d)).collect()).unwrap_or_default();
             Devices { output: all.clone(), input: all }
         });
         let _ = tx.send(devices);
@@ -1119,7 +1125,7 @@ pub fn list_device_names_in_background(host: Option<String>) -> std::sync::mpsc:
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new().name("audio device names".into()).spawn(move || {
         let host = host_for(host.as_deref());
-        let names: Vec<String> = host.devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+        let names: Vec<String> = host.devices().map(|d| d.filter_map(|d| device_name(&d)).collect()).unwrap_or_default();
         let _ = tx.send(names);
     });
     rx
@@ -1151,7 +1157,7 @@ fn open_stream(shared: &Arc<Shared>, wanted: &OutputChoice) -> Result<Opened, St
     let chosen = wanted.device.as_deref().and_then(|w| {
         // Not `output_devices()`: that asks every device about output, which can block.
         let devices: Vec<cpal::Device> = host.devices().ok()?.collect();
-        let names: Vec<String> = devices.iter().map(|d| d.name().unwrap_or_default()).collect();
+        let names: Vec<String> = devices.iter().map(|d| device_name(d).unwrap_or_default()).collect();
         let found = pick(Some(w), &names).and_then(|i| devices.into_iter().nth(i));
         if found.is_none() {
             log::warn!("audio output {w:?} is not available; using the system default");
@@ -1163,16 +1169,20 @@ fn open_stream(shared: &Arc<Shared>, wanted: &OutputChoice) -> Result<Opened, St
         Some(d) => d,
         None => host.default_output_device().ok_or("no audio output device")?,
     };
-    let name = device.name().unwrap_or_else(|_| "output".to_string());
+    let name = device_name(&device).unwrap_or_else(|| "output".to_string());
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let range = match supported.buffer_size() {
+        // cpal 0.18 reports a software stack (WASAPI shared mode) as one size, its period (min ==
+        // max). 0.16 said "anything" (0..=u32::MAX) there, and a larger Fixed size is still honoured
+        // as a buffer duration, so keep the old range or a chosen buffer would be clamped to the period.
+        cpal::SupportedBufferSize::Range { min, max } if min == max => Some((0, u32::MAX)),
         cpal::SupportedBufferSize::Range { min, max } => Some((*min, *max)),
         cpal::SupportedBufferSize::Unknown => None,
     };
     let format = supported.sample_format();
     let mut config: cpal::StreamConfig = supported.into();
     let channels = usize::from(config.channels).max(1);
-    let rate = config.sample_rate.0.max(1);
+    let rate = config.sample_rate.max(1);
     let build_with = |config: &cpal::StreamConfig| match format {
         cpal::SampleFormat::F32 => build::<f32>(&device, config, shared),
         cpal::SampleFormat::I16 => build::<i16>(&device, config, shared),
@@ -1212,11 +1222,11 @@ where
     let on_error = Arc::clone(shared);
     let shared = Arc::clone(shared);
     let channels = usize::from(config.channels).max(1);
-    let device_rate = f64::from(config.sample_rate.0.max(1));
+    let device_rate = f64::from(config.sample_rate.max(1));
     let mut rack: Option<Box<RackProcessor>> = None;
     device
         .build_output_stream(
-            config,
+            *config,
             move |out: &mut [T], _: &cpal::OutputCallbackInfo| device_callback(&shared, out, channels, device_rate, &mut rack),
             move |err| {
                 log::warn!("audio output: {err}");
@@ -1659,7 +1669,16 @@ fn read_ahead(shared: &Shared, inbox: &Receiver<Command>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
     use wavcraft_core::{AudioBuffer, Document};
+
+    /// How long a test thread waits for the render's hook before the test fails instead of hanging.
+    const HANDSHAKE_WAIT: Duration = Duration::from_secs(10);
+
+    /// How long the render's hook, holding the state lock, gives a racing call the chance to finish.
+    /// With the lock held the call cannot finish, so this wait always runs out; if the render ever
+    /// drops the lock between check and commit, the call finishes well inside it and the test fails.
+    const RACE_WINDOW: Duration = Duration::from_millis(200);
 
     /// A document holding `audio` in the store, as the app opens it.
     fn doc_of(audio: AudioBuffer) -> DocState {
@@ -1749,18 +1768,31 @@ mod tests {
         let shared = shared_with(&state);
         play(&shared, &state, 0.0, 1000.0);
         let mut out = vec![0.0f32; 64];
+        let (reached, hook_reached) = mpsc::channel::<()>();
+        let (starting, about_to_start) = mpsc::channel::<()>();
+        let (started, start_done) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
+            let live = &shared;
+            let restart = scope.spawn(move || {
+                hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
+                let _ = starting.send(());
+                live.start(500.0, 1000.0);
+                let _ = started.send(());
+            });
             render_with(
                 &shared,
                 &mut out,
                 1,
                 48_000.0,
                 || {},
-                || {
-                    scope.spawn(|| shared.start(500.0, 1000.0));
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                move || {
+                    // Hold the render between check and commit until the restart is under way.
+                    let _ = reached.send(());
+                    about_to_start.recv_timeout(HANDSHAKE_WAIT).expect("the restart thread never got to start()");
+                    let _ = start_done.recv_timeout(RACE_WINDOW);
                 },
             );
+            restart.join().unwrap();
         });
         assert_eq!(playback(&shared).pos, 500.0);
         assert!(playback(&shared).playing);
@@ -1772,21 +1804,97 @@ mod tests {
         let shared = shared_with(&state);
         play(&shared, &state, 10.0, 20.0);
         let mut out = vec![0.0f32; 64];
+        let (reached, hook_reached) = mpsc::channel::<()>();
+        let (starting, about_to_start) = mpsc::channel::<()>();
+        let (started, start_done) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
+            let live = &shared;
+            let restart = scope.spawn(move || {
+                hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
+                let _ = starting.send(());
+                live.start(500.0, 1000.0);
+                let _ = started.send(());
+            });
             render_with(
                 &shared,
                 &mut out,
                 1,
                 48_000.0,
                 || {},
-                || {
-                    scope.spawn(|| shared.start(500.0, 1000.0));
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                move || {
+                    // Hold the render between check and commit until the restart is under way.
+                    let _ = reached.send(());
+                    about_to_start.recv_timeout(HANDSHAKE_WAIT).expect("the restart thread never got to start()");
+                    let _ = start_done.recv_timeout(RACE_WINDOW);
                 },
             );
+            restart.join().unwrap();
         });
         assert!(playback(&shared).playing);
         assert_eq!(playback(&shared).pos, 500.0);
+    }
+
+    #[test]
+    fn stop_during_render_is_safe() {
+        let ramp: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        // A player with no output and no threads: `Player::new` would open the sound card and start
+        // the device watcher, which this test does not need.
+        let (commands, _inbox) = channel();
+        let player = Player {
+            shared: Arc::new(shared_with(&state)),
+            commands,
+            stream: None,
+            sink: None,
+            error: None,
+            device: String::new(),
+            host: String::new(),
+            buffer: None,
+            buffer_range: None,
+            wanted: OutputChoice::default(),
+            out_channels: 2,
+            out_rate: 48_000,
+            rack_config: Mutex::new(None),
+            held: Mutex::new(Some(Held { plan: Plan::new(0.0, 1000.0), pos: 0.0, rev: false, speed: 1.0, grain: false })),
+            wraps_base: AtomicU32::new(0),
+            reopens: AtomicU32::new(0),
+            metronome: Mutex::new(Metronome::default()),
+        };
+        let shared = &*player.shared;
+        play(shared, &state, 0.0, 1000.0);
+        let mut out = vec![0.0f32; 64];
+        let (reached, hook_reached) = mpsc::channel::<()>();
+        let (stopping, about_to_stop) = mpsc::channel::<()>();
+        // The render runs on its own thread (the output stream makes `Player` itself unsendable on
+        // macOS) and stop() is called from here, once the render sits between check and commit.
+        std::thread::scope(|scope| {
+            let render_thread = scope.spawn(move || {
+                render_with(
+                    shared,
+                    &mut out,
+                    1,
+                    48_000.0,
+                    || {},
+                    move || {
+                        // Hold the render between check and commit until stop() is under way.
+                        let _ = reached.send(());
+                        about_to_stop.recv_timeout(HANDSHAKE_WAIT).expect("the test thread never got to stop()");
+                    },
+                );
+            });
+            let hooked = hook_reached.recv_timeout(HANDSHAKE_WAIT);
+            if hooked.is_ok() {
+                let _ = stopping.send(());
+                player.stop();
+            }
+            render_thread.join().unwrap();
+            hooked.expect("render_with never reached its after_check hook");
+        });
+        assert!(!playback(shared).playing);
+        assert!(!player.is_playing());
+        assert!(player.held.lock().unwrap_or_else(|e| e.into_inner()).is_none());
+        let mut again = vec![0.0f32; 64];
+        render(shared, &mut again, 1, 48_000.0);
     }
 
     #[test]

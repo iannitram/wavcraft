@@ -125,7 +125,7 @@ impl InputMonitor {
 fn open_device(tap: &Arc<InputTap>, wanted: Option<&str>) -> Result<(cpal::Stream, String), String> {
     let host = cpal::default_host();
     let named = wanted.and_then(|w| {
-        let found = host.input_devices().ok()?.find(|d| d.name().is_ok_and(|n| n == w));
+        let found = host.input_devices().ok()?.find(|d| crate::player::device_name(d).is_some_and(|n| n == w));
         if found.is_none() {
             log::warn!(target: "wavcraft", "audio input {w:?} is not available; using the system default");
         }
@@ -135,9 +135,9 @@ fn open_device(tap: &Arc<InputTap>, wanted: Option<&str>) -> Result<(cpal::Strea
         Some(d) => d,
         None => host.default_input_device().ok_or("no audio input device")?,
     };
-    let name = device.name().unwrap_or_else(|_| "input".to_string());
+    let name = crate::player::device_name(&device).unwrap_or_else(|| "input".to_string());
     let supported = device.default_input_config().map_err(|e| e.to_string())?;
-    let config: cpal::StreamConfig = supported.clone().into();
+    let config: cpal::StreamConfig = supported.into();
     let stream = match supported.sample_format() {
         cpal::SampleFormat::F32 => build::<f32>(&device, &config, tap),
         cpal::SampleFormat::I16 => build::<i16>(&device, &config, tap),
@@ -158,7 +158,7 @@ where
     let channels = usize::from(config.channels).max(1);
     device
         .build_input_stream(
-            config,
+            *config,
             move |data: &[T], _: &cpal::InputCallbackInfo| tap.feed(data.iter().map(|s| cpal::Sample::to_sample::<f32>(*s)), channels),
             |err| log::warn!(target: "wavcraft", "audio input: {err}"),
             None,
