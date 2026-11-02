@@ -71,6 +71,7 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "properties", title: "Properties", default_dock: DockSide::Bottom },
     PanelInfo { id: "transport", title: "Transport", default_dock: DockSide::Bottom },
     PanelInfo { id: "time", title: "Time", default_dock: DockSide::Bottom },
+    PanelInfo { id: "zoom", title: "Zoom", default_dock: DockSide::Bottom },
     PanelInfo { id: "tools", title: "Tools", default_dock: DockSide::Left },
     PanelInfo { id: "files", title: "Files", default_dock: DockSide::Left },
     PanelInfo { id: "match", title: "Match Loudness", default_dock: DockSide::Right },
@@ -926,12 +927,12 @@ mod tests {
         let mut s = PanelSet::default();
         assert_eq!(
             s.report(),
-            "editor=1 waveform=1 spectral=1 history=1 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1 time=1 tools=1 files=1 match=1"
+            "editor=1 waveform=1 spectral=1 history=1 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1 time=1 zoom=1 tools=1 files=1 match=1"
         );
         assert_eq!(s.apply_action("window.toggle.history"), Some(Ok(false)));
         assert_eq!(
             s.report(),
-            "editor=1 waveform=1 spectral=1 history=0 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1 time=1 tools=1 files=1 match=1"
+            "editor=1 waveform=1 spectral=1 history=0 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1 time=1 zoom=1 tools=1 files=1 match=1"
         );
         assert_eq!(s.apply_action("window.show.history"), Some(Ok(true)));
         assert_eq!(s.apply_action("window.hide.spectral"), Some(Ok(false)));
@@ -1047,7 +1048,7 @@ mod tests {
         assert!(!l.set_size(DockSide::Bottom, 300.4));
         l.toggle_maximize("history");
         let (tabs, sizes) = l.encode();
-        assert_eq!(tabs, "left:tools,files,selection*;right:markers,playlist,match;bottom:freq,properties,transport,time,history*");
+        assert_eq!(tabs, "left:tools,files,selection*;right:markers,playlist,match;bottom:freq,properties,transport,time,zoom,history*");
         assert_eq!(sizes, "left:220,right:240,bottom:300");
         let back = Layout::decode(&tabs, &sizes);
         l.restore();
@@ -1093,7 +1094,7 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         assert_eq!(
             l.report(&set),
-            "zone.left=tools,files zone.right=history,selection,markers,playlist,match zone.bottom=freq,properties,transport,time zone.center=editor,waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=tools front.right=history front.bottom=freq maximized=- floating=-"
+            "zone.left=tools,files zone.right=history,selection,markers,playlist,match zone.bottom=freq,properties,transport,time,zoom zone.center=editor,waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=tools front.right=history front.bottom=freq maximized=- floating=-"
         );
         l.apply_command(&mut set, "move selection left").unwrap();
         l.apply_command(&mut set, "maximize selection").unwrap();
@@ -1171,11 +1172,11 @@ mod tests {
         l.apply_command(&mut set, "dock history bottom").unwrap();
         let r = l.report(&set);
         assert!(r.contains("floating=- ") || r.ends_with("floating=-"), "{r}");
-        assert!(r.contains("zone.bottom=freq,properties,transport,time,history"), "{r}");
+        assert!(r.contains("zone.bottom=freq,properties,transport,time,zoom,history"), "{r}");
         l.apply_command(&mut set, "float selection").unwrap();
         l.apply_command(&mut set, "dock selection").unwrap();
         assert_eq!(l.zone_of("selection"), Some(DockSide::Right));
-        assert_eq!(l.float_group(DockSide::Bottom, &set), 5, "freq, properties, transport, time and history are all in the bottom zone");
+        assert_eq!(l.float_group(DockSide::Bottom, &set), 6, "freq, properties, transport, time, zoom and history are all in the bottom zone");
     }
     /// History on the left, selection at the bottom, the right zone empty.
     fn docked() -> Layout {

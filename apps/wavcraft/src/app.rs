@@ -3603,6 +3603,7 @@ impl WaveApp {
             "tools" => self.tools_panel(ui),
             "selection" => self.selection_view_panel(ui),
             "time" => self.time_panel(ui),
+            "zoom" => self.zoom_panel(ui),
             // Window › Frequency Analysis: a docked panel like the others (Window menu, zones, tabs).
             "freq" => {
                 let doc = self.editor.as_ref().map(|e| e.history.current().clone());
@@ -11758,7 +11759,6 @@ impl eframe::App for WaveApp {
         }
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::top("tools").show(ui, |ui| self.tools_bar(ui));
-        egui::Panel::top("zoom").show(ui, |ui| self.zoom_panel(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.meters.show_levels {
             egui::Panel::bottom("levels").show(ui, |ui| {
