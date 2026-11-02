@@ -3,3 +3,5 @@
 *~
 .DS_Store
 tools/winlist
+__pycache__/
+*.pyc
