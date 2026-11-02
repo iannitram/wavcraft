@@ -1245,8 +1245,7 @@ where
     T: cpal::Sample + cpal::FromSample<f32>,
     f32: cpal::FromSample<T>,
 {
-    let was_playing = shared.state.try_lock().map(|s| s.playing).unwrap_or(false);
-    render(shared, out, channels, device_rate);
+    let was_playing = render(shared, out, channels, device_rate);
     take_rack(shared, rack);
     take_rack_reset(shared, rack);
     if let (true, Some(r)) = (was_playing, rack.as_mut()) {
@@ -1309,13 +1308,14 @@ where
     }
 }
 
-/// Fill one device buffer. Runs on the audio thread.
-fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T], channels: usize, device_rate: f64)
+/// Fill one device buffer and return its playback snapshot's playing flag. Runs on the audio thread.
+fn render<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &mut [T], channels: usize, device_rate: f64) -> bool
 where
     f32: cpal::FromSample<T>,
 {
-    render_with(shared, out, channels, device_rate, || {}, || {});
+    let playing = render_with(shared, out, channels, device_rate, || {}, || {});
     mix_monitor(shared, out, channels);
+    playing
 }
 
 /// What output channel `c` of `out_channels` hears of one input frame: a mono input on every
@@ -1363,28 +1363,29 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
     device_rate: f64,
     before_commit: F,
     after_check: G,
-) where
+) -> bool
+where
     f32: cpal::FromSample<T>,
 {
     let silence = T::from_sample(0.0f32);
     let Ok(state) = shared.state.try_lock() else {
         out.iter_mut().for_each(|s| *s = silence);
-        return;
+        return false;
     };
     let playback = *state;
     drop(state);
     out.iter_mut().for_each(|s| *s = silence);
     // A play sounds only once the read-ahead thread has primed the ring for its generation.
     if !playback.playing || shared.muted.load(Ordering::Relaxed) || shared.ready_generation.load(Ordering::Acquire) != playback.generation {
-        return;
+        return playback.playing;
     }
     let file_channels = shared.channels.load(Ordering::Acquire) as usize;
     let rate = shared.rate.load(Ordering::Acquire);
     if file_channels == 0 || rate == 0 {
-        return;
+        return playback.playing;
     }
-    let Ok(map) = shared.map.try_lock() else { return };
-    let Ok(downmix) = shared.downmix.try_lock().map(|d| *d) else { return };
+    let Ok(map) = shared.map.try_lock() else { return playback.playing };
+    let Ok(downmix) = shared.downmix.try_lock().map(|d| *d) else { return playback.playing };
     let step = f64::from(rate) / device_rate * playback.speed;
     // The metronome (C201): a click on each beat of the document's tempo, mixed into the output here
     // and nowhere else. Stateless: the click sounding at a grid position follows from the position
@@ -1523,7 +1524,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
     shared.levels.record(0, peak[0]);
     shared.levels.record(1, peak[1]);
     before_commit();
-    let Ok(mut state) = shared.state.try_lock() else { return };
+    let Ok(mut state) = shared.state.try_lock() else { return playback.playing };
     if state.generation == playback.generation {
         // Test seam: keep the state lock held so a concurrent restart applies after this commit.
         after_check();
@@ -1533,6 +1534,7 @@ fn render_with<T: cpal::Sample + cpal::FromSample<f32>, F: FnOnce(), G: FnOnce()
         state.pos = pos;
         state.lead = lead;
     }
+    playback.playing
 }
 
 /// What the read-ahead thread is feeding.
@@ -1703,6 +1705,33 @@ mod tests {
 
     fn playback(shared: &Shared) -> Playback {
         shared.snapshot()
+    }
+
+    #[test]
+    fn the_rack_decision_uses_the_rendered_playback_snapshot() {
+        let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 1000]] });
+        let shared = shared_with(&state);
+        let mut out = vec![0.0f32; 64];
+        assert!(!render(&shared, &mut out, 1, 48_000.0));
+        assert!(out.iter().all(|v| *v == 0.0));
+
+        play(&shared, &state, 0.0, 1000.0);
+        assert!(render(&shared, &mut out, 1, 48_000.0));
+        assert!(out.iter().all(|v| *v == 0.5));
+
+        // Stop after the rendering snapshot: this buffer still played and must get the rack,
+        // even though the live state is now stopped. The following silent buffer must skip it.
+        let was_playing = render_with(&shared, &mut out, 1, 48_000.0, || shared.halt(), || {});
+        assert!(!playback(&shared).playing);
+        assert!(was_playing);
+        let cfg = rack_of(&[("invert", None)]);
+        let mut rack = RackProcessor::new(&cfg, 1, 48_000).unwrap();
+        if was_playing {
+            run_rack(&mut rack, &mut out, 1);
+        }
+        assert!(out.iter().all(|v| *v == -0.5), "the rendered buffer gets the rack despite Stop");
+        assert!(!render(&shared, &mut out, 1, 48_000.0));
+        assert!(out.iter().all(|v| *v == 0.0));
     }
 
     #[test]
