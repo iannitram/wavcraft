@@ -2,6 +2,7 @@
 
 Newest first. One line per change of stage, release or decision that the next session needs.
 
+- 2026-11-01 cpal 0.16 to 0.18 and the soundcraft pin 274f788 to e3c5c67 (soundcraft main, for `Vst3Plugin::reactivate()`); soundcraft main itself needs cpal 0.18 (#1077).
 - 2026-11-01 My decision: v1 grows by sections K (Episode Check), L (Edit by transcript) and M (Studio and Podcast faces, Episode Map, one theme); 55 items become 70. Rows approved as drafted the same day; the work is queued after main is green (#1012).
 - 2026-10-27 Stage 0 merged into main (44 merges, PRs and branches triaged); moved to Dev Loop on my ruling that it goes ahead with the fixes first: #1012 (main green: 4 test targets do not compile, fmt, clippy), #1010 (stub limiter, 7 red tests) and #1013 (CI on three OSes) are taken before anything else.
 - 2026-10-26 Normalized to pipeline v2 at Roadmap: PIPELINE.md, SPEC.md (the v1 list, re-confirmed unchanged by the owner), ROADMAP.md (status of all 55 v1 items, stages, stage 0 = finish the merge plan). The old fleet roadmap moved to docs/archive/roadmap-v1-fleet.md unchanged. AGENTS.md gets the v2 rules; CLAUDE.md added.
