@@ -783,11 +783,10 @@ impl Settings {
         Duration::from_secs_f32(self.postroll_s)
     }
 
-    /// The spectral display's FFT length and lowest level (dBFS) from the preferences, put into
-    /// `params`. The window function is stored only: the analysis uses Hann.
+    /// The spectral display's FFT length, window function and lowest level (dBFS) from the
+    /// preferences, put into `params`.
     pub fn apply_to_spectrogram(&self, params: &mut crate::SpectrogramParams) {
         params.fft_size = self.spec_resolution as usize;
-        params.window = self.spec_window;
         params.window = self.spec_window;
         params.floor_db = -(self.spec_db_range as f32);
         params.ceil_db = 0.0;
