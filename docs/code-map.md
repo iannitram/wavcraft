@@ -1,6 +1,6 @@
 # Code map
 
-*Status per v1 item (what is on main, what is still on a branch): [ROADMAP.md](../ROADMAP.md). Describes commit: `9ed942d` (2026-10-28). Every file named below is present on `main` (status: present); files `main` has that the long table does not describe are listed in "Also on main" after it. Stage 0 merged the old branches into `main` on 2026-10-27 (44 merge commits); the ones not merged are kept as `archive/` tags, and nothing they add is listed here. Two removals since the first merge pass: the stub true-peak limiter (`dsp/true_peak_limiter.rs`, #1010) and the second copy of the STFT tests (`crates/core/tests/stft.rs`, #971; the STFT tests stay in `noise.rs`).*
+*Status per v1 item (what is on main, what is still on a branch): [ROADMAP.md](../ROADMAP.md). Describes commit: `ad3f4c1` (2026-11-02). Every file named below is present on `main` (status: present); files `main` has that the long table does not describe are listed in "Also on main" after it. Stage 0 merged the old branches into `main` on 2026-10-27 (44 merge commits); the ones not merged are kept as `archive/` tags, and nothing they add is listed here. Two removals since the first merge pass: the stub true-peak limiter (`dsp/true_peak_limiter.rs`, #1010) and the second copy of the STFT tests (`crates/core/tests/stft.rs`, #971; the STFT tests stay in `noise.rs`).*
 
 *Written 2026-10-15 (task 02) from the tree at `3cdf38f`, for a session that has seen nothing.
 Update it when the layout changes. The test kit and bench (task 02) are listed at the end.
@@ -117,7 +117,8 @@ All present on `main`. The first column is the file under `crates/core/src/` unl
 | `meters/phase.rs`, `meters/phase_bins.rs`, `meters/phase_scope.rs`, `meters/rms_histogram.rs` | Phase correlation, spectral phase numbers, phase scope data, RMS histogram (core only, no panel) |
 | `effects/oneshot.rs`, `effects/pitch_presets.rs`, `effects/compare.rs`, `effects/dynamics_graph.rs` | One-shot effects (Reverse, Amplify, Normalize, Fades, clip guard); pitch presets; A/B compare of two settings sets; the Dynamics transfer-curve points |
 | `effects/delay.rs`, `effects/reverb.rs`, `effects/plate.rs`, `effects/eq.rs`, `effects/pitch_saturate.rs`, `effects/dsp_run.rs` | Effects wrapping `soundcraft-dsp` plugins (delay, reverb, plate, filters and EQ, pitch shifter, saturator) and their shared run plumbing |
-| `dsp/mod.rs`, `dsp/pan.rs`, `dsp/midside.rs`, `dsp/stereo_width.rs`, `dsp/envelope.rs`, `dsp/fade_curve.rs` | Channel-layout and pan helpers, mid/side, stereo width, fade envelope and fade curve shapes |
+| `dsp/mod.rs`, `dsp/pan.rs`, `dsp/midside.rs`, `dsp/stereo_width.rs`, `dsp/envelope.rs`, `dsp/fade_curve.rs`, `dsp/fade.rs` | Channel-layout and pan helpers, mid/side, stereo width, fade envelope and fade curve shapes; the linear, logarithmic and cosine gain formulas and the pointer-drag rule that picks one (E1) |
+| `effects/fade.rs` | Fade In and Fade Out effects (E1): a linear, logarithmic or cosine envelope across the selection, or the whole file when nothing is selected, streamed in chunks |
 | `dsp/echo.rs`, `dsp/chorus.rs`, `dsp/flanger.rs`, `dsp/phaser.rs`, `dsp/distortion.rs`, `dsp/bass_enhancer.rs`, `dsp/doppler.rs`, `dsp/varispeed.rs`, `dsp/convolution.rs`, `dsp/sci_filter.rs`, `dsp/eq_graph.rs`, `dsp/band_only.rs`, `dsp/speech_ranges.rs` | Further DSP building blocks (modulation effects, distortion, bass exciter, Doppler path, varispeed, convolution, analogue-prototype filters, EQ graph mapping, band-only filter, speech/silence segmentation); none is in the effects registry or called from the app yet |
 | `generate/mod.rs`, `generate/tones_noise.rs`, `generate/dtmf.rs` | Generators: Tones, Noise, DTMF |
 | `timepitch/fit.rs`, `tempo.rs`, `transcript_cut.rs` | Stretch to fit a duration; tempo calculations; edit-by-transcript frame ranges |
@@ -248,7 +249,7 @@ itself when zoomed closer. Nothing is cached per view; columns are recomputed ev
 
 ## Playback
 
-- `cpal` 0.16 **directly**, in `apps/wavcraft/src/player.rs`. The single-file editor does not use
+- `cpal` 0.18 **directly**, in `apps/wavcraft/src/player.rs`. The single-file editor does not use
   SoundCraft's `playback` crate (its `Player::new` takes a SoundCraft `Session`); the multitrack path does (`mtplay.rs`, `multitrack_ui.rs`).
 - Default host, default output device, its default config (f32, i16, u16 or i32 samples). The
   stream is opened at start-up and reopened on Play after an error or when there was none.
@@ -265,7 +266,7 @@ itself when zoomed closer. Nothing is cached per view; columns are recomputed ev
 - **Playhead to the UI:** `Player::position()` reads `pos` atomically; while playing the editor draws
   the playhead there, keeps it on screen (`Viewport::reveal`) and calls `request_repaint()` each frame.
 
-## soundcraft-audio-io (this section was written at `3527bb4`, tag `wavecraft-pin-2026-10-12`; `main` now pins `274f788`)
+## soundcraft-audio-io (this section was written at `3527bb4`, tag `wavecraft-pin-2026-10-12`; `main` now pins `e3c5c67`)
 
 **Called today:** `decode(bytes, ext_hint) -> (AudioInfo, AudioBuffer)` (document.rs),
 `peaks::Peaks::{build, columns}`, and the types `AudioBuffer`, `AudioInfo`, `FileFormat`,
@@ -298,7 +299,7 @@ support in reading or writing. The WAV reader skips chunks it doesn't know (only
 
 Both are in the same fork at the same commit, so adding them as git dependencies with the same
 `rev` resolves (their own dependencies: `dsp` needs `serde`, `log`, `rustfft`; `time` needs
-`serde`, `thiserror`). Both are dependencies on `main` now (root `Cargo.toml`, pinned `274f788`).
+`serde`, `thiserror`). Both are dependencies on `main` now (root `Cargo.toml`, pinned `e3c5c67`).
 
 - `dsp::meter`: `LoudnessMeter::new(rate, channels)`, `process(&[Vec<f32>], frames)` (planar, in
   chunks; parallel per channel for long input), `momentary_lufs`, `short_term_lufs`,
