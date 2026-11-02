@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use soundcraft_mix::{DEFAULT_RING_FRAMES, MixEngine, ReadAheadSource, main_channels, mark_audio_thread};
 use soundcraft_model::time::{Range, Samples};
-use soundcraft_model::{SampleSource, Session};
+use soundcraft_model::{AutomationMode, SampleSource, Session, TrackKind};
 
 use crate::multitrack::Multitrack;
 
@@ -28,7 +28,25 @@ pub const SILENT_BLOCK: usize = 512;
 /// The main mix of `frames` frames starting at `start` (in session frames), planar. Offline, on
 /// the calling thread: sources are read directly, not through read-ahead.
 pub fn render(mt: &Multitrack, start: Samples, frames: usize) -> Vec<Vec<f32>> {
-    soundcraft_mix::render_range(&mt.session, Range::new(start, start + frames as i64), 1024)
+    let range = Range::new(start, start + frames as i64);
+    if mt.session.tracks.iter().any(|t| t.kind == TrackKind::Master && t.mixer.mute) {
+        let mut session = mt.session.clone();
+        apply_master_mute(&mut session);
+        soundcraft_mix::render_range(&session, range, 1024)
+    } else {
+        soundcraft_mix::render_range(&mt.session, range, 1024)
+    }
+}
+
+// The engine's master block reads only volume_db_at. Disable automation so it cannot
+// override the exact-zero gain at -144 dB; change only the render/playback snapshot.
+fn apply_master_mute(session: &mut Session) {
+    for track in &mut session.tracks {
+        if track.kind == TrackKind::Master && track.mixer.mute {
+            track.mixer.volume_db = -144.0;
+            track.mixer.automation_mode = AutomationMode::Off;
+        }
+    }
 }
 
 /// The session as the audio thread plays it, with the read-ahead sources it holds.
@@ -41,6 +59,7 @@ impl PlaybackSession {
     /// A snapshot of `mt` with every audio source behind a `ReadAheadSource`.
     pub fn new(mt: &Multitrack) -> PlaybackSession {
         let mut session = mt.session.clone();
+        apply_master_mute(&mut session);
         let mut readers = Vec::new();
         let ids: Vec<_> = session.pool.ids().collect();
         for id in ids {
@@ -215,6 +234,29 @@ mod tests {
         let want = render(&mt, 0, 2048);
         assert!(got.iter().zip(&want[0]).all(|(a, b)| (a - b).abs() < 1e-4));
         assert_eq!(ps.underruns(), 0);
+    }
+
+    #[test]
+    fn a_muted_master_silences_the_playback_snapshot() {
+        let mut mt = two_tone_session();
+        mt.set_master_volume_db(-6.0).unwrap();
+        mt.set_master_mute(true).unwrap();
+        let ps = PlaybackSession::new(&mt);
+        let master = ps.session.master().unwrap();
+        assert_eq!(master.mixer.volume_db, -144.0);
+        assert_eq!(master.mixer.automation_mode, AutomationMode::Off);
+        std::thread::sleep(Duration::from_millis(300)); // let the rings fill
+        let mut engine = MixEngine::new(48_000.0, 512);
+        let mut out = vec![vec![1.0; 512]; 2];
+        mark_audio_thread();
+        engine.render(&ps.session, 0, 512, &mut out);
+        assert!(out.iter().flatten().all(|&sample| sample == 0.0));
+        assert_eq!(ps.underruns(), 0);
+        let original = mt.session.master().unwrap();
+        assert_eq!(original.mixer.volume_db, -6.0);
+        assert_eq!(original.mixer.automation_mode, AutomationMode::Read);
+        mt.set_master_mute(false).unwrap();
+        assert!(render(&mt, 0, 512).iter().flatten().any(|&sample| sample != 0.0));
     }
 
     #[test]
