@@ -11535,6 +11535,10 @@ impl eframe::App for WaveApp {
         self.run_scrub();
         // Follow a change of the system's default output device (f48): reopen at the same place.
         self.player.maintain();
+        // A VST3 plugin whose tail could not be cleared on a seek or restart (#931): say so.
+        if let Some(why) = wavcraft_core::vst3::take_flush_errors().into_iter().next() {
+            self.error = Some(why);
+        }
         self.diag.poll();
         self.sync_input();
         let peaks = self.meter_peaks();
