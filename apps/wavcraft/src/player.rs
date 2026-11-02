@@ -1640,8 +1640,11 @@ fn read_ahead(shared: &Shared, inbox: &Receiver<Command>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Barrier;
+    use std::sync::mpsc;
     use wavcraft_core::{AudioBuffer, Document};
+
+    /// How long a test thread waits for the render's hook before the test fails instead of hanging.
+    const HANDSHAKE_WAIT: Duration = Duration::from_secs(10);
 
     /// A document holding `audio` in the store, as the app opens it.
     fn doc_of(audio: AudioBuffer) -> DocState {
@@ -1731,10 +1734,10 @@ mod tests {
         let shared = shared_with(&state);
         play(&shared, &state, 0.0, 1000.0);
         let mut out = vec![0.0f32; 64];
-        let barrier = Barrier::new(2);
+        let (reached, hook_reached) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
             let restart = scope.spawn(|| {
-                barrier.wait();
+                hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
                 shared.start(500.0, 1000.0);
             });
             render_with(
@@ -1743,8 +1746,8 @@ mod tests {
                 1,
                 48_000.0,
                 || {},
-                || {
-                    barrier.wait();
+                move || {
+                    let _ = reached.send(());
                 },
             );
             restart.join().unwrap();
@@ -1759,10 +1762,10 @@ mod tests {
         let shared = shared_with(&state);
         play(&shared, &state, 10.0, 20.0);
         let mut out = vec![0.0f32; 64];
-        let barrier = Barrier::new(2);
+        let (reached, hook_reached) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
             let restart = scope.spawn(|| {
-                barrier.wait();
+                hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
                 shared.start(500.0, 1000.0);
             });
             render_with(
@@ -1771,8 +1774,8 @@ mod tests {
                 1,
                 48_000.0,
                 || {},
-                || {
-                    barrier.wait();
+                move || {
+                    let _ = reached.send(());
                 },
             );
             restart.join().unwrap();
@@ -1785,30 +1788,36 @@ mod tests {
     fn stop_during_render_is_safe() {
         let ramp: Vec<f32> = (0..1000).map(|i| i as f32).collect();
         let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
-        let shared = shared_with(&state);
-        play(&shared, &state, 0.0, 1000.0);
+        let mut player = Player::new(OutputChoice::default(), ChannelMap::default(), Quality::default());
+        player.stream = None;
+        let shared = &*player.shared;
+        shared.rate.store(state.sample_rate(), Ordering::Relaxed);
+        shared.channels.store(state.channel_count().min(RING_CHANNELS) as u32, Ordering::Relaxed);
+        play(shared, &state, 0.0, 1000.0);
         let mut out = vec![0.0f32; 64];
-        let barrier = Barrier::new(2);
+        let (reached, hook_reached) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
             let stop = scope.spawn(|| {
-                barrier.wait();
-                shared.halt();
+                hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
+                player.stop();
             });
             render_with(
-                &shared,
+                shared,
                 &mut out,
                 1,
                 48_000.0,
                 || {},
-                || {
-                    barrier.wait();
+                move || {
+                    let _ = reached.send(());
                 },
             );
             stop.join().unwrap();
         });
-        assert!(!playback(&shared).playing);
+        assert!(!playback(shared).playing);
+        assert!(!player.is_playing());
+        assert!(player.held.lock().unwrap_or_else(|e| e.into_inner()).is_none());
         let mut again = vec![0.0f32; 64];
-        render(&shared, &mut again, 1, 48_000.0);
+        render(shared, &mut again, 1, 48_000.0);
     }
 
     #[test]
