@@ -16,8 +16,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use soundcraft_dsp::Plugin;
@@ -252,7 +252,12 @@ struct Vst3Stream {
 
 impl Vst3Stream {
     fn new(plugin: Box<dyn Hosted>, name: String, channels: usize, poll: Duration) -> Result<Vst3Stream, String> {
-        let link = Arc::new(Link { plugin: Mutex::new(plugin), flush: AtomicBool::new(false), broken: AtomicBool::new(false), stop: AtomicBool::new(false) });
+        let link = Arc::new(Link {
+            plugin: Mutex::new(plugin),
+            flush: AtomicBool::new(false),
+            broken: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+        });
         let worker = Arc::clone(&link);
         std::thread::Builder::new()
             .name("wavcraft-vst3-flush".into())
