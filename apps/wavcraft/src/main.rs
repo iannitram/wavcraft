@@ -19,7 +19,7 @@ mod doclist;
 mod effect_dialog;
 mod files;
 mod freq_panel;
-mod input;
+mod input_monitor;
 mod markers_panel;
 mod match_ui;
 mod menus;

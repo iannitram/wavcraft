@@ -66,7 +66,7 @@ use crate::doclist::{DocList, Where};
 use crate::effect_dialog::{Answer, EffectDialog};
 use crate::files;
 use crate::freq_panel::{self, FreqPanel};
-use crate::input::InputMonitor;
+use crate::input_monitor::InputMonitor;
 use crate::markers_panel::MarkersUi;
 use crate::match_ui::MatchUi;
 use crate::menus::{self, Cmd, Entry, Item, Menu};
