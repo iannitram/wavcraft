@@ -191,6 +191,18 @@ impl EffectStream for Vst3Stream {
             dst[k..].fill(0.0);
         }
     }
+
+    fn reset(&mut self) {
+        // The wrapper's `Plugin::reset` clears the host-side note and control state without
+        // allocating. Its only full reset is the setProcessing/setActive cycle inside `prepare`,
+        // which reallocates the bus buffers and so cannot run on the audio thread. This is the
+        // safest allocation-free step the wrapper offers; the plugin's own delay lines and
+        // filters cannot be cleared through it without that reactivation.
+        self.plugin.reset();
+        for buf in &mut self.io {
+            buf.clear();
+        }
+    }
 }
 
 /// Load the plugin `spec` names into a stream for `channels` channels at `rate` Hz. All memory is

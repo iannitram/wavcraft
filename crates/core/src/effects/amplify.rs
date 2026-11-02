@@ -73,6 +73,10 @@ impl EffectStream for Gains {
     fn process_block(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
         scale(&self.0, input, output);
     }
+
+    fn reset(&mut self) {
+        // The gains are fixed settings, not state from the signal: there is nothing to clear.
+    }
 }
 
 /// Amplify effect (`effect.amplify`).

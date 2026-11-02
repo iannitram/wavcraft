@@ -107,6 +107,7 @@ The rest of this table matches Audition's "Default Set" (checked in Audition 26.
 - A power button on each effect and a main power button (A/B compare).
 - **Process** (selection or entire file) and **Apply**, which writes the rack into the audio. *(Exact menu wording unconfirmed.)*
 - Playback previews the rack live. Presets exist for the whole rack and for each effect. Ctrl+C / Ctrl+V copy effects between racks.
+- *WavCraft:* a seek or a restart starts the rack clean. The old position's delay, reverb, filter and envelope state is cleared, so no tail rings into the new position (hard cut, decided 2026-11-01, #931).
 - **"(process)" effects** (Noise Reduction, Hiss Reduction, Normalize) are offline, Waveform-only, and **cannot go in the rack**. They run from the Effects menu.
 - **One-shot effects** from the Effects menu open a dialog with Preview (play), a power button for A/B, and Apply. While previewing you can still move the selection and playhead (not for Normalize).
 
