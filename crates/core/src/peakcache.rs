@@ -104,7 +104,7 @@ fn take_u64(b: &[u8], at: &mut usize) -> Option<u64> {
     Some(v)
 }
 
-type EncodedParts<'a> = Vec<(usize, &'a [Vec<(f32, f32)>], &'a [(usize, usize, usize)])>;
+type EncodedParts<'a> = Vec<(usize, Vec<Vec<(f32, f32)>>, &'a [(usize, usize, usize)])>;
 
 /// The cache file's bytes for `peaks` (one per channel, each of `frames` samples) under `key`.
 fn encode(key: &Key, frames: u64, peaks: &[WavePeaks]) -> Option<Vec<u8>> {
