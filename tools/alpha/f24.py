@@ -89,6 +89,7 @@ def main():
             proc.kill()
 
     def run1(c):
+        print("startup PANELS:", c.ask("PANELS"))
         z = zones(c)
         check("fresh: History and Selection/View are both in front",
               z["front.right"] == "history" and z["front.bottom"] == "selection", z)
@@ -130,7 +131,10 @@ def main():
         c.ask("PANEL move selection bottom 0")
         found = [os.path.join(d, f) for d, _, fs in os.walk(home) for f in fs if f == "settings.txt"]
         text = open(found[0]).read() if found else ""
-        check("settings.txt holds the layout and sizes", "panel_layout = left:history" in text and "bottom:selection" in text and "zone_sizes = left:" in text, text.replace("\n", " | ")[-200:])
+        layout = next((line.removeprefix("panel_layout = ") for line in text.splitlines() if line.startswith("panel_layout = ")), "")
+        tabs = dict(part.split(":", 1) for part in layout.split(";") if ":" in part)
+        check("settings.txt holds the layout and sizes", "history" in tabs.get("left", "").replace("*", "").split(",")
+              and "selection" in tabs.get("bottom", "").replace("*", "").split(",") and "zone_sizes = left:" in text, text.replace("\n", " | ")[-200:])
 
     def run2(c):
         z = zones(c)
