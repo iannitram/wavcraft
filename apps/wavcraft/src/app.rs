@@ -12041,20 +12041,26 @@ fn split_paths(s: &str) -> Vec<PathBuf> {
 /// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
 /// so Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
 fn pressed_commands(ctx: &egui::Context, keymap: &Keymap) -> Vec<Command> {
-    // A text field being edited owns the keyboard: Backspace, Delete and Cmd+Z there edit the text, not the audio (#368).
-    if ctx.text_edit_focused() {
-        return Vec::new();
-    }
+    // A text field being edited owns the keyboard: Space types a space, and Backspace, Delete and
+    // Cmd+Z edit the text, not the audio (#368, #434). Cmd+S and Cmd+O keep working.
+    let typing = ctx.egui_wants_keyboard_input();
     let mut rows: Vec<(Command, Shortcut)> = keymap.bindings().iter().map(|b| (b.command, b.chord)).collect();
     rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
         // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
-        let mut pressed: Vec<Command> = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
-            .into_iter()
-            .enumerate()
-            .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(n as u8))))
-            .collect();
+        let mut pressed: Vec<Command> = if typing {
+            Vec::new()
+        } else {
+            [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
+                .into_iter()
+                .enumerate()
+                .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(n as u8))))
+                .collect()
+        };
         pressed.extend(rows.iter().filter_map(|(command, k)| {
+            if typing && !matches!(command, Command::Save | Command::SaveAs | Command::Open) {
+                return None;
+            }
             let key = Key::from_name(k.key)?;
             let mut mods = egui::Modifiers::NONE;
             if k.cmd {
@@ -12588,6 +12594,44 @@ mod tests {
     fn cmd_shift_z_without_a_focused_text_field_runs_redo_only() {
         let got = commands_for_key(false, Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
         assert_eq!(got, vec![Command::Action(ActionId::Redo)]);
+    }
+
+    #[test]
+    fn space_in_a_focused_text_field_does_not_toggle_playback() {
+        let ctx = egui::Context::default();
+        let keymap = Keymap::new();
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("text_field")));
+        let press = egui::Event::Key {
+            key: Key::Space,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut got = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput { events: vec![press], ..Default::default() }, |ui| {
+            got = pressed_commands(ui.ctx(), &keymap);
+        });
+        output.textures_delta.clear();
+        assert_eq!(got, Vec::<Command>::new());
+    }
+
+    #[test]
+    fn space_without_a_focused_text_field_toggles_playback() {
+        let got = commands_for_key(false, Key::Space, egui::Modifiers::NONE);
+        assert_eq!(got, vec![Command::PlayStop]);
+    }
+
+    #[test]
+    fn cmd_s_in_a_focused_text_field_saves() {
+        let got = commands_for_key(true, Key::S, egui::Modifiers::COMMAND);
+        assert_eq!(got, vec![Command::Save]);
+    }
+
+    #[test]
+    fn cmd_o_in_a_focused_text_field_opens() {
+        let got = commands_for_key(true, Key::O, egui::Modifiers::COMMAND);
+        assert_eq!(got, vec![Command::Open]);
     }
 
     #[test]
