@@ -8382,7 +8382,17 @@ impl WaveApp {
                 let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
                 let name = name.strip_prefix("effect.").unwrap_or(name);
                 match wavcraft_core::effects::all().iter().position(|e| e.id() == name) {
-                    None => format!("ERR no effect named {name:?}"),
+                    // A one-shot (reverse, the fades) runs as `ACTION effect.<name>` does (#935).
+                    None => match one_shot_effect(name) {
+                        Some(_) if !args.trim().is_empty() => {
+                            format!("ERR {name} takes no settings here: set them with PARAM")
+                        }
+                        Some(id) => match self.run_action(id, ctx) {
+                            Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                            Err(e) => format!("ERR {e}"),
+                        },
+                        None => format!("ERR no effect named {name:?}"),
+                    },
                     Some(i) => match wavcraft_core::effects::parse_params(wavcraft_core::effects::all()[i], args) {
                         Err(e) => format!("ERR {e}"),
                         Ok(params) => match self.run_effect(i as u16, params, ctx) {
@@ -8466,6 +8476,9 @@ impl WaveApp {
                                 "OK".to_string()
                             }
                         },
+                        None if one_shot_effect(name).is_some() => {
+                            format!("ERR {name} has no dialog: run it with EFFECT {name}")
+                        }
                         _ => format!("ERR no effect named {name:?}, or no file is open"),
                     }
                 }
@@ -12493,8 +12506,27 @@ fn marker_drag_may_start(button: egui::PointerButton, tool: Tool) -> bool {
     button == egui::PointerButton::Primary && !matches!(tool, Tool::Hand | Tool::Zoom)
 }
 
+/// The one-shot effect (`actions::ONE_SHOT`: reverse, the fades) named `name` without its
+/// `effect.` prefix, for the `EFFECT` control verb (#935).
+fn one_shot_effect(name: &str) -> Option<ActionId> {
+    wavcraft_core::actions::ONE_SHOT.iter().find(|a| a.name.strip_prefix("effect.") == Some(name)).map(|a| a.id)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn one_shot_effects_resolve_by_their_control_names() {
+        use super::one_shot_effect as find;
+        use wavcraft_core::actions::ActionId;
+        assert_eq!(find("reverse"), Some(ActionId::Reverse));
+        assert_eq!(find("fadeIn.linear"), Some(ActionId::FadeInLinear));
+        assert_eq!(find("fadeOut.cosine"), Some(ActionId::FadeOutCosine));
+        // Registry effects and unknown names are not one-shots.
+        assert_eq!(find("gain"), None);
+        assert_eq!(find("effect.reverse"), None);
+        assert_eq!(find("nonesuch"), None);
+    }
+
     #[test]
     fn channel_chips_prefer_document_names() {
         assert_eq!(super::chip_label(Some("Renamed"), "FL"), "Renamed");

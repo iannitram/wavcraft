@@ -42,9 +42,9 @@
 //! - `WINDOW minimize|restore` → `OK` (requests keep being answered while it is minimised)
 //! - `NOISE_PRINT` → `OK frames=<n> channels=<n> rate=<hz>` (the session's noise print, captured by `ACTION nr.capture_print`), or `OK none`
 //! - `EFFECT` → `OK <id> [<key>=<default> (<range>)...]; ...` (every effect and its settings)
-//! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults)
+//! - `EFFECT <name> key=value ...` → `OK selection=<a>-<b> changed=<0|1>` (run an effect on the selection, the whole file when none; unset keys keep their defaults; a one-shot such as `reverse` or `fadeIn.linear` runs as `ACTION effect.<name>` does and takes no settings, #935)
 //! - `STRETCH ratio=<0.1-10> pitch=<semitones>` → `OK selection=<a>-<b> changed=<0|1>` (Stretch and Pitch on the selection, the whole file when none; the result is selected); `PITCHDETECT` → `OK hz=<f0>|none` (median pitch of the selection)
-//! - `EFFECT_DIALOG <name> [key=value ...]` opens the effect's dialog on those values; `EFFECT_DIALOG` → `OK open=<id|none> values=[..]`; `EFFECT_DIALOG OK|CANCEL` presses the button
+//! - `EFFECT_DIALOG <name> [key=value ...]` opens the effect's dialog on those values; `EFFECT_DIALOG` → `OK open=<id|none> values=[..]`; `EFFECT_DIALOG OK|CANCEL` presses the button; a one-shot has no dialog and answers ERR
 //! - `GENERATE` → the generators and their settings; `GENERATE <tone|noise> key=value ... [seed=N]` → `OK selection=<a>-<b> changed=<0|1>` (insert at the cursor or replace the selection)
 //! - `GENERATE_DIALOG <name> [key=value ...]` opens a Generate dialog; `GENERATE_DIALOG PREVIEW` → `OK preview=<frames>`; `GENERATE_DIALOG OK|CANCEL` presses the button
 //! - `DECLIP [threshold_db=-0.1 min_run=3]` → `OK selection=<a>-<b> changed=<0|1>` (DeClipper on the selection, the whole file when none; one undo step "DeClipper"; `ACTION diagnostics.declip` runs it with the defaults)
