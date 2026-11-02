@@ -10586,20 +10586,7 @@ impl WaveApp {
     /// The tools bar above the editor: the pointer's tools with the current one marked, and the
     /// current tool's options (the Marquee's feather; the Select tool's right-click setting).
     fn tools_bar(&mut self, ui: &mut egui::Ui) {
-        let mac = cfg!(target_os = "macos");
-        let tools = [
-            (Tool::Select, ActionId::ToolSelect, "Time Selection"),
-            (Tool::Hand, ActionId::ToolHand, "Hand"),
-            (Tool::Zoom, ActionId::ToolZoom, "Zoom"),
-            (Tool::Marquee, ActionId::ToolMarquee, "Marquee"),
-        ];
-        let labels: Vec<(Tool, String)> = tools
-            .iter()
-            .map(|&(tool, id, name)| {
-                let keys = self.keymap.menu_text(Command::Action(id), mac);
-                (tool, if keys.is_empty() { name.to_string() } else { format!("{name} ({keys})") })
-            })
-            .collect();
+        let labels = tool_labels(&self.keymap, cfg!(target_os = "macos"));
         ui.horizontal(|ui| {
             for (tool, label) in labels {
                 if ui.selectable_label(self.tool == tool, label).clicked() {
@@ -12118,6 +12105,24 @@ fn consume_record_now(ctx: &egui::Context) -> bool {
     })
 }
 
+/// The tools bar's labels in its order: each tool's name, with its key from the keymap in brackets
+/// when it has one.
+fn tool_labels(keymap: &Keymap, mac: bool) -> Vec<(Tool, String)> {
+    let tools = [
+        (Tool::Select, ActionId::ToolSelect, "Time Selection"),
+        (Tool::Hand, ActionId::ToolHand, "Hand"),
+        (Tool::Zoom, ActionId::ToolZoom, "Zoom"),
+        (Tool::Marquee, ActionId::ToolMarquee, "Marquee"),
+    ];
+    tools
+        .iter()
+        .map(|&(tool, id, name)| {
+            let keys = keymap.menu_text(Command::Action(id), mac);
+            (tool, if keys.is_empty() { name.to_string() } else { format!("{name} ({keys})") })
+        })
+        .collect()
+}
+
 /// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
 /// so Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
 fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec<Command> {
@@ -12900,3 +12905,7 @@ mod reset_tests {
 #[cfg(test)]
 #[path = "issue1000_tests.rs"]
 mod issue1000_tests;
+
+#[cfg(test)]
+#[path = "issue1002_tests.rs"]
+mod issue1002_tests;
