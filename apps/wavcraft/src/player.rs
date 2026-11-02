@@ -432,6 +432,12 @@ struct Held {
     grain: bool,
 }
 
+/// The name a device is listed and saved under. cpal 0.18 dropped `Device::name()`; its
+/// `description().name()` is the same human-readable name, so a saved choice still matches.
+pub(crate) fn device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_string())
+}
+
 /// The audio hosts this build offers (more than one on Windows with ASIO compiled in, or Linux
 /// with JACK; one elsewhere).
 pub fn host_names() -> Vec<String> {
@@ -967,7 +973,7 @@ fn map_plan(plan: Plan, span: &EditSpan) -> Plan {
 
 /// The name of the system's default output device, if there is one.
 fn default_device_name() -> Option<String> {
-    cpal::default_host().default_output_device().and_then(|d| d.name().ok())
+    cpal::default_host().default_output_device().and_then(|d| device_name(&d))
 }
 
 /// Look at the system's default output device once a second and flag a change to the player (which
@@ -1086,7 +1092,7 @@ pub fn list_devices_in_background(host: Option<String>) -> std::sync::mpsc::Rece
         let probe_host = host.clone();
         let _ = std::thread::Builder::new().name("audio device probe".into()).spawn(move || {
             let host = host_for(probe_host.as_deref());
-            let names = |devices: Vec<cpal::Device>| -> Vec<String> { devices.iter().filter_map(|d| d.name().ok()).collect() };
+            let names = |devices: Vec<cpal::Device>| -> Vec<String> { devices.iter().filter_map(device_name).collect() };
             let _ = probe_tx.send(Devices {
                 output: names(host.output_devices().map(Iterator::collect).unwrap_or_default()),
                 input: names(host.input_devices().map(Iterator::collect).unwrap_or_default()),
@@ -1094,7 +1100,7 @@ pub fn list_devices_in_background(host: Option<String>) -> std::sync::mpsc::Rece
         });
         let devices = probe_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or_else(|_| {
             log::warn!("the audio system is slow to list output and input devices; listing every device under both");
-            let all: Vec<String> = host_for(host.as_deref()).devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+            let all: Vec<String> = host_for(host.as_deref()).devices().map(|d| d.filter_map(|d| device_name(&d)).collect()).unwrap_or_default();
             Devices { output: all.clone(), input: all }
         });
         let _ = tx.send(devices);
@@ -1113,7 +1119,7 @@ pub fn list_device_names_in_background(host: Option<String>) -> std::sync::mpsc:
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new().name("audio device names".into()).spawn(move || {
         let host = host_for(host.as_deref());
-        let names: Vec<String> = host.devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+        let names: Vec<String> = host.devices().map(|d| d.filter_map(|d| device_name(&d)).collect()).unwrap_or_default();
         let _ = tx.send(names);
     });
     rx
@@ -1145,7 +1151,7 @@ fn open_stream(shared: &Arc<Shared>, wanted: &OutputChoice) -> Result<Opened, St
     let chosen = wanted.device.as_deref().and_then(|w| {
         // Not `output_devices()`: that asks every device about output, which can block.
         let devices: Vec<cpal::Device> = host.devices().ok()?.collect();
-        let names: Vec<String> = devices.iter().map(|d| d.name().unwrap_or_default()).collect();
+        let names: Vec<String> = devices.iter().map(|d| device_name(d).unwrap_or_default()).collect();
         let found = pick(Some(w), &names).and_then(|i| devices.into_iter().nth(i));
         if found.is_none() {
             log::warn!("audio output {w:?} is not available; using the system default");
@@ -1157,16 +1163,20 @@ fn open_stream(shared: &Arc<Shared>, wanted: &OutputChoice) -> Result<Opened, St
         Some(d) => d,
         None => host.default_output_device().ok_or("no audio output device")?,
     };
-    let name = device.name().unwrap_or_else(|_| "output".to_string());
+    let name = device_name(&device).unwrap_or_else(|| "output".to_string());
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let range = match supported.buffer_size() {
+        // cpal 0.18 reports a software stack (WASAPI shared mode) as one size, its period (min ==
+        // max). 0.16 said "anything" (0..=u32::MAX) there, and a larger Fixed size is still honoured
+        // as a buffer duration, so keep the old range or a chosen buffer would be clamped to the period.
+        cpal::SupportedBufferSize::Range { min, max } if min == max => Some((0, u32::MAX)),
         cpal::SupportedBufferSize::Range { min, max } => Some((*min, *max)),
         cpal::SupportedBufferSize::Unknown => None,
     };
     let format = supported.sample_format();
     let mut config: cpal::StreamConfig = supported.into();
     let channels = usize::from(config.channels).max(1);
-    let rate = config.sample_rate.0.max(1);
+    let rate = config.sample_rate.max(1);
     let build_with = |config: &cpal::StreamConfig| match format {
         cpal::SampleFormat::F32 => build::<f32>(&device, config, shared),
         cpal::SampleFormat::I16 => build::<i16>(&device, config, shared),
@@ -1206,11 +1216,11 @@ where
     let on_error = Arc::clone(shared);
     let shared = Arc::clone(shared);
     let channels = usize::from(config.channels).max(1);
-    let device_rate = f64::from(config.sample_rate.0.max(1));
+    let device_rate = f64::from(config.sample_rate.max(1));
     let mut rack: Option<Box<RackProcessor>> = None;
     device
         .build_output_stream(
-            config,
+            *config,
             move |out: &mut [T], _: &cpal::OutputCallbackInfo| device_callback(&shared, out, channels, device_rate, &mut rack),
             move |err| {
                 log::warn!("audio output: {err}");
