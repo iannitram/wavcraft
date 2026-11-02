@@ -1640,7 +1640,16 @@ fn read_ahead(shared: &Shared, inbox: &Receiver<Command>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
     use wavcraft_core::{AudioBuffer, Document};
+
+    /// How long a test thread waits for the render's hook before the test fails instead of hanging.
+    const HANDSHAKE_WAIT: Duration = Duration::from_secs(10);
+
+    /// How long the render's hook, holding the state lock, gives a racing call the chance to finish.
+    /// With the lock held the call cannot finish, so this wait always runs out; if the render ever
+    /// drops the lock between check and commit, the call finishes well inside it and the test fails.
+    const RACE_WINDOW: Duration = Duration::from_millis(200);
 
     /// A document holding `audio` in the store, as the app opens it.
     fn doc_of(audio: AudioBuffer) -> DocState {
@@ -1730,18 +1739,31 @@ mod tests {
         let shared = shared_with(&state);
         play(&shared, &state, 0.0, 1000.0);
         let mut out = vec![0.0f32; 64];
+        let (reached, hook_reached) = mpsc::channel::<()>();
+        let (starting, about_to_start) = mpsc::channel::<()>();
+        let (started, start_done) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
+            let live = &shared;
+            let restart = scope.spawn(move || {
+                hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
+                let _ = starting.send(());
+                live.start(500.0, 1000.0);
+                let _ = started.send(());
+            });
             render_with(
                 &shared,
                 &mut out,
                 1,
                 48_000.0,
                 || {},
-                || {
-                    scope.spawn(|| shared.start(500.0, 1000.0));
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                move || {
+                    // Hold the render between check and commit until the restart is under way.
+                    let _ = reached.send(());
+                    about_to_start.recv_timeout(HANDSHAKE_WAIT).expect("the restart thread never got to start()");
+                    let _ = start_done.recv_timeout(RACE_WINDOW);
                 },
             );
+            restart.join().unwrap();
         });
         assert_eq!(playback(&shared).pos, 500.0);
         assert!(playback(&shared).playing);
@@ -1753,21 +1775,97 @@ mod tests {
         let shared = shared_with(&state);
         play(&shared, &state, 10.0, 20.0);
         let mut out = vec![0.0f32; 64];
+        let (reached, hook_reached) = mpsc::channel::<()>();
+        let (starting, about_to_start) = mpsc::channel::<()>();
+        let (started, start_done) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
+            let live = &shared;
+            let restart = scope.spawn(move || {
+                hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
+                let _ = starting.send(());
+                live.start(500.0, 1000.0);
+                let _ = started.send(());
+            });
             render_with(
                 &shared,
                 &mut out,
                 1,
                 48_000.0,
                 || {},
-                || {
-                    scope.spawn(|| shared.start(500.0, 1000.0));
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                move || {
+                    // Hold the render between check and commit until the restart is under way.
+                    let _ = reached.send(());
+                    about_to_start.recv_timeout(HANDSHAKE_WAIT).expect("the restart thread never got to start()");
+                    let _ = start_done.recv_timeout(RACE_WINDOW);
                 },
             );
+            restart.join().unwrap();
         });
         assert!(playback(&shared).playing);
         assert_eq!(playback(&shared).pos, 500.0);
+    }
+
+    #[test]
+    fn stop_during_render_is_safe() {
+        let ramp: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
+        // A player with no output and no threads: `Player::new` would open the sound card and start
+        // the device watcher, which this test does not need.
+        let (commands, _inbox) = channel();
+        let player = Player {
+            shared: Arc::new(shared_with(&state)),
+            commands,
+            stream: None,
+            sink: None,
+            error: None,
+            device: String::new(),
+            host: String::new(),
+            buffer: None,
+            buffer_range: None,
+            wanted: OutputChoice::default(),
+            out_channels: 2,
+            out_rate: 48_000,
+            rack_config: Mutex::new(None),
+            held: Mutex::new(Some(Held { plan: Plan::new(0.0, 1000.0), pos: 0.0, rev: false, speed: 1.0, grain: false })),
+            wraps_base: AtomicU32::new(0),
+            reopens: AtomicU32::new(0),
+            metronome: Mutex::new(Metronome::default()),
+        };
+        let shared = &*player.shared;
+        play(shared, &state, 0.0, 1000.0);
+        let mut out = vec![0.0f32; 64];
+        let (reached, hook_reached) = mpsc::channel::<()>();
+        let (stopping, about_to_stop) = mpsc::channel::<()>();
+        // The render runs on its own thread (the output stream makes `Player` itself unsendable on
+        // macOS) and stop() is called from here, once the render sits between check and commit.
+        std::thread::scope(|scope| {
+            let render_thread = scope.spawn(move || {
+                render_with(
+                    shared,
+                    &mut out,
+                    1,
+                    48_000.0,
+                    || {},
+                    move || {
+                        // Hold the render between check and commit until stop() is under way.
+                        let _ = reached.send(());
+                        about_to_stop.recv_timeout(HANDSHAKE_WAIT).expect("the test thread never got to stop()");
+                    },
+                );
+            });
+            let hooked = hook_reached.recv_timeout(HANDSHAKE_WAIT);
+            if hooked.is_ok() {
+                let _ = stopping.send(());
+                player.stop();
+            }
+            render_thread.join().unwrap();
+            hooked.expect("render_with never reached its after_check hook");
+        });
+        assert!(!playback(shared).playing);
+        assert!(!player.is_playing());
+        assert!(player.held.lock().unwrap_or_else(|e| e.into_inner()).is_none());
+        let mut again = vec![0.0f32; 64];
+        render(shared, &mut again, 1, 48_000.0);
     }
 
     #[test]
