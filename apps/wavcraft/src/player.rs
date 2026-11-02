@@ -1736,9 +1736,10 @@ mod tests {
         let mut out = vec![0.0f32; 64];
         let (reached, hook_reached) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
-            let restart = scope.spawn(|| {
+            let live = &shared;
+            let restart = scope.spawn(move || {
                 hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
-                shared.start(500.0, 1000.0);
+                live.start(500.0, 1000.0);
             });
             render_with(
                 &shared,
@@ -1764,9 +1765,10 @@ mod tests {
         let mut out = vec![0.0f32; 64];
         let (reached, hook_reached) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
-            let restart = scope.spawn(|| {
+            let live = &shared;
+            let restart = scope.spawn(move || {
                 hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
-                shared.start(500.0, 1000.0);
+                live.start(500.0, 1000.0);
             });
             render_with(
                 &shared,
@@ -1797,7 +1799,8 @@ mod tests {
         let mut out = vec![0.0f32; 64];
         let (reached, hook_reached) = mpsc::channel::<()>();
         std::thread::scope(|scope| {
-            let stop = scope.spawn(|| {
+            let player = &player;
+            let stop = scope.spawn(move || {
                 hook_reached.recv_timeout(HANDSHAKE_WAIT).expect("render_with never reached its after_check hook");
                 player.stop();
             });
