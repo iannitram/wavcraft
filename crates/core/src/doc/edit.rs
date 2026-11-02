@@ -64,7 +64,13 @@ pub const CUT_AUDIO: &str = "Cut Audio";
 pub const PASTE_AUDIO: &str = "Paste Audio";
 pub const CROP_AUDIO: &str = "Crop Audio";
 
-/// Which channels an edit acts on: bit `n` is channel `n` (up to 64 channels).
+/// Which channels an edit acts on: bit `n` is channel `n`.
+///
+/// [`ALL`](ChannelMask::ALL) means every channel, whatever the document's count, including
+/// channels 64 and up. Every other mask addresses only channels 0-63: [`only`](ChannelMask::only),
+/// [`with`](ChannelMask::with) and [`without`](ChannelMask::without) ignore channels past 63, so
+/// `ALL.without(70)` stays `ALL` (channel 70 cannot be removed) and `ALL.without(0)` is the mask of
+/// channels 1-63, no longer "every channel".
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChannelMask(u64);
 
@@ -73,7 +79,7 @@ impl ChannelMask {
     pub const ALL: ChannelMask = ChannelMask(u64::MAX);
     pub const NONE: ChannelMask = ChannelMask(0);
 
-    /// Only channel `ch`.
+    /// Only channel `ch`; channels past 63 are not addressable and give [`NONE`](ChannelMask::NONE).
     pub fn only(ch: usize) -> ChannelMask {
         ChannelMask(if ch < 64 { 1 << ch } else { 0 })
     }
@@ -86,31 +92,36 @@ impl ChannelMask {
         self.0
     }
 
-    /// This mask plus channel `ch`.
+    /// This mask plus channel `ch`. `ALL` stays `ALL`, and channels past 63 are ignored.
     pub fn with(self, ch: usize) -> ChannelMask {
         ChannelMask(self.0 | ChannelMask::only(ch).0)
     }
 
-    /// This mask without channel `ch`.
+    /// This mask without channel `ch`. On `ALL` it clears channels 0-63; channels past 63 cannot be
+    /// removed, so they stay (`ALL.without(70)` is `ALL`).
     pub fn without(self, ch: usize) -> ChannelMask {
         ChannelMask(self.0 & !ChannelMask::only(ch).0)
     }
 
+    /// Whether `ch` is in the mask. [`ALL`](ChannelMask::ALL) contains every channel, whatever its
+    /// number.
     pub fn contains(self, ch: usize) -> bool {
-        ch < 64 && self.0 & (1 << ch) != 0
+        self.0 == u64::MAX || (ch < 64 && self.0 & (1 << ch) != 0)
     }
 
-    /// The channels of a `channels`-channel document in this mask, in order.
+    /// The channels of a `channels`-channel document in this mask, in order. `ALL` gives `0..channels`.
     pub fn active(self, channels: usize) -> Vec<usize> {
         (0..channels).filter(|&c| self.contains(c)).collect()
     }
 
-    /// Every channel of a `channels`-channel document is in the mask.
+    /// Every channel of a `channels`-channel document is in the mask. `ALL` covers every count.
     pub fn covers_all(self, channels: usize) -> bool {
         (0..channels).all(|c| self.contains(c))
     }
 
-    /// This mask limited to a `channels`-channel document (no bits past its last channel).
+    /// This mask limited to a `channels`-channel document (no bits past its last channel). `ALL`
+    /// stays `ALL` from 64 channels up; below that it becomes the mask of every channel up to the
+    /// document's last, which means the same for that document.
     pub fn within(self, channels: usize) -> ChannelMask {
         let keep = if channels >= 64 { u64::MAX } else { (1u64 << channels) - 1 };
         ChannelMask(self.0 & keep)
@@ -1007,4 +1018,30 @@ fn import(store: &Store, from: &Store, chans: &[&Arc<Channel>]) -> io::Result<Ch
         at += m as u64;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChannelMask;
+
+    #[test]
+    fn all_covers_every_channel_past_sixty_four() {
+        for n in [65, 100] {
+            assert!(ChannelMask::ALL.contains(64), "{n} channels");
+            assert!(ChannelMask::ALL.contains(n - 1), "{n} channels");
+            assert!(ChannelMask::ALL.covers_all(n), "{n} channels");
+            assert_eq!(ChannelMask::ALL.active(n), (0..n).collect::<Vec<_>>(), "{n} channels");
+            assert_eq!(ChannelMask::ALL.within(n), ChannelMask::ALL, "{n} channels");
+        }
+        assert!(ChannelMask::ALL.contains(0));
+        assert_eq!(ChannelMask::ALL.within(3).active(3), (0..3).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn without_on_all_cannot_drop_a_channel_past_sixty_three() {
+        assert_eq!(ChannelMask::ALL.without(70), ChannelMask::ALL);
+        assert!(ChannelMask::ALL.without(70).contains(64));
+        assert!(!ChannelMask::ALL.without(0).contains(0));
+        assert!(ChannelMask::ALL.without(0).contains(1));
+    }
 }
