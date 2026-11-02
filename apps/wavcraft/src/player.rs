@@ -216,6 +216,9 @@ struct Shared {
     /// UI to drop.
     rack_mailbox: Mutex<Option<Box<RackProcessor>>>,
     rack_new: AtomicBool,
+    /// A play began (seek, restart, resume): the callback clears the running rack's state before
+    /// it processes anything, so no tail from the old position rings into the new one (#931).
+    rack_reset: AtomicBool,
     /// Document channel -> device output channel (empty: the automatic layout). Changing it needs
     /// no new stream; the callback `try_lock`s it like the rest.
     map: Mutex<ChannelMap>,
@@ -260,6 +263,7 @@ impl Shared {
             levels: LevelTap::default(),
             rack_mailbox: Mutex::new(None),
             rack_new: AtomicBool::new(false),
+            rack_reset: AtomicBool::new(false),
             map: Mutex::new(ChannelMap::default()),
             downmix: Mutex::new(Downmix::for_file(None, 2)),
             device_changed: AtomicBool::new(false),
@@ -321,6 +325,8 @@ impl Shared {
         state.lead = 0.0;
         state.origin = 0.0;
         state.playing = frames > 0.0;
+        // Halt needs no reset: the next start begins from clean effects state (#931).
+        self.rack_reset.store(true, Ordering::Release);
         state.generation
     }
 
@@ -1242,6 +1248,7 @@ where
     let was_playing = shared.state.try_lock().map(|s| s.playing).unwrap_or(false);
     render(shared, out, channels, device_rate);
     take_rack(shared, rack);
+    take_rack_reset(shared, rack);
     if let (true, Some(r)) = (was_playing, rack.as_mut()) {
         run_rack(r, out, channels);
     }
@@ -1264,6 +1271,18 @@ fn take_rack(shared: &Shared, rack: &mut Option<Box<RackProcessor>>) {
         std::mem::swap(&mut *parked, rack);
         shared.rack_new.store(false, Ordering::Release);
     }
+}
+
+/// Consume a pending "a play began" flag (#931): reset the running rack once, without locking or
+/// allocating. Returns whether this call consumed the flag.
+fn take_rack_reset(shared: &Shared, rack: &mut Option<Box<RackProcessor>>) -> bool {
+    if !shared.rack_reset.swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    if let Some(r) = rack.as_mut() {
+        r.reset();
+    }
+    true
 }
 
 /// Run the rack over one device buffer in place, in chunks of at most [`MAX_BLOCK`] frames. No
@@ -2220,6 +2239,23 @@ mod tests {
         park_rack(&shared, &inactive, 2, 96_000).unwrap();
         assert!(shared.rack_new.load(Ordering::Acquire));
         assert!(shared.rack_mailbox.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_start_sets_the_rack_reset_flag_and_the_callback_consumes_it_once() {
+        let shared = Shared::new();
+        assert!(!shared.rack_reset.load(Ordering::Acquire));
+        shared.start(0.0, 1000.0);
+        assert!(shared.rack_reset.load(Ordering::Acquire), "start asks for a rack reset");
+        let mut rack = None;
+        assert!(take_rack_reset(&shared, &mut rack));
+        assert!(!shared.rack_reset.load(Ordering::Acquire), "the callback consumed the flag");
+        assert!(!take_rack_reset(&shared, &mut rack), "it is consumed only once");
+        // A seek or restart goes through start_with too.
+        shared.start_with(500.0, 1000.0, || {});
+        assert!(shared.rack_reset.load(Ordering::Acquire));
+        assert!(take_rack_reset(&shared, &mut rack));
+        assert!(!take_rack_reset(&shared, &mut rack));
     }
 
     #[test]

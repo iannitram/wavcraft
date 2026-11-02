@@ -123,6 +123,24 @@ impl EffectStream for Proc {
     fn process_block(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
         self.run_into(input, output);
     }
+
+    fn reset(&mut self) {
+        match self {
+            Proc::Multiband(host) => {
+                host.plugin.reset();
+                // The next run clears these anyway; clearing now leaves no old samples behind.
+                for b in &mut host.bufs {
+                    b.clear();
+                }
+            }
+            Proc::Broadband { hp, env, .. } => {
+                for b in hp {
+                    b.reset();
+                }
+                *env = 0.0;
+            }
+        }
+    }
 }
 
 fn unavailable() -> io::Error {
