@@ -2120,6 +2120,19 @@ mod tests {
         assert_eq!(shared.levels.take(), [0.0, 0.0]);
     }
 
+    #[test]
+    fn a_mono_device_feeds_both_level_meters_from_its_one_channel() {
+        let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.75; 64]] });
+        let shared = shared_with(&state);
+        play(&shared, &state, 0.0, 64.0);
+        let mut out = vec![0.0f32; 64];
+        let mut rack = None;
+        device_callback(&shared, &mut out, 1, 48_000.0, &mut rack);
+        let expected = out.iter().copied().map(f32::abs).fold(0.0, f32::max);
+        assert!(expected > 0.5, "the mono output should carry the 0.75 file");
+        assert_eq!(shared.levels.take(), [expected, expected]);
+    }
+
     /// Render `frames` device frames of mono output into one vector, buffer by buffer.
     fn render_run(shared: &Shared, frames: usize, device_rate: f64) -> Vec<f32> {
         let mut all = Vec::new();
