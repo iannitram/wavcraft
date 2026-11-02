@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Alpha run for f50 (A004): floating panels, through the control channel.
 
-    python3 tools/alpha/f41.py --exe <path to the release wavcraft>
+    python3 tools/alpha/f50.py --exe <path to the release wavcraft>
 
 Run 1 (fresh scratch HOME): PANEL float history makes it floating (PANELS lists it with a window
 rect, the zone it left is empty), the window is really drawn (float_window=os|embedded), editor
@@ -92,9 +92,16 @@ def main():
     def rect(p, id):
         return p.get("float." + id)
 
+    def two_panels(c):
+        # Floating checks use History and Selection/View without other shown tabs.
+        for panel in ("freq", "markers", "playlist", "properties", "transport", "time", "zoom", "tools", "files", "match"):
+            c.ask("PANEL close " + panel)
+
     def run1(c):
+        two_panels(c)
         p = panels(c)
         check("fresh: nothing floats", p["floating"] == "-" and "float_window" not in p, p)
+        check("move selection into the right zone", c.ask("PANEL move selection right").startswith("OK "))
         check("PANEL float history", c.ask("PANEL float history").startswith("OK "))
         time.sleep(1.5)
         p = panels(c)
@@ -123,8 +130,9 @@ def main():
         check("the window is drawn again", p.get("float_window") == state["kind"], p.get("float_window"))
         check("the workspace is not modified by the restart", kv(c.ask("WORKSPACES"))["modified"] == "0")
         c.ask("WORKSPACE switch Default")
+        two_panels(c)
         p = panels(c)
-        check("switching to Default docks them (Default floats nothing)", p["floating"] == "-" and p["zone.right"] == "history,selection", p)
+        check("switching to Default docks them (Default floats nothing)", p["floating"] == "-" and p["zone.right"] == "history" and p["zone.bottom"] == "selection", p)
         c.ask("WORKSPACE switch Floaty")
         time.sleep(1.0)
         p = panels(c)

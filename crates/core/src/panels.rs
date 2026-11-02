@@ -64,7 +64,7 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "waveform", title: "Waveform", default_dock: DockSide::Center },
     PanelInfo { id: "spectral", title: "Spectral Frequency Display", default_dock: DockSide::Center },
     PanelInfo { id: "history", title: "History", default_dock: DockSide::Right },
-    PanelInfo { id: "selection", title: "Selection/View", default_dock: DockSide::Right },
+    PanelInfo { id: "selection", title: "Selection/View", default_dock: DockSide::Bottom },
     PanelInfo { id: "freq", title: "Frequency Analysis", default_dock: DockSide::Bottom },
     PanelInfo { id: "markers", title: "Markers", default_dock: DockSide::Right },
     PanelInfo { id: "playlist", title: "Playlist", default_dock: DockSide::Right },
@@ -948,9 +948,12 @@ mod tests {
     #[test]
     fn the_default_layout_follows_the_registry() {
         let (l, set) = (Layout::default(), all());
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "selection", "markers", "playlist", "match"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["history", "markers", "playlist", "match"]);
         assert_eq!(l.visible(DockSide::Left, &set), vec!["tools", "files"]);
         assert_eq!(l.visible(DockSide::Center, &set), vec!["editor", "waveform", "spectral"]);
+        assert_eq!(l.visible(DockSide::Bottom, &set), vec!["selection", "freq", "properties", "transport", "time", "zoom"]);
+        assert_eq!(l.zone_of("selection"), Some(DockSide::Bottom));
+        assert_eq!(l.active_in(DockSide::Bottom, &set), Some("selection"));
         assert_eq!(l.zone_of("history"), Some(DockSide::Right));
         assert_eq!(l.zone_of("waveform"), Some(DockSide::Center));
         assert_eq!(l.zone_of("nope"), None);
@@ -979,6 +982,7 @@ mod tests {
     #[test]
     fn a_panel_moves_between_zones_and_into_a_tab_position() {
         let (mut l, set) = (Layout::default(), all());
+        l.move_to("selection", DockSide::Right, Some(1)).unwrap();
         l.move_to("history", DockSide::Left, None).unwrap();
         assert_eq!(l.visible(DockSide::Left, &set), vec!["tools", "files", "history"]);
         assert_eq!(l.visible(DockSide::Right, &set), vec!["selection", "markers", "playlist", "match"]);
@@ -1060,11 +1064,9 @@ mod tests {
         let l = Layout::decode("left:waveform,history,history,gone;moon:selection;right:", "left:5,bottom:abc,right:nan,x:1");
         let set = all();
         assert_eq!(l.visible(DockSide::Left, &set), vec!["history", "tools", "files"]);
-        assert_eq!(
-            l.visible(DockSide::Right, &set),
-            vec!["selection", "markers", "playlist", "match"],
-            "the missing panel returns to its default zone"
-        );
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["markers", "playlist", "match"], "the missing panels return to their default zone");
+        assert_eq!(l.zone_of("selection"), Some(DockSide::Bottom), "the missing panel returns to its default zone");
+        assert_eq!(l.active_in(DockSide::Bottom, &set), Some("selection"));
         assert_eq!(l.size(DockSide::Left), Some(220.0), "out of range: default");
         assert_eq!(Layout::decode("", ""), Layout::default());
         assert_eq!(Layout::decode("garbage", ",,"), Layout::default());
@@ -1094,7 +1096,7 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         assert_eq!(
             l.report(&set),
-            "zone.left=tools,files zone.right=history,selection,markers,playlist,match zone.bottom=freq,properties,transport,time,zoom zone.center=editor,waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=tools front.right=history front.bottom=freq maximized=- floating=-"
+            "zone.left=tools,files zone.right=history,markers,playlist,match zone.bottom=selection,freq,properties,transport,time,zoom zone.center=editor,waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=tools front.right=history front.bottom=selection maximized=- floating=-"
         );
         l.apply_command(&mut set, "move selection left").unwrap();
         l.apply_command(&mut set, "maximize selection").unwrap();
@@ -1151,7 +1153,7 @@ mod tests {
             "",
         );
         assert!(l.floating.is_empty(), "{:?}", l.floating);
-        assert_eq!(l.zone_of("selection"), Some(DockSide::Right));
+        assert_eq!(l.zone_of("selection"), Some(DockSide::Bottom));
         assert_eq!(l.zone_of("history"), Some(DockSide::Bottom));
         let l = Layout::decode("float:selection@5_6_7_8_moon", "");
         assert_eq!(l.floating[0].size, [FLOAT_SIZE_RANGE.0, FLOAT_SIZE_RANGE.0]);
@@ -1162,6 +1164,7 @@ mod tests {
     #[test]
     fn float_and_dock_commands_and_the_report() {
         let (mut set, mut l) = (all(), Layout::default());
+        l.move_to("selection", DockSide::Right, Some(1)).unwrap();
         l.apply_command(&mut set, "float history").unwrap();
         let r = l.report(&set);
         assert!(r.contains("floating=history") && r.contains("float.history=120,120,320,260"), "{r}");
@@ -1297,6 +1300,9 @@ mod tests {
     fn a_floating_window_remembers_its_monitor_in_the_layout_text() {
         let both = mons("main:0,0,1920,1080;side:1920,0,1280,1024");
         let mut l = Layout::default();
+        l.move_to("selection", DockSide::Right, None).unwrap();
+        // Start without an explicit front tab, as in the default layout.
+        l.active = Default::default();
         l.float("history", Some(([2000.0, 100.0], [320.0, 260.0]))).unwrap();
         l.float("selection", Some(([100.0, 100.0], [320.0, 260.0]))).unwrap();
         assert!(l.tag_monitors(&both));
