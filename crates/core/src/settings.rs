@@ -67,8 +67,8 @@ const KEY_IN_MAP: &str = "input_map";
 
 const KEY_SRC_QUALITY: &str = "src_quality";
 const KEY_PLAYBACK_QUALITY: &str = "playback_quality";
-const KEY_SAVE_MARKERS: &str = "save_markers";
-const KEY_SAVE_METADATA: &str = "save_metadata";
+const OLD_KEY_SAVE_MARKERS: &str = "save_markers";
+const OLD_KEY_SAVE_METADATA: &str = "save_metadata";
 const KEY_SAVE_META: &str = "save_include_metadata";
 const KEY_MARKER_PATTERN: &str = "marker_name_pattern";
 const KEY_AUTOSCROLL: &str = "autoscroll";
@@ -113,15 +113,13 @@ pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
 /// menu and is not one of them).
-pub const KEYS: [&str; 46] = [
+pub const KEYS: [&str; 44] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
     KEY_OUTPUT,
     KEY_INPUT,
     KEY_SRC_QUALITY,
-    KEY_SAVE_MARKERS,
-    KEY_SAVE_METADATA,
     KEY_SAVE_META,
     KEY_MARKER_PATTERN,
     KEY_AUTOSCROLL,
@@ -509,10 +507,6 @@ pub struct Settings {
     pub src_quality: SrcQuality,
     /// Sample-rate conversion quality for playback when the file's rate differs from the device's (`playback_quality = fast|high`).
     pub playback_quality: crate::resample::Quality,
-    /// Write the markers into a saved file by default.
-    pub save_markers: bool,
-    /// Write the metadata into a saved file by default.
-    pub save_metadata: bool,
     /// "Include markers and other metadata" when saving (A262): the default for each opened file.
     /// Off drops the markers and the INFO/BWF metadata, like Audition; only `fmt ` and `data` remain.
     pub save_include_metadata: bool,
@@ -610,8 +604,6 @@ impl Default for Settings {
             metadata_fields: None,
             src_quality: SrcQuality::High,
             playback_quality: crate::resample::Quality::default(),
-            save_markers: true,
-            save_metadata: true,
             save_include_metadata: true,
             marker_name_pattern: DEFAULT_MARKER_PATTERN.to_string(),
             autoscroll: AutoScroll::Pagewise,
@@ -680,6 +672,9 @@ impl Settings {
     /// Settings from the file's text.
     pub fn parse(text: &str) -> Settings {
         let mut s = Settings::default();
+        let mut has_save_meta = false;
+        let mut old_markers = None;
+        let mut old_metadata = None;
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -687,7 +682,8 @@ impl Settings {
             }
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
-            if key.trim() == KEY_PRESET {
+            let key = key.trim();
+            if key == KEY_PRESET {
                 if let Some(p) =
                     Preset::from_value(value, |b| (MIN_BRIGHTNESS..=MAX_BRIGHTNESS).contains(&b), |c| (MIN_CONTRAST..=MAX_CONTRAST).contains(&c))
                 {
@@ -695,7 +691,20 @@ impl Settings {
                 }
                 continue;
             }
-            match key.trim() {
+            if key == KEY_SAVE_META {
+                has_save_meta = true;
+            } else if key == OLD_KEY_SAVE_MARKERS {
+                if let Ok(b) = parse_bool(key, value) {
+                    old_markers = Some(b);
+                }
+                continue;
+            } else if key == OLD_KEY_SAVE_METADATA {
+                if let Ok(b) = parse_bool(key, value) {
+                    old_metadata = Some(b);
+                }
+                continue;
+            }
+            match key {
                 KEY_HIDDEN_PANELS => s.hidden_panels = value.split(',').map(str::trim).filter(|v| !v.is_empty()).map(String::from).collect(),
                 KEY_PANEL_LAYOUT => s.panel_layout = value.to_string(),
                 KEY_ZONE_SIZES => s.zone_sizes = value.to_string(),
@@ -740,6 +749,9 @@ impl Settings {
                     let _ = s.set(other, value);
                 }
             }
+        }
+        if !has_save_meta && (old_markers.is_some() || old_metadata.is_some()) {
+            s.save_include_metadata = !(old_markers == Some(false) && old_metadata == Some(false));
         }
         // The custom format carries the rate the file names, wherever the lines came.
         if let crate::view::TimeFormat::Custom(_) = s.time_display {
@@ -828,8 +840,6 @@ impl Settings {
             KEY_CUSTOM_FPS => self.custom_fps.to_string(),
             KEY_SRC_QUALITY => self.src_quality.name().to_string(),
             KEY_PLAYBACK_QUALITY => self.playback_quality.as_str().to_string(),
-            KEY_SAVE_MARKERS => self.save_markers.to_string(),
-            KEY_SAVE_METADATA => self.save_metadata.to_string(),
             KEY_SAVE_META => self.save_include_metadata.to_string(),
             KEY_MARKER_PATTERN => self.marker_name_pattern.clone(),
             KEY_AUTOSCROLL => self.autoscroll.name().to_string(),
@@ -913,8 +923,6 @@ impl Settings {
             KEY_PLAYBACK_QUALITY => {
                 self.playback_quality = crate::resample::Quality::parse(value).ok_or_else(|| format!("{key} is fast or high"))?;
             }
-            KEY_SAVE_MARKERS => self.save_markers = parse_bool(key, value)?,
-            KEY_SAVE_METADATA => self.save_metadata = parse_bool(key, value)?,
             KEY_SAVE_META => self.save_include_metadata = parse_on_off(key, value)?,
             KEY_MARKER_PATTERN => {
                 let n = value.chars().count();
@@ -1120,10 +1128,6 @@ impl Settings {
 ",
                 self.cut_join_ms, self.edge_ms
             ));
-        }
-        if !self.save_include_metadata {
-            out.push_str("# save_include_metadata: 0 saves only the audio (no markers or metadata); 1, the default, includes them.\n");
-            out.push_str(&format!("{KEY_SAVE_META} = 0\n"));
         }
         if let Some(output_device) = &self.output_device {
             out.push_str(&format!(

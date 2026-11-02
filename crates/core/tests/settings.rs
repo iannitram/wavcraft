@@ -380,6 +380,38 @@ fn a262_include_metadata_defaults_on_and_round_trips() {
 }
 
 #[test]
+fn old_save_markers_and_metadata_keys_map_onto_save_include_metadata() {
+    // Both old keys false means off.
+    let s = Settings::parse("save_markers = false\nsave_metadata = false\n");
+    assert!(!s.save_include_metadata, "both false -> off");
+
+    // Only one old key false means on.
+    let s = Settings::parse("save_markers = false\n");
+    assert!(s.save_include_metadata, "only markers false -> on");
+
+    let s = Settings::parse("save_metadata = false\n");
+    assert!(s.save_include_metadata, "only metadata false -> on");
+
+    // One false and one true means on.
+    let s = Settings::parse("save_markers = false\nsave_metadata = true\n");
+    assert!(s.save_include_metadata, "markers false, metadata true -> on");
+
+    let s = Settings::parse("save_markers = true\nsave_metadata = false\n");
+    assert!(s.save_include_metadata, "markers true, metadata false -> on");
+
+    // Both true means on.
+    let s = Settings::parse("save_markers = true\nsave_metadata = true\n");
+    assert!(s.save_include_metadata, "both true -> on");
+
+    // When the new key is present, it wins regardless of old keys.
+    let s = Settings::parse("save_markers = false\nsave_metadata = false\nsave_include_metadata = 1\n");
+    assert!(s.save_include_metadata, "new key wins (1)");
+
+    let s = Settings::parse("save_markers = true\nsave_metadata = true\nsave_include_metadata = 0\n");
+    assert!(!s.save_include_metadata, "new key wins (0)");
+}
+
+#[test]
 fn marker_columns_are_saved_and_unknown_names_ignored() {
     use wavcraft_core::settings::MarkerColumns;
     let dir = TempDir::new("marker-columns");

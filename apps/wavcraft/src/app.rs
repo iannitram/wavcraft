@@ -852,6 +852,20 @@ struct Scrub {
 /// Pixels of vertical drag for one step of the digit group.
 const SCRUB_PX_PER_STEP: f32 = 6.0;
 
+/// Whether a newly opened document saves its markers and other metadata: the preference.
+fn starting_include_meta(settings: &Settings) -> bool {
+    settings.save_include_metadata
+}
+
+/// Make `on` the save-metadata preference and write the settings file (`None`: no settings folder).
+fn keep_include_meta(settings: &mut Settings, file: Option<&Path>, on: bool) -> Result<(), String> {
+    settings.save_include_metadata = on;
+    match file {
+        Some(file) => settings.save(file).map_err(|e| format!("could not save the settings to {}: {e}", file.display())),
+        None => Err("this system has no settings folder, so the setting lasts until WavCraft closes".to_string()),
+    }
+}
+
 impl WaveApp {
     /// `session_dir`: the `--session-dir` flag, which wins over the environment variable and the
     /// settings file for this run.
@@ -968,6 +982,7 @@ impl WaveApp {
             tempo: Tempo::default(),
             tempo_dialog: None,
             sessions,
+            include_meta: starting_include_meta(&settings),
             settings,
             settings_path,
             fit_on_next_frame: false,
@@ -978,7 +993,6 @@ impl WaveApp {
             doc_serial: 0,
             docs: DocList::new(),
             closing_doc: false,
-            include_meta: true,
             rebuilding: None,
             saved: None,
             saving: None,
@@ -1660,15 +1674,9 @@ impl WaveApp {
                         }
                         PrefPage::MarkersMetadata => {
                             ui.label("Saved files: what goes in by default (the save options dialog can override it).");
-                            ui.label("Stored only for now: the save options that read these are not on this branch.");
-                            for (label, key, on) in [
-                                ("Include markers when saving", "save_markers", self.settings.save_markers),
-                                ("Include metadata when saving", "save_metadata", self.settings.save_metadata),
-                            ] {
-                                let mut v = on;
-                                if ui.checkbox(&mut v, label).changed() {
-                                    action = Some(PrefAction::Set(key, v.to_string()));
-                                }
+                            let mut v = self.settings.save_include_metadata;
+                            if ui.checkbox(&mut v, "Include markers and other metadata").changed() {
+                                action = Some(PrefAction::Set("save_include_metadata", v.to_string()));
                             }
                             ui.add_space(6.0);
                             ui.label("Marker name pattern ({n} is the marker's number):");
@@ -2101,7 +2109,7 @@ impl WaveApp {
                 self.tempo = self.settings.tempo_for(&self.doc_path);
                 self.doc_serial += 1;
                 self.doc_id = self.doc_serial;
-                self.include_meta = self.settings.save_include_metadata;
+                self.include_meta = starting_include_meta(&self.settings);
                 self.stats.forget();
                 self.playlist_ui.reset();
                 self.rebuilding = None;
@@ -7172,8 +7180,7 @@ impl WaveApp {
     /// for the files opened next (A262).
     fn set_include_meta(&mut self, on: bool) {
         self.include_meta = on;
-        self.settings.save_include_metadata = on;
-        if let Err(e) = self.save_settings() {
+        if let Err(e) = keep_include_meta(&mut self.settings, self.settings_path.as_deref(), on) {
             log::warn!(target: "wavcraft", "could not keep the save option: {e}");
         }
     }
@@ -9323,7 +9330,7 @@ impl WaveApp {
                             self.vorbis_quality = q;
                         }
                         if let Some(m) = meta {
-                            self.include_meta = m;
+                            self.set_include_meta(m);
                         }
                         let to = (!path.is_empty()).then(|| PathBuf::from(path));
                         // `aiff=` is for this save only.
@@ -12683,6 +12690,46 @@ mod tests {
         assert!(parse_save_args("x.wav bits=20").is_err());
         assert!(parse_save_args("x.wav bits=24 float=1").is_err());
         assert!(parse_save_args("x.wav float=2").is_err());
+    }
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let dir = std::env::temp_dir().join(format!("wavcraft-app-meta-test-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_documents_include_meta_starts_from_the_preference_and_the_choice_persists() {
+        let temp = TempDir::new("meta-pref");
+        let file = temp.0.join("settings.txt");
+        let mut settings = Settings { save_include_metadata: false, ..Default::default() };
+
+        // A newly opened document starts from the preference.
+        assert!(!starting_include_meta(&settings));
+
+        // Ticking Save As's checkbox (or `SAVE meta=1`) turns it on and keeps it in the settings file.
+        keep_include_meta(&mut settings, Some(&file), true).unwrap();
+        assert!(settings.save_include_metadata);
+        assert!(starting_include_meta(&settings), "the next document starts from the new choice");
+        assert!(Settings::load(&file).save_include_metadata, "persisted on");
+
+        // `SAVE meta=0` turns it off again.
+        keep_include_meta(&mut settings, Some(&file), false).unwrap();
+        assert!(!starting_include_meta(&settings));
+        assert!(!Settings::load(&file).save_include_metadata, "persisted off");
+
+        // With no settings folder the choice holds until close, and the caller is told.
+        assert!(keep_include_meta(&mut settings, None, true).is_err());
+        assert!(settings.save_include_metadata);
     }
 }
 
