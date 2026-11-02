@@ -939,6 +939,7 @@ impl WaveApp {
             layout_dirty: false,
             float_kind: None,
             float_typing: false,
+            float_typing: false,
             monitors: std::env::var("WAVCRAFT_MONITORS").ok().and_then(|t| match monitors::parse(&t) {
                 Ok(m) => Some(m),
                 Err(e) => {
@@ -12729,6 +12730,7 @@ mod tests {
             zone_rects: Vec::new(),
             layout_dirty: false,
             float_kind: None,
+            float_typing: false,
             monitors: None,
             workspaces: Workspaces::new(None, ""),
             workspace_name: String::new(),
