@@ -1809,11 +1809,29 @@ mod tests {
     fn stop_during_render_is_safe() {
         let ramp: Vec<f32> = (0..1000).map(|i| i as f32).collect();
         let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![ramp] });
-        let mut player = Player::new(OutputChoice::default(), ChannelMap::default(), Quality::default());
-        player.stream = None;
+        // A player with no output and no threads: `Player::new` would open the sound card and start
+        // the device watcher, which this test does not need.
+        let (commands, _inbox) = channel();
+        let player = Player {
+            shared: Arc::new(shared_with(&state)),
+            commands,
+            stream: None,
+            sink: None,
+            error: None,
+            device: String::new(),
+            host: String::new(),
+            buffer: None,
+            buffer_range: None,
+            wanted: OutputChoice::default(),
+            out_channels: 2,
+            out_rate: 48_000,
+            rack_config: Mutex::new(None),
+            held: Mutex::new(Some(Held { plan: Plan::new(0.0, 1000.0), pos: 0.0, rev: false, speed: 1.0, grain: false })),
+            wraps_base: AtomicU32::new(0),
+            reopens: AtomicU32::new(0),
+            metronome: Mutex::new(Metronome::default()),
+        };
         let shared = &*player.shared;
-        shared.rate.store(state.sample_rate(), Ordering::Relaxed);
-        shared.channels.store(state.channel_count().min(RING_CHANNELS) as u32, Ordering::Relaxed);
         play(shared, &state, 0.0, 1000.0);
         let mut out = vec![0.0f32; 64];
         let (reached, hook_reached) = mpsc::channel::<()>();
