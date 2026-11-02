@@ -202,6 +202,9 @@ struct Link {
     flush: AtomicBool,
     /// The last flush failed: the plugin stays bypassed until a later flush succeeds.
     broken: AtomicBool,
+    /// The plugin has processed audio since it was prepared or last flushed, so it may hold a
+    /// tail. A reset of a plugin that is not dirty has nothing to clear and asks for no flush.
+    dirty: AtomicBool,
     /// The stream is gone: the flush thread ends.
     stop: AtomicBool,
 }
@@ -256,6 +259,7 @@ impl Vst3Stream {
             plugin: Mutex::new(plugin),
             flush: AtomicBool::new(false),
             broken: AtomicBool::new(false),
+            dirty: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
         let worker = Arc::clone(&link);
@@ -299,6 +303,7 @@ impl EffectStream for Vst3Stream {
             buf.clear();
             buf.extend_from_slice(&src[..n]);
         }
+        link.dirty.store(true, Ordering::Relaxed);
         plugin.process(&mut self.io, n);
         for (dst, buf) in output.iter_mut().zip(&self.io) {
             let k = buf.len().min(dst.len());
@@ -311,7 +316,12 @@ impl EffectStream for Vst3Stream {
     /// stream's own buffers. The flush itself, `Vst3Plugin::reactivate`, allocates and may lock, so
     /// it runs on the stream's flush thread; until it finishes the plugin is bypassed.
     fn reset(&mut self) {
-        self.link.flush.store(true, Ordering::Release);
+        // Nothing processed since the last flush (a freshly built rack, or a second restart in a
+        // row): the plugin holds no tail, so it keeps playing with no bypass. A failed earlier
+        // flush still needs its retry.
+        if self.link.dirty.swap(false, Ordering::AcqRel) || self.link.broken.load(Ordering::Acquire) {
+            self.link.flush.store(true, Ordering::Release);
+        }
         for buf in &mut self.io {
             buf.clear();
         }
@@ -460,6 +470,7 @@ mod flush_tests {
     #[test]
     fn reset_returns_at_once_and_the_plugin_is_bypassed_while_it_flushes() {
         let mut r = rig("slow-flush", Duration::from_millis(400));
+        run(&mut r.stream);
         let t = Instant::now();
         r.stream.reset();
         assert!(t.elapsed() < Duration::from_millis(200), "reset waited for the flush: {:?}", t.elapsed());
@@ -473,6 +484,7 @@ mod flush_tests {
     #[test]
     fn a_failed_reactivation_is_reported_and_keeps_the_plugin_bypassed_until_one_works() {
         let mut r = rig("refuser", Duration::ZERO);
+        run(&mut r.stream);
         r.fail.store(true, Ordering::SeqCst);
         r.stream.reset();
         wait_until("the failed flush", || r.reactivations.load(Ordering::SeqCst) == 1 && !r.stream.link.flush.load(Ordering::SeqCst));
@@ -484,6 +496,21 @@ mod flush_tests {
         r.stream.reset();
         wait_until("the second flush", || r.reactivations.load(Ordering::SeqCst) == 2 && !r.stream.link.flush.load(Ordering::SeqCst));
         assert_eq!(run(&mut r.stream), 1.0, "a later good flush puts it back");
+    }
+
+    #[test]
+    fn a_reset_of_a_plugin_that_processed_nothing_asks_for_no_flush() {
+        let mut r = rig("untouched", Duration::ZERO);
+        r.stream.reset();
+        assert!(!r.stream.link.flush.load(Ordering::SeqCst), "a fresh plugin is not bypassed");
+        assert_eq!(run(&mut r.stream), 1.0, "it processes from the first block");
+        r.stream.reset();
+        wait_until("the flush", || r.reactivations.load(Ordering::SeqCst) == 1 && !r.stream.link.flush.load(Ordering::SeqCst));
+        r.stream.reset();
+        assert!(!r.stream.link.flush.load(Ordering::SeqCst), "a second reset with no audio in between asks for nothing");
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(r.reactivations.load(Ordering::SeqCst), 1, "only the reset after audio flushed");
+        assert_eq!(run(&mut r.stream), 1.0);
     }
 
     #[test]
