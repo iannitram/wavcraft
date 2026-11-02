@@ -801,8 +801,6 @@ pub struct WaveApp {
     /// the ruler land on frame boundaries. (PR #95 adds the general snapping switch; once both
     /// are merged this is "snapping is on" there, and `TimeFormat::snap_to_frame` is the call.)
     snap_frames: bool,
-    /// View › Time panel.
-    show_time_panel: bool,
     /// The Selection/View box being typed in: its name and its text.
     panel_edit: Option<(&'static str, String)>,
     /// The Effects Rack panel and its settings (f31).
@@ -1005,7 +1003,6 @@ impl WaveApp {
             show_mixer: false,
             mixer: MixerModel::new(),
             snap_frames: true,
-            show_time_panel: true,
             panel_edit: None,
             batch: BatchPanel::default(),
             goto: None,
@@ -3605,6 +3602,7 @@ impl WaveApp {
             "history" => self.history_panel(ui),
             "tools" => self.tools_panel(ui),
             "selection" => self.selection_view_panel(ui),
+            "time" => self.time_panel(ui),
             // Window › Frequency Analysis: a docked panel like the others (Window menu, zones, tabs).
             "freq" => {
                 let doc = self.editor.as_ref().map(|e| e.history.current().clone());
@@ -5170,7 +5168,7 @@ impl WaveApp {
             if frames == 0 {
                 return Err("no file is open".to_string());
             }
-            self.show_time_panel = true;
+            self.set_panel("time", true);
             self.goto = Some(self.fmt_time(self.selection.start()));
             return Ok(false);
         }
@@ -10192,7 +10190,6 @@ impl WaveApp {
                 if open_custom {
                     let _ = self.run_action(ActionId::TimeCustom, ui.ctx());
                 }
-                ui.checkbox(&mut self.show_time_panel, "Time panel");
                 ui.checkbox(&mut self.show_metadata, "Metadata panel");
                 ui.separator();
                 for (id, label) in [
@@ -11802,9 +11799,6 @@ impl eframe::App for WaveApp {
                 }
                 egui::Panel::right("video").default_size(360.0).show(ui, |ui| v.ui(ui));
             }
-        }
-        if self.show_time_panel {
-            egui::Panel::bottom("time_panel").show(ui, |ui| self.time_panel(ui));
         }
         if self.show_metadata {
             egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));

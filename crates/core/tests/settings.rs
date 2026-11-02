@@ -68,9 +68,26 @@ fn the_panel_layout_is_kept_in_the_settings_file() {
     assert_eq!(Layout::decode(&back.panel_layout, &back.zone_sizes), layout);
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
-        text.contains("panel_layout = left:tools,files;right:selection,markers,playlist,match;bottom:freq,properties,transport,history*"),
+        text.contains("panel_layout = left:tools,files;right:selection,markers,playlist,match;bottom:freq,properties,transport,time,history*"),
         "{text}"
     );
+}
+
+#[test]
+fn hiding_the_time_and_selection_view_panels_survives_a_settings_save_and_load() {
+    use wavcraft_core::panels::{PanelSet, by_id};
+    let dir = TempDir::new("hidden-time-selection");
+    let file = dir.0.join("settings.txt");
+    assert_eq!(by_id("time").map(|p| p.title), Some("Time"));
+    assert_eq!(by_id("selection").map(|p| p.title), Some("Selection/View"));
+    let mut set = PanelSet::default();
+    assert!(set.set("time", false));
+    assert!(set.set("selection", false));
+    Settings { hidden_panels: set.hidden_ids(), ..Settings::default() }.save(&file).unwrap();
+    let back = PanelSet::from_hidden(&Settings::load(&file).hidden_panels);
+    assert!(!back.is_shown("time"), "the Time panel is still hidden after a restart");
+    assert!(!back.is_shown("selection"), "Selection/View is still hidden after a restart");
+    assert!(back.is_shown("waveform"), "the other panels are still shown");
 }
 
 #[test]
