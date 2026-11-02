@@ -12601,13 +12601,7 @@ mod tests {
         let ctx = egui::Context::default();
         let keymap = Keymap::new();
         ctx.memory_mut(|m| m.request_focus(egui::Id::new("text_field")));
-        let press = egui::Event::Key {
-            key: Key::Space,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        };
+        let press = egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
         let mut got = Vec::new();
         let mut output = ctx.run_ui(egui::RawInput { events: vec![press], ..Default::default() }, |ui| {
             got = pressed_commands(ui.ctx(), &keymap);
