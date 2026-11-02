@@ -21,10 +21,9 @@ impl Drop for TempDir {
     }
 }
 
-const NEW_KEYS: [(&str, &str); 8] = [
+const NEW_KEYS: [(&str, &str); 7] = [
     ("src_quality", "high"),
-    ("save_markers", "true"),
-    ("save_metadata", "true"),
+    ("save_include_metadata", "true"),
     ("marker_name_pattern", "Marker {n}"),
     ("autoscroll", "pagewise"),
     ("jkl_speed_steps", "0.5,1,2,4"),
@@ -46,7 +45,7 @@ fn defaults_and_typed_getters() {
     assert_eq!(s.jkl_speed_steps(), &[0.5, 1.0, 2.0, 4.0]);
     assert_eq!(s.preroll(), Duration::from_secs(2));
     assert_eq!(s.postroll(), Duration::from_secs(2));
-    assert!(s.save_markers && s.save_metadata);
+    assert!(s.save_include_metadata);
     assert_eq!(s.record_offset_ms, 0);
 }
 
@@ -57,8 +56,7 @@ fn every_new_key_round_trips_through_the_file() {
     let mut s = Settings::default();
     for (k, v) in [
         ("src_quality", "best"),
-        ("save_markers", "false"),
-        ("save_metadata", "false"),
+        ("save_include_metadata", "false"),
         ("marker_name_pattern", "Cue = {n} (take)"),
         ("autoscroll", "centred"),
         ("jkl_speed_steps", "0.25,1,3.5,8"),
@@ -79,6 +77,7 @@ fn every_new_key_round_trips_through_the_file() {
     assert_eq!(back.postroll(), Duration::ZERO);
     assert_eq!(back.record_offset_ms, -35);
     assert_eq!(back.marker_name_pattern, "Cue = {n} (take)");
+    assert!(!back.save_include_metadata);
 }
 
 #[test]
@@ -96,8 +95,7 @@ fn bad_values_are_refused_and_change_nothing() {
     let mut s = Settings::default();
     for (k, v) in [
         ("src_quality", "ultra"),
-        ("save_markers", "maybe"),
-        ("save_metadata", "2"),
+        ("save_include_metadata", "maybe"),
         ("marker_name_pattern", ""),
         ("marker_name_pattern", "a\nb"),
         ("marker_name_pattern", &"x".repeat(200)),
@@ -122,10 +120,10 @@ fn bad_values_are_refused_and_change_nothing() {
     }
     assert_eq!(s, Settings::default(), "refused values changed nothing");
     // A bad line in a file leaves that key's default.
-    let p = Settings::parse("autoscroll = nope\npreroll_s = 99\nsave_markers = false\n");
+    let p = Settings::parse("autoscroll = nope\npreroll_s = 99\nsave_include_metadata = 0\n");
     assert_eq!(p.autoscroll, AutoScroll::Pagewise);
     assert_eq!(p.preroll(), Duration::from_secs(2));
-    assert!(!p.save_markers);
+    assert!(!p.save_include_metadata);
 }
 
 #[test]

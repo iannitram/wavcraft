@@ -964,6 +964,7 @@ impl WaveApp {
             tempo: Tempo::default(),
             tempo_dialog: None,
             sessions,
+            include_meta: settings.save_include_metadata,
             settings,
             settings_path,
             fit_on_next_frame: false,
@@ -974,7 +975,6 @@ impl WaveApp {
             doc_serial: 0,
             docs: DocList::new(),
             closing_doc: false,
-            include_meta: true,
             rebuilding: None,
             saved: None,
             saving: None,
@@ -1656,15 +1656,9 @@ impl WaveApp {
                         }
                         PrefPage::MarkersMetadata => {
                             ui.label("Saved files: what goes in by default (the save options dialog can override it).");
-                            ui.label("Stored only for now: the save options that read these are not on this branch.");
-                            for (label, key, on) in [
-                                ("Include markers when saving", "save_markers", self.settings.save_markers),
-                                ("Include metadata when saving", "save_metadata", self.settings.save_metadata),
-                            ] {
-                                let mut v = on;
-                                if ui.checkbox(&mut v, label).changed() {
-                                    action = Some(PrefAction::Set(key, v.to_string()));
-                                }
+                            let mut v = self.settings.save_include_metadata;
+                            if ui.checkbox(&mut v, "Include markers and other metadata").changed() {
+                                action = Some(PrefAction::Set("save_include_metadata", v.to_string()));
                             }
                             ui.add_space(6.0);
                             ui.label("Marker name pattern ({n} is the marker's number):");
@@ -9314,7 +9308,7 @@ impl WaveApp {
                             self.vorbis_quality = q;
                         }
                         if let Some(m) = meta {
-                            self.include_meta = m;
+                            self.set_include_meta(m);
                         }
                         let to = (!path.is_empty()).then(|| PathBuf::from(path));
                         // `aiff=` is for this save only.
@@ -12616,6 +12610,264 @@ mod tests {
         assert!(parse_save_args("x.wav bits=20").is_err());
         assert!(parse_save_args("x.wav bits=24 float=1").is_err());
         assert!(parse_save_args("x.wav float=2").is_err());
+    }
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let dir = std::env::temp_dir().join(format!("wavcraft-app-meta-test-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_app(dir: &Path, settings: Settings) -> WaveApp {
+        let ctx = egui::Context::default();
+        let sessions = SessionFolder {
+            path: dir.to_path_buf(),
+            source: FolderSource::Default,
+            warning: None,
+        };
+        let settings_path = Some(dir.join("settings.txt"));
+        let player = Player::new(output_choice(&settings), settings.output_map.clone(), settings.playback_quality);
+        let include_meta = settings.save_include_metadata;
+        WaveApp {
+            spectral_dirty: false,
+            doc: None,
+            tool: Tool::default(),
+            menu_area: Menu::Editor,
+            band: None,
+            feather_hz: 0.0,
+            feather_ms: 0.0,
+            marquee: None,
+            drag_origin: None,
+            generation: 0,
+            view: Viewport { start: 0.0, frames_per_px: 1.0 },
+            amp_zoom: AmpZoom::full(),
+            nav_drag: None,
+            selection: Selection::default(),
+            player,
+            transport: Transport::default(),
+            head_scrub: ScrubState::default(),
+            hold: Hold::default(),
+            clock: Instant::now(),
+            params: SpectrogramParams::default(),
+            panels: PanelSet::default(),
+            layout: Layout::default(),
+            hover: None,
+            hover_next: None,
+            tab_rects: Vec::new(),
+            zone_rects: Vec::new(),
+            layout_dirty: false,
+            float_kind: None,
+            monitors: None,
+            workspaces: Workspaces::new(None, ""),
+            workspace_name: String::new(),
+            freq: FreqPanel::default(),
+            spectrum: None,
+            freq_drag: None,
+            free_space: None,
+            last_op: None,
+            editor_layout: None,
+            pointer: None,
+            renderer: Renderer::new(&ctx, Vec::new()),
+            opening: None,
+            test_busy_until: None,
+            open_queue: VecDeque::new(),
+            open_failures: Vec::new(),
+            appending: None,
+            inserting: None,
+            error: None,
+            notice: None,
+            sessions,
+            settings_path,
+            fit_on_next_frame: false,
+            title: String::new(),
+            editor: None,
+            doc_path: PathBuf::new(),
+            doc_id: 0,
+            doc_serial: 0,
+            docs: DocList::new(),
+            closing_doc: false,
+            include_meta,
+            rebuilding: None,
+            saved: None,
+            saving: None,
+            batch_write: None,
+            running: None,
+            save_type: None,
+            vorbis_quality: VORBIS_DEFAULT_QUALITY,
+            aiff_kind: AiffKind::Aiff,
+            export_open: false,
+            scripted_pick: None,
+            export_choice: ExportChoice::default(),
+            export_presets_path: None,
+            export_presets: ExportPresets::default(),
+            export_preset_name: String::new(),
+            size_cache: None,
+            dialog_format: None,
+            confirm_close: false,
+            allow_close: false,
+            os_clipboard: crate::oscb::OsClipboard::new(),
+            editor_width: 800.0,
+            making: None,
+            new_audio: None,
+            close_all: false,
+            save_all: None,
+            hud: HudState::default(),
+            show_mixer: false,
+            mixer: MixerModel::new(),
+            snap_frames: true,
+            panel_edit: None,
+            batch: BatchPanel::default(),
+            goto: None,
+            scrub: None,
+            insert_silence: None,
+            stats: StatsPanel::default(),
+            raw_import: None,
+            mix_paste: None,
+            custom_fps_dialog: None,
+            confirm_clear_history: false,
+            keeper: display::WindowKeeper::new(None),
+            files: files::View::default(),
+            ctx: ctx.clone(),
+            recent_path: None,
+            recent: Recent::default(),
+            imports: Vec::new(),
+            meta: HashMap::new(),
+            convert_dialog: None,
+            interpret: None,
+            convert_presets: PresetFile::default(),
+            snap_targets: Vec::new(),
+            rec: Recording::default(),
+            integrating: None,
+            show_metadata: false,
+            meta_draft: Vec::new(),
+            meta_for: None,
+            meta_filter: String::new(),
+            meta_sets: wavcraft_core::meta_view::DisplaySets::default(),
+            meta_set_name: String::new(),
+            video: None,
+            show_video: true,
+            video_waiters: Waiters::default(),
+            history_focus: false,
+            history_refocus: None,
+            effect_dialog: None,
+            diag: DiagPanel::new(),
+            diag_wait: false,
+            previewing: false,
+            keymap: Keymap::default(),
+            shortcuts_path: None,
+            shortcut_sets: None,
+            shortcut_dialog: None,
+            mtv: MtView::default(),
+            cdv: CdView::default(),
+            meters: MetersUi::new(),
+            matcher: MatchUi::new(),
+            input: InputMonitor::new(),
+            meter_input: false,
+            mic: None,
+            mic_dialog: None,
+            prefs: None,
+            recovery: Recovery::new(Vec::new(), None, || {}),
+            prefs_usage: None,
+            prefs_confirm_cleanup: false,
+            applied_look: None,
+            applied_palette: None,
+            dark: true,
+            brightness: 1.0,
+            contrast: 1.0,
+            preset_name: String::new(),
+            devices: Devices::default(),
+            devices_rx: None,
+            profiles: ProfileStore::default(),
+            profiles_path: None,
+            profile_rx: None,
+            shift_frames: SHIFT_RESET_FRAMES,
+            rack: RackPanel::new(),
+            clip_edit: None,
+            metadata: MetadataDisplay::default(),
+            metadata_dialog: false,
+            markers_ui: MarkersUi::new(),
+            playlist_ui: PlaylistUi::default(),
+            peak_dir: dir.to_path_buf(),
+            peak_report: None,
+            show_about: false,
+            confirm_reset_prefs: false,
+            control: None,
+            time_format: settings.time_display,
+            tempo: Tempo::default(),
+            tempo_dialog: None,
+            settings,
+        }
+    }
+
+    #[test]
+    fn a_newly_opened_documents_include_meta_starts_from_preference_and_persists() {
+        let temp = TempDir::new("meta-pref");
+        let settings_file = temp.0.join("settings.txt");
+        let settings = Settings { save_include_metadata: false, ..Default::default() };
+        let mut app = test_app(&temp.0, settings);
+
+        // A newly opened document's include_meta starts from the preference (which is false here).
+        let doc = Document::from_buffer(wavcraft_core::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 1000]] }).unwrap();
+        let (tx, rx) = channel();
+        tx.send(Ok(doc)).unwrap();
+        app.opening = Some(Opening {
+            path: PathBuf::from("test.wav"),
+            result: rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress: Arc::new(AtomicU32::new(0)),
+            fresh: true,
+            started: Instant::now(),
+        });
+        app.finish_opening();
+        assert!(!app.include_meta, "newly opened document starts from preference (false)");
+
+        // Save As checkbox: ticking it turns it on and persists to settings.
+        app.set_include_meta(true);
+        assert!(app.include_meta);
+        assert!(app.settings.save_include_metadata);
+        let reloaded = Settings::load(&settings_file);
+        assert!(reloaded.save_include_metadata, "Save As checkbox persisted on to settings file");
+
+        // SAVE meta=0: persists to preference and settings file.
+        let ctx = egui::Context::default();
+        let save1 = temp.0.join("test.wav");
+        let _ = app.control_request(&format!("SAVE {} meta=0", save1.display()), &ctx);
+        assert!(!app.include_meta);
+        assert!(!app.settings.save_include_metadata);
+        let reloaded = Settings::load(&settings_file);
+        assert!(!reloaded.save_include_metadata, "SAVE meta=0 persisted off to settings file");
+
+        // And opening another document now starts from the new preference (false).
+        let doc2 = Document::from_buffer(wavcraft_core::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 1000]] }).unwrap();
+        let (tx2, rx2) = channel();
+        tx2.send(Ok(doc2)).unwrap();
+        app.opening = Some(Opening {
+            path: PathBuf::from("test2.wav"),
+            result: rx2,
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress: Arc::new(AtomicU32::new(0)),
+            fresh: true,
+            started: Instant::now(),
+        });
+        app.finish_opening();
+        assert!(!app.include_meta, "second opened document starts from updated preference (false)");
+
+        // SAVE meta=1: persists back to on.
+        let save2 = temp.0.join("test2.wav");
+        let _ = app.control_request(&format!("SAVE {} meta=1", save2.display()), &ctx);
+        assert!(app.include_meta);
+        assert!(app.settings.save_include_metadata);
+        let reloaded = Settings::load(&settings_file);
+        assert!(reloaded.save_include_metadata, "SAVE meta=1 persisted on to settings file");
     }
 }
 
