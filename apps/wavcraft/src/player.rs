@@ -1251,6 +1251,26 @@ where
     if let (true, Some(r)) = (was_playing, rack.as_mut()) {
         run_rack(r, out, channels);
     }
+    // Levels follows the Effects Rack output: what you hear, like Audition.
+    record_output_levels(shared, out, channels);
+}
+
+/// Record peaks from the first two device channels; a mono device feeds both meters.
+fn record_output_levels<T: cpal::Sample + cpal::FromSample<f32>>(shared: &Shared, out: &[T], channels: usize)
+where
+    f32: cpal::FromSample<T>,
+{
+    let mut peak = [0.0f32; 2];
+    if channels > 0 {
+        for frame in out.chunks(channels) {
+            let left = f32::from_sample(frame[0]).abs();
+            let right = if channels > 1 { f32::from_sample(frame[1]).abs() } else { left };
+            peak[0] = peak[0].max(left);
+            peak[1] = peak[1].max(right);
+        }
+    }
+    shared.levels.record(0, peak[0]);
+    shared.levels.record(1, peak[1]);
 }
 
 /// Build and park the rack for an output. An inactive configuration removes the rack.
@@ -1430,7 +1450,6 @@ where
     let last_k = last.min(i64::MAX as u64) as i64;
     let reach = sinc.map_or(0, |r| r.half_width().ceil() as u64);
     let mut finished = false;
-    let mut peak = [0.0f32; 2];
     for frame in out.chunks_mut(channels) {
         if lead > 0.0 {
             // The count-in (C201): clicks only, while the playhead waits at the start.
@@ -1469,10 +1488,6 @@ where
             let b = if i + 1 < last { sample(i + 1, c) } else { a };
             gain * (a + (b - a) * frac)
         };
-        // Level tap: the first two file channels (a mono file shows on both), before the mix-down.
-        let l = interp(0);
-        let r = if file_channels > 1 { interp(1) } else { l };
-        peak = [peak[0].max(l.abs()), peak[1].max(r.abs())];
         if !map.is_default() {
             // An explicit map: each device channel plays the document channels mapped to it
             // (summed), and nothing else.
@@ -1521,8 +1536,6 @@ where
         add_click(frame, click_at(pos));
         pos += step;
     }
-    shared.levels.record(0, peak[0]);
-    shared.levels.record(1, peak[1]);
     before_commit();
     let Ok(mut state) = shared.state.try_lock() else { return playback.playing };
     if state.generation == playback.generation {
@@ -2076,16 +2089,34 @@ mod tests {
         let shared = shared_with(&state);
         play(&shared, &state, 0.0, 4.0);
         let mut out = vec![0.0f32; 8];
-        render(&shared, &mut out, 2, 48_000.0);
+        let mut rack = None;
+        device_callback(&shared, &mut out, 2, 48_000.0, &mut rack);
         assert_eq!(shared.levels.take(), [0.5, 1.0]);
         assert_eq!(shared.levels.take(), [0.0, 0.0], "taking starts over");
         // A mono file shows on both bars; a stopped player records nothing.
         let mono = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0, 0.75]] });
         let shared = shared_with(&mono);
         play(&shared, &mono, 0.0, 2.0);
-        render(&shared, &mut out, 2, 48_000.0);
+        device_callback(&shared, &mut out, 2, 48_000.0, &mut rack);
         assert_eq!(shared.levels.take(), [0.75, 0.75]);
-        render(&shared, &mut out, 2, 48_000.0);
+        device_callback(&shared, &mut out, 2, 48_000.0, &mut rack);
+        assert_eq!(shared.levels.take(), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_levels_meter_records_post_rack_gain() {
+        let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 64]] });
+        let shared = shared_with(&state);
+        play(&shared, &state, 0.0, 64.0);
+        let cfg = rack_of(&[("gain", Some(vec![-6.0206]))]);
+        *shared.rack_mailbox.lock().unwrap() = Some(Box::new(RackProcessor::new(&cfg, 2, 48_000).unwrap()));
+        shared.rack_new.store(true, Ordering::Release);
+        let mut out = vec![0.0f32; 128];
+        let mut rack = None;
+        device_callback(&shared, &mut out, 2, 48_000.0, &mut rack);
+        let expected = out.iter().copied().map(f32::abs).fold(0.0, f32::max);
+        assert!((expected - 0.25).abs() < 1e-4);
+        assert_eq!(shared.levels.take(), [expected, expected]);
         assert_eq!(shared.levels.take(), [0.0, 0.0]);
     }
 
