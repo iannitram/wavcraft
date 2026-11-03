@@ -66,6 +66,11 @@ impl Markers {
         self.list.iter()
     }
 
+    /// The id the next added marker gets (the store never reuses one).
+    pub fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
     pub fn as_slice(&self) -> &[Marker] {
         &self.list
     }
@@ -161,6 +166,15 @@ impl Markers {
         }
         out.list.sort_by_key(|m| (m.start, m.id));
         out
+    }
+
+    /// Markers as they were stored: the ids are kept as given (they are stable across undo), the
+    /// list is ordered by (start, id), and the next id is `next_id` or past the highest id given,
+    /// whichever is larger.
+    pub fn from_raw(mut list: Vec<Marker>, next_id: u64) -> Markers {
+        list.sort_by_key(|m| (m.start, m.id));
+        let next_id = list.iter().map(|m| m.id.saturating_add(1)).max().unwrap_or(0).max(next_id);
+        Markers { list, next_id }
     }
 
     /// A copy with every start and end passed through `f` (ids and names kept): a change of
