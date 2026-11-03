@@ -417,6 +417,9 @@ struct Hooks<'a> {
     metadata: bool,
     /// The chunks written after `data` when `metadata` is set.
     extra: &'a [ExtraChunk],
+    /// Whether a whole-document WAV save copies the source's chunks and the document's markers
+    /// (`plan_chunks`). Off for a [`Slice`]: its file holds only `data` and the slice's own chunks.
+    source_chunks: bool,
     /// Set from another thread to stop the save (A263).
     cancel: Option<&'a AtomicBool>,
     /// Test only: wait this long after each 64 K-frame block.
@@ -438,6 +441,7 @@ fn no_hooks<'a>() -> Hooks<'a> {
         plain: None,
         metadata: true,
         extra: &[],
+        source_chunks: true,
         cancel: None,
         block_delay: Duration::ZERO,
         transform: None,
@@ -522,8 +526,8 @@ pub fn save_wav_dithered(
 
 /// A part of a document to write as a WAV file: some channels (in this order), a frame range,
 /// and the bytes of the `cue `/`LIST` chunks to put after the audio (empty for none).
-/// Used by Extract Channels and by exporting ranges (f79); the whole-file save is the part of
-/// every channel and every frame, and keeps its source chunks.
+/// Used by Extract Channels and by exporting ranges (f79). A slice never copies the source's
+/// chunks or the document's markers, even when it covers the whole document.
 pub struct Slice {
     pub channels: Vec<usize>,
     pub range: Range<u64>,
@@ -543,7 +547,7 @@ pub fn save_slice(
 ) -> Result<(), SaveError> {
     let part = Part { frames: slice.range.clone(), channels: slice.channels.clone() };
     let extra = split_chunks(&slice.markers);
-    let hooks = Hooks { fail_after, relocate: false, extra: &extra, ..no_hooks() };
+    let hooks = Hooks { fail_after, relocate: false, extra: &extra, source_chunks: false, ..no_hooks() };
     save_inner(doc, target, SaveFormat::Wav, ty, &part, progress, hooks)
 }
 
@@ -888,7 +892,7 @@ fn write_stream(
             let out_channels = hooks.transform.map_or(channels, |c| c.borrow().channels);
             let ch16 = u16::try_from(out_channels).map_err(|_| invalid("too many channels for WAV"))?;
             let whole = part.frames.start == 0 && part.frames.end == doc.len_frames() && part.channels.iter().copied().eq(0..doc.channel_count());
-            let (mut plan, mut source) = if whole { plan_chunks(doc, ty, hooks.metadata) } else { (vec![Item::Data], None) };
+            let (mut plan, mut source) = if whole && hooks.source_chunks { plan_chunks(doc, ty, hooks.metadata) } else { (vec![Item::Data], None) };
             if hooks.metadata {
                 // A262: the caller's chunks go last, so the RIFF size and the relocation table cover them.
                 plan.extend(hooks.extra.iter().map(|c| Item::Fresh { id: c.id, body: c.data.clone() }));
