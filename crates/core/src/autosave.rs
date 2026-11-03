@@ -25,7 +25,7 @@
 //! Each history step is recorded with **its own** document state: its sample rate and its source
 //! (so an older step restored by undo has the rate and source it had), and any number of
 //! [`Extra`] records, opaque versioned text per step that features keeping data beside the
-//! samples (markers) give through [`Snapshot::with_extras`] and read back from
+//! samples give through [`Snapshot::with_extras`] and read back from
 //! [`Recovered::extras`]. Unknown keys and versions are carried, never dropped.
 //!
 //! The journal is plain text (see `encode`), versioned, with an FNV-1a checksum of everything
@@ -46,6 +46,7 @@ use soundcraft_audio_io::{BwfInfo, FileFormat, SampleFormat};
 
 use crate::doc::history::History;
 use crate::doc::{Channel, ChunkInfo, DocState, Piece, SourceFormat};
+use crate::markers::{Marker, Markers};
 use crate::store::{BlockHandle, BlockId, BlockRef, Encoding, HELD_FILE, LOCK_FILE, Store, StoreOptions, machine_id, stale_candidates};
 
 /// The journal in a session folder.
@@ -304,6 +305,18 @@ fn encode(snap: &Snapshot, next_id: u64) -> Result<String, String> {
         let src = source_index[&(Arc::as_ptr(st.source()) as usize)];
         let _ = writeln!(o, "step {} {} {src} {}", esc(label), st.sample_rate(), list.join(" "));
     }
+    // Markers per step: `marks <step> <next id>`, then one `mark` line per marker. A step with no
+    // markers and no ids used writes nothing (an old journal reads as none).
+    for (i, (_, st)) in snap.steps.iter().enumerate() {
+        let m = st.markers();
+        if m.is_empty() && m.next_id() == 0 {
+            continue;
+        }
+        let _ = writeln!(o, "marks {i} {}", m.next_id());
+        for k in m.iter() {
+            let _ = writeln!(o, "mark {i} {} {} {} {}", k.id, k.start, k.end, esc(&k.name));
+        }
+    }
     for (i, list) in snap.extras.iter().enumerate().take(snap.steps.len()) {
         for x in list {
             if x.key.is_empty() {
@@ -352,6 +365,10 @@ struct Parsed {
     blocks: Vec<BlockRef>,
     chans: Vec<Vec<(u64, u32, u32)>>,
     steps: Vec<ParsedStep>,
+    /// Per step with a `marks` line: its step index and next marker id.
+    marks: Vec<(usize, u64)>,
+    /// Per `mark` line: its step index and the marker.
+    mark_items: Vec<(usize, Marker)>,
     extras: Vec<(usize, Extra)>,
     cursor: usize,
 }
@@ -381,8 +398,17 @@ fn decode(text: &str) -> Result<Parsed, String> {
     }
     let num =
         |t: Option<&str>| -> Result<u64, String> { t.ok_or("a line is too short")?.parse::<u64>().map_err(|_| "a number is wrong".to_string()) };
-    let mut p =
-        Parsed { next_id: 0, sources: Vec::new(), blocks: Vec::new(), chans: Vec::new(), steps: Vec::new(), extras: Vec::new(), cursor: usize::MAX };
+    let mut p = Parsed {
+        next_id: 0,
+        sources: Vec::new(),
+        blocks: Vec::new(),
+        chans: Vec::new(),
+        steps: Vec::new(),
+        marks: Vec::new(),
+        mark_items: Vec::new(),
+        extras: Vec::new(),
+        cursor: usize::MAX,
+    };
     for line in lines {
         let mut t = line.split_whitespace();
         match t.next() {
@@ -450,6 +476,19 @@ fn decode(text: &str) -> Result<Parsed, String> {
                 let chans = t.map(|x| x.parse::<usize>().map_err(|_| "a channel index is wrong".to_string())).collect::<Result<Vec<_>, _>>()?;
                 p.steps.push(ParsedStep { label, rate, source, chans });
             }
+            Some("marks") => {
+                let step = usize::try_from(num(t.next())?).map_err(|_| "a step index is too big")?;
+                p.marks.push((step, num(t.next())?));
+            }
+            Some("mark") => {
+                let step = usize::try_from(num(t.next())?).map_err(|_| "a step index is too big")?;
+                let id = num(t.next())?;
+                let start = num(t.next())?;
+                let end = num(t.next())?;
+                let name = unesc(t.next().ok_or("a line is too short")?)?;
+                // Colour and description are not in the journal (the line format is fixed).
+                p.mark_items.push((step, Marker { id, name, start, end, description: String::new(), color: 0 }));
+            }
             Some("extra") => {
                 let step = usize::try_from(num(t.next())?).map_err(|_| "a step index is too big")?;
                 let key = unesc(t.next().ok_or("a line is too short")?)?;
@@ -473,6 +512,9 @@ fn decode(text: &str) -> Result<Parsed, String> {
     }
     if p.extras.iter().any(|(i, _)| *i >= p.steps.len()) {
         return Err("an extra record names a step that is not there".to_string());
+    }
+    if p.marks.iter().any(|(i, _)| *i >= p.steps.len()) || p.mark_items.iter().any(|(i, _)| *i >= p.steps.len()) {
+        return Err("a marker names a step that is not there".to_string());
     }
     Ok(p)
 }
@@ -810,13 +852,23 @@ pub fn recover(dir: &Path, opts: StoreOptions) -> Result<Recovered, RecoverError
     for (i, x) in parsed.extras {
         extras[i].push(x);
     }
+    let mut marks: HashMap<usize, Vec<Marker>> = HashMap::new();
+    for (i, m) in parsed.mark_items {
+        marks.entry(i).or_default().push(m);
+    }
+    let next_ids: HashMap<usize, u64> = parsed.marks.into_iter().collect();
     let mut steps = Vec::with_capacity(parsed.steps.len());
-    for ParsedStep { label, rate, source, chans } in parsed.steps {
+    for (i, ParsedStep { label, rate, source, chans }) in parsed.steps.into_iter().enumerate() {
         let chs = chans
             .iter()
             .map(|i| channels.get(*i).cloned().ok_or_else(|| bad("a step names a channel that is not there".to_string())))
             .collect::<Result<Vec<_>, _>>()?;
-        let state = DocState::from_shared(store.clone(), chs, rate, sources[source].clone()).map_err(|e| bad(e.to_string()))?;
+        let mut state = DocState::from_shared(store.clone(), chs, rate, sources[source].clone()).map_err(|e| bad(e.to_string()))?;
+        let list = marks.remove(&i);
+        if list.is_some() || next_ids.contains_key(&i) {
+            let next_id = next_ids.get(&i).copied().unwrap_or(0);
+            state = state.with_markers(Arc::new(Markers::from_raw(list.unwrap_or_default(), next_id)));
+        }
         steps.push((label, state));
     }
     store.thaw();
