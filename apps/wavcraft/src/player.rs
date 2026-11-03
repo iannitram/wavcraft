@@ -2047,7 +2047,6 @@ mod tests {
         assert!((out[0] - 0.01).abs() < 1e-6 && (out[1] - 0.02).abs() < 1e-6, "{out:?}");
     }
 
-    /// f26: what the callback sends is what the Levels panel gets, per channel, without a lock.
     /// Set the channel map a play is rendered through (the text form, as the settings hold it).
     fn set_map(shared: &Shared, text: &str) {
         let map = ChannelMap::parse(text).unwrap_or_default();
@@ -2083,6 +2082,7 @@ mod tests {
         assert!(out.iter().all(|v| *v == 0.0), "{out:?}");
     }
 
+    /// f26: what the callback sends is what the Levels panel gets, per channel, without a lock.
     #[test]
     fn the_callback_records_the_peaks_it_sends() {
         let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0, 0.25, -0.5, 0.0], vec![0.0, 0.125, 0.0, -1.0]] });
