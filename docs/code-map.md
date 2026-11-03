@@ -144,7 +144,7 @@ All present on `main`. The first column is the file under `crates/core/src/` unl
 | `tools/checks/` | Locked checks for single issues, run by hand: `1010-stub-limiter.sh` (the stub limiter is gone, `match_loudness.rs` unchanged, `cargo check --workspace`), `971-stft-duplicate.sh` |
 | | `cd_ui.rs` (f121) | The CD Layout view (View › CD Layout) and the `CD` control verb (`add`, `adddoc`, `pause`, `meta`, `move`, `remove`, `limit`, `view`, `state`, `export`) |
 | | `input_meter.rs` (f56) | The input meter: `InputTap` (lock-free per-callback peaks and run totals), `InputStats` (verdict too-quiet, ok or clipping), `FakeInput` for `WAVCRAFT_FAKE_INPUT` |
-| `apps/wavcraft/src/input.rs` (f56) | `InputMonitor`: the input stream (or the fake thread), open only while the Levels 'Input' toggle is on or a mic check listens; Window > Meter Input Signal, Window > Mic Check…, actions `meter.input.*`, control `MICCHECK` |
+| `apps/wavcraft/src/input_monitor.rs` (f56) | `InputMonitor`: the input stream (or the fake thread), open only while the Levels 'Input' toggle is on or a mic check listens; Window > Meter Input Signal, Window > Mic Check…, actions `meter.input.*`, control `MICCHECK` |
 
 Workspace: `Cargo.toml` at the root; `unsafe_code = "forbid"` for every crate that inherits the
 workspace lints. Members: `crates/core`, `crates/testkit`, `crates/craft-log`, `crates/craft-stage`, `apps/wavcraft`. The test counts that stood here (21 in the core, 9 in the app) predate task 02 and were dropped; run `cargo test --workspace` for the count.
