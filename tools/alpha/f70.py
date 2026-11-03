@@ -44,6 +44,10 @@ def kv(line):
     return dict(x.split("=", 1) for x in line.split()[1:])
 
 
+def prefs(c):
+    return {k: c.ask(f"PREF get {k}")[3:] for k in ("autosave_enabled", "autosave_interval_secs", "autosave_keep_days", "cache_mb")}
+
+
 def run(exe, port, keep):
     base = os.environ.get("WAVCRAFT_SCRATCH") or tempfile.gettempdir()
     os.makedirs(base, exist_ok=True)
@@ -94,7 +98,7 @@ def run(exe, port, keep):
             time.sleep(0.2)
         mid = machine_id()
         check("run 1: the app made its machine id", len(mid) == 32, mid)
-        defaults = kv(c.ask("PREF get"))
+        defaults = prefs(c)
         check("defaults: Auto Save on, 2 s, 30 days, default cache", defaults == {"autosave_enabled": "on", "autosave_interval_secs": "2", "autosave_keep_days": "30", "cache_mb": "default"}, defaults)
         c.ask("QUIT")
         p.wait(20)
@@ -140,12 +144,12 @@ def run(exe, port, keep):
 
         # Auto Save preferences.
         check("PREF set refuses a bad value", c.ask("PREF set autosave_interval_secs 0").startswith("ERR") and c.ask("PREF set autosave_enabled maybe").startswith("ERR"))
-        check("PREF set autosave_enabled off", c.ask("PREF set autosave_enabled off") == "OK autosave_enabled=off")
+        check("PREF set autosave_enabled off", c.ask("PREF set autosave_enabled off") == "OK")
         edit(c, 2)
         time.sleep(4)
         a = c.autosave()
         check("with Auto Save off an edit offers no journal", a["offered"] == "0" and a["written"] == "0", a)
-        check("PREF set autosave_enabled on", c.ask("PREF set autosave_enabled on") == "OK autosave_enabled=on")
+        check("PREF set autosave_enabled on", c.ask("PREF set autosave_enabled on") == "OK")
         c.ask("PREF set autosave_interval_secs 6")
         edit(c)
         for _ in range(50):
@@ -169,7 +173,8 @@ def run(exe, port, keep):
         info = kv(c.ask("CACHE info"))
         check("the cache size and keep days are reported", info["cache_mb"] == "128" and info["keep_days"] == "7", info)
         text = settings_text()
-        check("settings.txt holds the keys", all(k in text for k in ("autosave_enabled = on", "autosave_interval_secs = 6", "autosave_keep_days = 7", "cache_mb = 128")), text)
+        check("settings.txt holds the keys", all(k in text for k in ("autosave_interval_secs = 6", "autosave_keep_days = 7", "cache_mb = 128")), text)
+        check("settings.txt: Auto Save is on (the default), so it is absent or reads on", "autosave_enabled" not in text or "autosave_enabled = on" in text, text)
         c.ask("QUIT discard")
         p.wait(20)
     except Exception as e:
@@ -180,7 +185,7 @@ def run(exe, port, keep):
     p, err = start(3)
     try:
         c = Control(port, token)
-        got = kv(c.ask("PREF get"))
+        got = prefs(c)
         check("run 3: the preferences persisted", got == {"autosave_enabled": "on", "autosave_interval_secs": "6", "autosave_keep_days": "7", "cache_mb": "128"}, got)
         c.ask("QUIT")
         p.wait(20)
