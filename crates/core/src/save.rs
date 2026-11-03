@@ -295,17 +295,18 @@ impl SaveFormat {
         }
     }
 
-    /// The short name used in presets and the control channel (`wav`, `aiff`, `flac`).
+    /// The short name used in presets and the control channel (`wav`, `aiff`, `flac`, `ogg`).
     pub fn key(self) -> &'static str {
         self.extension()
     }
 
-    /// The inverse of [`SaveFormat::key`] (`aif` also means AIFF).
+    /// The inverse of [`SaveFormat::key`] (`aif` also means AIFF; `oga` also means Vorbis).
     pub fn parse(s: &str) -> Option<SaveFormat> {
         match s.trim().to_ascii_lowercase().as_str() {
             "wav" => Some(SaveFormat::Wav),
             "aiff" | "aif" => Some(SaveFormat::Aiff),
             "flac" => Some(SaveFormat::Flac),
+            "ogg" | "oga" => Some(SaveFormat::Vorbis),
             _ => None,
         }
     }
