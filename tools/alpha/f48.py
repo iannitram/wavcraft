@@ -67,7 +67,7 @@ def main():
         time.sleep(0.6)
         st = c.state(wait=False)
         p1 = int(st["position"])
-        check("PLAY starts and the position advances", a.endswith("playing=1") and st["playing"] == "1" and p1 > 100000 + RATE // 4, f"{a}; {st}")
+        check("PLAY starts and the position advances", a == "OK" and st["playing"] == "1" and p1 > 100000 + RATE // 4, f"{a}; {st}")
 
         # Delete one second before the playhead while it plays.
         c.ask(f"SELECT 0 {RATE}")

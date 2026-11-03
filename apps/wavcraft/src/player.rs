@@ -230,6 +230,8 @@ struct Shared {
     /// The output follows the system's default device (none was named, or the one named is not
     /// there): only then does the watcher flag a change.
     follow_default: AtomicBool,
+    /// Simulated device changes so far under `WAVCRAFT_NO_AUDIO=1`: each one names the silent sink anew.
+    sim_changes: AtomicU32,
     /// Nothing plays while this is set (a take is being recorded; roadmap C024).
     muted: AtomicBool,
     /// The input heard through the output while recording (C025). The callback only `try_lock`s
@@ -268,6 +270,7 @@ impl Shared {
             downmix: Mutex::new(Downmix::for_file(None, 2)),
             device_changed: AtomicBool::new(false),
             follow_default: AtomicBool::new(false),
+            sim_changes: AtomicU32::new(0),
             muted: AtomicBool::new(false),
             monitor: Mutex::new(None),
             metro_on: AtomicBool::new(false),
@@ -531,7 +534,7 @@ impl Player {
         self.shared.follow_default.store(self.wanted.device.is_none(), Ordering::Relaxed);
         if no_audio() {
             let sink = Sink::start(&self.shared);
-            self.device = "test sink (no audio)".to_string();
+            self.device = test_sink_name(self.shared.sim_changes.load(Ordering::Relaxed));
             self.host = String::new();
             self.buffer = None;
             self.buffer_range = None;
@@ -771,6 +774,10 @@ impl Player {
     /// Simulate the system's default output device changing (the control channel's
     /// `DEVICE_CHANGED`): the next `maintain` reopens the output.
     pub fn simulate_device_change(&self) {
+        if no_audio() {
+            // Counted before the flag is set, so the reopen that follows reads the new count.
+            self.shared.sim_changes.fetch_add(1, Ordering::Relaxed);
+        }
         self.shared.device_changed.store(true, Ordering::Release);
     }
 
@@ -1025,6 +1032,15 @@ pub struct PlaybackInfo {
 /// True under `WAVCRAFT_NO_AUDIO=1`: no sound card, a silent real-time sink instead.
 fn no_audio() -> bool {
     std::env::var("WAVCRAFT_NO_AUDIO").is_ok_and(|v| !matches!(v.trim(), "" | "0" | "false"))
+}
+
+/// The name of the silent test sink after `changes` simulated device changes: the first open is
+/// "test sink (no audio)", and each change after it adds its count (f48, #997).
+fn test_sink_name(changes: u32) -> String {
+    match changes {
+        0 => "test sink (no audio)".to_string(),
+        n => format!("test sink (no audio) {n}"),
+    }
 }
 
 const SINK_CHANNELS: usize = 2;
@@ -2522,3 +2538,7 @@ mod tests {
         assert!(!p.resume(), "nothing to resume after a stop");
     }
 }
+
+#[cfg(test)]
+#[path = "f48_device_change_tests.rs"]
+mod f48_device_change_tests;
