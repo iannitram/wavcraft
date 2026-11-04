@@ -25,7 +25,7 @@ How to read it:
 | B1 | Waveform, amplitude ruler | #15 | partial | waveform and peaks on main (`core/document.rs`, `core/levels.rs`); amplitude ruler (f19) on `feat/ap-f68-channel-display` (#81) |
 | B2 | Spectral Frequency Display | #16 | partial | display and show/hide on main (`core/spectrogram.rs`); scale, resolution and divider on `feat/ap-f65-spectral-display` (#84), `feat/ap-f92-spectral-scale` (#85) |
 | B3 | Zoom and navigator | #17 | partial | zoom in/out, to selection, out full on main (`core/actions.rs`); navigator (f19) on #81, zoom presets on `feat/ap-f69-zoom-presets` (#83) |
-| B4 | Levels meter | #18 | built | `core/levels.rs`, `core/meters/levels_meter.rs`; tests `b4_levels_meter.rs`, `b4_levels_scale.rs` |
+| B4 | Levels meter | #18 | built | `core/levels.rs`; tests `b4_levels_scale.rs` |
 | B5 | Selection/View panel | #19 | built | `apps/wavcraft/src/app.rs` (typed begin/end/duration), formats in `core/view.rs`, `core/smpte.rs`; Go to Time (f66) on `feat/ap-f66-time-entry` (#62) |
 | C1 | Time Selection tool | #20 | built | `core/actions.rs` (Select All, Deselect), tests `i3_time_selection.rs` |
 | C2 | One channel of stereo | #21 | partial | Left/Right Channel Only and `ChannelMask` on main (`core/doc/edit.rs`); Enable Channels submenu and context-sensitive drag on `feat/ap-f42-channel-select` (#80) |
@@ -52,7 +52,7 @@ How to read it:
 | G1 | Capture Noise Print | #36 | on branch | `fleet/api-fx-139-stft-port` (#20, merged locally) |
 | G2 | Noise Reduction | #37 | on branch | `fleet/api-fx-139-stft-port` (#20, merged locally) |
 | G3 | Match Loudness | #38 | partial | loudness measurement on main (`core/loudness.rs`, tests `loudness.rs`, `match_volume.rs`); the effect on the integration branch (f33, #89) and `fleet/card-wav-38` (#92) |
-| G4 | Loudness analysis | #39 | built | `core/stats.rs`, `core/meters/amplitude_stats.rs`, `apps/wavcraft/src/statspanel.rs`; tests `g4_amplitude_stats.rs` |
+| G4 | Loudness analysis | #39 | built | `core/stats.rs`, `apps/wavcraft/src/statspanel.rs`; tests `stats.rs` |
 | H1 | Add Marker | #40 | on branch | single-file markers: `fleet/api-recut-markers` (#58) (main has multitrack markers only) |
 | H2 | Markers panel | #41 | on branch | f39 Markers panel in `feat/ap-f105-playlist` (#61) |
 | H3 | Next / previous marker | #42 | on branch | #58 (main's next/previous are multitrack only) |
