@@ -2,6 +2,7 @@
 //! settings, and Run (one undoable step). The work is `wavcraft_core::match_loudness`, on a worker
 //! thread so the window stays responsive; the app pushes the finished edit on the history.
 
+use crate::theme;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -233,7 +234,7 @@ impl MatchUi {
                 if *ok {
                     ui.label(text);
                 } else {
-                    ui.colored_label(egui::Color32::from_rgb(235, 70, 60), text);
+                    ui.colored_label(theme::pal().alert, text);
                 }
             }
         }

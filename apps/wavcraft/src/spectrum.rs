@@ -8,6 +8,7 @@
 //! from which a far view takes a few milliseconds. It builds them before the file's first
 //! picture: that picture shows the whole file, so it would run the same FFTs anyway.
 
+use crate::theme;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use egui::{Color32, ColorImage};
@@ -114,12 +115,12 @@ impl Renderer {
                 let images = sources.iter().enumerate().map(|(ch, samples)| {
                     let overview = overviews.as_ref().and_then(|o| o.channels.get(ch));
                     let levels = spectrogram::render_columns_from(samples, state.sample_rate(), job.columns, job.rows, &job.params, overview);
-                    let pixels: Vec<Color32> = levels.iter().map(|l| palette.get(usize::from(*l)).copied().unwrap_or(Color32::BLACK)).collect();
+                    let pixels: Vec<Color32> = levels.iter().map(|l| palette.get(usize::from(*l)).copied().unwrap_or(theme::pal().black)).collect();
                     // `render_columns` clamps what it is asked for; an image must be exactly its stated size.
                     if pixels.len() == cols * job.rows {
                         ColorImage::new([cols, job.rows], pixels)
                     } else {
-                        ColorImage::filled([1, 1], Color32::BLACK)
+                        ColorImage::filled([1, 1], theme::pal().black)
                     }
                 });
                 if outbox.send(Picture { job, images: images.collect() }).is_err() {
