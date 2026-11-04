@@ -42,6 +42,8 @@ mod selflog;
 mod shortcut_editor;
 mod spectrum;
 mod statspanel;
+mod theme;
+mod v1;
 mod video;
 #[cfg(windows)]
 mod win_acl;

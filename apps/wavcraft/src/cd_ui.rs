@@ -2,18 +2,16 @@
 //! total time against the disc limit, and Export (one WAV plus a CUE sheet). Also the control
 //! verb `CD`, so a script can drive it. Burning a disc is not here (roadmap C243).
 
+use crate::theme;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use egui::Color32;
 use wavcraft_core::DocState;
 use wavcraft_core::cd::{CdError, CdLayout, DiscLimit, format_msf, isrc_valid};
 use wavcraft_core::io::OpenOptions;
 
 use crate::multitrack_ui::tokens;
-
-const RED: Color32 = Color32::from_rgb(235, 80, 70);
 
 #[derive(Default)]
 pub struct CdView {
@@ -59,7 +57,7 @@ impl CdView {
             ui.selectable_value(&mut self.layout.limit, DiscLimit::Min80, "80 min");
         });
         if let Some(m) = &self.message {
-            ui.colored_label(RED, m);
+            ui.colored_label(theme::pal().alert, m);
         }
         ui.separator();
         let mut action: Option<(usize, i8)> = None; // (track, -1 up, 1 down, 0 remove)
@@ -75,7 +73,7 @@ impl CdView {
                     let src = ui.label(&t.name);
                     if let Some(c) = t.conversion() {
                         src.on_hover_text(format!("Converted on export: {c}"));
-                        ui.colored_label(Color32::from_rgb(230, 170, 60), "converted");
+                        ui.colored_label(theme::pal().caution, "converted");
                     }
                     ui.add(egui::DragValue::new(&mut t.pause_secs).range(0.0..=wavcraft_core::cd::MAX_PAUSE_SECS).speed(0.1).fixed_decimals(2));
                     ui.text_edit_singleline(&mut t.title);
@@ -83,7 +81,7 @@ impl CdView {
                     let bad = !t.isrc.is_empty() && !isrc_valid(&t.isrc);
                     let mut field = egui::TextEdit::singleline(&mut t.isrc).desired_width(120.0).hint_text("US-ABC-24-00001");
                     if bad {
-                        field = field.text_color(RED);
+                        field = field.text_color(theme::pal().alert);
                     }
                     ui.add(field).on_hover_text(if bad {
                         "Not an ISRC: 2 letters, 3 letters or digits, 2 digits, 5 digits"
@@ -112,12 +110,12 @@ impl CdView {
             let total = self.layout.total_frames();
             let text = format!("Total {} of {} minutes", format_msf(total), self.layout.limit.minutes());
             if self.layout.over_limit() {
-                ui.colored_label(RED, format!("{text}: over the limit"));
+                ui.colored_label(theme::pal().alert, format!("{text}: over the limit"));
             } else {
                 ui.label(text);
             }
             for w in self.layout.warnings() {
-                ui.colored_label(Color32::from_rgb(230, 170, 60), w);
+                ui.colored_label(theme::pal().caution, w);
             }
             ui.horizontal(|ui| {
                 ui.label("Export to folder");

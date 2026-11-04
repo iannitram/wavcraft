@@ -569,6 +569,18 @@ impl Multitrack {
         self.type_filter.is_none_or(|f| self.clip_type(clip) == Some(f))
     }
 
+    /// The first clip on `track`'s active playlist that covers `seconds` and that the type
+    /// filter shows (`None` if there is none). A lane click picks with it, so it can only
+    /// select a clip the Multitrack view draws.
+    pub fn visible_clip_at(&self, track: TrackId, seconds: f64) -> Option<ClipId> {
+        let t = self.session.track(track)?;
+        let rate = f64::from(self.rate());
+        t.clips()
+            .iter()
+            .find(|c| (c.start as f64 / rate..(c.start + c.length) as f64 / rate).contains(&seconds) && self.clip_visible(c.id))
+            .map(|c| c.id)
+    }
+
     /// Remove a track with its clips; sources no clip uses any more are dropped with it.
     pub fn remove_track(&mut self, id: TrackId) -> Result<(), MtError> {
         let Some(i) = self.session.track_index(id) else { return err("no such track") };

@@ -11,15 +11,15 @@ Each run ends with QUIT discard and must leave no ERROR line in the app's log.
 import argparse, os, shutil, socket, subprocess, sys, tempfile, time, wave, struct, math
 
 DEFAULTS = {"spec_window": "hann", "spec_resolution": "2048", "spec_db_range": "100", "spec_play_selected_freqs": "false",
-            "time_format": "decimal", "frame_rate": "30", "loudness_target_lufs": "-16", "true_peak_ceiling_dbtp": "-1",
+            "time_display": "decimal", "loudness_target_lufs": "-16", "true_peak_ceiling_dbtp": "-1",
             "zoom_factor": "2", "extend_selection": "nearest", "context_channel_editing": "true", "theme": "dark",
             "waveform_colour": "green", "ui_brightness": "1"}
 CHANGED = {"spec_window": "blackman-harris", "spec_resolution": "4096", "spec_db_range": "120", "spec_play_selected_freqs": "true",
-           "time_format": "smpte", "frame_rate": "29.97", "loudness_target_lufs": "-23", "true_peak_ceiling_dbtp": "-2.5",
+           "time_display": "smpte_2997df", "loudness_target_lufs": "-23", "true_peak_ceiling_dbtp": "-2.5",
            "zoom_factor": "3", "extend_selection": "anchor", "context_channel_editing": "false", "theme": "light",
            "waveform_colour": "amber", "ui_brightness": "0.8"}
 BAD = [("spec_window", "triangle"), ("spec_resolution", "1000"), ("spec_db_range", "161"), ("spec_play_selected_freqs", "yes"),
-       ("time_format", "hex"), ("frame_rate", "0"), ("loudness_target_lufs", "1"), ("true_peak_ceiling_dbtp", "0.5"),
+       ("time_display", "hex"), ("loudness_target_lufs", "1"), ("true_peak_ceiling_dbtp", "0.5"),
        ("zoom_factor", "1"), ("extend_selection", "left"), ("context_channel_editing", "1"), ("theme", "sepia"),
        ("waveform_colour", "#ff0000"), ("ui_brightness", "inf")]
 
