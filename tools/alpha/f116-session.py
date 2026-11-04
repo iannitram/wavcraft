@@ -59,9 +59,7 @@ def main():
     ap.add_argument("--exe", required=True)
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
-    root = os.path.expanduser("~/dev/craft/_wt/scratch")
-    os.makedirs(root, exist_ok=True)
-    work = tempfile.mkdtemp(prefix="f116s.", dir=root)
+    work = tempfile.mkdtemp(prefix="f116s.")
     home, logs, sessions = (os.path.join(work, d) for d in ("home", "logs", "sessions"))
     for d in (home, logs, sessions):
         os.makedirs(d)
