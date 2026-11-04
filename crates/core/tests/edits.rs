@@ -1049,7 +1049,8 @@ fn every_step_name_is_the_history_label_and_the_undo_text() {
     let s = store(&dir.0.join("s"), 1 << 20);
     let file = doc_from(&s, &data(2, 300, 9), 300);
     let fresh = || Editor::new(History::new(doc_from(&s, &data(2, 10_000, 3), 2_000), u64::MAX));
-    let rows: [(&str, &dyn Fn(&mut Editor)); 12] = [
+    type Row<'a> = (&'a str, &'a dyn Fn(&mut Editor));
+    let rows: [Row<'_>; 12] = [
         ("Delete", &|e: &mut Editor| {
             e.run(ActionId::Delete, 100..200).unwrap();
         }),
