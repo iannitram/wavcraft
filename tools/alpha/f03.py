@@ -4,10 +4,10 @@
     python3 tools/alpha/f03.py --exe <path to the release wavcraft> [--keep]
 
 A scratch HOME and session folder hold a synthetic 4 s stereo 48 kHz file (left: a straight ramp
-from -0.4 to +0.4, right: a constant 0.25). Each effect runs through `ACTION effect.*` (numbers
-through `PARAM`), the result is SAVEd to a WAV and read back sample by sample, and STATE's undo
-label is checked. The run fails on any check that fails, a non-clean QUIT, or an ERROR line in
-the app's own log.
+from -0.4 to +0.4, right: a constant 0.25). Normalize runs through `EFFECT normalize unit=dB db=-2`,
+the others through `ACTION effect.*` (numbers through `PARAM`). The result is SAVEd to a WAV and
+read back sample by sample, and STATE's undo label is checked. The run fails on any check that
+fails, a non-clean QUIT, or an ERROR line in the app's own log.
 """
 import argparse, os, shutil, socket, struct, subprocess, sys, tempfile, time, wave
 
@@ -102,9 +102,9 @@ def main():
         check("the file opened", c.state().get("frames") == str(N), c.state())
         mid = N // 2
 
-        def result(name, sel, label, want_undo):
+        def result(name, sel, label, want_undo, line=None):
             c.ask(f"SELECT {sel[0]} {sel[1]}")
-            a = c.ask(f"ACTION {name}")
+            a = c.ask(line or f"ACTION {name}")
             st = c.state()
             check(f"{name}: answered OK and changed the file", a.endswith("changed=1"), a)
             check(f"{name}: undo step is named {want_undo!r}", st["undo"] == want_undo, st["undo"])
@@ -128,9 +128,8 @@ def main():
         check("Amplify -6 dB: both channels scaled", abs(l[mid] - left[mid] * g) < tol and abs(r[1000] - 0.25 * g) < tol, (l[mid], left[mid] * g, r[1000]))
         c.ask("ACTION edit.undo")
 
-        # Normalize to -2 dBFS.
-        check("PARAM normalize.db accepted", c.ask("PARAM normalize.db -2") == "OK")
-        l, r = result("effect.normalize", (0, 0), "norm", "Normalize")
+        # Normalize to -2 dBFS, through the registry effect (the EFFECT verb).
+        l, r = result("effect.normalize", (0, 0), "norm", "Normalize", line="EFFECT normalize unit=dB db=-2")
         peak = max(max(abs(v) for v in l), max(abs(v) for v in r))
         check("Normalize -2 dBFS: peak reached", abs(peak - 10 ** (-2 / 20)) < 1e-3, peak)
         c.ask("ACTION edit.undo")
