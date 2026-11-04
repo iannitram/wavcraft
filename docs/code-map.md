@@ -113,8 +113,8 @@ All present on `main`. The first column is the file under `crates/core/src/` unl
 | `autosave.rs`, `random.rs` | The autosave journal an open session writes for crash recovery (I4); random names and tokens from the operating system's CSPRNG |
 | `take_readout.rs`, `take_repair.rs`, `take_recover.rs` | J4 recording readouts as text; J3 header repair of a take left by a killed app; finding and repairing such takes on disk |
 | `levels.rs`, `levels/rms.rs` | Peak level meter maths (bars, hold, clip light); RMS reading |
-| `meters/mod.rs`, `meters/levels_meter.rs`, `meters/levels_scale.rs` | The Levels meter (B4): per-channel peak, hold, clip and RMS; its 60 dB scale and colour zones |
-| `meters/amplitude_stats.rs`, `stats.rs`, `loudness.rs` | Amplitude Statistics (G4); per-channel statistics (peak, DC offset, clipped runs, RMS); offline loudness (integrated, range, true peak) |
+| `meters/mod.rs`, `meters/levels_scale.rs` | The Levels meter (B4): its 60 dB scale and colour zones (readings come from `levels.rs`) |
+| `stats.rs`, `loudness.rs` | Amplitude Statistics (G4); per-channel statistics (peak, DC offset, clipped runs, RMS); offline loudness (integrated, range, true peak) |
 | `meters/phase.rs`, `meters/phase_bins.rs`, `meters/phase_scope.rs`, `meters/rms_histogram.rs` | Phase correlation, spectral phase numbers, phase scope data, RMS histogram (core only, no panel) |
 | `effects/oneshot.rs`, `effects/pitch_presets.rs`, `effects/compare.rs`, `effects/dynamics_graph.rs` | One-shot effects (Reverse, Amplify, Normalize, Fades, clip guard); pitch presets; A/B compare of two settings sets; the Dynamics transfer-curve points |
 | `effects/delay.rs`, `effects/reverb.rs`, `effects/plate.rs`, `effects/eq.rs`, `effects/pitch_saturate.rs`, `effects/dsp_run.rs` | Effects wrapping `soundcraft-dsp` plugins (delay, reverb, plate, filters and EQ, pitch shifter, saturator) and their shared run plumbing |
