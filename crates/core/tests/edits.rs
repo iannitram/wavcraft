@@ -16,7 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use proptest::prelude::*;
-use wavcraft_core::doc::edit::{self, Change, ChannelMask, Clip, Crossfades, EditError, PasteAt};
+use wavcraft_core::actions::{ActionId, Editor};
+use wavcraft_core::doc::edit::{self, Change, ChannelMask, Clip, Crossfades, EditError, MixMode, MixOptions, PasteAt};
 use wavcraft_core::doc::history::{History, NoSpace};
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::store::{BLOCK_FRAMES, BlockHandle, BlockId, Encoding, Store, StoreOptions, f32_to_i16_exact};
@@ -1037,6 +1038,69 @@ fn some_channel_labels_say_audio() {
     assert_eq!(edit::crop(&doc, 10..500, ChannelMask::only(1), NONE).unwrap().label, "Crop Audio");
     // A no-op keeps the plain name (it records nothing anyway).
     assert_eq!(edit::delete(&doc, 100..200, ChannelMask::only(1), NONE).unwrap().label, "Delete Audio");
+}
+
+/// Issue #63: every step name in the table (the names Audition gives them), checked on the
+/// History label and the Undo menu text from [`Editor::label`]. Each row runs one edit on a fresh
+/// editor, so the step under test is the only one. "Some channels" rows select the left channel.
+#[test]
+fn every_step_name_is_the_history_label_and_the_undo_text() {
+    let dir = TempDir::new("names");
+    let s = store(&dir.0.join("s"), 1 << 20);
+    let file = doc_from(&s, &data(2, 300, 9), 300);
+    let fresh = || Editor::new(History::new(doc_from(&s, &data(2, 10_000, 3), 2_000), u64::MAX));
+    type Row<'a> = (&'a str, &'a dyn Fn(&mut Editor));
+    let rows: [Row<'_>; 12] = [
+        ("Delete", &|e: &mut Editor| {
+            e.run(ActionId::Delete, 100..200).unwrap();
+        }),
+        ("Delete Audio", &|e: &mut Editor| {
+            e.run(ActionId::LeftChannel, 0..0).unwrap();
+            e.run(ActionId::Delete, 100..200).unwrap();
+        }),
+        ("Cut", &|e: &mut Editor| {
+            e.run(ActionId::Cut, 100..200).unwrap();
+        }),
+        ("Cut Audio", &|e: &mut Editor| {
+            e.run(ActionId::LeftChannel, 0..0).unwrap();
+            e.run(ActionId::Cut, 100..200).unwrap();
+        }),
+        ("Paste", &|e: &mut Editor| {
+            e.run(ActionId::Copy, 100..200).unwrap();
+            e.run(ActionId::Paste, 300..300).unwrap();
+        }),
+        ("Paste Audio", &|e: &mut Editor| {
+            e.run(ActionId::Copy, 100..200).unwrap();
+            e.run(ActionId::LeftChannel, 0..0).unwrap();
+            e.run(ActionId::Paste, 300..300).unwrap();
+        }),
+        ("Crop", &|e: &mut Editor| {
+            e.run(ActionId::Crop, 100..500).unwrap();
+        }),
+        ("Crop Audio", &|e: &mut Editor| {
+            e.run(ActionId::LeftChannel, 0..0).unwrap();
+            e.run(ActionId::Crop, 100..500).unwrap();
+        }),
+        ("Silence", &|e: &mut Editor| {
+            e.run(ActionId::Silence, 100..200).unwrap();
+        }),
+        ("Insert Silence", &|e: &mut Editor| {
+            e.insert_silence(400, 250).unwrap();
+        }),
+        ("Mix Paste", &|e: &mut Editor| {
+            let clip = edit::copy(&file, 0..300, ChannelMask::ALL).unwrap();
+            e.mix_paste(300, Some(clip), &MixOptions::new(MixMode::Insert), &AtomicBool::new(false)).unwrap();
+        }),
+        ("Insert Audio from File", &|e: &mut Editor| {
+            e.insert_file(&file, 400..400).unwrap();
+        }),
+    ];
+    for (want, act) in rows {
+        let mut e = fresh();
+        act(&mut e);
+        assert_eq!(e.history.undo_label(), Some(want), "History label for {want}");
+        assert_eq!(e.label(ActionId::Undo), format!("Undo {want}"), "Undo text for {want}");
+    }
 }
 
 /// Deleting a history state removes it and every later state; Open can't go (f15).

@@ -6,7 +6,8 @@
 //! on their playlists.
 //!
 //! Arming reuses SoundCraft's: `mixer.record_arm` plus `mixer.input` as `Route::Hardware("In 3")`
-//! (stereo tracks "In 3-4"), the form `plan_takes` in the engine reads.
+//! (stereo tracks "In 3-4", a 5.1 track "In 3-8": first to last input), the form `plan_takes` in
+//! the engine reads.
 //!
 //! Never lose a take: a take is written straight to its own file as it arrives, and the WAV
 //! header's sizes are rewritten and synced every [`PATCH_EVERY`] seconds of audio, so a killed
@@ -178,25 +179,28 @@ fn err<T>(s: impl Into<String>) -> Result<T, MtError> {
 /// The part of `c` between timeline frames `from..to` (inside the clip), as a new clip: same
 /// source with the offset moved on, fades kept only at the end that is still the clip's own.
 /// `None` for content that has no source offset to move (MIDI), so the caller drops it.
+///
+/// The model's trims keep the gain envelope's value at the cut; the source offset is then set
+/// from the stretch-scaled advance (#976).
 fn cut_piece(c: &Clip, from: Samples, to: Samples, is_left: bool, mut new_id: impl FnMut() -> ClipId) -> Option<Clip> {
     let skip = from - c.start;
     let adv = if (c.stretch - 1.0).abs() < f64::EPSILON { skip } else { (skip as f64 * c.stretch).round() as Samples };
-    let mut n = c.clone();
-    n.content = match &c.content {
+    let content = match &c.content {
         ClipContent::Audio { source, offset } => ClipContent::Audio { source: *source, offset: offset + adv },
         ClipContent::Video { source, offset } => ClipContent::Video { source: *source, offset: offset + adv },
         _ => return None,
     };
+    let mut n = c.clone();
     n.id = new_id();
-    n.start = from;
-    n.length = (to - from).max(1);
-    n.gain_env = c.gain_env.iter().filter(|(t, _)| *t >= skip && *t < skip + n.length).map(|(t, g)| (t - skip, *g)).collect();
-    n.sync_point = (c.sync_point - skip).clamp(0, n.length);
+    // The fade on the cut side goes first, so the trims' fade clamp does not shrink the other one.
     if is_left {
         n.fade_out = Default::default();
     } else {
         n.fade_in = Default::default();
     }
+    n.trim_start_to(from);
+    n.trim_end_to(to);
+    n.content = content;
     Some(n)
 }
 
@@ -207,7 +211,7 @@ fn file_stem(name: &str) -> String {
 
 impl Multitrack {
     /// Arm a track for recording, on input channel `input` (1-based, as the interface labels
-    /// it; a stereo track takes `input` and the next one). `None` keeps the route it has
+    /// it; a track of n channels takes `input` and the next n-1). `None` keeps the route it has
     /// (channel 1 when it has none).
     pub fn arm_track(&mut self, id: TrackId, input: Option<usize>) -> Result<(), MtError> {
         let Some(t) = self.session.track_mut(id) else { return err("no such track") };
@@ -220,7 +224,8 @@ impl Multitrack {
             Some(n) => n,
             None => first_input(&t.mixer.input) + 1,
         };
-        t.mixer.input = Route::Hardware(if t.channels() == 2 { format!("In {ch}-{}", ch + 1) } else { format!("In {ch}") });
+        let n = t.channels();
+        t.mixer.input = Route::Hardware(if n >= 2 { format!("In {ch}-{}", ch.saturating_add(n - 1)) } else { format!("In {ch}") });
         t.mixer.record_arm = true;
         Ok(())
     }

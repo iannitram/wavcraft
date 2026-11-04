@@ -7,6 +7,7 @@
 //! strip per audio track plus the master, so a fader, pan, mute or solo writes the session model
 //! itself and a track added or removed there shows up here on the next frame.
 
+use crate::theme;
 use std::collections::HashMap;
 
 use soundcraft_dsp::pan::PanLaw;
@@ -333,18 +334,18 @@ impl MixerModel {
 fn meter_ui(ui: &mut egui::Ui, peak_db: f32, audible: bool) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 120.0), egui::Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
+    p.rect_filled(rect, 2.0, theme::pal().well);
     let top = 6.0;
     let frac = ((peak_db.clamp(FLOOR_DB, top) - FLOOR_DB) / (top - FLOOR_DB)).clamp(0.0, 1.0);
     let h = rect.height() * frac;
     let colour = if peak_db > -3.0 {
-        egui::Color32::from_rgb(220, 60, 50)
+        theme::pal().alert
     } else if peak_db > -12.0 {
-        egui::Color32::from_rgb(220, 180, 50)
+        theme::pal().caution
     } else if audible {
-        egui::Color32::from_rgb(70, 190, 90)
+        theme::pal().ok
     } else {
-        egui::Color32::from_gray(90)
+        theme::pal().divider
     };
     let fill = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - h), rect.right_bottom());
     p.rect_filled(fill, 2.0, colour);

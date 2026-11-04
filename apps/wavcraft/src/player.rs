@@ -641,9 +641,12 @@ impl Player {
     /// Set the Effects Rack the player runs on what it plays (f31). An inactive rack (power off,
     /// nothing switched on) is removed. The swap into the audio callback is lock-free; calling
     /// this while playing is fine. Takes effect for the next audio buffer.
+    /// The settings are kept for the next device reopen only once the rack built from them is
+    /// parked, so a rejected configuration is not retried (and re-errors) on every reopen.
     pub fn set_rack(&self, config: &RackConfig) -> Result<(), String> {
+        park_rack(&self.shared, config, self.out_channels, self.out_rate)?;
         *self.rack_config.lock().map_err(|e| format!("could not store Effects Rack settings: {e}"))? = Some(config.clone());
-        park_rack(&self.shared, config, self.out_channels, self.out_rate)
+        Ok(())
     }
 
     /// Whether the output stream has reported an error since it was opened.
@@ -1149,7 +1152,7 @@ pub fn list_device_names_in_background(host: Option<String>) -> std::sync::mpsc:
 
 /// Which of `available` to open for the wanted name: its position, or `None` (take the system
 /// default) when nothing was asked for or the name isn't there (the device was unplugged).
-fn pick(wanted: Option<&str>, available: &[String]) -> Option<usize> {
+pub(crate) fn pick(wanted: Option<&str>, available: &[String]) -> Option<usize> {
     let wanted = wanted?;
     available.iter().position(|n| n == wanted)
 }
@@ -2328,6 +2331,47 @@ mod tests {
         park_rack(&shared, &inactive, 2, 96_000).unwrap();
         assert!(shared.rack_new.load(Ordering::Acquire));
         assert!(shared.rack_mailbox.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_rejected_rack_is_not_stored_for_the_next_reopen() {
+        let state = doc_of(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 8]] });
+        let (commands, _inbox) = channel();
+        let mut player = Player {
+            shared: Arc::new(shared_with(&state)),
+            commands,
+            stream: None,
+            sink: None,
+            error: None,
+            device: String::new(),
+            host: String::new(),
+            buffer: None,
+            buffer_range: None,
+            wanted: OutputChoice::default(),
+            out_channels: 2,
+            out_rate: 48_000,
+            rack_config: Mutex::new(None),
+            held: Mutex::new(None),
+            wraps_base: AtomicU32::new(0),
+            reopens: AtomicU32::new(0),
+            metronome: Mutex::new(Metronome::default()),
+        };
+        let good = rack_of(&[("invert", None)]);
+        player.set_rack(&good).unwrap();
+        assert_eq!(*player.rack_config.lock().unwrap(), Some(good.clone()));
+
+        // A device with no channels: the rack is refused, so the stored settings stay the last
+        // good ones instead of the refused one.
+        player.out_channels = 0;
+        let refused = rack_of(&[("invert", None), ("invert", None)]);
+        assert_ne!(refused, good);
+        assert!(player.set_rack(&refused).is_err());
+        assert_eq!(*player.rack_config.lock().unwrap(), Some(good.clone()), "the refused settings are not stored");
+
+        // With no good settings yet, a refused rack stores nothing at all.
+        player.rack_config = Mutex::new(None);
+        assert!(player.set_rack(&refused).is_err());
+        assert!(player.rack_config.lock().unwrap().is_none());
     }
 
     #[test]

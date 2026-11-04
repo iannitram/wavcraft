@@ -1,5 +1,6 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
+use crate::theme;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -86,12 +87,6 @@ use crate::video::{VideoPanel, Waiters};
 use wavcraft_core::doc::rec_edit::{self, RecMode, RecPlan, RecTarget};
 use wavcraft_core::multitrack::soundcraft_model::{SourceId, TrackId};
 
-const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
-const BACKGROUND_LIGHT: Color32 = Color32::from_rgb(246, 247, 249);
-const SELECTION: Color32 = Color32::from_rgba_premultiplied(70, 90, 130, 90);
-const CURSOR: Color32 = Color32::from_rgb(235, 80, 70);
-const PLAYHEAD: Color32 = Color32::from_rgb(250, 250, 250);
-const ACCENT: Color32 = Color32::from_rgb(90, 140, 230);
 const RULER_HEIGHT: f32 = 22.0;
 /// Width of the frequency ruler on the left of the spectral display.
 const FREQ_RULER_WIDTH: f32 = 54.0;
@@ -100,8 +95,6 @@ const FREE_SPACE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 /// The amplitude ruler's column, left of the editor.
 const AMP_RULER_WIDTH: f32 = 46.0;
 const NAV_HEIGHT: f32 = 34.0;
-const BAND_FILL: Color32 = Color32::from_rgba_premultiplied(60, 70, 20, 60);
-const BAND_OUTLINE: Color32 = Color32::from_rgb(240, 220, 90);
 
 /// A Marquee drag in progress: drawing a new rectangle, or moving the one the drag began inside.
 #[derive(Clone, Copy)]
@@ -424,6 +417,13 @@ fn is_unsaved(editor: &Option<Editor>, saved: &Option<Arc<DocState>>) -> bool {
         (Some(_), None) => true,
         _ => false,
     }
+}
+
+/// Whether a finished save may close its document: only when the open step is still the one that
+/// was saved (`current` is the editor's step, `None` when no document is open). An edit that landed
+/// while the save ran leaves a different step, so the document stays open.
+fn closes_after_save(current: Option<&Arc<DocState>>, saved: &Arc<DocState>) -> bool {
+    current.is_none_or(|c| Arc::ptr_eq(c, saved))
 }
 
 /// A file added by File › Import (f63): listed in the Files panel, but not open. Only its header
@@ -1117,11 +1117,7 @@ impl WaveApp {
     /// Give egui the theme and brightness from the preferences (only when they changed, or when
     /// the system theme changed while the preference is "system").
     fn apply_look(&mut self, ctx: &egui::Context) {
-        let dark = match self.settings.theme {
-            settings::Theme::Dark => true,
-            settings::Theme::Light => false,
-            settings::Theme::System => ctx.system_theme().is_none_or(|t| t == egui::Theme::Dark),
-        };
+        let dark = show_theme_set(self.settings.theme, ctx);
         let key = (dark, milli(self.settings.ui_brightness), milli(self.settings.ui_contrast));
         self.dark = dark;
         self.brightness = self.settings.ui_brightness;
@@ -1454,7 +1450,7 @@ impl WaveApp {
             if let Some((t, total)) = listening {
                 ui.add(egui::ProgressBar::new((t / total).clamp(0.0, 1.0)).text(format!("Listening… {:.0} s", (total - t).max(0.0).ceil())));
             } else if let Some(e) = &self.input.error {
-                ui.colored_label(CURSOR, format!("Input unavailable: {e}"));
+                ui.colored_label(theme::pal().cursor, format!("Input unavailable: {e}"));
             }
             if let Some((stats, source)) = &dialog.result {
                 ui.separator();
@@ -1463,8 +1459,8 @@ impl WaveApp {
                 ui.label(format!("Peak: {}   Average: {}", f(stats.peak_db()), f(stats.average_db())));
                 let v = stats.verdict();
                 let colour = match v {
-                    wavcraft_core::input_meter::Verdict::Ok => Color32::from_rgb(64, 200, 140),
-                    _ => CURSOR,
+                    wavcraft_core::input_meter::Verdict::Ok => theme::pal().ok,
+                    _ => theme::pal().cursor,
                 };
                 ui.colored_label(colour, v.advice());
             }
@@ -1752,7 +1748,7 @@ impl WaveApp {
                             for (item, key) in appearance::ITEMS.iter().zip(COLOR_KEYS) {
                                 ui.horizontal(|ui| {
                                     let now = self.settings.colors.get(item).flatten();
-                                    let mut rgb = now.unwrap_or_else(|| default_rgb(item, &self.settings, self.dark));
+                                    let mut rgb = now.unwrap_or_else(|| default_rgb(item, &self.settings));
                                     if ui.color_edit_button_srgb(&mut rgb).changed() {
                                         action = Some(PrefAction::Set(key, appearance::format_hex(rgb)));
                                     }
@@ -1871,7 +1867,7 @@ impl WaveApp {
                             });
                             ui.add_space(6.0);
                             match &self.player.error {
-                                Some(e) => ui.colored_label(CURSOR, format!("No sound: {e}")),
+                                Some(e) => ui.colored_label(theme::pal().cursor, format!("No sound: {e}")),
                                 None => ui.label(format!(
                                     "Playing on: {} ({}, {} channels, buffer {})",
                                     self.player.device,
@@ -3944,8 +3940,8 @@ impl WaveApp {
         ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
         if let Some((_, _, rect)) = target {
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dock-drop")));
-            painter.rect_filled(rect, 2.0, ACCENT.gamma_multiply(0.35));
-            painter.rect_stroke(rect, 2.0, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
+            painter.rect_filled(rect, 2.0, theme::pal().accent.gamma_multiply(0.35));
+            painter.rect_stroke(rect, 2.0, Stroke::new(1.5, theme::pal().accent), egui::StrokeKind::Inside);
         }
         if ctx.input(|i| i.pointer.any_released()) {
             egui::DragAndDrop::clear_payload(ctx);
@@ -4210,6 +4206,7 @@ impl WaveApp {
         self.halt_play();
         self.player.set_muted(true);
         self.rec.monitor_default = self.settings.monitor_input;
+        self.rec.input_device = self.settings.input_device.clone();
         match self.rec.start(fmt, max_secs) {
             Ok(path) => {
                 self.error = None;
@@ -4275,6 +4272,7 @@ impl WaveApp {
         self.halt_play();
         self.player.set_muted(!punch);
         self.rec.monitor_default = self.settings.monitor_input;
+        self.rec.input_device = self.settings.input_device.clone();
         match self.rec.start_with(fmt, limit, punch) {
             Ok(path) => {
                 self.rec.set_into(plan, base, self.doc_id, punch.then_some(from), fmt.rate);
@@ -6179,7 +6177,7 @@ impl WaveApp {
             if let Some(why) = &src.meta.xmp_problem {
                 ui.add_space(4.0);
                 ui.colored_label(
-                    Color32::LIGHT_RED,
+                    theme::pal().alert,
                     format!("The XMP packet could not be read ({why}). It is kept as it is and cannot be edited here."),
                 );
             } else if let Some(x) = &src.meta.xmp {
@@ -6425,6 +6423,9 @@ impl WaveApp {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
         let sel = self.selection_range();
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         match editor.run_declip(params, sel) {
@@ -6451,6 +6452,9 @@ impl WaveApp {
     fn run_declick(&mut self, params: Vec<f64>, auto: bool, ctx: &egui::Context) -> Result<bool, String> {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
+        }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
         }
         let sel = self.selection_range();
         let name = if auto { "Automatic Click Remover" } else { "DeClicker" };
@@ -6491,6 +6495,9 @@ impl WaveApp {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         let (tool, doc, regions) = self.diag.plan(rows, editor.history.current())?;
         let cancel = AtomicBool::new(false);
@@ -6517,7 +6524,7 @@ impl WaveApp {
 
     fn diagnostics_ui(&mut self, ctx: &egui::Context) {
         self.diag.poll();
-        let busy = self.saving.is_some() || self.rebuilding.is_some();
+        let busy = self.saving.is_some() || self.rebuilding.is_some() || self.running.is_some();
         let current = self.editor.as_ref().map(|e| e.history.current().clone());
         match self.diag.ui(ctx, current.as_ref(), busy) {
             Some(Ask::Scan) => {
@@ -7228,6 +7235,9 @@ impl WaveApp {
                 }
             }
             Ok(()) => {
+                // An edit confirmed while the save ran (say, in the Insert Silence dialog) is not in
+                // the file: the document stays open and unsaved rather than closing and losing it.
+                let closes = closes_after_save(self.editor.as_ref().map(|e| e.history.current()), &state);
                 self.saved = Some(state);
                 self.doc_path = path.clone();
                 // The tempo follows the document to its new path; it is written only when there is one to keep.
@@ -7239,7 +7249,16 @@ impl WaveApp {
                 }
                 self.error = None;
                 self.notice = Some(format!("Saved {} ({} {})", path.display(), ty.describe(), label));
-                if then_close && std::mem::take(&mut self.closing_doc) {
+                if then_close && !closes {
+                    self.closing_doc = false;
+                    self.close_all = false;
+                    self.notice = Some(format!(
+                        "Saved {} ({} {}), but a change made while saving is not in the file: the document stays open and unsaved",
+                        path.display(),
+                        ty.describe(),
+                        label
+                    ));
+                } else if then_close && std::mem::take(&mut self.closing_doc) {
                     self.remove_current();
                 } else if then_close {
                     // Not allow_close: another document may still have unsaved changes.
@@ -7354,7 +7373,7 @@ impl WaveApp {
                 }
                 match &est {
                     Some(Ok(e)) => ui.label(format_size_label(e)),
-                    Some(Err(why)) => ui.colored_label(Color32::from_rgb(235, 120, 90), why),
+                    Some(Err(why)) => ui.colored_label(theme::pal().alert, why),
                     None => ui.label(""),
                 };
                 ui.separator();
@@ -8726,6 +8745,9 @@ impl WaveApp {
                 }
                 if self.saving.is_some() {
                     return "ERR wait for the save to finish".to_string();
+                }
+                if self.running.is_some() {
+                    return "ERR wait for the background job to finish, or cancel it".to_string();
                 }
                 let selection = self.selection_range();
                 let Some(editor) = self.editor.as_mut() else { return "ERR no file is open".to_string() };
@@ -10347,7 +10369,7 @@ impl WaveApp {
         let free = if self.doc.is_some() && fields.is_shown(StatusField::FreeSpace) { Some(self.free_space_now()) } else { None };
         ui.horizontal(|ui| {
             if let Some((text, warn)) = self.rec.status_text() {
-                ui.colored_label(if warn { CURSOR } else { Color32::from_rgb(230, 230, 230) }, text);
+                ui.colored_label(if warn { theme::pal().cursor } else { theme::pal().text }, text);
             } else if let Some(o) = &self.opening {
                 ui.spinner();
                 let permille = o.progress.load(Ordering::Relaxed);
@@ -10385,7 +10407,7 @@ impl WaveApp {
                 ui.spinner();
                 ui.label(tr("status.updating"));
             } else if let Some(e) = &self.error {
-                ui.colored_label(CURSOR, e);
+                ui.colored_label(theme::pal().cursor, e);
             } else if let Some(n) = &self.notice {
                 ui.label(n);
             } else if let Some(doc) = &self.doc {
@@ -10429,8 +10451,8 @@ impl WaveApp {
                         StatusField::Output => {
                             gap(ui);
                             match &self.player.error {
-                                Some(e) => ui.colored_label(CURSOR, tr_args("status.no_sound", &[e])),
-                                None if self.player.failed() => ui.colored_label(CURSOR, tr("status.no_sound_stopped")),
+                                Some(e) => ui.colored_label(theme::pal().cursor, tr_args("status.no_sound", &[e])),
+                                None if self.player.failed() => ui.colored_label(theme::pal().cursor, tr("status.no_sound_stopped")),
                                 None => {
                                     let i = self.player.info();
                                     if i.resampling {
@@ -10480,7 +10502,7 @@ impl WaveApp {
                 }
                 if let Some(first_warning) = doc.warnings().first() {
                     gap(ui);
-                    ui.colored_label(CURSOR, format!("Warning: {first_warning}")).on_hover_text(doc.warnings().join("\n"));
+                    ui.colored_label(theme::pal().cursor, format!("Warning: {first_warning}")).on_hover_text(doc.warnings().join("\n"));
                 }
             } else if self.editor.is_some() {
                 ui.label(format!("{} (no audio yet): paste into it, or File › Save As once it has some", path_name(&self.doc_path)));
@@ -10714,7 +10736,7 @@ impl WaveApp {
     fn navigator(&mut self, ui: &mut egui::Ui) {
         let (resp, painter) = ui.allocate_painter(vec2(ui.available_width(), NAV_HEIGHT), Sense::click_and_drag());
         let rect = resp.rect;
-        painter.rect_filled(rect, 2.0, Color32::from_gray(24));
+        painter.rect_filled(rect, 2.0, theme::pal().well);
         let Some(doc) = &self.doc else { return };
         let (frames, channels) = (doc.frames(), doc.channels().max(1));
         let (nav_px, view_px) = (rect.width().max(1.0), self.editor_width.max(1.0));
@@ -10730,7 +10752,7 @@ impl WaveApp {
         for (i, (lo, hi)) in merged.into_iter().enumerate() {
             let x = rect.left() + i as f32 + 0.5;
             let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);
-            painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, Color32::from_rgb(40, 110, 80)));
+            painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, theme::pal().ok_dim));
         }
 
         // Presses and drags.
@@ -10776,15 +10798,15 @@ impl WaveApp {
         let (l, r) = self.view.nav_handle(view_px, nav_px, frames);
         let r = r.max(l + 3.0);
         let handle_rect = Rect::from_min_max(pos2(rect.left() + l, rect.top()), pos2((rect.left() + r).min(rect.right()), rect.bottom()));
-        painter.rect_filled(handle_rect, 2.0, Color32::from_rgba_premultiplied(60, 80, 120, 70));
-        painter.rect_stroke(handle_rect, 2.0, Stroke::new(1.5, Color32::from_rgb(120, 160, 230)), egui::StrokeKind::Inside);
+        painter.rect_filled(handle_rect, 2.0, theme::pal().accent_fill);
+        painter.rect_stroke(handle_rect, 2.0, Stroke::new(1.5, theme::pal().accent), egui::StrokeKind::Inside);
         if !self.selection.is_empty() {
             let (a, b) = (self.selection.start() as f32 / frames.max(1) as f32, self.selection.end() as f32 / frames.max(1) as f32);
             let strip = Rect::from_min_max(
                 pos2(rect.left() + a * nav_px, rect.bottom() - 3.0),
                 pos2(rect.left() + (b * nav_px).max(a * nav_px + 1.0), rect.bottom()),
             );
-            painter.rect_filled(strip, 0.0, Color32::from_rgb(130, 150, 210));
+            painter.rect_filled(strip, 0.0, theme::pal().accent);
         }
     }
 
@@ -10792,13 +10814,13 @@ impl WaveApp {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let full = response.rect;
         let c = &self.settings.colors;
-        let ground = c.background.map_or(if self.dark { BACKGROUND } else { BACKGROUND_LIGHT }, |[r, g, b]| Color32::from_rgb(r, g, b));
+        let ground = c.background.map_or(theme::pal().background, |[r, g, b]| theme::rgb(r, g, b));
         painter.rect_filled(full, 0.0, contrast(brighten(ground, self.brightness), self.contrast));
-        let rgb = |o: Option<[u8; 3]>, d: Color32| o.map_or(d, |[r, g, b]| Color32::from_rgb(r, g, b));
+        let rgb = |o: Option<[u8; 3]>, d: Color32| o.map_or(d, |[r, g, b]| theme::rgb(r, g, b));
         let (selection_colour, cursor_colour, playhead_colour) = (
-            c.selection.map_or(SELECTION, |[r, g, b]| Color32::from_rgba_unmultiplied(r, g, b, 90)),
-            rgb(c.cursor, CURSOR),
-            rgb(c.playhead, PLAYHEAD),
+            c.selection.map_or(theme::pal().selection, |[r, g, b]| theme::rgba(r, g, b, 90)),
+            rgb(c.cursor, theme::pal().cursor),
+            rgb(c.playhead, theme::pal().playhead),
         );
         let Some((frames, rate, channels)) = self.doc.as_ref().map(|d| (d.frames(), d.sample_rate(), d.channels().max(1))) else { return };
         // The amplitude ruler takes a column on the left; the time axis starts right of it.
@@ -11172,7 +11194,7 @@ impl WaveApp {
         let (start, end) = (self.view.start, self.view.end(width));
         let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
-        draw_ruler(&painter, ruler, &self.view, rate, self.time_format, self.dark, &self.tempo);
+        draw_ruler(&painter, ruler, &self.view, rate, self.time_format, &self.tempo);
         if let Some(e) = &self.editor {
             let shown = self.markers_ui.shown(e.history.current().markers(), frames as u64);
             draw_markers(&painter, ruler, &self.view, &shown, &self.markers_ui.pick.ids);
@@ -11239,7 +11261,7 @@ impl WaveApp {
         if let Some(area) = wave_area {
             let cols = display::physical_columns(area.width(), ppp);
             let [r, g, b] = self.settings.colors.waveform.unwrap_or_else(|| self.settings.waveform_rgb());
-            let wave = Color32::from_rgb(r, g, b);
+            let wave = theme::rgb(r, g, b);
             let editing = self.editor.as_ref().map_or(wavcraft_core::ChannelMask::ALL, |e| e.channels.within(channels));
             let zoom = self.amp_zoom.get();
             let scale = self.settings.amp_scale;
@@ -11251,10 +11273,7 @@ impl WaveApp {
             for lane_index in 0..lanes {
                 let lane = lane(area, lane_index, lanes);
                 let mid = lane.center().y;
-                painter.line_segment(
-                    [pos2(lane.left(), mid), pos2(lane.right(), mid)],
-                    Stroke::new(hair, Color32::from_gray(if self.dark { 50 } else { 200 })),
-                );
+                painter.line_segment([pos2(lane.left(), mid), pos2(lane.right(), mid)], Stroke::new(hair, theme::pal().hairline));
                 let half = lane.height() * 0.5 - 2.0;
                 let (first, last) = if layered { (0, channels) } else { (lane_index, lane_index + 1) };
                 let mut chip_to_paint = None;
@@ -11291,7 +11310,7 @@ impl WaveApp {
                             egui::Align2::LEFT_TOP,
                             name,
                             egui::FontId::proportional(12.0),
-                            Color32::from_gray(170),
+                            theme::pal().text_dim,
                         );
                     }
                 }
@@ -11301,9 +11320,9 @@ impl WaveApp {
                     let [br, bg, bb] = if channels > 1 { channel_color(ch) } else { [wave.r(), wave.g(), wave.b()] };
                     let lit = editing.covers_all(channels) || editing.contains(ch);
                     let wave_color = match (lit, layered) {
-                        (true, true) => Color32::from_rgba_unmultiplied(br, bg, bb, 190),
-                        (true, false) => Color32::from_rgb(br, bg, bb),
-                        (false, _) => Color32::from_rgba_unmultiplied(br, bg, bb, 70),
+                        (true, true) => theme::rgba(br, bg, bb, 190),
+                        (true, false) => theme::rgb(br, bg, bb),
+                        (false, _) => theme::rgba(br, bg, bb, 70),
                     };
                     for (i, (lo, hi)) in doc.waveform_columns(ch, start, end, cols).into_iter().enumerate() {
                         let x = display::column_x(lane.left(), i, ppp);
@@ -11312,13 +11331,13 @@ impl WaveApp {
                     }
                 }
                 if let Some((chip, lit, label)) = chip_to_paint {
-                    painter.rect_filled(chip, 2.0, Color32::from_black_alpha(if lit { 170 } else { 90 }));
+                    painter.rect_filled(chip, 2.0, theme::with_alpha(theme::pal().black, if lit { 170 } else { 90 }));
                     painter.text(
                         chip.center(),
                         egui::Align2::CENTER_CENTER,
                         label,
                         egui::FontId::monospace(10.0),
-                        if lit { Color32::WHITE } else { Color32::GRAY },
+                        if lit { theme::pal().white } else { theme::pal().text_faint },
                     );
                 }
                 let ruler_lane = Rect::from_min_max(pos2(amp_col.left(), lane.top()), pos2(amp_col.right(), lane.bottom()));
@@ -11334,13 +11353,13 @@ impl WaveApp {
                     let label = chnames.get(ch).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| (ch + 1).to_string());
                     let resp = ui.interact(button, ui.id().with(("channel-button", ch)), Sense::click());
                     let [r, g, b] = channel_color(ch);
-                    painter.rect_filled(button, 3.0, if on { Color32::from_rgb(r, g, b) } else { Color32::from_gray(48) });
+                    painter.rect_filled(button, 3.0, if on { theme::rgb(r, g, b) } else { theme::pal().button_off });
                     painter.text(
                         button.center(),
                         egui::Align2::CENTER_CENTER,
                         &label,
                         egui::FontId::monospace(10.0),
-                        if on { Color32::BLACK } else { Color32::from_gray(150) },
+                        if on { theme::pal().black } else { theme::pal().text_dim },
                     );
                     if resp.on_hover_text(format!("Channel {label}: {} for edits (click to toggle)", if on { "on" } else { "off" })).clicked() {
                         toggled = Some(ch);
@@ -11348,7 +11367,7 @@ impl WaveApp {
                 }
             }
         }
-        painter.rect_filled(Rect::from_min_max(amp_col.min, pos2(amp_col.right(), amp_col.top() + RULER_HEIGHT)), 0.0, Color32::from_gray(32));
+        painter.rect_filled(Rect::from_min_max(amp_col.min, pos2(amp_col.right(), amp_col.top() + RULER_HEIGHT)), 0.0, theme::pal().ruler);
         let current_scale = self.settings.amp_scale;
         ruler_resp.context_menu(|ui| {
             for s in AmpScale::ALL {
@@ -11392,7 +11411,7 @@ impl WaveApp {
                             texture.id(),
                             Rect::from_min_max(pos2(left, top), pos2(right, bottom)),
                             uv,
-                            Color32::WHITE,
+                            theme::pal().white,
                         );
                     }
                 }
@@ -11419,8 +11438,8 @@ impl WaveApp {
                 };
                 let r = Rect::from_min_max(pos2(x0, y(spectral.band.hi_hz)), pos2(x1, y(spectral.band.lo_hz)));
                 let clipped = painter.with_clip_rect(l.intersect(rect));
-                clipped.rect_filled(r, 0.0, BAND_FILL);
-                clipped.rect_stroke(r, 0.0, Stroke::new(1.0, BAND_OUTLINE), egui::StrokeKind::Inside);
+                clipped.rect_filled(r, 0.0, theme::pal().band_fill);
+                clipped.rect_stroke(r, 0.0, Stroke::new(1.0, theme::pal().band_outline), egui::StrokeKind::Inside);
             }
         }
         divider.draw(&painter, body, self.editor_shows("waveform"));
@@ -11556,7 +11575,11 @@ impl eframe::App for WaveApp {
         }
         if let Some(why) = self.rec.refresh() {
             log::warn!(target: "wavcraft", "recording: {why}");
-            self.finish_recording(true, ctx);
+            // A writer error is already shown by finish_recording; anything else (an unplugged
+            // input) is said here, and the take it kept is named.
+            if let Some(take) = self.finish_recording(true, ctx).filter(|t| t.error.is_none()) {
+                self.error = Some(format!("{why}, take saved: {}", take.path.display()));
+            }
         }
         if self.rec.max_reached() {
             log::info!(target: "wavcraft", "recording: the time limit is reached, stopping");
@@ -12219,7 +12242,7 @@ fn pref_check(ui: &mut egui::Ui, label: &str, key: &'static str, on: bool, actio
 /// `c` with each colour channel multiplied by `b` (1: unchanged), kept in range.
 fn brighten(c: Color32, b: f32) -> Color32 {
     let m = |v: u8| (f32::from(v) * b).round().clamp(0.0, 255.0) as u8;
-    Color32::from_rgba_unmultiplied(m(c.r()), m(c.g()), m(c.b()), c.a())
+    theme::rgba(m(c.r()), m(c.g()), m(c.b()), c.a())
 }
 
 /// The check items for every snap target, shared by View › Snapping: the action whose item was
@@ -12260,10 +12283,10 @@ fn lane(area: Rect, ch: usize, channels: usize) -> Rect {
 /// The amplitude ruler for one lane: marks and numbers on both sides of the centre line, at the
 /// current vertical zoom.
 fn draw_amp_ruler(painter: &egui::Painter, lane: Rect, scale: AmpScale, zoom: AmpZoom) {
-    painter.rect_filled(lane, 0.0, Color32::from_gray(28));
+    painter.rect_filled(lane, 0.0, theme::pal().ruler);
     let (mid, half) = (lane.center().y, lane.height() * 0.5 - 2.0);
     let font = egui::FontId::monospace(10.0);
-    let ink = Color32::from_gray(170);
+    let ink = theme::pal().text_dim;
     for tick in scale.ticks(zoom, half, 16.0) {
         let offset = tick.amp * zoom.get() * half;
         for sign in [1.0_f32, -1.0] {
@@ -12282,13 +12305,13 @@ fn draw_amp_ruler(painter: &egui::Painter, lane: Rect, scale: AmpScale, zoom: Am
             painter.text(pos2(lane.right() - 7.0, y), anchor, scale.label(sign * tick.amp), font.clone(), ink);
         }
     }
-    painter.line_segment([pos2(lane.right() - 0.5, lane.top()), pos2(lane.right() - 0.5, lane.bottom())], Stroke::new(1.0, Color32::from_gray(60)));
+    painter.line_segment([pos2(lane.right() - 0.5, lane.top()), pos2(lane.right() - 0.5, lane.bottom())], Stroke::new(1.0, theme::pal().hairline));
 }
 
 /// Tick marks and times along the top, at a round step that leaves room for the labels.
-fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, fmt: TimeFormat, dark: bool, tempo: &Tempo) {
-    let (ground, tick, text) = if dark { (32, 140, 190) } else { (225, 110, 60) };
-    painter.rect_filled(rect, 0.0, Color32::from_gray(ground));
+fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, fmt: TimeFormat, tempo: &Tempo) {
+    let (ground, tick, text) = (theme::pal().ruler, theme::pal().text_faint, theme::pal().text_dim);
+    painter.rect_filled(rect, 0.0, ground);
     let seconds_per_px = view.frames_per_px / f64::from(rate.max(1));
     let step = fmt.tick_step_with(seconds_per_px * 110.0, rate, tempo);
     let first = (view.start / f64::from(rate.max(1)) / step).floor() as i64;
@@ -12305,7 +12328,7 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, f
             if x < rect.left() || t < 0.0 || k % i64::from(parts) == 0 {
                 continue;
             }
-            painter.line_segment([pos2(x, rect.bottom() - 3.0), pos2(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(90)));
+            painter.line_segment([pos2(x, rect.bottom() - 3.0), pos2(x, rect.bottom())], Stroke::new(1.0, theme::pal().divider));
         }
     }
     for k in first..first + 200 {
@@ -12317,13 +12340,13 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, f
         if x < rect.left() || t < 0.0 {
             continue;
         }
-        painter.line_segment([pos2(x, rect.bottom() - 6.0), pos2(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(tick)));
+        painter.line_segment([pos2(x, rect.bottom() - 6.0), pos2(x, rect.bottom())], Stroke::new(1.0, tick));
         painter.text(
             pos2(x + 3.0, rect.top() + 3.0),
             egui::Align2::LEFT_TOP,
             fmt.format_tick_with(t, rate, tempo),
             egui::FontId::monospace(11.0),
-            Color32::from_gray(text),
+            text,
         );
     }
 }
@@ -12337,8 +12360,8 @@ fn draw_markers(painter: &egui::Painter, rect: Rect, view: &Viewport, markers: &
             .color
             .checked_sub(1)
             .and_then(|n| wavcraft_core::PALETTE.get(usize::from(n)))
-            .map_or(Color32::from_rgb(240, 190, 60), |(_, c)| Color32::from_rgb(c[0], c[1], c[2]));
-        let color = if picked.contains(&m.id) { Color32::from_rgb(255, 255, 255) } else { own };
+            .map_or(theme::pal().marker, |(_, c)| theme::rgb(c[0], c[1], c[2]));
+        let color = if picked.contains(&m.id) { theme::pal().white } else { own };
         let x0 = rect.left() + view.x_of(m.start as f64);
         let x1 = rect.left() + view.x_of(m.end.max(m.start) as f64);
         if x1 < rect.left() - 200.0 || x0 > rect.right() {
@@ -12365,16 +12388,28 @@ fn draw_markers(painter: &egui::Painter, rect: Rect, view: &Viewport, markers: &
 const COLOR_KEYS: [&str; 5] = ["color.waveform", "color.selection", "color.cursor", "color.playhead", "color.background"];
 
 /// The colour an item has when nothing overrides it, as red, green, blue.
-fn default_rgb(item: &str, settings: &Settings, dark: bool) -> [u8; 3] {
+fn default_rgb(item: &str, settings: &Settings) -> [u8; 3] {
     let c = match item {
         "waveform" => return settings.waveform_rgb(),
-        "selection" => SELECTION,
-        "cursor" => CURSOR,
-        "playhead" => PLAYHEAD,
-        _ if dark => BACKGROUND,
-        _ => BACKGROUND_LIGHT,
+        "selection" => theme::pal().selection,
+        "cursor" => theme::pal().cursor,
+        "playhead" => theme::pal().playhead,
+        _ => theme::pal().background,
     };
     [c.r(), c.g(), c.b()]
+}
+
+/// Pick the dark or the light set from the theme preference ("system" asks `ctx`) and make
+/// `theme::pal()` return it, so every panel paints with it. Returns whether the dark set is showing.
+/// `apply_look` calls this every frame.
+fn show_theme_set(preference: settings::Theme, ctx: &egui::Context) -> bool {
+    let dark = match preference {
+        settings::Theme::Dark => true,
+        settings::Theme::Light => false,
+        settings::Theme::System => ctx.system_theme().is_none_or(|t| t == egui::Theme::Dark),
+    };
+    theme::set_dark(dark);
+    dark
 }
 
 /// `v` in thousandths, for comparing settings that are floats.
@@ -12385,7 +12420,7 @@ fn milli(v: f32) -> i32 {
 /// `c` with its distance from mid grey multiplied by `k` (1: unchanged), kept in range.
 fn contrast(c: Color32, k: f32) -> Color32 {
     let m = |v: u8| ((f32::from(v) - 128.0) * k + 128.0).round().clamp(0.0, 255.0) as u8;
-    Color32::from_rgba_unmultiplied(m(c.r()), m(c.g()), m(c.b()), c.a())
+    theme::rgba(m(c.r()), m(c.g()), m(c.b()), c.a())
 }
 
 /// 256 colours along `which`'s ramp (quiet to loud), with brightness and contrast applied.
@@ -12398,7 +12433,7 @@ fn palette(which: settings::SpecPalette, brightness: f32, contrast_k: f32) -> Ve
             let (a, b) = (stops[hi - 1], stops[hi]);
             let f = ((t - a.0) / (b.0 - a.0).max(1e-6)).clamp(0.0, 1.0);
             let mix = |k: usize| (a.1[k] + (b.1[k] - a.1[k]) * f).round() as u8;
-            contrast(brighten(Color32::from_rgb(mix(0), mix(1), mix(2)), brightness), contrast_k)
+            contrast(brighten(theme::rgb(mix(0), mix(1), mix(2)), brightness), contrast_k)
         })
         .collect()
 }
@@ -12640,9 +12675,9 @@ mod tests {
 
     #[test]
     fn brightness_scales_colours_and_stays_in_range() {
-        assert_eq!(brighten(Color32::from_rgb(100, 200, 50), 1.0), Color32::from_rgb(100, 200, 50));
-        assert_eq!(brighten(Color32::from_rgb(100, 200, 50), 0.5), Color32::from_rgb(50, 100, 25));
-        assert_eq!(brighten(Color32::from_rgb(100, 200, 50), 1.5), Color32::from_rgb(150, 255, 75));
+        assert_eq!(brighten(theme::rgb(100, 200, 50), 1.0), theme::rgb(100, 200, 50));
+        assert_eq!(brighten(theme::rgb(100, 200, 50), 0.5), theme::rgb(50, 100, 25));
+        assert_eq!(brighten(theme::rgb(100, 200, 50), 1.5), theme::rgb(150, 255, 75));
     }
 
     #[test]
@@ -12677,8 +12712,8 @@ mod tests {
     fn the_palette_runs_dark_to_light() {
         let p = palette(settings::SpecPalette::Ember, 1.0, 1.0);
         assert_eq!(p.len(), 256);
-        assert_eq!(p[0], Color32::from_rgb(0, 0, 0));
-        assert_eq!(p[255], Color32::from_rgb(255, 250, 215));
+        assert_eq!(p[0], theme::rgb(0, 0, 0));
+        assert_eq!(p[255], theme::rgb(255, 250, 215));
         let brightness = |c: Color32| u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b());
         assert!(p.windows(2).all(|w| brightness(w[1]) + 3 >= brightness(w[0])), "brightness never drops");
     }
@@ -12698,10 +12733,10 @@ mod tests {
         for which in settings::SpecPalette::ALL {
             assert_eq!(palette(*which, 1.0, 1.0).len(), 256, "{}", which.name());
         }
-        assert_eq!(contrast(Color32::from_rgb(100, 128, 200), 1.0), Color32::from_rgb(100, 128, 200));
-        assert_eq!(contrast(Color32::from_rgb(100, 128, 200), 2.0), Color32::from_rgb(72, 128, 255));
+        assert_eq!(contrast(theme::rgb(100, 128, 200), 1.0), theme::rgb(100, 128, 200));
+        assert_eq!(contrast(theme::rgb(100, 128, 200), 2.0), theme::rgb(72, 128, 255));
         let mono = palette(settings::SpecPalette::Mono, 1.0, 1.0);
-        assert_eq!((mono[0], mono[255]), (Color32::BLACK, Color32::WHITE));
+        assert_eq!((mono[0], mono[255]), (theme::pal().black, theme::pal().white));
         assert_ne!(palette(settings::SpecPalette::Glacier, 1.0, 1.0), palette(settings::SpecPalette::Ember, 1.0, 1.0));
     }
 
@@ -12903,9 +12938,85 @@ mod reset_tests {
 }
 
 #[cfg(test)]
+mod step_name_tests {
+    use super::*;
+
+    /// Issue #63: the Undo menu text and the History panel's row name the same step, for each
+    /// whole-file and some-channels edit.
+    #[test]
+    fn undo_menu_and_history_agree_for_each_step() {
+        let dir = std::env::temp_dir().join(format!("wavcraft-app-steps-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opts = NewDocOptions { sessions_root: Some(dir.clone()), ..NewDocOptions::default() };
+        let doc = newdoc::empty(&opts, 48_000, 2, SampleFormat::Int16).expect("doc");
+        let cases: [(&str, bool, ActionId); 8] = [
+            ("Delete", false, ActionId::Delete),
+            ("Delete Audio", true, ActionId::Delete),
+            ("Cut", false, ActionId::Cut),
+            ("Cut Audio", true, ActionId::Cut),
+            ("Paste", false, ActionId::Paste),
+            ("Paste Audio", true, ActionId::Paste),
+            ("Crop", false, ActionId::Crop),
+            ("Crop Audio", true, ActionId::Crop),
+        ];
+        for (want, left_only, id) in cases {
+            let mut e = Editor::new(History::new(doc.clone(), u64::MAX));
+            e.insert_silence(0, 10_000).expect("silence");
+            if id == ActionId::Paste {
+                e.run(ActionId::Copy, 100..200).expect("copy");
+            }
+            if left_only {
+                e.run(ActionId::LeftChannel, 0..0).expect("left");
+            }
+            let range = if id == ActionId::Paste { 300..300 } else { 100..500 };
+            e.run(id, range).expect("edit");
+            let history_row = e.history.steps()[e.history.cursor()].label().to_string();
+            assert_eq!(history_row, want);
+            let undo = actions::action(ActionId::Undo);
+            assert_eq!(WaveApp::action_text(&e, undo), tr_args("action.undo_step", &[&history_row]), "Undo text for {want}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 #[path = "issue1000_tests.rs"]
 mod issue1000_tests;
 
 #[cfg(test)]
 #[path = "issue1002_tests.rs"]
 mod issue1002_tests;
+
+#[cfg(test)]
+mod look_tests {
+    use super::*;
+
+    /// `apply_look` takes `dark` from `show_theme_set`, which is what makes `theme::pal()` return the
+    /// set the preference names. Without its `theme::set_dark` call every panel keeps painting the
+    /// set it painted before: this test fails on the first switch to light, and on the switch back.
+    #[test]
+    fn the_theme_preference_picks_the_set_every_panel_paints_with() {
+        let _guard = theme::SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = egui::Context::default();
+        theme::set_dark(true);
+
+        assert!(!show_theme_set(settings::Theme::Light, &ctx));
+        assert_eq!(theme::pal(), &theme::LIGHT);
+        assert!(show_theme_set(settings::Theme::Dark, &ctx));
+        assert_eq!(theme::pal(), &theme::DARK);
+
+        // "System" follows the operating system, and is dark when the system doesn't say.
+        assert!(show_theme_set(settings::Theme::System, &ctx));
+        assert_eq!(theme::pal(), &theme::DARK);
+        let mut output = ctx.run_ui(egui::RawInput { system_theme: Some(egui::Theme::Light), ..Default::default() }, |_| {});
+        output.textures_delta.clear();
+        assert!(!show_theme_set(settings::Theme::System, &ctx));
+        assert_eq!(theme::pal(), &theme::LIGHT);
+
+        theme::set_dark(true);
+    }
+}
+
+#[cfg(test)]
+#[path = "issue369_tests.rs"]
+mod issue369_tests;

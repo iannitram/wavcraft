@@ -122,19 +122,24 @@ impl InputMonitor {
     }
 }
 
+/// The input named `wanted` when it is there (the preferences' `input_device`), else the system
+/// default. A name that is not there (the device was unplugged) falls back to the default with a
+/// warning.
+pub(crate) fn find_input(host: &cpal::Host, wanted: Option<&str>) -> Option<cpal::Device> {
+    if let Some(w) = wanted {
+        let devices: Vec<cpal::Device> = host.input_devices().map(Iterator::collect).unwrap_or_default();
+        let names: Vec<String> = devices.iter().map(|d| crate::player::device_name(d).unwrap_or_default()).collect();
+        if let Some(d) = crate::player::pick(Some(w), &names).and_then(|i| devices.into_iter().nth(i)) {
+            return Some(d);
+        }
+        log::warn!(target: "wavcraft", "audio input {w:?} is not available; using the system default");
+    }
+    host.default_input_device()
+}
+
 fn open_device(tap: &Arc<InputTap>, wanted: Option<&str>) -> Result<(cpal::Stream, String), String> {
     let host = cpal::default_host();
-    let named = wanted.and_then(|w| {
-        let found = host.input_devices().ok()?.find(|d| crate::player::device_name(d).is_some_and(|n| n == w));
-        if found.is_none() {
-            log::warn!(target: "wavcraft", "audio input {w:?} is not available; using the system default");
-        }
-        found
-    });
-    let device = match named {
-        Some(d) => d,
-        None => host.default_input_device().ok_or("no audio input device")?,
-    };
+    let device = find_input(&host, wanted).ok_or("no audio input device")?;
     let name = crate::player::device_name(&device).unwrap_or_else(|| "input".to_string());
     let supported = device.default_input_config().map_err(|e| e.to_string())?;
     let config: cpal::StreamConfig = supported.into();

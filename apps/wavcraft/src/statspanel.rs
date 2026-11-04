@@ -2,6 +2,7 @@
 //! never the whole file in memory) and the panel shows the numbers per channel. The maths is in
 //! `wavcraft_core::stats`.
 
+use crate::theme;
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -137,7 +138,7 @@ impl StatsPanel {
                 }
             });
             if let Some(e) = &self.error {
-                ui.colored_label(egui::Color32::from_rgb(235, 80, 70), e);
+                ui.colored_label(theme::pal().alert, e);
             }
             let Some(m) = &self.measured else {
                 ui.label("Press Scan to measure.");
@@ -145,7 +146,7 @@ impl StatsPanel {
             };
             let stale = current.is_none_or(|c| !Arc::ptr_eq(c, &m.state));
             if stale {
-                ui.colored_label(egui::Color32::from_rgb(230, 180, 60), "The file changed since this scan: scan again.");
+                ui.colored_label(theme::pal().caution, "The file changed since this scan: scan again.");
             }
             let st = &m.stats;
             let rate = st.sample_rate;

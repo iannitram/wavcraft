@@ -2,6 +2,7 @@
 //! statistics window (f26). The meter maths is `wavcraft_core::levels`; the measurement is
 //! `wavcraft_core::loudness`, run on a worker thread so the window stays responsive.
 
+use crate::theme;
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
@@ -9,16 +10,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::Instant;
 
-use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, pos2, vec2};
+use egui::{Align2, FontId, Rect, Sense, Stroke, pos2, vec2};
 use wavcraft_core::DocState;
 use wavcraft_core::levels::{FLOOR_DB, Levels, Reading};
 use wavcraft_core::loudness::{self, Loudness};
 
-const TRACK: Color32 = Color32::from_rgb(30, 33, 40);
-const GREEN: Color32 = Color32::from_rgb(70, 190, 120);
-const AMBER: Color32 = Color32::from_rgb(225, 185, 60);
-const RED: Color32 = Color32::from_rgb(235, 70, 60);
-const HOLD: Color32 = Color32::from_gray(235);
 /// Colour changes at these levels, dBFS.
 const AMBER_FROM: f32 = -18.0;
 const RED_FROM: f32 = -6.0;
@@ -81,7 +77,7 @@ impl MetersUi {
         let (label_w, clip_w, num_w) = (16.0, 18.0, 48.0);
         let bar = Rect::from_min_max(pos2(rect.left() + label_w, rect.top() + 2.0), pos2(rect.right() - clip_w - num_w - 8.0, rect.bottom() - 16.0));
         let font = FontId::proportional(11.0);
-        let dim = Color32::from_gray(150);
+        let dim = theme::pal().text_dim;
         let x_of = |db: f32| bar.left() + bar.width() * ((db.clamp(FLOOR_DB, 0.0) - FLOOR_DB) / -FLOOR_DB);
         let lane_h = (bar.height() - 3.0) / 2.0;
         let mut reset = false;
@@ -90,16 +86,16 @@ impl MetersUi {
             let lane = Rect::from_min_size(pos2(bar.left(), top), vec2(bar.width(), lane_h));
             let r = self.levels.reading(ch);
             painter.text(pos2(rect.left() + 2.0, lane.center().y), Align2::LEFT_CENTER, if ch == 0 { "L" } else { "R" }, font.clone(), dim);
-            painter.rect_filled(lane, 1.0, TRACK);
+            painter.rect_filled(lane, 1.0, theme::pal().meter_track);
             paint_bar(&painter, lane, r.level_db, &x_of);
             if r.hold_db > FLOOR_DB {
                 let x = x_of(r.hold_db);
-                painter.line_segment([pos2(x, lane.top()), pos2(x, lane.bottom())], Stroke::new(2.0, HOLD));
+                painter.line_segment([pos2(x, lane.top()), pos2(x, lane.bottom())], Stroke::new(2.0, theme::pal().text_strong));
             }
             let clip = Rect::from_min_size(pos2(bar.right() + 4.0, top), vec2(clip_w, lane_h));
-            painter.rect_filled(clip, 2.0, if r.clipped { RED } else { TRACK });
+            painter.rect_filled(clip, 2.0, if r.clipped { theme::pal().alert } else { theme::pal().meter_track });
             if r.clipped {
-                painter.text(clip.center(), Align2::CENTER_CENTER, "!", font.clone(), Color32::WHITE);
+                painter.text(clip.center(), Align2::CENTER_CENTER, "!", font.clone(), theme::pal().white);
             }
             let text = if r.hold_db > FLOOR_DB { format!("{:.1}", r.hold_db) } else { "-inf".to_string() };
             painter.text(pos2(rect.right() - 2.0, lane.center().y), Align2::RIGHT_CENTER, text, font.clone(), dim);
@@ -151,7 +147,7 @@ impl MetersUi {
                 match result {
                     Ok(m) => stats_grid(ui, m),
                     Err(e) => {
-                        ui.colored_label(RED, e);
+                        ui.colored_label(theme::pal().alert, e);
                     }
                 }
             } else {
@@ -201,7 +197,7 @@ fn paint_bar(painter: &egui::Painter, lane: Rect, level_db: f32, x_of: &dyn Fn(f
         return;
     }
     // Segments up to -18, -6 and 0, each in its colour, cut at the level.
-    let stops = [(FLOOR_DB, AMBER_FROM, GREEN), (AMBER_FROM, RED_FROM, AMBER), (RED_FROM, 0.0, RED)];
+    let stops = [(FLOOR_DB, AMBER_FROM, theme::pal().ok), (AMBER_FROM, RED_FROM, theme::pal().caution), (RED_FROM, 0.0, theme::pal().alert)];
     for (from, to, color) in stops {
         if level_db > from {
             let seg = Rect::from_min_max(pos2(x_of(from), lane.top()), pos2(x_of(level_db.min(to)), lane.bottom()));

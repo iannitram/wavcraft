@@ -3,6 +3,7 @@
 //! all of them. The window only holds state and draws; the app runs the repair so it lands on
 //! the history as one undo step named for the tool.
 
+use crate::theme;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
@@ -252,10 +253,10 @@ impl DiagPanel {
             ui.separator();
             ui.label(format!("{} regions found, {skipped} would be skipped (too long, or at a file edge)", found.regions.len()));
             if found.truncated {
-                ui.colored_label(egui::Color32::YELLOW, "The scan stopped at its limit: repair, then scan again for the rest.");
+                ui.colored_label(theme::pal().caution, "The scan stopped at its limit: repair, then scan again for the rest.");
             }
             if stale {
-                ui.colored_label(egui::Color32::LIGHT_RED, "Stale: the file changed since this scan. Scan again.");
+                ui.colored_label(theme::pal().alert, "Stale: the file changed since this scan. Scan again.");
             }
             let rate = f64::from(found.doc.sample_rate());
             egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
