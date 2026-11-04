@@ -236,19 +236,37 @@ impl MetadataDisplay {
     }
 }
 
-/// Which panels are shown. All start shown.
+/// Panels v1 rules out (docs/v1/v1.md, "Deliberately not in v1"). A release build does not
+/// offer them: they are never shown, and the Window menu does not list them. Their code stays.
+pub const OUT_OF_V1: &[&str] = &["freq"];
+
+/// Which panels are shown. All start shown, except in a release build the panels in
+/// [`OUT_OF_V1`] (whatever the settings file says: it keeps the user's own choice for the rest).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PanelSet {
     shown: Vec<bool>,
+    /// Whether this is a release build (the out-of-v1 panels are not offered).
+    release: bool,
 }
 
 impl Default for PanelSet {
     fn default() -> Self {
-        PanelSet { shown: vec![true; REGISTRY.len()] }
+        PanelSet::for_build(!cfg!(debug_assertions))
     }
 }
 
 impl PanelSet {
+    /// Every panel shown, for a release build or a debug build (`release`). The out-of-v1 panels
+    /// are not offered in a release build.
+    pub fn for_build(release: bool) -> PanelSet {
+        PanelSet { shown: vec![true; REGISTRY.len()], release }
+    }
+
+    /// Whether this build offers the panel at all: false for an out-of-v1 panel in a release build.
+    pub fn offers(&self, id: &str) -> bool {
+        !(self.release && OUT_OF_V1.contains(&id))
+    }
+
     /// Everything shown except the panels whose ids are in `hidden` (ids not in the registry
     /// are ignored).
     pub fn from_hidden<S: AsRef<str>>(hidden: &[S]) -> PanelSet {
@@ -264,15 +282,15 @@ impl PanelSet {
         REGISTRY.iter().zip(&self.shown).filter(|(_, s)| !**s).map(|(p, _)| p.id.to_string()).collect()
     }
 
-    /// Whether the panel is shown (false for an id that is not registered).
+    /// Whether the panel is shown (false for an id that is not registered, or not offered by this build).
     pub fn is_shown(&self, id: &str) -> bool {
-        REGISTRY.iter().position(|p| p.id == id).is_some_and(|i| self.shown[i])
+        REGISTRY.iter().position(|p| p.id == id).is_some_and(|i| self.shown[i] && self.offers(id))
     }
 
     /// Show or hide a panel. Returns false for an id that is not registered, and for hiding the
     /// Editor (it can't be closed).
     pub fn set(&mut self, id: &str, shown: bool) -> bool {
-        if !shown && !is_closable(id) {
+        if (!shown && !is_closable(id)) || (shown && !self.offers(id)) {
             return false;
         }
         match REGISTRY.iter().position(|p| p.id == id) {
@@ -312,7 +330,7 @@ impl PanelSet {
 
     /// `waveform=1 spectral=1 history=0`: the control channel's report.
     pub fn report(&self) -> String {
-        REGISTRY.iter().zip(&self.shown).map(|(p, s)| format!("{}={}", p.id, u8::from(*s))).collect::<Vec<_>>().join(" ")
+        REGISTRY.iter().map(|p| format!("{}={}", p.id, u8::from(self.is_shown(p.id)))).collect::<Vec<_>>().join(" ")
     }
 }
 
@@ -912,6 +930,19 @@ mod tests {
         assert_eq!(s.toggle("history"), Some(true));
         assert_eq!(s.toggle("nope"), None);
         assert!(!s.is_shown("nope"));
+    }
+
+    #[test]
+    fn a_release_build_lists_no_out_of_v1_panel() {
+        let mut release = PanelSet::for_build(true);
+        let listed: Vec<&str> = REGISTRY.iter().filter(|p| release.is_shown(p.id)).map(|p| p.id).collect();
+        assert!(OUT_OF_V1.iter().all(|id| !listed.contains(id)), "{listed:?}");
+        assert!(!release.is_shown("freq") && !release.set("freq", true));
+        assert_eq!(release.toggle("freq"), None);
+        assert_eq!(release.apply_action("window.show.freq"), Some(Err("no panel with the id \"freq\"".into())));
+        assert!(release.report().contains("freq=0") && release.is_shown("history"));
+        assert!(release.hidden_ids().is_empty(), "the settings file keeps no release-only state");
+        assert!(PanelSet::for_build(false).is_shown("freq"), "a debug build offers every panel");
     }
 
     #[test]
