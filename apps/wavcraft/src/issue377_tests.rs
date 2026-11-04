@@ -1,14 +1,10 @@
 //! Tests for #377: Play pressed right after an edit must play the edited audio, not the buffer the
 //! player held before the asynchronous rebuild finished.
-//!
-//! Hook-up, both in apps/wavcraft/src/app.rs: at the end of the file add
-//! `#[cfg(test)] #[path = "issue377_tests.rs"] mod issue377_tests;`.
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use super::*;
 use crate::player::{OutputChoice, Player};
-use wavcraft_core::transport::Plan;
 use wavcraft_core::{AudioBuffer, Document};
 
 /// A player on the silent sink (the env var is set once for the test process; no test needs a device).
@@ -22,25 +18,85 @@ fn silent_player() -> Player {
     p
 }
 
+/// A folder for one test, removed when it ends. Declare it before the window, so the window (and
+/// its session store inside) is dropped first.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let dir = std::env::temp_dir().join(format!("wavcraft-issue377-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        Scratch(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The window as the program builds it, with its session folder in `scratch`. Its settings file and
+/// recent-files list are cut loose at once, so nothing a test does is written to the user's own.
+fn a_window(scratch: &Scratch) -> WaveApp {
+    let _ = silent_player();
+    let cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+    let mut app = WaveApp::new(&cc, None, Some(scratch.0.join("sessions")), false);
+    assert!(app.sessions.path.starts_with(&scratch.0), "the window's sessions are in the scratch folder, not {}", app.sessions.path.display());
+    app.settings_path = None;
+    app.recent_path = None;
+    app
+}
+
 fn ramp(n: usize) -> DocState {
     Document::from_buffer(AudioBuffer { sample_rate: 48_000, channels: vec![(0..n).map(|i| i as f32).collect()] }).unwrap().state
 }
 
-/// The issue's case at the player: the old 100-frame buffer is held, the edit shortens it to 60
-/// frames, and the play that starts on the edited audio plays those 60 frames and then stops.
+/// The issue's case: the old 100-frame buffer is held, the edit shortens it to 60 frames, Play
+/// pressed while the rebuild is still running must not start on the pre-edit audio, and starts on
+/// the 60 edited frames once `finish_rebuild` hands them over.
 #[test]
 fn a_play_on_the_edited_audio_plays_the_sixty_edited_frames() {
-    let mut p = silent_player();
-    p.set_audio(Some(ramp(100)));
-    let span = EditSpan::between(&ramp(100), &ramp(60));
-    p.replace_audio(Some(ramp(60)), &span);
-    assert!(p.start(&Plan::new(0.0, 60.0), 0.0), "the play starts");
+    let scratch = Scratch::new("play-edited");
+    let mut app = a_window(&scratch);
+    let ctx = app.ctx.clone();
+    app.add_document(ramp(100), &ctx);
+    while app.rebuilding.is_some() {
+        app.finish_rebuild();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(app.doc.as_ref().map(Document::frames), Some(100));
+
+    // Shorten the audio to 60 frames by deleting frames 60..100.
+    app.selection = Selection { anchor: 60, head: 100 };
+    app.run_action(ActionId::Delete, &ctx).expect("delete frames 60..100");
+    assert!(app.rebuilding.is_some(), "rebuilding after edit");
+
+    // Press Play at the start during the rebuild: it must wait for the edited audio, not start on pre-edit audio.
+    app.selection = Selection { anchor: 0, head: 0 };
+    app.start_play();
+    assert!(!app.player.is_playing(), "play must not start on pre-edit audio");
+    assert_eq!(app.transport.mode, Mode::Stopped);
+
+    // finish_rebuild hands over the edited audio and starts the waiting play.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while p.is_playing() && Instant::now() < deadline {
+    while app.rebuilding.is_some() && Instant::now() < deadline {
+        app.finish_rebuild();
+        if app.rebuilding.is_some() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    assert!(app.rebuilding.is_none(), "rebuild finished");
+    assert_eq!(app.doc.as_ref().map(Document::frames), Some(60));
+    assert_eq!(app.transport.mode, Mode::Playing, "the play starts on the edited audio");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.player.is_playing() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(!p.is_playing(), "the 60 frames run out and the play ends");
-    assert_eq!(p.position(), 60, "the play went over the 60 edited frames");
+    assert!(!app.player.is_playing(), "the 60 frames run out and the play ends");
+    assert_eq!(app.player.position(), 60, "the play went over the 60 edited frames");
 }
 
 /// The app defers a Play pressed while the rebuild is pending (it must not start on the old audio)
