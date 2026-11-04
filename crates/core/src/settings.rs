@@ -40,6 +40,8 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+/// A session folder path plain text can't hold (see [`needs_hex`]): its native bytes, in hex.
+const KEY_SESSION_FOLDER_HEX: &str = "session_folder_hex";
 const KEY_LANGUAGE: &str = "language";
 const KEY_STATUS_FIELDS: &str = "status_fields";
 const KEY_SPECTRAL_VIEW: &str = "spectral_view";
@@ -178,6 +180,7 @@ const FILE_ONLY_KEYS: &[&str] = &[
     KEY_SNAP_EDGES,
     KEY_SNAP_MARKERS,
     KEY_HIDDEN_PANELS,
+    KEY_SESSION_FOLDER_HEX,
     KEY_SYNC_SELECTION,
     KEY_SYNC_ZOOM,
     KEY_SYNC_PLAYHEAD,
@@ -881,6 +884,11 @@ impl Settings {
 
     /// Set preference `key` from text. A value that doesn't fit changes nothing.
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
+        // A session folder is kept exactly as given: its spaces and newlines are part of it.
+        if key == KEY_SESSION_FOLDER {
+            self.session_folder = (!value.is_empty()).then(|| PathBuf::from(value));
+            return Ok(());
+        }
         let value = value.trim();
         let device = |v: &str| (!v.is_empty() && v != SYSTEM_DEFAULT).then(|| v.to_string());
         let ms = |v: &str| match v.parse::<u32>() {
@@ -888,7 +896,13 @@ impl Settings {
             _ => Err(format!("{key} is a whole number of milliseconds, 0 to {MAX_CROSSFADE_MS}")),
         };
         match key {
-            KEY_SESSION_FOLDER => self.session_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
+            KEY_SESSION_FOLDER_HEX => {
+                self.session_folder = Some(
+                    hex_decode(value)
+                        .and_then(|b| path_from_native(&b))
+                        .ok_or_else(|| format!("{key} is the hex of a path's bytes (an even number of hex digits)"))?,
+                )
+            }
             KEY_LANGUAGE => self.language = (!value.is_empty()).then(|| value.to_string()),
             // Only exactly `on` turns it on; the last line in the file wins.
             KEY_DITHER => self.dither = value == "on",
@@ -1087,8 +1101,17 @@ impl Settings {
     pub fn to_text(&self) -> String {
         let mut out = String::from("# WavCraft settings. One `key = value` per line.\n");
         out.push_str("# session_folder: where opened files are kept while you work on them (empty: the default).\n");
-        let folder = self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-        out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+        match self.session_folder.as_deref() {
+            // A path plain text can't hold comes back exactly from its hex bytes, which replace the plain line.
+            Some(folder) if needs_hex(folder) => {
+                out.push_str("# session_folder_hex: the session folder's bytes in hex, for a path with a newline, a leading or trailing space, or bytes that are not text.\n");
+                out.push_str(&format!("{KEY_SESSION_FOLDER_HEX} = {}\n", hex_encode(&path_to_native(folder))));
+            }
+            folder => {
+                let folder = folder.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                out.push_str(&format!("{KEY_SESSION_FOLDER} = {folder}\n"));
+            }
+        }
         if let Some(language) = &self.language {
             out.push_str("# language: the interface language's code (en, pseudo; absent: English).\n");
             out.push_str(&format!("{KEY_LANGUAGE} = {language}\n"));
@@ -1331,9 +1354,10 @@ impl Settings {
 
 /// The start of every comment line `Settings::to_text` can write. `merge_into` drops the old
 /// file's copies of these, so each save leaves one copy; other modules' comments are kept.
-const OWN_COMMENTS: [&str; 21] = [
+const OWN_COMMENTS: [&str; 22] = [
     "# WavCraft settings.",
     "# session_folder:",
+    "# session_folder_hex:",
     "# language:",
     "# status_fields:",
     "# spectral_view:",
@@ -1418,6 +1442,72 @@ fn parse_steps(key: &str, v: &str) -> Result<Vec<f32>, String> {
 /// Marker name `n` from `pattern`: `{n}` becomes the number; a pattern without it gets " n" appended.
 pub fn marker_name(pattern: &str, n: u32) -> String {
     if pattern.contains("{n}") { pattern.replace("{n}", &n.to_string()) } else { format!("{pattern} {n}") }
+}
+
+/// Whether a session folder path must be written as hex: it isn't text (not valid Unicode), or
+/// its text has a control character (a newline would end the line) or a leading or trailing space
+/// (a plain value is trimmed when read).
+fn needs_hex(path: &Path) -> bool {
+    match path.to_str() {
+        None => true,
+        Some(s) => s.chars().any(char::is_control) || s.starts_with(char::is_whitespace) || s.ends_with(char::is_whitespace),
+    }
+}
+
+/// The path's bytes as the OS holds them: the raw bytes on Unix, UTF-16 little-endian on Windows.
+fn path_to_native(path: &Path) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().to_vec()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str().encode_wide().flat_map(u16::to_le_bytes).collect()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        path.to_string_lossy().as_bytes().to_vec()
+    }
+}
+
+/// The inverse of [`path_to_native`]. `None` for bytes that are no path (empty, or an odd count on Windows).
+fn path_from_native(bytes: &[u8]) -> Option<PathBuf> {
+    if bytes.is_empty() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Some(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        if !bytes.len().is_multiple_of(2) {
+            return None;
+        }
+        let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+        Some(PathBuf::from(OsString::from_wide(&units)))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        String::from_utf8(bytes.to_vec()).ok().map(PathBuf::from)
+    }
+}
+
+/// Lowercase hex of `bytes`, two digits each.
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The bytes of a hex string (either case). `None` for an odd length or a non-hex digit.
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    text.as_bytes().chunks(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()).collect()
 }
 
 fn unknown_key(key: &str) -> String {
