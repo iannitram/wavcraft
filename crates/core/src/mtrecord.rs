@@ -570,6 +570,19 @@ pub(crate) fn wait_until(what: &str, timeout: Duration, mut ready: impl FnMut() 
     }
 }
 
+/// Sets the recorder's `stop` when dropped. A test keeps one of these alive across its waits:
+/// when `wait_until` panics, unwinding drops it and the fake input thread exits, so the scope
+/// joins instead of hanging.
+#[cfg(test)]
+struct StopOnDrop<'a>(&'a AtomicBool);
+
+#[cfg(test)]
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,6 +773,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         std::thread::scope(|s| {
             let h = s.spawn(|| run_fake(vec![(plan.clone(), w)], 48_000, &stop));
+            let _stop_on_panic = StopOnDrop(&stop);
             // About 0.3 s of audio: wait until the take's header shows it, then stop.
             wait_until("the take to hold 9600 frames", Duration::from_secs(20), || readable_frames(&plan.path).is_some_and(|(_, _, f)| f >= 9_600));
             stop.store(true, Ordering::SeqCst);
@@ -813,6 +827,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         let report = std::thread::scope(|s| {
             let h = s.spawn(|| run_fake(vec![(plan_b.clone(), wb), (plan_a.clone(), wa)], 48_000, &stop));
+            let _stop_on_panic = StopOnDrop(&stop);
             // The good track has its 9600 frames on disk (its header is patched every 0.25 s of audio).
             wait_until("the good track to hold 9600 frames", Duration::from_secs(20), || readable_frames(&pa).is_some_and(|(_, _, f)| f >= 9_600));
             stop.store(true, Ordering::SeqCst);
