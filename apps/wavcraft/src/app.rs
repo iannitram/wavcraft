@@ -624,6 +624,9 @@ pub struct WaveApp {
     include_meta: bool,
     /// The views' copy of the document, being read back after an edit (newest request only).
     rebuilding: Option<Receiver<Result<Document, OpenError>>>,
+    /// Play was pressed while `rebuilding` was still building the edited audio (#377): the play
+    /// starts from the edited audio when it arrives, not from the old buffer the player holds.
+    play_after_edit: bool,
     /// Requests from the control channel, when `WAVCRAFT_CONTROL_PORT` turned it on.
     control: Option<Receiver<control::Request>>,
     /// The step last opened or saved: the file on disk holds it (no unsaved changes while the
@@ -1003,6 +1006,7 @@ impl WaveApp {
             docs: DocList::new(),
             closing_doc: false,
             rebuilding: None,
+            play_after_edit: false,
             saved: None,
             saving: None,
             batch_write: None,
@@ -2437,6 +2441,8 @@ impl WaveApp {
 
     /// Park the current document's fields (the window's are left empty).
     fn take_slot(&mut self) -> DocSlot {
+        // A play waiting for this document's edit does not follow the document to another one.
+        self.play_after_edit = false;
         DocSlot {
             doc: self.doc.take(),
             editor: self.editor.take(),
@@ -4609,7 +4615,10 @@ impl WaveApp {
             Mode::Playing => self.stop_play(),
             Mode::Paused => self.resume_play(),
             Mode::Stopped => {
-                if self.player.is_playing() {
+                if self.play_after_edit {
+                    // Play is waiting for an edit (#377): Space cancels that play.
+                    self.play_after_edit = false;
+                } else if self.player.is_playing() {
                     // Something else is playing (the Playlist): Space stops it.
                     self.halt_play();
                 } else {
@@ -4632,6 +4641,7 @@ impl WaveApp {
 
     /// Stop at once with the cursor left where it is (the file or the cursor changed under it).
     fn halt_play(&mut self) {
+        self.play_after_edit = false;
         self.player.stop();
         self.transport.shuttle.stop();
         self.transport.mode = Mode::Stopped;
@@ -4652,6 +4662,12 @@ impl WaveApp {
 
     /// Play from the cursor, or the selection, as the Loop and Skip Selection options say.
     fn start_play(&mut self) {
+        if self.rebuilding.is_some() {
+            // The edited audio is not on the player yet, and the old buffer is the wrong one to play
+            // (#377): the play starts when `finish_rebuild` hands the edited audio over.
+            self.play_after_edit = true;
+            return;
+        }
         let Some(doc) = &self.doc else { return };
         let width = self.editor_width.max(1.0);
         let rate = doc.sample_rate();
@@ -7063,6 +7079,7 @@ impl WaveApp {
             Err(TryRecvError::Disconnected) => Err(OpenError::Io("the worker stopped unexpectedly".to_string())),
         };
         self.rebuilding = None;
+        let play_now = std::mem::take(&mut self.play_after_edit);
         match result {
             Ok(doc) => {
                 // Edit while playing (f48): the player takes the edited audio and the play goes on
@@ -7074,6 +7091,10 @@ impl WaveApp {
                 }
                 self.doc = Some(doc);
                 self.generation += 1;
+                // A Play pressed during the rebuild (#377) starts now, on the edited audio.
+                if play_now && self.transport.mode == Mode::Stopped && !self.player.is_playing() {
+                    self.start_play();
+                }
                 // Keep the last picture while the spectral worker refreshes stale visible blocks.
             }
             Err(OpenError::Empty) => {
@@ -13157,3 +13178,7 @@ mod look_tests {
 #[cfg(test)]
 #[path = "issue369_tests.rs"]
 mod issue369_tests;
+
+#[cfg(test)]
+#[path = "issue377_tests.rs"]
+mod issue377_tests;
