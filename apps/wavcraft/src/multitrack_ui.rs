@@ -712,6 +712,8 @@ impl MtView {
                     if cresp.clicked() {
                         // A click on a clip selects its track, as a click on the lane does.
                         self.selected = Some(id);
+                        // The clip is the one the Clip Properties panel is about (#980).
+                        self.sel_clip = Some((id, c.id));
                         // f123: a click picks this clip for its audio type; Shift or Ctrl adds it, or takes it back out.
                         let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
                         match self.sel_clips.iter().position(|x| *x == c.id) {
