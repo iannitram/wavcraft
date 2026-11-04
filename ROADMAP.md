@@ -68,7 +68,7 @@ How to read it:
 | J2 | No playback while recording | #52 | not started | no check found in the code or tests |
 | J3 | A crash keeps the take | #53 | built | `core/take_repair.rs`, `core/take_recover.rs`; tests `j3_take_repair.rs`, `j3_take_recover.rs` |
 | J4 | While recording readouts | #54 | partial | `core/take_readout.rs` (time, size, disk left, drops; tests `j4_take_readout.rs`); the input level meter on `feat/ap-f56-input-meter` (#72) |
-| J5 | Input device | #55 | built | `core/settings.rs`; tests `j5_input_device.rs`; the unplug check by hand is not done |
+| J5 | Input device | #55 | built | `core/settings.rs`; a take records from it and an unplug stops the take and keeps it (`rec_input.rs`, `recording.rs`); tests `j5_input_device.rs`; the unplug check by hand is not done |
 | J6 | Every machine | #56 | not started | needs a mic on each machine; nothing recorded yet |
 | J7 | Take opens in the editor | #57 | not started | not found on main |
 | K1 | Run Episode Check | #1049 | not started | added 2026-11-01 |

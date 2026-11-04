@@ -1152,7 +1152,7 @@ pub fn list_device_names_in_background(host: Option<String>) -> std::sync::mpsc:
 
 /// Which of `available` to open for the wanted name: its position, or `None` (take the system
 /// default) when nothing was asked for or the name isn't there (the device was unplugged).
-fn pick(wanted: Option<&str>, available: &[String]) -> Option<usize> {
+pub(crate) fn pick(wanted: Option<&str>, available: &[String]) -> Option<usize> {
     let wanted = wanted?;
     available.iter().position(|n| n == wanted)
 }
