@@ -83,6 +83,7 @@ use crate::recovery::{self, Choice, Recovery};
 use crate::shortcut_editor::{Change, ShortcutDialog};
 use crate::spectrum::{Job, Renderer};
 use crate::statspanel::{Nav, StatsPanel};
+use crate::v1::{self, Feature};
 use crate::video::{VideoPanel, Waiters};
 use wavcraft_core::doc::rec_edit::{self, RecMode, RecPlan, RecTarget};
 use wavcraft_core::multitrack::soundcraft_model::{SourceId, TrackId};
@@ -4206,6 +4207,7 @@ impl WaveApp {
         self.halt_play();
         self.player.set_muted(true);
         self.rec.monitor_default = self.settings.monitor_input;
+        self.rec.input_device = self.settings.input_device.clone();
         match self.rec.start(fmt, max_secs) {
             Ok(path) => {
                 self.error = None;
@@ -4271,6 +4273,7 @@ impl WaveApp {
         self.halt_play();
         self.player.set_muted(!punch);
         self.rec.monitor_default = self.settings.monitor_input;
+        self.rec.input_device = self.settings.input_device.clone();
         match self.rec.start_with(fmt, limit, punch) {
             Ok(path) => {
                 self.rec.set_into(plan, base, self.doc_id, punch.then_some(from), fmt.rate);
@@ -5818,7 +5821,7 @@ impl WaveApp {
     /// Window › Tools: the tools by name, the active one selected; unbuilt ones greyed.
     fn tools_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Tools");
-        for t in menus::TOOLS {
+        for t in menus::TOOLS.iter().filter(|t| v1::tool_offered_in(v1::RELEASE, t.name)) {
             let on = t.tool.is_some_and(|x| x == self.tool);
             if ui
                 .add_enabled(t.tool.is_some(), egui::Button::new(t.label).selected(on).min_size(vec2(ui.available_width(), 0.0)))
@@ -5897,7 +5900,9 @@ impl WaveApp {
         // The panel's ≡ menu: a row above its body (the tab strip names the panel).
         let maximized = self.layout.maximized(&self.panels) == Some("history");
         let mut chosen = None;
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| chosen = panel_menu_button(ui, maximized, "history"));
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| chosen = panel_menu_button(ui, maximized, "history"));
+        });
         if let Some(item) = chosen
             && let Err(e) = self.run_panel_item("history", item)
         {
@@ -9624,7 +9629,9 @@ impl WaveApp {
             }
         }
         ui.separator();
-        if ui.add_enabled(self.editor.is_some() && self.saving.is_none(), egui::Button::new("Mix Paste…")).clicked() {
+        if v1::offered(Feature::MixPaste)
+            && ui.add_enabled(self.editor.is_some() && self.saving.is_none(), egui::Button::new(Feature::MixPaste.menu_text())).clicked()
+        {
             self.mix_paste = Some(mixpaste::Dialog::new());
             ui.close();
         }
@@ -9821,20 +9828,22 @@ impl WaveApp {
             self.rack.open = !self.rack.open;
             ui.close();
         }
-        if ui.button("Diagnostics…").clicked() {
+        if v1::offered(Feature::Diagnostics) && ui.button(Feature::Diagnostics.menu_text()).clicked() {
             self.diag.open = true;
             ui.close();
         }
         // Diagnostics: DeClipper runs at once with its defaults (no dialog yet).
-        ui.separator();
-        let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(ActionId::DeClip, &sel)) && self.saving.is_none() && self.running.is_none();
-        if ui.add_enabled(enabled, egui::Button::new("DeClipper (defaults)")).clicked() {
-            chosen = Some((ActionId::DeClip, false));
-        }
-        for (id, text) in [(ActionId::DeClick, "DeClicker (defaults)"), (ActionId::AutoClick, "Automatic Click Remover (defaults)")] {
-            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(id, &sel)) && self.saving.is_none() && self.running.is_none();
-            if ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
-                chosen = Some((id, false));
+        if v1::offered(Feature::Diagnostics) {
+            ui.separator();
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(ActionId::DeClip, &sel)) && self.saving.is_none() && self.running.is_none();
+            if ui.add_enabled(enabled, egui::Button::new("DeClipper (defaults)")).clicked() {
+                chosen = Some((ActionId::DeClip, false));
+            }
+            for (id, text) in [(ActionId::DeClick, "DeClicker (defaults)"), (ActionId::AutoClick, "Automatic Click Remover (defaults)")] {
+                let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(id, &sel)) && self.saving.is_none() && self.running.is_none();
+                if ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
+                    chosen = Some((id, false));
+                }
             }
         }
         match chosen {
@@ -10016,24 +10025,26 @@ impl WaveApp {
                         self.error = Some(e);
                     }
                 });
-                ui.menu_button("New", |ui| {
-                    if ui.button("Multitrack Session…").clicked() {
-                        self.mtv.open_dialog();
+                if v1::offered(Feature::Multitrack) {
+                    ui.menu_button("New", |ui| {
+                        if ui.button("Multitrack Session…").clicked() {
+                            self.mtv.open_dialog();
+                            ui.close();
+                        }
+                    });
+                    let has_session = self.mtv.mt.is_some();
+                    if ui.add_enabled(has_session, egui::Button::new("Save Session")).clicked() {
+                        self.mtv.save_session_dialog(false);
                         ui.close();
                     }
-                });
-                let has_session = self.mtv.mt.is_some();
-                if ui.add_enabled(has_session, egui::Button::new("Save Session")).clicked() {
-                    self.mtv.save_session_dialog(false);
-                    ui.close();
-                }
-                if ui.add_enabled(has_session, egui::Button::new("Save Session As…")).clicked() {
-                    self.mtv.save_session_dialog(true);
-                    ui.close();
-                }
-                if ui.button("Open Session…").clicked() {
-                    self.mtv.open_session_dialog();
-                    ui.close();
+                    if ui.add_enabled(has_session, egui::Button::new("Save Session As…")).clicked() {
+                        self.mtv.save_session_dialog(true);
+                        ui.close();
+                    }
+                    if ui.button("Open Session…").clicked() {
+                        self.mtv.open_session_dialog();
+                        ui.close();
+                    }
                 }
                 let busy = self.saving.is_some() || self.making.is_some() || self.save_all.is_some();
                 if ui.add_enabled(self.editor.is_some() && !busy, egui::Button::new("Save All")).clicked()
@@ -10047,7 +10058,7 @@ impl WaveApp {
                     self.error = Some(e);
                 }
                 ui.separator();
-                if ui.button("Batch Process…").clicked() {
+                if v1::offered(Feature::Batch) && ui.button(Feature::Batch.menu_text()).clicked() {
                     self.batch.open = true;
                 }
                 ui.separator();
@@ -10087,30 +10098,33 @@ impl WaveApp {
                 }
             });
             ui.menu_button(tr("menu.edit"), |ui| self.edit_menu(ui));
-            ui.menu_button("Multitrack", |ui| {
-                let has = self.mtv.mt.as_ref().is_some_and(|m| m.clip_count() > 0);
-                let norm = self.mtv.mix_normalize.then_some(-1.0);
-                ui.checkbox(&mut self.mtv.mix_normalize, "Normalize the mixdown to -1 dB");
-                if ui.add_enabled(has, egui::Button::new("Mixdown Session to New File")).clicked() {
-                    if let Err(e) = self.start_mixdown(false, norm, ui.ctx()) {
-                        self.error = Some(e);
+            if v1::offered(Feature::Multitrack) {
+                ui.menu_button("Multitrack", |ui| {
+                    let has = self.mtv.mt.as_ref().is_some_and(|m| m.clip_count() > 0);
+                    let norm = self.mtv.mix_normalize.then_some(-1.0);
+                    ui.checkbox(&mut self.mtv.mix_normalize, "Normalize the mixdown to -1 dB");
+                    if ui.add_enabled(has, egui::Button::new("Mixdown Session to New File")).clicked() {
+                        if let Err(e) = self.start_mixdown(false, norm, ui.ctx()) {
+                            self.error = Some(e);
+                        }
+                        ui.close();
                     }
-                    ui.close();
-                }
-                let picked = has && !self.mtv.sel_clips.is_empty();
-                if ui
-                    .add_enabled(picked, egui::Button::new("Mixdown Selected Clips to New File"))
-                    .on_hover_text("Click clips in the Multitrack editor to pick them")
-                    .clicked()
-                {
-                    if let Err(e) = self.start_mixdown(true, norm, ui.ctx()) {
-                        self.error = Some(e);
+                    let picked = has && !self.mtv.sel_clips.is_empty();
+                    if ui
+                        .add_enabled(picked, egui::Button::new("Mixdown Selected Clips to New File"))
+                        .on_hover_text("Click clips in the Multitrack editor to pick them")
+                        .clicked()
+                    {
+                        if let Err(e) = self.start_mixdown(true, norm, ui.ctx()) {
+                            self.error = Some(e);
+                        }
+                        ui.close();
                     }
-                    ui.close();
-                }
-            });
+                });
+            }
             ui.menu_button("Window", |ui| {
-                for p in panels::REGISTRY {
+                let offered: Vec<&panels::PanelInfo> = panels::REGISTRY.iter().filter(|p| self.panels.offers(p.id)).collect();
+                for p in offered {
                     let mut shown = self.panels.is_shown(p.id);
                     // The Editor is always shown (A029): its entry is a fixed tick, and below it maximises.
                     if ui.add_enabled(panels::is_closable(p.id), egui::Checkbox::new(&mut shown, p.title)).changed() {
@@ -10149,12 +10163,16 @@ impl WaveApp {
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
             ui.menu_button("Generate", |ui| self.generate_menu(ui));
             ui.menu_button(tr("menu.view"), |ui| {
-                if ui.radio_value(&mut self.mtv.show, false, "Waveform editor").clicked()
-                    | ui.radio_value(&mut self.mtv.show, true, "Multitrack editor").clicked()
-                {
+                let mut switched = ui.radio_value(&mut self.mtv.show, false, "Waveform editor").clicked();
+                if v1::offered(Feature::Multitrack) {
+                    switched |= ui.radio_value(&mut self.mtv.show, true, "Multitrack editor").clicked();
+                }
+                if switched {
                     self.cdv.show = false;
                 }
-                ui.radio_value(&mut self.cdv.show, true, "CD Layout");
+                if v1::offered(Feature::CdLayout) {
+                    ui.radio_value(&mut self.cdv.show, true, "CD Layout");
+                }
                 if self.clip_edit.is_some() && ui.button("Return to session").clicked() {
                     let r = self.return_to_session(ui.ctx()).map(|_| ());
                     self.report(r);
@@ -10273,15 +10291,17 @@ impl WaveApp {
                     self.set_language(code);
                 }
             });
-            ui.menu_button("Video", |ui| {
-                if ui.add_enabled(self.editor.is_some(), egui::Button::new("Attach video file…")).clicked() {
-                    self.pick_video(ui.ctx());
-                }
-                if ui.add_enabled(self.video.is_some(), egui::Button::new("Detach video")).clicked() {
-                    self.drop_video();
-                }
-                ui.checkbox(&mut self.show_video, "Video panel");
-            });
+            if v1::offered(Feature::Video) {
+                ui.menu_button("Video", |ui| {
+                    if ui.add_enabled(self.editor.is_some(), egui::Button::new("Attach video file…")).clicked() {
+                        self.pick_video(ui.ctx());
+                    }
+                    if ui.add_enabled(self.video.is_some(), egui::Button::new("Detach video")).clicked() {
+                        self.drop_video();
+                    }
+                    ui.checkbox(&mut self.show_video, "Video panel");
+                });
+            }
             ui.menu_button("Help", |ui| {
                 if ui.button("About WavCraft…").clicked() {
                     self.show_about = true;
@@ -11573,7 +11593,11 @@ impl eframe::App for WaveApp {
         }
         if let Some(why) = self.rec.refresh() {
             log::warn!(target: "wavcraft", "recording: {why}");
-            self.finish_recording(true, ctx);
+            // A writer error is already shown by finish_recording; anything else (an unplugged
+            // input) is said here, and the take it kept is named.
+            if let Some(take) = self.finish_recording(true, ctx).filter(|t| t.error.is_none()) {
+                self.error = Some(format!("{why}, take saved: {}", take.path.display()));
+            }
         }
         if self.rec.max_reached() {
             log::info!(target: "wavcraft", "recording: the time limit is reached, stopping");
@@ -12927,6 +12951,48 @@ mod reset_tests {
         assert_eq!(std::fs::read_to_string(dir.join("shortcuts.txt")).expect("read"), shortcuts);
         assert!(!dir.join("shortcuts.txt.reset-1").exists());
         assert_eq!(store.active().as_deref(), Some(set.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod step_name_tests {
+    use super::*;
+
+    /// Issue #63: the Undo menu text and the History panel's row name the same step, for each
+    /// whole-file and some-channels edit.
+    #[test]
+    fn undo_menu_and_history_agree_for_each_step() {
+        let dir = std::env::temp_dir().join(format!("wavcraft-app-steps-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opts = NewDocOptions { sessions_root: Some(dir.clone()), ..NewDocOptions::default() };
+        let doc = newdoc::empty(&opts, 48_000, 2, SampleFormat::Int16).expect("doc");
+        let cases: [(&str, bool, ActionId); 8] = [
+            ("Delete", false, ActionId::Delete),
+            ("Delete Audio", true, ActionId::Delete),
+            ("Cut", false, ActionId::Cut),
+            ("Cut Audio", true, ActionId::Cut),
+            ("Paste", false, ActionId::Paste),
+            ("Paste Audio", true, ActionId::Paste),
+            ("Crop", false, ActionId::Crop),
+            ("Crop Audio", true, ActionId::Crop),
+        ];
+        for (want, left_only, id) in cases {
+            let mut e = Editor::new(History::new(doc.clone(), u64::MAX));
+            e.insert_silence(0, 10_000).expect("silence");
+            if id == ActionId::Paste {
+                e.run(ActionId::Copy, 100..200).expect("copy");
+            }
+            if left_only {
+                e.run(ActionId::LeftChannel, 0..0).expect("left");
+            }
+            let range = if id == ActionId::Paste { 300..300 } else { 100..500 };
+            e.run(id, range).expect("edit");
+            let history_row = e.history.steps()[e.history.cursor()].label().to_string();
+            assert_eq!(history_row, want);
+            let undo = actions::action(ActionId::Undo);
+            assert_eq!(WaveApp::action_text(&e, undo), tr_args("action.undo_step", &[&history_row]), "Undo text for {want}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

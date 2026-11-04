@@ -310,3 +310,24 @@ Multitrack is a later phase of WavCraft. It will have its own session model with
 - **Paste:** a multi-channel clip into a mono file is the mean of its channels. A clip whose blocks live in another store (another open file) is copied into this one, so every block of a `DocState` lives in its own store.
 - **History disk cap:** per-block counts of the steps that use each block, plus a running total. The bytes held beyond the current state are that total minus the current state's own bytes, so a push walks only the new state's pieces. Measured: about 1 ms with 200 steps behind. Dropping a step that holds GBs of blocks (a whole-file effect's redo step) deletes its packs on the calling thread, which takes 0.3 to 0.45 s; hand dropped steps to a worker when the UI pushes (task 05/07).
 - **`replace_range` producer:** `FnMut(start, &[&[f32]], &mut [&mut [f32]]) -> io::Result<()>`, every masked channel at once. The function also takes a label, crossfades and a cancel flag. Whole 3 hours of stereo: 3.9 to 6.5 s, peak working set 0.555 GB with a 512 MB cache.
+
+## Transcription (L0, 2026-11-03)
+
+*Research for v1 section L (edit by transcript). Choice only: no transcription code is in the tree yet. The memory figure is still owed (see the end of this section).*
+
+**Runner: `candle` (Hugging Face, pure Rust).** `candle-core` and `candle-nn`, both **MIT OR Apache-2.0** (the `candle` repository's licence files, checked 2026-11-03). They run on the CPU with no C or C++ build step; an optional Metal backend uses the Mac's GPU and is a later choice, not part of L0. The Whisper network is written against `candle-nn`, as FilmCraft did, so WavCraft also writes the glue: audio to 16 kHz mono log-mel frames, the decode loop, and word timings.
+
+**Model: Whisper base, multilingual (74 M parameters).** About 290 MB of float32 weights (`model.safetensors`), plus a 2.5 MB tokenizer. Chosen as the default size in FilmCraft and as the smallest multilingual one that is still usable; it leaves most of an 8 GB Mac free. Its accuracy on WavCraft's own episodes is not yet measured (L1). Whisper tiny (39 M) is faster but rough on noisy audio; Whisper small (244 M, about 1 GB of weights) is the fallback if base fails L1's word-accuracy test on a real episode. Multilingual is kept so a non-English episode still transcribes; the English-only builds are not used.
+
+**Reuse: FilmCraft already settled this.** Its `crates/speech` crate runs Whisper on `candle` behind an off-by-default `whisper` feature, and its model catalogue pins each file to a Hugging Face revision with a SHA-256 (`src/models.rs`). Both repositories are MIT OR Apache-2.0. Reuse means splitting the inference modules into a shared crate, which the FilmCraft notes already propose; WavCraft does not copy them.
+
+**Licence of the weights (checked 2026-11-03).**
+- OpenAI's Whisper code and model weights: **MIT**, `Copyright (c) 2022 OpenAI`, text at <https://github.com/openai/whisper/blob/main/LICENSE>.
+- The `openai/whisper-base` safetensors and tokenizer on Hugging Face: the model card's licence field says **apache-2.0** (<https://huggingface.co/openai/whisper-base>).
+- Both are permissive. Nothing in this chain is GPL, LGPL or AGPL. The text is recorded in `THIRD-PARTY-NOTICES.txt` under "Speech-to-text model weights", and the generator in `tools/notices.py` writes that block.
+- The weights are downloaded on first use after the user confirms, checked against a pinned SHA-256, and never bundled in the repository or the app.
+
+**Owed before L1 is done:**
+- **Measured peak memory on the Z13 for one hour of audio** with whisper-base, in the Done-when of #1056. Not measured; no figure is recorded here.
+- The same measurement on the 8 GB Mac budget (I7).
+- Real-time factor on the Z13 (L1 requires under 15 minutes per hour of audio, measured).

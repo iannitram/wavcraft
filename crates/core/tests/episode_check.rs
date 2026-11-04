@@ -1,5 +1,5 @@
-//! K2: Episode Check detectors, part 1 (clipping, true peak, DC offset, dead air), on synthetic
-//! audio. The speech-like signal is generated here (it is not a recording). A copy with four
+//! K2: Episode Check detectors (clipping, true peak, DC offset, dead air, loudness drift, mains
+//! hum, plosives), on synthetic audio. The speech-like signal is generated here (it is not a recording). A copy with four
 //! planted faults must report each one within 50 ms of where it was planted, and the clean copy
 //! must report nothing. Runs that cross the 64 K-frame chunk joins must come out whole.
 
@@ -18,20 +18,29 @@ fn frame(seconds: f64) -> u64 {
 /// noise floor of about -50 dBFS (peaks at 0.003), so no stretch of the clean signal is quiet
 /// enough, for long enough, to be dead air. Voice peaks stay near 0.35.
 fn speechlike(seed: u32, f0: f64) -> Vec<f32> {
+    speechlike_for(seed, f0, SECONDS, 0.5)
+}
+
+/// [`speechlike`] for `seconds` seconds, with `gap` seconds of each 2 s period left to the noise
+/// floor, and the envelope swings 20 % instead of 50 %. Gaps and deep dips pull the gated integrated
+/// loudness above the short-term level of the voice, so the loudness drift tests use none.
+fn speechlike_for(seed: u32, f0: f64, seconds: f64, gap: f64) -> Vec<f32> {
     let mut lcg = seed;
-    let total = frame(SECONDS) as usize;
+    let total = frame(seconds) as usize;
     (0..total)
         .map(|n| {
             lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             let noise = (f64::from(lcg >> 8) / f64::from(1u32 << 24) * 2.0 - 1.0) * 0.003;
             let t = n as f64 / f64::from(RATE);
             let phrase = t % 2.0;
-            if phrase >= 1.5 {
+            if phrase >= 2.0 - gap {
                 return noise as f32;
             }
-            let envelope = 0.5 - 0.5 * (2.0 * PI_F * phrase / 1.5).cos();
-            let pitch = f0 + 15.0 * (2.0 * PI_F * 0.7 * t).sin();
-            let voice: f64 = (1..=8).map(|k| (2.0 * PI_F * f64::from(k) * pitch * t).sin() / f64::from(k)).sum();
+            let swing = if gap == 0.0 { 0.2 } else { 0.5 };
+            let envelope = (1.0 - swing) - swing * (2.0 * PI_F * phrase / (2.0 - gap)).cos();
+            // The pitch swings 15 Hz around f0 at 0.7 Hz; this is the phase that gives that pitch.
+            let phase = 2.0 * PI_F * f0 * t - 15.0 / 0.7 * (2.0 * PI_F * 0.7 * t).cos();
+            let voice: f64 = (1..=8).map(|k| (f64::from(k) * phase).sin() / f64::from(k)).sum();
             (envelope * 0.12 * voice + noise) as f32
         })
         .collect()
@@ -160,4 +169,83 @@ fn runs_crossing_chunk_joins_come_out_whole() {
     }
     let tp: Vec<&Finding> = report.findings.iter().filter(|f| f.kind == Kind::TruePeak).collect();
     assert!(tp.len() <= 1, "true peak split into {tp:?}");
+}
+
+const LONG: f64 = 240.0;
+
+fn long_clean() -> (Vec<f32>, Vec<f32>) {
+    (speechlike_for(1, 120.0, LONG, 0.0), speechlike_for(2, 150.0, LONG, 0.0))
+}
+
+fn of_kind(report: &Report, kind: Kind) -> Vec<Finding> {
+    report.findings.iter().filter(|f| f.kind == kind).copied().collect()
+}
+
+/// Add mains hum (the fundamental and harmonics 2x to 5x) to `ch` from `from` to `to` seconds.
+fn add_hum(ch: &mut [f32], hz: f64, from: f64, to: f64) {
+    let first = frame(from) as usize;
+    for (i, x) in ch[first..frame(to) as usize].iter_mut().enumerate() {
+        let t = (first + i) as f64 / f64::from(RATE);
+        let hum: f64 = (1..=5).map(|k| (if k == 1 { 0.02 } else { 0.01 }) * (2.0 * PI_F * hz * f64::from(k) * t).sin()).sum();
+        *x += hum as f32;
+    }
+}
+
+#[test]
+fn loudness_drift_is_reported_at_the_planted_start() {
+    // 12 s at +9 LU (x2.82) in a 240 s file (a shorter one would raise the integrated loudness too
+    // close to the loud section for it to be 6 LU over it), on both channels.
+    let (mut ch0, mut ch1) = long_clean();
+    let section = (frame(101.0), frame(113.0));
+    for ch in [&mut ch0, &mut ch1] {
+        for x in &mut ch[section.0 as usize..section.1 as usize] {
+            *x *= 2.818_383;
+        }
+    }
+    let report = scan(&ch0, &ch1);
+    let drift = of_kind(&report, Kind::LoudnessDrift);
+    assert_eq!(drift.len(), 1, "{drift:?}");
+    assert_eq!((drift[0].channel, drift[0].severity), (None, Severity::Warning));
+    assert_near("drift start", drift[0].start, section.0);
+    assert_near("drift end", drift[0].end, section.1);
+    assert!(drift[0].value > 6.0 && drift[0].value < 10.0, "deviation {} LU", drift[0].value);
+}
+
+#[test]
+fn mains_hum_is_reported_with_its_frequency() {
+    for hz in [60.0, 50.0] {
+        let (mut ch0, ch1) = clean();
+        let region = (frame(5.0), frame(15.0));
+        add_hum(&mut ch0, hz, 5.0, 15.0);
+        let report = scan(&ch0, &ch1);
+        let hum = of_kind(&report, Kind::MainsHum);
+        assert_eq!(hum.len(), 1, "{hz} Hz: {hum:?}");
+        assert_eq!((hum[0].channel, hum[0].severity, hum[0].value), (Some(0), Severity::Warning, hz));
+        assert!(hum[0].start >= region.0 - 16_384 && hum[0].start <= region.0 + 16_384, "{hz} Hz: start {}", hum[0].start);
+        assert!(hum[0].end >= region.1 - 16_384 && hum[0].end <= region.1 + 16_384, "{hz} Hz: end {}", hum[0].end);
+    }
+}
+
+#[test]
+fn a_40_hz_burst_in_a_gap_is_a_plosive() {
+    let (mut ch0, ch1) = clean();
+    let at = frame(5.55);
+    for n in 0..frame(0.08) as usize {
+        let t = n as f64 / f64::from(RATE);
+        ch0[at as usize + n] += (0.3 * (-t / 0.025).exp() * (2.0 * PI_F * 40.0 * t).sin()) as f32;
+    }
+    let report = scan(&ch0, &ch1);
+    let plosive = of_kind(&report, Kind::Plosive);
+    assert_eq!(plosive.len(), 1, "{plosive:?}");
+    assert_eq!((plosive[0].channel, plosive[0].severity), (Some(0), Severity::Warning));
+    assert_near("plosive start", plosive[0].start, at);
+}
+
+#[test]
+fn clean_long_speech_reports_none_of_the_new_kinds() {
+    let (ch0, ch1) = long_clean();
+    let report = scan(&ch0, &ch1);
+    for kind in [Kind::LoudnessDrift, Kind::MainsHum, Kind::Plosive] {
+        assert!(of_kind(&report, kind).is_empty(), "{kind:?}: {:?}", of_kind(&report, kind));
+    }
 }

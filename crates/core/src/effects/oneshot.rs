@@ -11,6 +11,7 @@ use std::sync::atomic::AtomicBool;
 use soundcraft_dsp::offline::{self, FadeShape};
 use soundcraft_dsp::{db_to_gain, gain_to_db};
 
+use super::reverse::mirror_range;
 use crate::doc::DocState;
 use crate::doc::edit::{ChannelMask, Crossfades, Edit, EditError, replace_range};
 
@@ -74,8 +75,8 @@ pub fn reverse(doc: &DocState, range: Range<u64>, channels: ChannelMask, xf: Cro
     let (start, end) = (range.start, range.end);
     replace_range(doc, range, channels, "Reverse", xf, &never(), |at, _ins, outs| {
         let m = outs.first().map_or(0, |o| o.len()) as u64;
-        // Output frames [at, at + m) are input frames (end - (at - start) - m)..(end - (at - start)) reversed.
-        let from = end - (at - start) - m;
+        // Output frames [at, at + m) come from the mirror slice of the range, reversed.
+        let from = mirror_range(start..end, at, m as usize).start;
         let mut bufs: Vec<Vec<f32>> = Vec::with_capacity(active.len());
         for &c in &active {
             let mut v = vec![0.0f32; m as usize];

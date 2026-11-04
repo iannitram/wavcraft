@@ -667,10 +667,9 @@ impl MtView {
                 let lane_resp = ui.interact(lane, ui.id().with(("lane", id.0)), Sense::click());
                 if lane_resp.clicked() {
                     self.selected = Some(id);
-                    let rate = f64::from(mt.rate());
                     self.sel_clip = lane_resp.interact_pointer_pos().and_then(|pp| {
                         let sec = f64::from(pp.x - lane.left()) / f64::from(self.px_per_sec);
-                        clips.iter().find(|c| (c.start as f64 / rate..(c.start + c.length) as f64 / rate).contains(&sec)).map(|c| (id, c.id))
+                        mt.visible_clip_at(id, sec).map(|c| (id, c))
                     });
                 }
                 let rate = f64::from(mt.rate());
