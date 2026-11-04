@@ -148,23 +148,23 @@ All present on `main`. The first column is the file under `crates/core/src/` unl
 | | `input_meter.rs` (f56) | The input meter: `InputTap` (lock-free per-callback peaks and run totals), `InputStats` (verdict too-quiet, ok or clipping), `FakeInput` for `WAVCRAFT_FAKE_INPUT` |
 | `apps/wavcraft/src/input_monitor.rs` (f56) | `InputMonitor`: the input stream (or the fake thread), open only while the Levels 'Input' toggle is on or a mic check listens; Window > Meter Input Signal, Window > Mic Check…, actions `meter.input.*`, control `MICCHECK` |
 
-### Planned: Automation, v1 section N (status: planned, not on `main` yet)
+### Automation, v1 section N (N1 present; N2 to N4 planned)
 
-These files do not exist yet. They are where the four Automation issues put their work; each row turns to present when its issue merges. The design is copied from SoundCraft's `crates/automation` (MIT OR Apache-2.0, our own fork), with credit in the file headers.
+The N1 rows (#1107) are present; the others are not on `main` yet. Each row turns to present when its issue merges. The design is copied from SoundCraft's `crates/automation` (MIT OR Apache-2.0, our own fork), with credit in the file headers.
 
 | Crate | Module | What it will hold |
 |---|---|---|
-| `crates/automation` (`wavcraft-automation`, library, no UI; planned) | `lib.rs` (N1, #1107) | The `Backend` trait (open, select, run an action or effect, save, read state) and the request parser that `apps/wavcraft/src/control.rs` uses today, moved here so the window and the command line read the same words |
-| | `headless.rs` (N1, #1107) | `Headless`: a `Backend` that runs `wavcraft-core` in-process with no window (`Document`, `actions::by_name`, `effects::apply`) |
-| | `remote.rs` (N1, #1107) | `Remote`: a `Backend` that drives a running window through the control channel (`WAVCRAFT_CONTROL_PORT` plus its token file) |
+| `crates/automation` (`wavcraft-automation`, library, no UI; present for N1) | `lib.rs` (N1, #1107, present) | `Request` (the parsed `OPEN`, `SELECT`, `ACTION`, `EFFECT`, `SAVE`, `STATE` line, with `parse` and `line` for both sides) and the `Backend` trait (one `execute`, and `answer_line` for the `OK`/`ERR` text). Not yet: `apps/wavcraft/src/control.rs` still parses its own requests; moving that is the rest of N1 |
+| | `headless.rs` (N1, #1107, present) | `Headless`: a `Backend` that runs `wavcraft-core` in-process with no window (`io::open`, `Editor::run`, `Editor::run_effect`, `save::save`) |
+| | `remote.rs` (N1, #1107, present) | `Remote`: a `Backend` that drives a running window through the control channel (`WAVCRAFT_CONTROL_PORT` plus its token file); its tests use a stand-in channel, not the app |
 | | `mcp.rs` (N3, #1108) | The MCP server: JSON-RPC 2.0 over stdio, one tool per `Backend` call; `wavcraft mcp` runs it headless, `wavcraft mcp --attach` drives an open window |
 | | `script.rs` (N4, #879) | Script files: one request per line, run headless or in the window (File > Run Script... in `menus.rs` and `app.rs`); the whole script is one undo step |
 | `apps/wavcraft` | `cli.rs` (N2, #845; planned) | The subcommands `run <script> <file> [-o <out>]`, `convert` and `inspect`, reached from `main.rs`; it builds on `crates/core/src/batch_cli.rs` (the C239-a parser already on `main`) instead of a second parser |
 
-How they link: `main.rs` sends a subcommand to `cli.rs`, which runs a `Headless` backend; `wavcraft mcp` and scripts take either backend; the window's `control.rs` keeps the socket and the token check but hands each request to `crates/automation`'s parser (N1).
+How they link: `main.rs` sends a subcommand to `cli.rs`, which runs a `Headless` backend; `wavcraft mcp` and scripts take either backend; the window's `control.rs` keeps the socket and the token check; handing its requests to `crates/automation`'s parser is still to do (N1).
 
 Workspace: `Cargo.toml` at the root; `unsafe_code = "forbid"` for every crate that inherits the
-workspace lints. Members: `crates/core`, `crates/testkit`, `crates/craft-log`, `crates/craft-stage`, `apps/wavcraft`. The test counts that stood here (21 in the core, 9 in the app) predate task 02 and were dropped; run `cargo test --workspace` for the count.
+workspace lints. Members: `crates/core`, `crates/automation`, `crates/testkit`, `crates/craft-log`, `crates/craft-stage`, `apps/wavcraft`. The test counts that stood here (21 in the core, 9 in the app) predate task 02 and were dropped; run `cargo test --workspace` for the count.
 
 ## Known differences from Audition
 
