@@ -1,6 +1,6 @@
 # Code map
 
-*Status per v1 item (what is on main, what is still on a branch): [ROADMAP.md](../ROADMAP.md). Describes commit: `ad3f4c1` (2026-11-02). Every file named below is present on `main` (status: present); files `main` has that the long table does not describe are listed in "Also on main" after it. Stage 0 merged the old branches into `main` on 2026-10-27 (44 merge commits); the ones not merged are kept as `archive/` tags, and nothing they add is listed here. Two removals since the first merge pass: the stub true-peak limiter (`dsp/true_peak_limiter.rs`, #1010) and the second copy of the STFT tests (`crates/core/tests/stft.rs`, #971; the STFT tests stay in `noise.rs`).*
+*Status per v1 item (what is on main, what is still on a branch): [ROADMAP.md](../ROADMAP.md). Describes commit: `ad3f4c1` (2026-11-02). Every file named below is present on `main` (status: present), except the one section marked planned (Automation, v1 section N); files `main` has that the long table does not describe are listed in "Also on main" after it. Stage 0 merged the old branches into `main` on 2026-10-27 (44 merge commits); the ones not merged are kept as `archive/` tags, and nothing they add is listed here. Two removals since the first merge pass: the stub true-peak limiter (`dsp/true_peak_limiter.rs`, #1010) and the second copy of the STFT tests (`crates/core/tests/stft.rs`, #971; the STFT tests stay in `noise.rs`).*
 
 *Written 2026-10-15 (task 02) from the tree at `3cdf38f`, for a session that has seen nothing.
 Update it when the layout changes. The test kit and bench (task 02) are listed at the end.
@@ -145,6 +145,21 @@ All present on `main`. The first column is the file under `crates/core/src/` unl
 | | `cd_ui.rs` (f121) | The CD Layout view (View › CD Layout) and the `CD` control verb (`add`, `adddoc`, `pause`, `meta`, `move`, `remove`, `limit`, `view`, `state`, `export`) |
 | | `input_meter.rs` (f56) | The input meter: `InputTap` (lock-free per-callback peaks and run totals), `InputStats` (verdict too-quiet, ok or clipping), `FakeInput` for `WAVCRAFT_FAKE_INPUT` |
 | `apps/wavcraft/src/input_monitor.rs` (f56) | `InputMonitor`: the input stream (or the fake thread), open only while the Levels 'Input' toggle is on or a mic check listens; Window > Meter Input Signal, Window > Mic Check…, actions `meter.input.*`, control `MICCHECK` |
+
+### Planned: Automation, v1 section N (status: planned, not on `main` yet)
+
+These files do not exist yet. They are where the four Automation issues put their work; each row turns to present when its issue merges. The design is copied from SoundCraft's `crates/automation` (MIT OR Apache-2.0, our own fork), with credit in the file headers.
+
+| Crate | Module | What it will hold |
+|---|---|---|
+| `crates/automation` (`wavcraft-automation`, library, no UI; planned) | `lib.rs` (N1, #1107) | The `Backend` trait (open, select, run an action or effect, save, read state) and the request parser that `apps/wavcraft/src/control.rs` uses today, moved here so the window and the command line read the same words |
+| | `headless.rs` (N1, #1107) | `Headless`: a `Backend` that runs `wavcraft-core` in-process with no window (`Document`, `actions::by_name`, `effects::apply`) |
+| | `remote.rs` (N1, #1107) | `Remote`: a `Backend` that drives a running window through the control channel (`WAVCRAFT_CONTROL_PORT` plus its token file) |
+| | `mcp.rs` (N3, #1108) | The MCP server: JSON-RPC 2.0 over stdio, one tool per `Backend` call; `wavcraft mcp` runs it headless, `wavcraft mcp --attach` drives an open window |
+| | `script.rs` (N4, #879) | Script files: one request per line, run headless or in the window (File > Run Script... in `menus.rs` and `app.rs`); the whole script is one undo step |
+| `apps/wavcraft` | `cli.rs` (N2, #845; planned) | The subcommands `run <script> <file> [-o <out>]`, `convert` and `inspect`, reached from `main.rs`; it builds on `crates/core/src/batch_cli.rs` (the C239-a parser already on `main`) instead of a second parser |
+
+How they link: `main.rs` sends a subcommand to `cli.rs`, which runs a `Headless` backend; `wavcraft mcp` and scripts take either backend; the window's `control.rs` keeps the socket and the token check but hands each request to `crates/automation`'s parser (N1).
 
 Workspace: `Cargo.toml` at the root; `unsafe_code = "forbid"` for every crate that inherits the
 workspace lints. Members: `crates/core`, `crates/testkit`, `crates/craft-log`, `crates/craft-stage`, `apps/wavcraft`. The test counts that stood here (21 in the core, 9 in the app) predate task 02 and were dropped; run `cargo test --workspace` for the count.

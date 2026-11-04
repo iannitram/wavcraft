@@ -1,6 +1,6 @@
 # Spec
 
-**1.0 means:** the owner can clean a real podcast episode from start to finish in WavCraft and would rather use it than the tool used today, judged by ear ([docs/v1/v1.md](docs/v1/v1.md), "What v1 is"). All 70 items in sections A to M are done, including MP3 export (A3) and recording (J), and it runs within the memory of an 8 GB Mac (I7).
+**1.0 means:** the owner can clean a real podcast episode from start to finish in WavCraft and would rather use it than the tool used today, judged by ear ([docs/v1/v1.md](docs/v1/v1.md), "What v1 is"). All 74 items in sections A to N are done, including MP3 export (A3) and recording (J), and it runs within the memory of an 8 GB Mac (I7).
 
 **Approval:** 2026-11-01: sections K (Episode Check), L (Edit by transcript) and M (Studio and Podcast faces) added to v1 by my decision and their rows approved as drafted ("Approve as drafted (Recommended)"). Before that: 2026-10-15 (v1 list approved with changes, [docs/v1/questions-and-answers.md](docs/v1/questions-and-answers.md)); re-confirmed 2026-10-26, the owner: "v1.md unchanged (Recommended)".
 

@@ -86,8 +86,12 @@ How to read it:
 | M3 | One theme | #1050 | not started | added 2026-11-01 |
 | M4 | Large controls | #1062 | not started | added 2026-11-01 |
 | M5 | Out-of-v1 panels hidden | #1051 | not started | added 2026-11-01 |
+| N1 | Automation core | #1107 | not started | added 2026-11-03 |
+| N2 | Command line | #845 | not started | added 2026-11-03 (was C239, after-1.0; PR #506 closed) |
+| N3 | MCP server | #1108 | not started | added 2026-11-03 |
+| N4 | Scripts | #879 | not started | added 2026-11-03 (was C312, after-1.0) |
 
-**Totals (70):** built 20 · partial 17 · on branch only 13 · not started 20 (K, L and M added 2026-11-01, all not started). No item has its Done check recorded yet.
+**Totals (74):** built 20 · partial 17 · on branch only 13 · not started 24 (K, L and M added 2026-11-01, N added 2026-11-03, all not started). No item has its Done check recorded yet.
 
 ## Stages
 
@@ -109,6 +113,10 @@ The owner's ruling, 2026-10-26: "Stage 0, finish on the build machine (Recommend
 ### Stage 1: Editor (v1 order 1)
 
 A1, A2, D1, D3, D4, D5, D7, I7 (the store and the edit model), C1, C2, C3, C5, H1, H2, H3, H4, A6. **Done when** a full rough-cut edit of an episode is saved, reopened and identical.
+
+### Stage 1b: Automation (added 2026-11-03)
+
+My ruling, 2026-11-03: "In v1, after Editor (Recommended)". Right after the Editor stage, so the edits it drives exist, and every later stage is checked by script instead of by clicking. It copies the shape of SoundCraft's `crates/automation` (`Backend`, `Headless`, `Remote`, `mcp.rs`; MIT OR Apache-2.0, our fork) into a new `crates/automation`, over the request names `apps/wavcraft/src/control.rs` already answers. Order: N1 (#1107), then N2 (#845), then N3 (#1108) and N4 (#879) side by side. N2's `convert` writes MP3 once A3 is in. Bounce from the command line (C197, #818) stays after-1.0: it needs the multitrack mixdown (C185, #809). **Done when** an AI agent completes 10 real editing tasks through the MCP server with no window (N3's test).
 
 ### Stage 2: Recording (v1 order 2)
 
