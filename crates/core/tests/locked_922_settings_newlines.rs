@@ -32,8 +32,7 @@ fn unescaped_quotes(line: &str) -> usize {
 #[test]
 fn no_string_literal_in_to_text_spans_a_line_break() {
     let source = to_text_source();
-    let open: Vec<(usize, &str)> =
-        source.lines().enumerate().filter(|(_, line)| unescaped_quotes(line) % 2 == 1).collect();
+    let open: Vec<(usize, &str)> = source.lines().enumerate().filter(|(_, line)| unescaped_quotes(line) % 2 == 1).collect();
     assert!(open.is_empty(), "string literal left open at a line end (line offset, text): {open:?}");
 }
 
