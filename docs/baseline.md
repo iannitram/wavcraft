@@ -123,3 +123,99 @@ or 07.
 
 To repeat: `wavcraft-edit-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav` and
 test 10 as above, through the gate.
+
+## Issue #68: zoomed-out spectrogram, floor and picture lag (2026-11-03)
+
+Measured on this Windows host (24 threads, release build), not the machine the table above used.
+Nothing in the code changed; these are the numbers the issue's "Done when" needs and the decision
+they leave open.
+
+**Picture lag on a 3-hour mono 48 kHz file** (`cargo run --release -p wavcraft-core --example spectrogram_cost`):
+
+| Measure | Result here | Issue #68 / table above |
+|---|---|---|
+| Overview build, one channel | 1,103 ms best, 1,342 ms median; 32.4 MB | 170 ms first overview (issue); 120 ms per channel (table above) |
+| Picture with overview, 640 / 1280 / 2048 columns, one channel | 43.6 / 66.6 / 166.0 ms best; 180 / 103 / 199 ms median | 3.0 / 5.8 / 8.7 ms per channel (table above) |
+| Picture from audio alone, same columns | 957 / 910 / 601 ms best | |
+
+The two pictures are identical in all three cases. The "one frame" bound in the issue is not met
+on this host. The gap to the table above (about 9 times slower overview build, 15 to 30 times
+slower overview picture) is not explained. Check the host's CPU state and the build profile before
+blaming the design.
+
+**Noise floor, zoomed out against zoomed in** (10 minutes of uniform noise, amplitude 0.002, 384
+rows, 640 columns; a throwaway probe, not kept). Mean drawn level in dB:
+
+| View | Log axis | Linear axis |
+|---|---|---|
+| Zoomed in, one FFT a column (1,024 frames a column) | -89.9 | -88.5 |
+| Zoomed out, whole file in 640 columns, peak per column (the design) | -83.2 | -82.8 |
+| Zoomed out, same, mean of levels per bin over the column (tried, not kept) | -91.8 | -91.6 |
+
+The design's peak gives a floor 6.7 dB (log) and 5.7 dB (linear) brighter than zoomed in, as the
+issue says. A mean of levels per bin lands 1.9 dB and 3.1 dB darker. It misses from the other side
+because a row shows the loudest bin in its band, and zoomed in that maximum is taken per FFT.
+Zoomed out, the maximum is taken after averaging. Matching zoomed in exactly needs the per-FFT row
+maximum averaged over the column, which the overview (per-bin levels, independent of picture height)
+cannot store. A mean mode would also stop a short tone from reaching full scale when zoomed out.
+That is the guarantee `a_short_tone_is_never_lost_by_zooming_out` tests. That test was not run
+against a mean mode.
+
+**Decision:** the zoomed-out spectrogram keeps the peak column (decided 2026-11-04, see issue #68),
+so a short tone is never lost by zooming out; the zoomed-out noise floor is a known 6.7 dB (log) /
+5.7 dB (linear) brighter than zoomed in; the mean and per-FFT row-maximum modes are not built. The
+one-frame picture-lag item stays open until the run-to-run gap on one host (about 6 times) is explained.
+
+## Issue #68: per-FFT row maximum, measured (2026-11-03, second run)
+
+Same host and build settings as the section above. Nothing in the code changed: the peak column
+stays the default. A throwaway probe (not kept) gave each zoomed-out column the mean, over its FFTs,
+of each FFT's row maximum (the level of the loudest bin in the row's band, per FFT), which is what
+zoomed in shows for one FFT. Noise: the same 10 minutes of uniform noise, amplitude 0.002, 384 rows,
+640 columns zoomed out; zoomed in at 1,024 frames a column over its first 2 minutes. Levels are the
+0-255 drawn values; the dB figures map the drawn mean back to the -100..0 scale, so only the
+differences compare with the table above.
+
+| View | Mean drawn level | Against zoomed in |
+|---|---|---|
+| Zoomed in, one FFT a column | 40.77 (-84.0 dB) | |
+| Zoomed out, peak per column (the design in the code) | 58.22 (-77.2 dB) | +17.45 levels, **+6.85 dB** |
+| Zoomed out, mean over the column of each FFT's row maximum | 40.78 (-84.0 dB) | **+0.01 dB** |
+
+The per-FFT row maximum matches zoomed in on stationary noise. It does not keep a short tone. The
+probe ran the geometry of `a_short_tone_is_never_lost_by_zooming_out` (a full-scale 1 s, 3 kHz tone in
+quiet hiss, 40 minutes at 8 kHz, 256-point FFT, 128 rows) and read the tone in its own column:
+
+| Columns (zoomed out) | 640 | 960 | 1280 | 2048 |
+|---|---|---|---|---|
+| Tone, per-FFT row maximum averaged | 103 | 128 | 153 | 152 |
+| Hiss, highest elsewhere | 56 | 56 | 57 | 57 |
+| The test needs | at least 250 | at least 250 | at least 250 | at least 250 |
+
+So the two requirements conflict. An average over a column's FFTs matches a steady sound and dilutes
+a sound that fills part of a column; the tone test asserts the opposite. The peak column keeps the
+tone and is 6.85 dB bright on noise. No averaging of FFT levels meets both, so the test cannot pass
+with this design as written.
+
+A second cost: the overview keeps the loudest level per bin over 16 FFTs, which cannot give the mean of
+row maxima at any picture height. The mode would need every FFT's per-bin levels: one byte per bin per
+FFT, which by calculation (not measured) is about 173 MB per channel-hour against the 10.8 MB now.
+
+**Cost example re-run** (`cargo run --release -p wavcraft-core --example spectrogram_cost`, default
+180 minutes, mono, current code). Overview built in 191 ms (median 195), 32.4 MB. Picture times in ms,
+best / median, audio alone then with the overview; "same" yes at all three widths:
+
+| Columns | Audio alone | With overview | Tone level | Row median |
+|---|---|---|---|---|
+| 640 | 170.6 / 176.0 | 4.0 / 4.3 | 255 | 48 |
+| 1280 | 171.5 / 177.0 | 7.7 / 8.6 | 255 | 47 |
+| 2048 | 178.1 / 183.9 | 13.0 / 14.8 | 255 | 47 |
+
+These differ from this same day's earlier run: there the overview took 1,103 ms and the audio-alone
+picture 601 to 957 ms. The host's state changes them by several times, so one run does not settle
+the lag item, and this section does not claim it met.
+
+**Decision:** the zoomed-out spectrogram keeps the peak column (decided 2026-11-04, see issue #68),
+so a short tone is never lost by zooming out; the zoomed-out noise floor is a known 6.7 dB (log) /
+5.7 dB (linear) brighter than zoomed in; the mean and per-FFT row-maximum modes are not built. The
+one-frame picture-lag item stays open until the run-to-run gap on one host (about 6 times) is explained.
