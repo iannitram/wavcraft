@@ -69,9 +69,11 @@ class Control:
     def state(self):
         while True:
             a = self.ask("STATE")
-            head, _, labels = a.partition(" undo=")
+            answer, _, docpath = a.partition(" path=")
+            head, _, labels = answer.partition(" undo=")
             f = dict(kv.split("=", 1) for kv in head.split()[1:])
             f["undo"], _, f["redo"] = labels.partition(" redo=")
+            f["path"] = docpath
             if f.get("busy") == "0" and f.get("frames") != "0" or a.startswith("ERR"):
                 return f
             time.sleep(0.2)

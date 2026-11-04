@@ -47,10 +47,15 @@ class Control:
 
     def state(self):
         for _ in range(300):
-            head, _, labels = self.ask("STATE").partition(" undo=")
+            answer, _, docpath = self.ask("STATE").partition(" path=")
+            head, _, labels = answer.partition(" undo=")
             fields = dict(kv.split("=", 1) for kv in head.split()[1:])
             undo, _, redo = labels.partition(" redo=")
-            fields.update(undo=undo, redo=redo)
+            # band= sits between redo= and path=; a label is free text, so split off the last " band=" token.
+            redo, sep, band = redo.rpartition(" band=")
+            if not sep:
+                redo, band = band, ""
+            fields.update(undo=undo, redo=redo, band=band, path=docpath)
             if fields.get("busy") == "0":
                 return fields
             time.sleep(0.2)

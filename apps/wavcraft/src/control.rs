@@ -13,6 +13,8 @@
 //! - `DEVICE_CHANGED` → `OK` (simulate the system's default output device changing: the output is reopened at the same place, `reopens` counts it; f48)
 //! - `CHANNELS all|<0-based channel>,..` → `OK` (which channels edits act on; `ERR` for none or out of range)
 //! - `OPEN <path>` → `OK` (the open runs in the background; poll `STATE` until `busy=0`)
+//! - `OPEN_PICK <path> [...]` → `OK queued=<n> prompt=<0|1>` (what Ctrl+O and a dropped file do: with unsaved edits in the open document the files wait behind the Save / Don't Save / Cancel prompt, and `prompt=1`)
+//! - `OPEN_ANSWER save|discard|cancel` → `OK prompt=<0|1>` (answers that prompt: save first, drop the edits, or drop the files; `ERR` when no prompt is up)
 //! - `SELECT <start> <end>` (frames) → `OK selection=<a>-<b>`
 //! - `GESTURE marquee <frame0> <frame1> <hz0> <hz1>` / `GESTURE marquee_move <dframes> <dhz>` → `OK selection=<a>-<b> band=<lo-hi>` (the Marquee tool: a time range and a frequency band; a plain selection change clears the band)
 //! - `GESTURE right_click <frame>` → `OK selection=<a>-<b> moved=<0|1>` (Select tool, `right_click = extend`: the nearest edge moves; the menu setting turns it off)

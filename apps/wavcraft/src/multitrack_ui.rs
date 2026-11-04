@@ -149,6 +149,9 @@ pub struct MtView {
     lanes: HashMap<TrackId, AutoParam>,
     /// The point being dragged: track, parameter, index.
     dragging: Option<(TrackId, AutoParam, usize)>,
+    /// Counts the sessions loaded in place of another (SESSION new or open, File menu); a clip
+    /// edit remembers it, so Return refuses to write into a session other than the one it came from (f116, #979).
+    session_gen: u64,
 }
 
 impl Default for MtView {
@@ -176,11 +179,17 @@ impl Default for MtView {
             mix_normalize: false,
             lanes: HashMap::new(),
             dragging: None,
+            session_gen: 0,
         }
     }
 }
 
 impl MtView {
+    /// The session generation: it changes each time a session is loaded in place of another (f116, #979).
+    pub fn session_gen(&self) -> u64 {
+        self.session_gen
+    }
+
     /// What Mixdown needs: the session and the options (`selected_only`: just the picked clips).
     pub fn mixdown_input(
         &self,
@@ -239,6 +248,7 @@ impl MtView {
         match Multitrack::open_from(path) {
             Ok((mt, offline)) => {
                 self.mt = Some(mt);
+                self.session_gen = self.session_gen.wrapping_add(1);
                 self.selected = None;
                 self.sel_clips.clear();
                 self.rename = None;
@@ -258,6 +268,7 @@ impl MtView {
             return Err(MtError("recording: stop it first (SREC stop) so the takes are placed, then start a new session".into()));
         }
         self.mt = Some(Multitrack::new_with_master(name, rate, depth, master)?);
+        self.session_gen = self.session_gen.wrapping_add(1);
         self.transport.stop();
         self.selected = None;
         self.sel_clips.clear();
