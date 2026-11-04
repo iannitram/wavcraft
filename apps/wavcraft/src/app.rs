@@ -4206,6 +4206,7 @@ impl WaveApp {
         self.halt_play();
         self.player.set_muted(true);
         self.rec.monitor_default = self.settings.monitor_input;
+        self.rec.input_device = self.settings.input_device.clone();
         match self.rec.start(fmt, max_secs) {
             Ok(path) => {
                 self.error = None;
@@ -4271,6 +4272,7 @@ impl WaveApp {
         self.halt_play();
         self.player.set_muted(!punch);
         self.rec.monitor_default = self.settings.monitor_input;
+        self.rec.input_device = self.settings.input_device.clone();
         match self.rec.start_with(fmt, limit, punch) {
             Ok(path) => {
                 self.rec.set_into(plan, base, self.doc_id, punch.then_some(from), fmt.rate);
@@ -11573,7 +11575,11 @@ impl eframe::App for WaveApp {
         }
         if let Some(why) = self.rec.refresh() {
             log::warn!(target: "wavcraft", "recording: {why}");
-            self.finish_recording(true, ctx);
+            // A writer error is already shown by finish_recording; anything else (an unplugged
+            // input) is said here, and the take it kept is named.
+            if let Some(take) = self.finish_recording(true, ctx).filter(|t| t.error.is_none()) {
+                self.error = Some(format!("{why}, take saved: {}", take.path.display()));
+            }
         }
         if self.rec.max_reached() {
             log::info!(target: "wavcraft", "recording: the time limit is reached, stopping");
