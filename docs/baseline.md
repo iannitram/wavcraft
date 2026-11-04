@@ -161,9 +161,10 @@ cannot store. A mean mode would also stop a short tone from reaching full scale 
 That is the guarantee `a_short_tone_is_never_lost_by_zooming_out` tests. That test was not run
 against a mean mode.
 
-**Open for a decision:** keep the peak column (the 2026-10-12 design, records the floor gap as known),
-or add an opt-in mean mode that does not change the default, or accept a per-FFT row-maximum mode and
-its cost. The lag item needs the host question answered first.
+**Decision:** the zoomed-out spectrogram keeps the peak column (decided 2026-11-04, see issue #68),
+so a short tone is never lost by zooming out; the zoomed-out noise floor is a known 6.7 dB (log) /
+5.7 dB (linear) brighter than zoomed in; the mean and per-FFT row-maximum modes are not built. The
+one-frame picture-lag item stays open until the run-to-run gap on one host (about 6 times) is explained.
 
 ## Issue #68: per-FFT row maximum, measured (2026-11-03, second run)
 
@@ -214,8 +215,7 @@ These differ from this same day's earlier run: there the overview took 1,103 ms 
 picture 601 to 957 ms. The host's state changes them by several times, so one run does not settle
 the lag item, and this section does not claim it met.
 
-**Open for a decision:** the per-FFT row-maximum mean matches the brightness and drops the short tone;
-the peak keeps the tone and is 6.85 dB bright. Either the tone test becomes a steady-sound test with a
-stated tolerance, or the brightness target changes, or a mode is chosen per use, and the overview cost
-above applies to any mode that needs the mean. A fixed dB offset on the peak would match noise but is a
-calibration to one signal and would drift on others.
+**Decision:** the zoomed-out spectrogram keeps the peak column (decided 2026-11-04, see issue #68),
+so a short tone is never lost by zooming out; the zoomed-out noise floor is a known 6.7 dB (log) /
+5.7 dB (linear) brighter than zoomed in; the mean and per-FFT row-maximum modes are not built. The
+one-frame picture-lag item stays open until the run-to-run gap on one host (about 6 times) is explained.
