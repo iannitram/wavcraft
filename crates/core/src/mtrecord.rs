@@ -559,6 +559,17 @@ pub fn readable_frames(path: &Path) -> Option<(usize, u32, u64)> {
     Some((ch, rate, data / (ch.max(1) as u64 * 4)))
 }
 
+/// Poll `ready` until it holds, failing after `timeout`. Tests wait on what the recorder has
+/// written, not on a fixed wall-clock sleep: a slow runner just takes longer to get there.
+#[cfg(test)]
+pub(crate) fn wait_until(what: &str, timeout: Duration, mut ready: impl FnMut() -> bool) {
+    let start = Instant::now();
+    while !ready() {
+        assert!(start.elapsed() < timeout, "timed out after {timeout:?} waiting for {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,7 +760,8 @@ mod tests {
         let stop = AtomicBool::new(false);
         std::thread::scope(|s| {
             let h = s.spawn(|| run_fake(vec![(plan.clone(), w)], 48_000, &stop));
-            std::thread::sleep(Duration::from_millis(300));
+            // About 0.3 s of audio: wait until the take's header shows it, then stop.
+            wait_until("the take to hold 9600 frames", Duration::from_secs(20), || readable_frames(&plan.path).is_some_and(|(_, _, f)| f >= 9_600));
             stop.store(true, Ordering::SeqCst);
             let out = h.join().unwrap_or_else(|_| panic!("thread"));
             assert!(out.failures.is_empty());
@@ -801,7 +813,8 @@ mod tests {
         let stop = AtomicBool::new(false);
         let report = std::thread::scope(|s| {
             let h = s.spawn(|| run_fake(vec![(plan_b.clone(), wb), (plan_a.clone(), wa)], 48_000, &stop));
-            std::thread::sleep(Duration::from_millis(300));
+            // The good track has its 9600 frames on disk (its header is patched every 0.25 s of audio).
+            wait_until("the good track to hold 9600 frames", Duration::from_secs(20), || readable_frames(&pa).is_some_and(|(_, _, f)| f >= 9_600));
             stop.store(true, Ordering::SeqCst);
             h.join().unwrap_or_else(|_| panic!("thread"))
         });
