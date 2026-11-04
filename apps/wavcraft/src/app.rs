@@ -12932,6 +12932,48 @@ mod reset_tests {
 }
 
 #[cfg(test)]
+mod step_name_tests {
+    use super::*;
+
+    /// Issue #63: the Undo menu text and the History panel's row name the same step, for each
+    /// whole-file and some-channels edit.
+    #[test]
+    fn undo_menu_and_history_agree_for_each_step() {
+        let dir = std::env::temp_dir().join(format!("wavcraft-app-steps-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opts = NewDocOptions { sessions_root: Some(dir.clone()), ..NewDocOptions::default() };
+        let doc = newdoc::empty(&opts, 48_000, 2, SampleFormat::Int16).expect("doc");
+        let cases: [(&str, bool, ActionId); 8] = [
+            ("Delete", false, ActionId::Delete),
+            ("Delete Audio", true, ActionId::Delete),
+            ("Cut", false, ActionId::Cut),
+            ("Cut Audio", true, ActionId::Cut),
+            ("Paste", false, ActionId::Paste),
+            ("Paste Audio", true, ActionId::Paste),
+            ("Crop", false, ActionId::Crop),
+            ("Crop Audio", true, ActionId::Crop),
+        ];
+        for (want, left_only, id) in cases {
+            let mut e = Editor::new(History::new(doc.clone(), u64::MAX));
+            e.insert_silence(0, 10_000).expect("silence");
+            if id == ActionId::Paste {
+                e.run(ActionId::Copy, 100..200).expect("copy");
+            }
+            if left_only {
+                e.run(ActionId::LeftChannel, 0..0).expect("left");
+            }
+            let range = if id == ActionId::Paste { 300..300 } else { 100..500 };
+            e.run(id, range).expect("edit");
+            let history_row = e.history.steps()[e.history.cursor()].label().to_string();
+            assert_eq!(history_row, want);
+            let undo = actions::action(ActionId::Undo);
+            assert_eq!(WaveApp::action_text(&e, undo), tr_args("action.undo_step", &[&history_row]), "Undo text for {want}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 #[path = "issue1000_tests.rs"]
 mod issue1000_tests;
 

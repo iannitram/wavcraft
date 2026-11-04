@@ -184,9 +184,11 @@ Choices made where Audition 26.5.0.82 was not seen (`docs/v1/audition-behaviour.
   at the cursor) and the six zero-crossing adjusts. Delete is not repeatable (Audition); Undo,
   Redo, Cut, Copy, selection moves and the view are not either. With the dialog (F2, Ctrl+R) Insert Silence
   and any effect with settings reopen their dialog on the last values (f14); the others run at once. An effect is repeated with the settings it last ran with, on the current selection.
-- **History labels:** one-channel Crop, Cut and Paste are labelled "Crop", "Cut" and "Paste";
-  Audition says "Crop Audio", "Cut Audio" and "Paste Audio" (one-channel Delete is "Delete Audio"
-  in both).
+- **History labels (resolved, issue #63):** one-channel Crop, Cut, Paste and Delete are labelled
+  "Crop Audio", "Cut Audio", "Paste Audio" and "Delete Audio" (constants in `doc/edit.rs`); the
+  Undo menu says "Undo Cut Audio" and so on. Audition's one-channel names were checked in Audition
+  26.5.0.82 (2026-10-15/16). The table test `every_step_name_is_the_history_label_and_the_undo_text`
+  (`crates/core/tests/edits.rs`) pins each label. The Undo-menu side is pinned by `undo_menu_and_history_agree_for_each_step` (`apps/wavcraft/src/app.rs`). Adobe's user guide does not list History step names, so Mix Paste, Silence, Insert Silence and Insert Audio from File are unverified against Audition and keep their current text.
 
 ## Where the samples live after open
 
