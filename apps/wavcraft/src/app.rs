@@ -6425,6 +6425,9 @@ impl WaveApp {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
         let sel = self.selection_range();
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         match editor.run_declip(params, sel) {
@@ -6451,6 +6454,9 @@ impl WaveApp {
     fn run_declick(&mut self, params: Vec<f64>, auto: bool, ctx: &egui::Context) -> Result<bool, String> {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
+        }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
         }
         let sel = self.selection_range();
         let name = if auto { "Automatic Click Remover" } else { "DeClicker" };
@@ -6491,6 +6497,9 @@ impl WaveApp {
         if self.saving.is_some() {
             return Err("wait for the save to finish".to_string());
         }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
         let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
         let (tool, doc, regions) = self.diag.plan(rows, editor.history.current())?;
         let cancel = AtomicBool::new(false);
@@ -6517,7 +6526,7 @@ impl WaveApp {
 
     fn diagnostics_ui(&mut self, ctx: &egui::Context) {
         self.diag.poll();
-        let busy = self.saving.is_some() || self.rebuilding.is_some();
+        let busy = self.saving.is_some() || self.rebuilding.is_some() || self.running.is_some();
         let current = self.editor.as_ref().map(|e| e.history.current().clone());
         match self.diag.ui(ctx, current.as_ref(), busy) {
             Some(Ask::Scan) => {
