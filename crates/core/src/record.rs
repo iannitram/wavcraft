@@ -1347,8 +1347,18 @@ mod tests {
         let rec = Recorder::start(create_take(&dir, fmt, 8).unwrap(), ring.clone()).unwrap();
         let spec = FakeSpec::parse(Some("sine:400+800+1200+2400")).unwrap().unwrap();
         let fake = FakeInput::spawn(spec, fmt, ring).unwrap();
-        // Past one header interval, so the on-disk header has been rewritten at least once.
-        std::thread::sleep(HEADER_INTERVAL + Duration::from_millis(500));
+        // Wait until the on-disk header claims the frames the assertion below needs. The header is
+        // rewritten every HEADER_INTERVAL, so seeing the count there means it was rewritten at least once.
+        let data_claimed = |path: &Path| -> u32 {
+            let mut h = [0u8; 44];
+            match File::open(path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut h)) {
+                Ok(()) => u32::from_le_bytes([h[40], h[41], h[42], h[43]]),
+                Err(_) => 0,
+            }
+        };
+        crate::mtrecord::wait_until("the take's header to claim 40000 frames", Duration::from_secs(20), || {
+            data_claimed(rec.path()) >= 4 * 2 * 40_000
+        });
         let killed = dir.join("killed.wav");
         std::fs::copy(rec.path(), &killed).unwrap();
         let (ch, rate, bits, data, _) = header_of(&killed);
