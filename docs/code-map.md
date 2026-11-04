@@ -98,6 +98,8 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | | `display.rs` (f76) | High-DPI and window maths: `physical_columns`/`column_x`/`hairline` (a waveform column per physical pixel, one-pixel lines), `PxRect`, `clamp_to_monitors` (a window off every monitor goes back, centred, onto the primary), and `WindowKeeper` (restores and saves `window.txt` in the config folder; `STATE` shows `pixels_per_point`, `window`, `primary`, `startup`). The status bar's Format and bit-depth fields double-click to `ActionId::ConvertSampleType` (the Convert Sample Type dialog) |
 | | `spectrum.rs` | `Renderer`: the spectrogram worker thread and its overview cache |
 | | `mixer.rs` (f104, C152) | The Mixer panel (Window › Mixer panel): `MixerModel` holds only a `soundcraft_mix::MixEngine` that meters the multitrack session's `Session` (f113: every call is given `&mut Session` from `MtView`; one strip per audio track plus the master, which `Multitrack::new` adds; no session, no strips); fader in dB through the model's taper (`fader_pos_to_db`/`fader_db_to_pos`), pan through `soundcraft_dsp::pan` (constant power, -3 dB centre), mute and solo by the engine's rule (a solo mutes the others); the strip meter is the engine's, post-fader and before the pan. Control: `MIXER show\|hide`, `MIXER state`, `MIXER set <n\|master> vol= pan= mute= solo=`. Scripted run: `tools/alpha/f113.sh` |
+| | `cd_ui.rs` (f121) | The CD Layout view (View › CD Layout) and the `CD` control verb (`add`, `adddoc`, `pause`, `meta`, `move`, `remove`, `limit`, `view`, `state`, `export`) |
+| | `input_meter.rs` (f56) | The input meter: `InputTap` (lock-free per-callback peaks and run totals), `InputStats` (verdict too-quiet, ok or clipping), `FakeInput` for `WAVCRAFT_FAKE_INPUT` |
 
 ### Also on main (added after the table above was written; one line each, from the file's own header)
 
@@ -144,8 +146,6 @@ All present on `main`. The first column is the file under `crates/core/src/` unl
 | `tools/golden.py`, `tools/winlist.swift`, `tools/alpha/` | The golden task script; a macOS window lister; the scripted checks of the alpha features (`fNN.py` / `.sh`) |
 | `tools/notices.py`, `tools/test_notices.py`, `tools/licence-texts/`, `THIRD-PARTY-NOTICES.txt` | `notices.py --write` makes the third-party notices from `Cargo.lock` (compiled into the app by `notices.rs`); its test; the licence texts it quotes |
 | `tools/checks/` | Locked checks for single issues, run by hand: `1010-stub-limiter.sh` (the stub limiter is gone, `match_loudness.rs` unchanged, `cargo check --workspace`), `971-stft-duplicate.sh` |
-| | `cd_ui.rs` (f121) | The CD Layout view (View › CD Layout) and the `CD` control verb (`add`, `adddoc`, `pause`, `meta`, `move`, `remove`, `limit`, `view`, `state`, `export`) |
-| | `input_meter.rs` (f56) | The input meter: `InputTap` (lock-free per-callback peaks and run totals), `InputStats` (verdict too-quiet, ok or clipping), `FakeInput` for `WAVCRAFT_FAKE_INPUT` |
 | `apps/wavcraft/src/input_monitor.rs` (f56) | `InputMonitor`: the input stream (or the fake thread), open only while the Levels 'Input' toggle is on or a mic check listens; Window > Meter Input Signal, Window > Mic Check…, actions `meter.input.*`, control `MICCHECK` |
 
 ### Automation, v1 section N (N1 present; N2 to N4 planned)
