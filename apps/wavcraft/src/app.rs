@@ -1110,14 +1110,9 @@ impl WaveApp {
     /// Give egui the theme and brightness from the preferences (only when they changed, or when
     /// the system theme changed while the preference is "system").
     fn apply_look(&mut self, ctx: &egui::Context) {
-        let dark = match self.settings.theme {
-            settings::Theme::Dark => true,
-            settings::Theme::Light => false,
-            settings::Theme::System => ctx.system_theme().is_none_or(|t| t == egui::Theme::Dark),
-        };
+        let dark = show_theme_set(self.settings.theme, ctx);
         let key = (dark, milli(self.settings.ui_brightness), milli(self.settings.ui_contrast));
         self.dark = dark;
-        theme::set_dark(dark);
         self.brightness = self.settings.ui_brightness;
         self.contrast = self.settings.ui_contrast;
         let pal = (self.settings.spec_palette, key.1, key.2);
@@ -12367,6 +12362,19 @@ fn default_rgb(item: &str, settings: &Settings) -> [u8; 3] {
     [c.r(), c.g(), c.b()]
 }
 
+/// Pick the dark or the light set from the theme preference ("system" asks `ctx`) and make
+/// `theme::pal()` return it, so every panel paints with it. Returns whether the dark set is showing.
+/// `apply_look` calls this every frame.
+fn show_theme_set(preference: settings::Theme, ctx: &egui::Context) -> bool {
+    let dark = match preference {
+        settings::Theme::Dark => true,
+        settings::Theme::Light => false,
+        settings::Theme::System => ctx.system_theme().is_none_or(|t| t == egui::Theme::Dark),
+    };
+    theme::set_dark(dark);
+    dark
+}
+
 /// `v` in thousandths, for comparing settings that are floats.
 fn milli(v: f32) -> i32 {
     (v * 1000.0).round() as i32
@@ -12899,3 +12907,33 @@ mod issue1000_tests;
 #[cfg(test)]
 #[path = "issue1002_tests.rs"]
 mod issue1002_tests;
+
+#[cfg(test)]
+mod look_tests {
+    use super::*;
+
+    /// `apply_look` takes `dark` from `show_theme_set`, which is what makes `theme::pal()` return the
+    /// set the preference names. Without its `theme::set_dark` call every panel keeps painting the
+    /// set it painted before: this test fails on the first switch to light, and on the switch back.
+    #[test]
+    fn the_theme_preference_picks_the_set_every_panel_paints_with() {
+        let _guard = theme::SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = egui::Context::default();
+        theme::set_dark(true);
+
+        assert!(!show_theme_set(settings::Theme::Light, &ctx));
+        assert_eq!(theme::pal(), &theme::LIGHT);
+        assert!(show_theme_set(settings::Theme::Dark, &ctx));
+        assert_eq!(theme::pal(), &theme::DARK);
+
+        // "System" follows the operating system, and is dark when the system doesn't say.
+        assert!(show_theme_set(settings::Theme::System, &ctx));
+        assert_eq!(theme::pal(), &theme::DARK);
+        let mut output = ctx.run_ui(egui::RawInput { system_theme: Some(egui::Theme::Light), ..Default::default() }, |_| {});
+        output.textures_delta.clear();
+        assert!(!show_theme_set(settings::Theme::System, &ctx));
+        assert_eq!(theme::pal(), &theme::LIGHT);
+
+        theme::set_dark(true);
+    }
+}

@@ -344,8 +344,8 @@ pub(super) fn draw_freq_ruler(painter: &egui::Painter, lane: Rect, axis: &FreqAx
     for tick in axis.ticks(lane.height(), 26.0) {
         let y = lane.bottom() - tick.t * lane.height();
         painter.line_segment([pos2(lane.right() - 5.0, y), pos2(lane.right(), y)], Stroke::new(1.0, theme::pal().text_dim));
-        // Keep the label inside the lane at the very top and bottom.
+        // Keep the label inside the lane at the very top and bottom. The strip is black in both sets, so the label is white in both.
         let label_y = y.clamp(lane.top() + 6.0, lane.bottom() - 6.0);
-        painter.text(pos2(lane.right() - 8.0, label_y), egui::Align2::RIGHT_CENTER, tick.label, egui::FontId::monospace(10.0), theme::pal().text);
+        painter.text(pos2(lane.right() - 8.0, label_y), egui::Align2::RIGHT_CENTER, tick.label, egui::FontId::monospace(10.0), theme::pal().white);
     }
 }

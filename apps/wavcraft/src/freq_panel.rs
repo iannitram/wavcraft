@@ -204,7 +204,8 @@ impl FreqPanel {
         draw_grid(&painter, &axis);
         for h in &self.holds {
             for row in &h.channels {
-                draw_curve(&painter, &axis, row, h.bin_hz(), Style::Lines, theme::with_alpha(theme::pal().white, 40));
+                // A mid grey that shows on both grounds (white at low alpha vanished on the light one).
+                draw_curve(&painter, &axis, row, h.bin_hz(), Style::Lines, theme::pal().divider);
             }
         }
         for (i, row) in sp.channels.iter().enumerate() {

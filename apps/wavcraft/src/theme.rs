@@ -179,6 +179,11 @@ pub fn with_alpha(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
+/// Tests that switch the set showing hold this while they run: the switch is one flag for the whole
+/// process and tests run on several threads.
+#[cfg(test)]
+pub(crate) static SET_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +233,7 @@ mod tests {
 
     #[test]
     fn switching_the_set_changes_what_panels_read() {
+        let _guard = SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set_dark(true);
         assert_eq!(pal(), &DARK);
         assert_ne!(pal().background, LIGHT.background);
