@@ -204,6 +204,15 @@ Fonts bundled with the user interface library (egui / epaint_default_fonts)
 - emoji-icon-font: MIT licence (text under epaint_default_fonts).
 The fonts are used unmodified. The OFL and UFL texts allow bundling and redistribution with
 software, provided these notices stay with it.
+
+Speech-to-text model weights (not bundled: planned to download on first use after the user
+confirms, and check against a pinned SHA-256)
+---------------------------------------------------------------------------------------
+- Whisper base (multilingual, 74 M parameters), speech recognition model by OpenAI. Its code and
+  model weights are released under the MIT licence: Copyright (c) 2022 OpenAI, text at
+  https://github.com/openai/whisper/blob/main/LICENSE. The safetensors conversion and the
+  tokenizer published at https://huggingface.co/openai/whisper-base are labelled Apache-2.0 on
+  that model card. WavCraft uses the files as published, without modification.
 """
 
 

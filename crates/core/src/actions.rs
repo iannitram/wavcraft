@@ -362,6 +362,8 @@ pub fn zoom_preset_slot(id: ActionId) -> Option<usize> {
 
 /// The one-shot effects (B002). Kept apart from [`TABLE`] (which holds no `effect.` rows; the
 /// registry's effects come through [`all_actions`]) and listed by [`all_actions`] before the registry's.
+/// They run synchronously on the caller's thread (the UI thread in the app), so a long
+/// selection freezes the window until the effect finishes.
 pub const ONE_SHOT: &[Action] = &[
     // One-shot effects on the selection (the whole file with none). Amplify uses the editor's
     // `params` (control verb `PARAM`). Amplify has no row: the registry's Amplify (E2, #28) owns

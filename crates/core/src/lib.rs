@@ -7,6 +7,7 @@
 //!   (pure functions from one state to the next), and [`doc::history`], undo with a disk cap.
 //! - [`autosave`]: the journal of the piece table and history, and crash recovery from it.
 //! - [`batch`]: the Batch Process runner (a list of files through a chain of operations to WAV).
+//! - [`check`]: Episode Check detectors (K2): clipped runs, true peak, DC offset and dead air.
 //! - [`cd`]: the CD layout (track order, pauses, ISRC), and its single-WAV-plus-CUE export.
 //! - [`i18n`]: the interface text catalogue (English source, pseudo-locale, fallback).
 //! - [`io`]: streamed open into the store.
@@ -46,6 +47,7 @@ pub mod bundle;
 pub mod cd;
 pub mod chanmap;
 pub mod channels;
+pub mod check;
 pub mod clipboard;
 pub mod convert;
 pub mod diagnostics;

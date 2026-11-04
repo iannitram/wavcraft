@@ -197,3 +197,26 @@ fn cancelling_stops_the_run() {
     let cancel = AtomicBool::new(true);
     assert!(run(&doc, &Target::PODCAST, None, &cancel, &mut |_| {}).is_err());
 }
+
+/// Issue #38 "Done when": matched to -16 LUFS / -1 dBTP, the result is within 0.2 LU of the target
+/// and its true peak is at or below -1.0 dBTP. Stricter than the tests above, on a quiet kit and on
+/// a peaky one that needs the limiter.
+#[test]
+fn done_when_minus_16_and_minus_1_dbtp_lands_within_0_2_lu_and_peak_at_or_below_minus_1() {
+    let t = TempDir::new("done38-quiet");
+    let s = sine(20.0, 1000.0, -34.0);
+    let doc = doc_from(&t.0, &[s.clone(), s]);
+    let r = go(&doc, &Target::PODCAST);
+    let after = meas(&r.edit.state);
+    assert!((after.integrated_lufs + 16.0).abs() <= 0.2, "{after:?} {}", r.message);
+    assert!(after.true_peak_dbtp <= -1.0, "{after:?} {}", r.message);
+
+    let t = TempDir::new("done38-peaky");
+    let s = peaky(20.0, -32.0, 0.5);
+    let doc = doc_from(&t.0, &[s.clone(), s]);
+    let r = go(&doc, &Target::PODCAST);
+    let after = meas(&r.edit.state);
+    assert!(r.limited, "{}", r.message);
+    assert!((after.integrated_lufs + 16.0).abs() <= 0.2, "{after:?} {}", r.message);
+    assert!(after.true_peak_dbtp <= -1.0, "{after:?} {}", r.message);
+}

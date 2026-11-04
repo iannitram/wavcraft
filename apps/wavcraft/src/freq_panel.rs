@@ -7,6 +7,7 @@
 //! [`MAX_HOLDS`] snapshots can be held and are drawn faintly behind the live curve; they live in
 //! memory only.
 
+use crate::theme;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -23,11 +24,6 @@ const TOP_DB: f32 = 0.0;
 const BOTTOM_DB: f32 = -120.0;
 /// The lowest frequency on the log axis.
 const LOG_LOW_HZ: f32 = 20.0;
-const GRID: Color32 = Color32::from_gray(45);
-const TEXT: Color32 = Color32::from_gray(170);
-const CHANNEL_COLORS: [Color32; 4] =
-    [Color32::from_rgb(64, 200, 140), Color32::from_rgb(90, 160, 235), Color32::from_rgb(235, 190, 80), Color32::from_rgb(220, 110, 200)];
-const MEAN_COLOR: Color32 = Color32::from_gray(210);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Style {
@@ -187,7 +183,7 @@ impl FreqPanel {
             ui.ctx().request_repaint();
         }
         if let Some(e) = &self.error {
-            ui.colored_label(Color32::from_rgb(235, 110, 100), e);
+            ui.colored_label(theme::pal().alert, e);
         }
 
         let hold_count = self.holds.len();
@@ -195,9 +191,9 @@ impl FreqPanel {
         let shown = self.shown(doc, channels, cursor).cloned();
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::hover());
         let rect = response.rect;
-        painter.rect_filled(rect, 0.0, Color32::from_rgb(18, 20, 24));
+        painter.rect_filled(rect, 0.0, theme::pal().background);
         let Some(sp) = shown else {
-            painter.text(rect.center(), Align2::CENTER_CENTER, "Select a channel to analyse", FontId::proportional(14.0), TEXT);
+            painter.text(rect.center(), Align2::CENTER_CENTER, "Select a channel to analyse", FontId::proportional(14.0), theme::pal().text_dim);
             return;
         };
         let plot = Rect::from_min_max(pos2(rect.left() + 38.0, rect.top() + 6.0), pos2(rect.right() - 8.0, rect.bottom() - 18.0));
@@ -208,14 +204,15 @@ impl FreqPanel {
         draw_grid(&painter, &axis);
         for h in &self.holds {
             for row in &h.channels {
-                draw_curve(&painter, &axis, row, h.bin_hz(), Style::Lines, Color32::from_white_alpha(40));
+                // A mid grey that shows on both grounds (white at low alpha vanished on the light one).
+                draw_curve(&painter, &axis, row, h.bin_hz(), Style::Lines, theme::pal().divider);
             }
         }
         for (i, row) in sp.channels.iter().enumerate() {
-            draw_curve(&painter, &axis, row, sp.bin_hz(), style, CHANNEL_COLORS[sp.channel_ids[i] % CHANNEL_COLORS.len()]);
+            draw_curve(&painter, &axis, row, sp.bin_hz(), style, theme::CHANNEL[sp.channel_ids[i] % theme::CHANNEL.len()]);
         }
         if sp.channels.len() > 1 {
-            draw_curve(&painter, &axis, &sp.mean, sp.bin_hz(), Style::Lines, MEAN_COLOR);
+            draw_curve(&painter, &axis, &sp.mean, sp.bin_hz(), Style::Lines, theme::pal().text);
         }
 
         // The readout under the pointer.
@@ -223,7 +220,7 @@ impl FreqPanel {
         readout.push_str(&format!(" · FFT {} · {} · {hold_count} held", sp.fft_size, self.window.name()));
         if let Some(p) = response.hover_pos().filter(|p| plot.contains(*p)) {
             let hz = axis.hz_at(p.x);
-            painter.line_segment([pos2(p.x, plot.top()), pos2(p.x, plot.bottom())], Stroke::new(1.0, Color32::from_gray(90)));
+            painter.line_segment([pos2(p.x, plot.top()), pos2(p.x, plot.bottom())], Stroke::new(1.0, theme::pal().divider));
             readout = format!("{hz:.1} Hz");
             for (i, row) in sp.channels.iter().enumerate() {
                 let db = Spectrum::level_at(row, sp.bin_hz(), hz);
@@ -233,7 +230,7 @@ impl FreqPanel {
                 readout.push_str(&format!("   mean: {:.1} dB", Spectrum::level_at(&sp.mean, sp.bin_hz(), hz)));
             }
         }
-        painter.text(pos2(plot.left() + 4.0, rect.bottom() - 2.0), Align2::LEFT_BOTTOM, readout, FontId::monospace(11.0), TEXT);
+        painter.text(pos2(plot.left() + 4.0, rect.bottom() - 2.0), Align2::LEFT_BOTTOM, readout, FontId::monospace(11.0), theme::pal().text_dim);
     }
 
     /// The spectrum to show: the scan if there is one, else the one under the cursor.
@@ -336,8 +333,8 @@ fn draw_grid(painter: &egui::Painter, axis: &Axis) {
     let mut db = TOP_DB;
     while db >= BOTTOM_DB {
         let y = axis.y_of(db);
-        painter.line_segment([pos2(axis.plot.left(), y), pos2(axis.plot.right(), y)], Stroke::new(1.0, GRID));
-        painter.text(pos2(axis.plot.left() - 3.0, y), Align2::RIGHT_CENTER, format!("{db:.0}"), font.clone(), TEXT);
+        painter.line_segment([pos2(axis.plot.left(), y), pos2(axis.plot.right(), y)], Stroke::new(1.0, theme::pal().grid));
+        painter.text(pos2(axis.plot.left() - 3.0, y), Align2::RIGHT_CENTER, format!("{db:.0}"), font.clone(), theme::pal().text_dim);
         db -= 20.0;
     }
     let ticks: Vec<f32> = if axis.log {
@@ -348,8 +345,8 @@ fn draw_grid(painter: &egui::Painter, axis: &Axis) {
     };
     for hz in ticks.into_iter().filter(|&f| f <= axis.nyquist) {
         let x = axis.x_of(hz);
-        painter.line_segment([pos2(x, axis.plot.top()), pos2(x, axis.plot.bottom())], Stroke::new(1.0, GRID));
-        painter.text(pos2(x, axis.plot.bottom() + 2.0), Align2::CENTER_TOP, hz_label(hz), font.clone(), TEXT);
+        painter.line_segment([pos2(x, axis.plot.top()), pos2(x, axis.plot.bottom())], Stroke::new(1.0, theme::pal().grid));
+        painter.text(pos2(x, axis.plot.bottom() + 2.0), Align2::CENTER_TOP, hz_label(hz), font.clone(), theme::pal().text_dim);
     }
 }
 

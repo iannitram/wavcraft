@@ -13,6 +13,8 @@ use wavcraft_core::doc::rec_edit::{RecMode, RecPlan, RecTarget};
 use wavcraft_core::record::{self, FakeInput, FakeSpec, MonitorRing, RecFormat, Recorder, Ring, Take};
 use wavcraft_core::space::{format_bytes, free_space};
 
+use crate::rec_input::Lost;
+
 /// Where the audio comes from while a take runs.
 enum Source {
     Fake(FakeInput),
@@ -87,6 +89,8 @@ struct Active {
     recorder: Recorder,
     source: Source,
     ring: Arc<Ring>,
+    /// Set when the input device goes away; the take then stops and keeps its frames.
+    lost: Arc<Lost>,
     dir: PathBuf,
     device: String,
     free: Option<u64>,
@@ -219,6 +223,8 @@ pub struct Recording {
     into: Option<IntoDoc>,
     /// The preference: hear the input while recording (C025). Off unless the owner turns it on.
     pub monitor_default: bool,
+    /// The preference `input_device`: the input a take records from; `None` is the system default.
+    pub input_device: Option<String>,
     /// `RECORD start monitor=`: this take only; taken by the next start.
     pub monitor_override: Option<bool>,
     /// What monitoring did during the last take, and the input latency the device reported for it.
@@ -371,7 +377,7 @@ impl Recording {
         let make = |fmt: RecFormat| record::create_take(&dir, fmt, now).map_err(|e| format!("cannot make a take in {}: {e}", dir.display()));
         let want_monitor = self.monitor_override.take().unwrap_or(self.monitor_default);
         let monitor;
-        let (recorder, source, ring, device) = match FakeSpec::from_env()? {
+        let (recorder, source, ring, device, lost) = match FakeSpec::from_env()? {
             Some(spec) => {
                 let tones = spec.tones_for(want)?;
                 let ring_frames = spec.ring_ms.map_or(want.rate as usize * 2, |ms| (want.rate as usize * ms as usize / 1000).max(1));
@@ -382,15 +388,16 @@ impl Recording {
                 let recorder =
                     Recorder::start_stalled(make(want)?, ring.clone(), Duration::from_millis(u64::from(spec.stall_ms))).map_err(|e| e.to_string())?;
                 let fake = FakeInput::spawn(spec, want, ring.clone()).map_err(|e| e.to_string())?;
-                (recorder, Source::Fake(fake), ring, format!("fake sine {} Hz", tones.iter().map(f64::to_string).collect::<Vec<_>>().join(" + ")))
+                let device = format!("fake sine {} Hz", tones.iter().map(f64::to_string).collect::<Vec<_>>().join(" + "));
+                (recorder, Source::Fake(fake), ring, device, Arc::new(Lost::new()))
             }
             None => {
-                let opened = crate::rec_input::open(want, want_monitor)?;
+                let opened = crate::rec_input::open(want, want_monitor, self.input_device.as_deref())?;
                 monitor = opened.monitor.clone().map(|m| (m, opened.fmt.rate));
                 opened.ring.set_paused(held);
                 let recorder = Recorder::start(make(opened.fmt)?, opened.ring.clone()).map_err(|e| e.to_string())?;
                 cpal::traits::StreamTrait::play(&opened.stream).map_err(|e| format!("cannot start the input: {e}"))?;
-                (recorder, Source::Device(opened.stream), opened.ring, opened.device)
+                (recorder, Source::Device(opened.stream), opened.ring, opened.device, opened.lost)
             }
         };
         let path = recorder.path().to_path_buf();
@@ -407,6 +414,7 @@ impl Recording {
             recorder,
             source,
             ring,
+            lost,
             dir,
             device,
             free: None,
@@ -482,6 +490,9 @@ impl Recording {
         if a.free_at.elapsed() >= Duration::from_secs(1) {
             a.free = free_space(&a.dir);
             a.free_at = Instant::now();
+        }
+        if let Some(why) = a.lost.get() {
+            return Some((*why).to_string());
         }
         a.recorder.status().error
     }
@@ -779,5 +790,58 @@ mod tests {
         assert_eq!(clock(0), "0:00");
         assert_eq!(clock(65), "1:05");
         assert_eq!(clock(3723), "1:02:03");
+    }
+
+    #[test]
+    fn a_lost_input_stops_the_take_and_keeps_its_frames() {
+        use super::{Active, Recording, Source};
+        use crate::rec_input::Lost;
+        use std::sync::Arc;
+        use wavcraft_core::record::{FakeInput, FakeSpec, Recorder, Ring, create_take};
+
+        let dir = std::env::temp_dir().join(format!("wavcraft-input-lost-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fmt = RecFormat::default();
+        let ring = Ring::new(fmt.rate as usize * 2, fmt.channels);
+        let spec = FakeSpec::parse(Some("sine:440")).unwrap().unwrap();
+        let recorder = Recorder::start(create_take(&dir, fmt, 0).unwrap(), ring.clone()).unwrap();
+        let fake = FakeInput::spawn(spec, fmt, ring.clone()).unwrap();
+        let lost = Arc::new(Lost::new());
+        let mut rec = Recording {
+            active: Some(Active {
+                monitor: None,
+                recorder,
+                source: Source::Fake(fake),
+                ring,
+                lost: lost.clone(),
+                dir: dir.clone(),
+                device: "fake sine 440 Hz".to_string(),
+                free: None,
+                free_at: Instant::now(),
+                peak: 0.0,
+                clipped: false,
+                max_frames: None,
+                resumes: Vec::new(),
+                logged_dropped: 0,
+                warn_at: Instant::now(),
+            }),
+            ..Default::default()
+        };
+        let t = Instant::now();
+        while rec.active.as_ref().is_some_and(|a| a.recorder.status().frames < 4_800) && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(rec.refresh().is_none(), "a working input keeps the take going");
+        assert!(lost.set("input device unplugged").is_ok());
+        assert_eq!(rec.refresh().as_deref(), Some("input device unplugged"));
+        let take = rec.stop().expect("the take");
+        assert!(take.error.is_none(), "{:?}", take.error);
+        assert!(take.frames >= 4_800, "{} frames kept", take.frames);
+        // The header is final: its data chunk holds exactly the frames the take kept.
+        let file = std::fs::read(&take.path).unwrap();
+        let at = file.windows(4).position(|w| w == b"data").expect("a data chunk") + 4;
+        let data = u32::from_le_bytes(file[at..at + 4].try_into().unwrap());
+        assert_eq!(u64::from(data), take.frames * u64::from(fmt.channels) * u64::from(fmt.bits / 8));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

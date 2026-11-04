@@ -3765,6 +3765,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wavcraft-automation"
+version = "0.1.0"
+dependencies = [
+ "wavcraft-core",
+]
+
+[[package]]
 name = "wavcraft-core"
 version = "0.1.0"
 dependencies = [

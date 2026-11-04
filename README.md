@@ -47,7 +47,7 @@ refuses with the size needed and the space free if not.
 
 | Do this | To |
 |---|---|
-| File › Open, Ctrl+O, or drop a file on the window (dropping does not work under Wayland yet) | open a file (WAV, AIFF, FLAC, MP3, OGG, M4A, CAF) |
+| File › Open or Ctrl+O; or drop a file on the window (no drops under a Wayland session, see Known limits) | open a file (WAV, AIFF, FLAC, MP3, OGG, M4A, CAF) |
 | Mouse wheel | zoom in and out around the pointer |
 | Shift + wheel, or sideways scroll | move through time |
 | = / − | zoom in / out around the middle of the view |
@@ -128,6 +128,12 @@ screen is short. The overview does not depend on the frequency axis or the pictu
 `cargo run --release -p wavcraft-core --example spectrogram_cost` measures all of this.
 
 ### Known limits (found in the 2026-10-12 review, not fixed yet)
+
+- **Dropping a file on the window does nothing under a Wayland session (Linux, e.g. SteamOS Desktop Mode).**
+  WavCraft reads dropped files from the windowing layer (winit 0.30, the version egui and eframe
+  pin), and that layer does not deliver file drops on Wayland. Upstream tracks this in winit issues
+  #1563 and #4773; a backport to 0.30 is proposed in PR #4729, still open. Under Wayland, use
+  File › Open or Ctrl+O. Running under XWayland (unset `WAYLAND_DISPLAY`) restores drops.
 
 - **The spectrogram can still trail the view by a frame or two.** A picture takes up to about
   12 ms per channel at any zoom (it was 140 ms per channel zoomed out on three hours before the

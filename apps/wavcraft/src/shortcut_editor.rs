@@ -2,6 +2,7 @@
 //! press "Assign", then the new chord; a chord another command has asks first (reassign or cancel).
 //! The dialog only reports what the user chose ([`Change`]); the app applies and saves it.
 
+use crate::theme;
 use egui::Key;
 use wavcraft_core::keyboard::{ANSI_ROWS, Mods};
 use wavcraft_core::shortcut_sets::DEFAULT_SET;
@@ -101,10 +102,7 @@ impl ShortcutDialog {
             });
             ui.separator();
             if let Some((p_command, p_chord, p_holder)) = self.pending.as_ref().map(|p| (p.command, p.chord, p.holder)) {
-                ui.colored_label(
-                    egui::Color32::from_rgb(235, 180, 70),
-                    format!("{} is already assigned to {}.", p_chord.text(mac), p_holder.label()),
-                );
+                ui.colored_label(theme::pal().caution, format!("{} is already assigned to {}.", p_chord.text(mac), p_holder.label()));
                 ui.horizontal(|ui| {
                     if ui.button(format!("Reassign to {}", p_command.label())).clicked() {
                         change = Some(Change::Assign { command: p_command, chord: p_chord, reassign: true });
@@ -197,7 +195,7 @@ impl ShortcutDialog {
             }
         });
         let bound = keymap.keys_with(self.mods);
-        let (fill, other, outline) = (egui::Color32::from_rgb(52, 120, 190), egui::Color32::from_gray(70), egui::Color32::from_rgb(235, 180, 70));
+        let (fill, other, outline) = (theme::pal().accent, theme::pal().button_off, theme::pal().caution);
         let width = ANSI_ROWS.iter().map(|r| r.iter().map(|k| k.width).sum::<f32>()).fold(0.0, f32::max) * UNIT;
         let (area, _) = ui.allocate_exact_size(egui::vec2(width, ANSI_ROWS.len() as f32 * UNIT), egui::Sense::hover());
         for (row, caps) in ANSI_ROWS.iter().enumerate() {
@@ -207,7 +205,7 @@ impl ShortcutDialog {
                 x += cap.width * UNIT;
                 let Some(name) = cap.name else {
                     if !cap.label.is_empty() {
-                        ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0, egui::Color32::from_gray(60)), egui::StrokeKind::Inside);
+                        ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0, theme::pal().hairline), egui::StrokeKind::Inside);
                     }
                     continue;
                 };
@@ -220,15 +218,12 @@ impl ShortcutDialog {
                 } else if anywhere {
                     other
                 } else {
-                    egui::Color32::from_gray(40)
+                    theme::pal().button_off
                 };
-                let stroke = if self.key_filter == Some(name) {
-                    egui::Stroke::new(2.0, outline)
-                } else {
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(90))
-                };
+                let stroke =
+                    if self.key_filter == Some(name) { egui::Stroke::new(2.0, outline) } else { egui::Stroke::new(1.0, theme::pal().divider) };
                 ui.painter().rect(rect, 3.0, colour, stroke, egui::StrokeKind::Inside);
-                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, cap.label, egui::FontId::proportional(11.0), egui::Color32::WHITE);
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, cap.label, egui::FontId::proportional(11.0), theme::pal().white);
                 if response.clicked() {
                     self.key_filter = if self.key_filter == Some(name) { None } else { Some(name) };
                 }

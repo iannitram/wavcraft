@@ -2,7 +2,7 @@
 //!
 //! Pure helpers behind Reverse: [`mirror_range`] says which source frames supply an output
 //! chunk, and [`reverse_frames`] reverses a slice bit for bit. The Reverse action itself is the
-//! one-shot in [`super::oneshot::reverse`], which computes the same mirror range inline.
+//! one-shot in [`super::oneshot::reverse`], which takes its source frame from [`mirror_range`].
 
 use std::ops::Range;
 
