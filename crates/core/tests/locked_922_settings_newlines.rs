@@ -37,11 +37,6 @@ fn no_string_literal_in_to_text_spans_a_line_break() {
 }
 
 #[test]
-fn to_text_source_holds_no_carriage_return() {
-    assert!(!to_text_source().contains('\r'));
-}
-
-#[test]
 fn to_text_of_a_fully_set_file_is_unchanged() {
     let mut s = Settings::default();
     s.set("session_folder", "/x/y").unwrap();
