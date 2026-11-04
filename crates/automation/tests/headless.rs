@@ -166,3 +166,100 @@ fn bad_requests_answer_err_and_change_nothing() {
     assert_eq!(current(&b), source_samples(), "refused requests leave the document as it was");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `source_samples` with `f` applied to every sample whose frame is in `range`: what the document
+/// must hold after an edit that touches exactly those frames.
+fn source_with(range: std::ops::Range<usize>, f: impl Fn(i32) -> i32) -> Vec<Vec<i32>> {
+    source_samples().into_iter().map(|c| c.into_iter().enumerate().map(|(p, v)| if range.contains(&p) { f(v) } else { v }).collect()).collect()
+}
+
+/// Save what `b` has open as `name` in `dir`, open that file in a fresh backend and read it back.
+fn saved(b: &mut Headless, dir: &Path, name: &str) -> Vec<Vec<i32>> {
+    let out = dir.join(name);
+    assert_eq!(b.answer_line(&format!("SAVE {}", out.display())), "OK");
+    let mut reread = Headless::new(dir);
+    assert_eq!(reread.answer_line(&format!("OPEN {}", out.display())), "OK");
+    current(&reread)
+}
+
+#[test]
+fn effect_invert_on_a_selection_changes_only_the_selection() {
+    let dir = scratch("effect-invert");
+    let src = dir.join("src.wav");
+    write_wav(&src, &source_samples());
+    let mut b = Headless::with_crossfades(&dir, Crossfades::NONE);
+
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    assert_eq!(b.answer_line("SELECT 4000 4500"), "OK selection=4000-4500");
+    assert_eq!(b.answer_line("EFFECT invert"), "OK selection=4000-4500 changed=1");
+    assert_eq!(current(&b), source_with(4_000..4_500, |v| -v), "only frames 4000..4500 are negated, both channels");
+    assert_eq!(saved(&mut b, &dir, "out.wav"), source_with(4_000..4_500, |v| -v), "the saved file holds the same samples");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn effect_takes_the_effect_prefix_and_its_settings() {
+    let dir = scratch("effect-gain");
+    let src = dir.join("src.wav");
+    write_wav(&src, &source_samples());
+    let mut b = Headless::with_crossfades(&dir, Crossfades::NONE);
+
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    assert_eq!(b.answer_line("SELECT 2000 3000"), "OK selection=2000-3000");
+    assert_eq!(b.answer_line("EFFECT effect.gain gain_db=-6"), "OK selection=2000-3000 changed=1");
+
+    // The gain is computed here in f64, apart from the effect's own f32 maths: the two agree to
+    // within one 16-bit step, and the samples outside the selection are exact.
+    let k = 10f64.powf(-6.0 / 20.0);
+    let want = source_with(2_000..3_000, |v| (f64::from(v) * k).round() as i32);
+    let got = saved(&mut b, &dir, "out.wav");
+    for (c, (g, w)) in got.iter().zip(&want).enumerate() {
+        assert_eq!(g.len(), FRAMES, "channel {c} keeps its length");
+        for (p, (g, w)) in g.iter().zip(w).enumerate() {
+            let slack = i32::from((2_000..3_000).contains(&p));
+            assert!((g - w).abs() <= slack, "channel {c} frame {p}: got {g}, want {w} (within {slack})");
+        }
+    }
+    assert_ne!(got, source_samples(), "the gain changed the selection");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn effect_with_no_selection_runs_on_the_whole_file() {
+    let dir = scratch("effect-whole");
+    let src = dir.join("src.wav");
+    write_wav(&src, &source_samples());
+    let mut b = Headless::with_crossfades(&dir, Crossfades::NONE);
+
+    // Nothing selected right after OPEN.
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    assert!(b.answer_line("STATE").contains("selection=0-0"), "OPEN leaves nothing selected");
+    assert!(b.answer_line("EFFECT invert").ends_with("changed=1"));
+    assert_eq!(current(&b), source_with(0..FRAMES, |v| -v), "every frame of both channels is negated");
+    assert_eq!(saved(&mut b, &dir, "out.wav"), source_with(0..FRAMES, |v| -v), "the saved file holds the same samples");
+
+    // A collapsed selection (start == end) is also "none": it does not mean "zero frames".
+    assert_eq!(b.answer_line("SELECT 7000 7000"), "OK selection=7000-7000");
+    assert!(b.answer_line("EFFECT invert").ends_with("changed=1"));
+    assert_eq!(current(&b), source_samples(), "a second whole-file invert gives the source back");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn action_effect_with_no_selection_runs_on_the_whole_file_but_other_actions_do_not() {
+    let dir = scratch("action-whole");
+    let src = dir.join("src.wav");
+    write_wav(&src, &source_samples());
+    let mut b = Headless::with_crossfades(&dir, Crossfades::NONE);
+
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    // Delete is not an effect: with nothing selected it has nothing to delete, and does not widen.
+    let reply = b.answer_line("ACTION edit.delete");
+    assert!(reply.starts_with("OK ") && reply.ends_with("changed=0"), "unexpected reply {reply:?}");
+    assert_eq!(current(&b), source_samples(), "delete with no selection leaves the document as it was");
+
+    // An effect action is: it widens to the whole file.
+    assert!(b.answer_line("ACTION effect.invert").ends_with("changed=1"));
+    assert_eq!(current(&b), source_with(0..FRAMES, |v| -v), "every frame of both channels is negated");
+    let _ = std::fs::remove_dir_all(&dir);
+}
