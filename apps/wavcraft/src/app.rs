@@ -840,6 +840,8 @@ struct ClipEdit {
     dir: PathBuf,
     /// The file that was open before, opened again on return.
     back_to: Option<PathBuf>,
+    /// The session the source came from (`MtView::session_gen`): Return refuses after another is loaded.
+    session_gen: u64,
 }
 
 /// A drag across the digits of a time box: the frames one step is worth and the drag not yet used.
@@ -6675,7 +6677,7 @@ impl WaveApp {
             return Err(format!("cannot write the source: {e}"));
         }
         let back_to = self.doc.is_some().then(|| self.doc_path.clone());
-        self.clip_edit = Some(ClipEdit { source, name, path: path.clone(), dir, back_to });
+        self.clip_edit = Some(ClipEdit { source, name, path: path.clone(), dir, back_to, session_gen: self.mtv.session_gen() });
         self.mtv.show = false;
         self.open(path, ctx);
         Ok(())
@@ -6701,6 +6703,11 @@ impl WaveApp {
                 self.mtv.show = true;
             }
             return Err(why.into());
+        }
+        if edit.session_gen != self.mtv.session_gen() {
+            return Err(
+                "the session changed since the clip source was opened: nothing was replaced; the edited audio is still open, Save As keeps it".into(),
+            );
         }
         let Some(doc) = &self.doc else { return Err("no document".into()) };
         let audio = wavcraft_core::multitrack::ModelBuffer {
