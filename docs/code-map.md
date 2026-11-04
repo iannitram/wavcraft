@@ -98,6 +98,8 @@ Task 04 (2026-10-15) added `doc/edit.rs` and `doc/history.rs`, the test kit's `r
 | | `display.rs` (f76) | High-DPI and window maths: `physical_columns`/`column_x`/`hairline` (a waveform column per physical pixel, one-pixel lines), `PxRect`, `clamp_to_monitors` (a window off every monitor goes back, centred, onto the primary), and `WindowKeeper` (restores and saves `window.txt` in the config folder; `STATE` shows `pixels_per_point`, `window`, `primary`, `startup`). The status bar's Format and bit-depth fields double-click to `ActionId::ConvertSampleType` (the Convert Sample Type dialog) |
 | | `spectrum.rs` | `Renderer`: the spectrogram worker thread and its overview cache |
 | | `mixer.rs` (f104, C152) | The Mixer panel (Window › Mixer panel): `MixerModel` holds only a `soundcraft_mix::MixEngine` that meters the multitrack session's `Session` (f113: every call is given `&mut Session` from `MtView`; one strip per audio track plus the master, which `Multitrack::new` adds; no session, no strips); fader in dB through the model's taper (`fader_pos_to_db`/`fader_db_to_pos`), pan through `soundcraft_dsp::pan` (constant power, -3 dB centre), mute and solo by the engine's rule (a solo mutes the others); the strip meter is the engine's, post-fader and before the pan. Control: `MIXER show\|hide`, `MIXER state`, `MIXER set <n\|master> vol= pan= mute= solo=`. Scripted run: `tools/alpha/f113.sh` |
+| | `cd_ui.rs` (f121) | The CD Layout view (View › CD Layout) and the `CD` control verb (`add`, `adddoc`, `pause`, `meta`, `move`, `remove`, `limit`, `view`, `state`, `export`) |
+| | `input_meter.rs` (f56) | The input meter: `InputTap` (lock-free per-callback peaks and run totals), `InputStats` (verdict too-quiet, ok or clipping), `FakeInput` for `WAVCRAFT_FAKE_INPUT` |
 
 ### Also on main (added after the table above was written; one line each, from the file's own header)
 
@@ -129,6 +131,7 @@ All present on `main`. The first column is the file under `crates/core/src/` unl
 | `mix/mod.rs`, `mix/downmix.rs`, `mix/band_plan.rs`, `mixer_sections.rs`, `strip_eq.rs`, `mtpunch.rs` | Downmix, the frequency band splitter plan, show/hide mixer sections, the strip quick EQ, Punch Again memory |
 | `recent_sessions.rs`, `sc_source.rs`, `settings/multitrack.rs`, `settings/video.rs` | Recent sessions list; a document as a SoundCraft clip source; Multitrack and Video preferences |
 | `apps/wavcraft/src/control.rs`, `selflog.rs`, `reveal.rs`, `win_acl.rs` | The loopback control channel (off unless `WAVCRAFT_CONTROL_PORT`); the app's own log; reveal a file in the file manager; Windows owner-only token file |
+| `apps/wavcraft/src/theme.rs` | The one theme (M3): `Palette` with a dark and a light set of named design values; `pal()` (the set showing, switched each frame by `apply_look` through `set_dark`), `rgb`/`rgba`/`with_alpha` for user-chosen colours, `CHANNEL`; a test fails on any inline `Color32` value in the UI sources |
 | `apps/wavcraft/src/meters_ui.rs`, `statspanel.rs`, `video.rs`, `i3_shortcut_help_tests.rs` | The Levels panel and statistics window; Window > Sample Statistics; the Video panel; the locked I3 shortcut-help tests |
 | `crates/craft-log`, `crates/craft-stage` | Self-logging for the Craft apps (`lib.rs`, `cli.rs` log reader, `crash.rs` and `stall.rs` and `report.rs` reports, `build_tree.rs` with `build.rs`, `collapse.rs` repeat collapse, `wrap.rs`, `filter.rs`, `line.rs`, `testing.rs`; `tests/process.rs`); stage markers so a stall can say where it stuck. Ours, never offered upstream |
 | `markers.rs`, `playlist.rs`, `fade_handles.rs` | Markers (A170): point and range markers kept in the document state, moved by edits and stored as WAV `cue `/`LIST adtl` chunks; the playlist (A188-A190: marker ranges in any order with loop counts, not stored in the WAV); top-corner fade-handle hit-testing and drag-to-fade (E1) |
@@ -143,27 +146,25 @@ All present on `main`. The first column is the file under `crates/core/src/` unl
 | `tools/golden.py`, `tools/winlist.swift`, `tools/alpha/` | The golden task script; a macOS window lister; the scripted checks of the alpha features (`fNN.py` / `.sh`) |
 | `tools/notices.py`, `tools/test_notices.py`, `tools/licence-texts/`, `THIRD-PARTY-NOTICES.txt` | `notices.py --write` makes the third-party notices from `Cargo.lock` (compiled into the app by `notices.rs`); its test; the licence texts it quotes |
 | `tools/checks/` | Locked checks for single issues, run by hand: `1010-stub-limiter.sh` (the stub limiter is gone, `match_loudness.rs` unchanged, `cargo check --workspace`), `971-stft-duplicate.sh` |
-| | `cd_ui.rs` (f121) | The CD Layout view (View › CD Layout) and the `CD` control verb (`add`, `adddoc`, `pause`, `meta`, `move`, `remove`, `limit`, `view`, `state`, `export`) |
-| | `input_meter.rs` (f56) | The input meter: `InputTap` (lock-free per-callback peaks and run totals), `InputStats` (verdict too-quiet, ok or clipping), `FakeInput` for `WAVCRAFT_FAKE_INPUT` |
 | `apps/wavcraft/src/input_monitor.rs` (f56) | `InputMonitor`: the input stream (or the fake thread), open only while the Levels 'Input' toggle is on or a mic check listens; Window > Meter Input Signal, Window > Mic Check…, actions `meter.input.*`, control `MICCHECK` |
 
-### Planned: Automation, v1 section N (status: planned, not on `main` yet)
+### Automation, v1 section N (N1 present; N2 to N4 planned)
 
-These files do not exist yet. They are where the four Automation issues put their work; each row turns to present when its issue merges. The design is copied from SoundCraft's `crates/automation` (MIT OR Apache-2.0, our own fork), with credit in the file headers.
+The N1 rows (#1107) are present; the others are not on `main` yet. Each row turns to present when its issue merges. The design is copied from SoundCraft's `crates/automation` (MIT OR Apache-2.0, our own fork), with credit in the file headers.
 
 | Crate | Module | What it will hold |
 |---|---|---|
-| `crates/automation` (`wavcraft-automation`, library, no UI; planned) | `lib.rs` (N1, #1107) | The `Backend` trait (open, select, run an action or effect, save, read state) and the request parser that `apps/wavcraft/src/control.rs` uses today, moved here so the window and the command line read the same words |
-| | `headless.rs` (N1, #1107) | `Headless`: a `Backend` that runs `wavcraft-core` in-process with no window (`Document`, `actions::by_name`, `effects::apply`) |
-| | `remote.rs` (N1, #1107) | `Remote`: a `Backend` that drives a running window through the control channel (`WAVCRAFT_CONTROL_PORT` plus its token file) |
+| `crates/automation` (`wavcraft-automation`, library, no UI; present for N1) | `lib.rs` (N1, #1107, present) | `Request` (the parsed `OPEN`, `SELECT`, `ACTION`, `EFFECT`, `SAVE`, `STATE` line, with `parse` and `line` for both sides) and the `Backend` trait (one `execute`, and `answer_line` for the `OK`/`ERR` text). Not yet: `apps/wavcraft/src/control.rs` still parses its own requests; moving that is the rest of N1 |
+| | `headless.rs` (N1, #1107, present) | `Headless`: a `Backend` that runs `wavcraft-core` in-process with no window (`io::open`, `Editor::run`, `Editor::run_effect`, `save::save`) |
+| | `remote.rs` (N1, #1107, present) | `Remote`: a `Backend` that drives a running window through the control channel (`WAVCRAFT_CONTROL_PORT` plus its token file); its tests use a stand-in channel, not the app |
 | | `mcp.rs` (N3, #1108) | The MCP server: JSON-RPC 2.0 over stdio, one tool per `Backend` call; `wavcraft mcp` runs it headless, `wavcraft mcp --attach` drives an open window |
 | | `script.rs` (N4, #879) | Script files: one request per line, run headless or in the window (File > Run Script... in `menus.rs` and `app.rs`); the whole script is one undo step |
 | `apps/wavcraft` | `cli.rs` (N2, #845; planned) | The subcommands `run <script> <file> [-o <out>]`, `convert` and `inspect`, reached from `main.rs`; it builds on `crates/core/src/batch_cli.rs` (the C239-a parser already on `main`) instead of a second parser |
 
-How they link: `main.rs` sends a subcommand to `cli.rs`, which runs a `Headless` backend; `wavcraft mcp` and scripts take either backend; the window's `control.rs` keeps the socket and the token check but hands each request to `crates/automation`'s parser (N1).
+How they link: `main.rs` sends a subcommand to `cli.rs`, which runs a `Headless` backend; `wavcraft mcp` and scripts take either backend; the window's `control.rs` keeps the socket and the token check; handing its requests to `crates/automation`'s parser is still to do (N1).
 
 Workspace: `Cargo.toml` at the root; `unsafe_code = "forbid"` for every crate that inherits the
-workspace lints. Members: `crates/core`, `crates/testkit`, `crates/craft-log`, `crates/craft-stage`, `apps/wavcraft`. The test counts that stood here (21 in the core, 9 in the app) predate task 02 and were dropped; run `cargo test --workspace` for the count.
+workspace lints. Members: `crates/core`, `crates/automation`, `crates/testkit`, `crates/craft-log`, `crates/craft-stage`, `apps/wavcraft`. The test counts that stood here (21 in the core, 9 in the app) predate task 02 and were dropped; run `cargo test --workspace` for the count.
 
 ## Known differences from Audition
 

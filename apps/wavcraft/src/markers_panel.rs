@@ -3,6 +3,7 @@
 //!
 //! Kept out of `app.rs` so that file only gains the few lines that call it.
 
+use crate::theme;
 use std::ops::Range;
 
 use egui::{Key, Pos2, Rect};
@@ -179,8 +180,7 @@ impl MarkersUi {
                 }
                 for (n, (name, c)) in wavcraft_core::PALETTE.iter().enumerate() {
                     let n = (n + 1) as u8;
-                    let swatch =
-                        egui::RichText::new(if current == n { "\u{25cf}" } else { "\u{25cb}" }).color(egui::Color32::from_rgb(c[0], c[1], c[2]));
+                    let swatch = egui::RichText::new(if current == n { "\u{25cf}" } else { "\u{25cb}" }).color(theme::rgb(c[0], c[1], c[2]));
                     if ui.button(swatch).on_hover_text(*name).clicked() {
                         set_color = Some((id, n));
                     }

@@ -2,11 +2,12 @@
 //! that draws each track's clips as plain boxes, over `wavcraft_core::multitrack`. Also the
 //! control verbs `SESSION`, `TRACK`, `CLIP`, `CLIPPROP` and `VIEW`, so a script can drive it.
 
+use crate::theme;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use soundcraft_playback::Player as DevicePlayer;
 use wavcraft_core::Document;
 use wavcraft_core::mtplay::{PlaybackSession, SilentPlayer};
@@ -20,8 +21,6 @@ const HEADER_W: f32 = 230.0;
 const ROW_H: f32 = 64.0;
 const RULER_H: f32 = 20.0;
 const RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
-const BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
-const MARKER_COLOUR: Color32 = Color32::from_rgb(240, 190, 70);
 
 /// The session's transport (f114): a device player, or the silent clock under `WAVCRAFT_NO_AUDIO=1`.
 /// Only output is ever opened; no input device.
@@ -313,7 +312,7 @@ impl MtView {
                     ui.end_row();
                 });
                 if let Some(m) = &self.message {
-                    ui.colored_label(Color32::from_rgb(235, 80, 70), m);
+                    ui.colored_label(theme::pal().alert, m);
                 }
                 ui.horizontal(|ui| {
                     create = ui.button("Create").clicked();
@@ -472,7 +471,8 @@ impl MtView {
                         }
                     } else {
                         let name = m["name"].as_str().unwrap_or("").to_string();
-                        let l = ui.add(egui::Label::new(egui::RichText::new(format!("{i}. {name}")).color(MARKER_COLOUR)).sense(Sense::click()));
+                        let l =
+                            ui.add(egui::Label::new(egui::RichText::new(format!("{i}. {name}")).color(theme::pal().marker)).sense(Sense::click()));
                         if l.clicked() {
                             jump = m["start"].as_f64();
                         }
@@ -536,7 +536,7 @@ impl MtView {
             });
         });
         if let Some(m) = &self.message {
-            ui.colored_label(Color32::from_rgb(235, 80, 70), m);
+            ui.colored_label(theme::pal().alert, m);
         }
         ui.separator();
         let ids = mt.track_ids();
@@ -568,8 +568,8 @@ impl MtView {
             let mut s = 0.0_f64;
             while (s as f32) * self.px_per_sec < width {
                 let x = rr.left() + HEADER_W + s as f32 * self.px_per_sec;
-                painter.line_segment([pos2(x, rr.bottom() - 6.0), pos2(x, rr.bottom())], Stroke::new(1.0, Color32::GRAY));
-                painter.text(pos2(x + 3.0, rr.top()), egui::Align2::LEFT_TOP, format!("{s}s"), egui::FontId::monospace(10.0), Color32::GRAY);
+                painter.line_segment([pos2(x, rr.bottom() - 6.0), pos2(x, rr.bottom())], Stroke::new(1.0, theme::pal().text_faint));
+                painter.text(pos2(x + 3.0, rr.top()), egui::Align2::LEFT_TOP, format!("{s}s"), egui::FontId::monospace(10.0), theme::pal().text_faint);
                 s += step;
             }
             // Session markers and ranges on the ruler, then the selection and the playhead.
@@ -581,11 +581,11 @@ impl MtView {
                     painter.rect_filled(
                         Rect::from_min_max(pos2(x0, rr.bottom() - 10.0), pos2(x1.max(x0 + 2.0), rr.bottom())),
                         0.0,
-                        MARKER_COLOUR.gamma_multiply(0.45),
+                        theme::pal().marker.gamma_multiply(0.45),
                     );
                 }
-                painter.line_segment([pos2(x0, rr.top()), pos2(x0, rr.bottom())], Stroke::new(1.5, MARKER_COLOUR));
-                painter.text(pos2(x0 + 3.0, rr.top() + 10.0), egui::Align2::LEFT_TOP, &m.name, egui::FontId::proportional(11.0), MARKER_COLOUR);
+                painter.line_segment([pos2(x0, rr.top()), pos2(x0, rr.bottom())], Stroke::new(1.5, theme::pal().marker));
+                painter.text(pos2(x0 + 3.0, rr.top() + 10.0), egui::Align2::LEFT_TOP, &m.name, egui::FontId::proportional(11.0), theme::pal().marker);
             }
             // Punch range band (f126): red while punch is on, grey while it is set but off.
             if let Some(r) = mt.punch.range {
@@ -594,7 +594,7 @@ impl MtView {
                     pos2(rr.left() + HEADER_W + rate.seconds(r.start) as f32 * self.px_per_sec, rr.top() + 12.0),
                     pos2(rr.left() + HEADER_W + rate.seconds(r.end) as f32 * self.px_per_sec, rr.bottom()),
                 );
-                let c = if mt.punch.on { Color32::from_rgb(220, 70, 60) } else { Color32::from_gray(110) };
+                let c = if mt.punch.on { theme::pal().alert } else { theme::pal().text_faint };
                 painter.rect_filled(band, 0.0, c.gamma_multiply(0.45));
             }
             if let Some((a, b)) = mt.selection_seconds() {
@@ -602,10 +602,10 @@ impl MtView {
                     pos2(rr.left() + HEADER_W + a as f32 * self.px_per_sec, rr.top()),
                     pos2(rr.left() + HEADER_W + b as f32 * self.px_per_sec, rr.bottom()),
                 );
-                painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(120, 160, 255, 50));
+                painter.rect_filled(r, 0.0, theme::pal().range_fill);
             }
             let px = xs(mt.session.edit.playhead);
-            painter.line_segment([pos2(px, rr.top()), pos2(px, rr.bottom())], Stroke::new(1.0, Color32::from_rgb(255, 255, 255)));
+            painter.line_segment([pos2(px, rr.top()), pos2(px, rr.bottom())], Stroke::new(1.0, theme::pal().white));
             for id in ids {
                 let Some(t) = mt.session.track(id) else { continue };
                 let (name, chans, clips, [r, g, b]) = (t.name.clone(), t.channels(), t.clips().to_vec(), t.color);
@@ -617,9 +617,9 @@ impl MtView {
                 let lane = Rect::from_min_size(pos2(row.left() + HEADER_W, row.top()), vec2(width, ROW_H));
                 let selected = self.selected == Some(id);
                 let p = ui.painter();
-                p.rect_filled(header, 3.0, if selected { Color32::from_rgb(44, 52, 66) } else { Color32::from_rgb(32, 36, 44) });
-                p.rect_filled(lane, 0.0, BACKGROUND);
-                let colour = Color32::from_rgb(r, g, b);
+                p.rect_filled(header, 3.0, if selected { theme::pal().track_header_selected } else { theme::pal().track_header });
+                p.rect_filled(lane, 0.0, theme::pal().background);
+                let colour = theme::rgb(r, g, b);
                 p.rect_filled(Rect::from_min_size(header.min, vec2(4.0, ROW_H)), 0.0, colour);
                 // Header: name (click to select, double-click to rename), M, S, volume, remove.
                 let mut h =
@@ -688,7 +688,7 @@ impl MtView {
                 let p = ui.painter_at(lane);
                 if self.transport.is_playing() {
                     let x = lane.left() + (self.transport.position() as f64 / rate) as f32 * self.px_per_sec;
-                    p.line_segment([pos2(x, lane.top()), pos2(x, lane.bottom())], Stroke::new(1.5, Color32::from_rgb(255, 200, 60)));
+                    p.line_segment([pos2(x, lane.top()), pos2(x, lane.bottom())], Stroke::new(1.5, theme::pal().marker));
                 }
                 for (ci, c) in clips.iter().enumerate().filter(|(_, c)| mt.clip_visible(c.id)) {
                     let x0 = lane.left() + (c.start as f64 / rate) as f32 * self.px_per_sec;
@@ -700,21 +700,21 @@ impl MtView {
                     p.rect_stroke(
                         cr,
                         3.0,
-                        Stroke::new(if picked { 2.5 } else { 1.0 }, if picked { Color32::WHITE } else { colour }),
+                        Stroke::new(if picked { 2.5 } else { 1.0 }, if picked { theme::pal().white } else { colour }),
                         StrokeKind::Inside,
                     );
                     if self.sel_clips.contains(&c.id) {
-                        p.rect_stroke(cr, 3.0, Stroke::new(2.0, Color32::WHITE), StrokeKind::Inside);
+                        p.rect_stroke(cr, 3.0, Stroke::new(2.0, theme::pal().white), StrokeKind::Inside);
                     }
                     let mut label_at = cr.left_top() + vec2(4.0, 3.0);
                     if let Some(ty) = mt.clip_type(c.id) {
                         let [tr, tg, tb] = ty.colour();
                         let tag = Rect::from_min_size(cr.left_top(), vec2(cr.width(), 14.0));
-                        p.rect_filled(tag, 3.0, Color32::from_rgb(tr, tg, tb));
-                        p.text(tag.left_center() + vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, ty.label(), egui::FontId::proportional(10.0), Color32::BLACK);
+                        p.rect_filled(tag, 3.0, theme::rgb(tr, tg, tb));
+                        p.text(tag.left_center() + vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, ty.label(), egui::FontId::proportional(10.0), theme::pal().black);
                         label_at.y += 14.0;
                     }
-                    p.text(label_at, egui::Align2::LEFT_TOP, &c.name, egui::FontId::proportional(12.0), Color32::WHITE);
+                    p.text(label_at, egui::Align2::LEFT_TOP, &c.name, egui::FontId::proportional(12.0), theme::pal().white);
                     let cresp = ui.interact(cr, ui.id().with(("clip", id.0, c.id.0)), Sense::click()).on_hover_text(format!(
                         "{} · type: {}",
                         c.name,
@@ -723,6 +723,8 @@ impl MtView {
                     if cresp.clicked() {
                         // A click on a clip selects its track, as a click on the lane does.
                         self.selected = Some(id);
+                        // The clip is the one the Clip Properties panel is about (#980).
+                        self.sel_clip = Some((id, c.id));
                         // f123: a click picks this clip for its audio type; Shift or Ctrl adds it, or takes it back out.
                         let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
                         match self.sel_clips.iter().position(|x| *x == c.id) {
@@ -753,9 +755,9 @@ impl MtView {
                 let (row, _) = ui.allocate_exact_size(vec2(HEADER_W + width, ROW_H), Sense::hover());
                 let header = Rect::from_min_size(row.min, vec2(HEADER_W - 4.0, ROW_H));
                 let p = ui.painter();
-                p.rect_filled(header, 3.0, Color32::from_rgb(40, 40, 40));
-                p.rect_filled(Rect::from_min_size(pos2(row.left() + HEADER_W, row.top()), vec2(width, ROW_H)), 0.0, BACKGROUND);
-                p.rect_filled(Rect::from_min_size(header.min, vec2(4.0, ROW_H)), 0.0, Color32::from_rgb(140, 140, 140));
+                p.rect_filled(header, 3.0, theme::pal().track_header_idle);
+                p.rect_filled(Rect::from_min_size(pos2(row.left() + HEADER_W, row.top()), vec2(width, ROW_H)), 0.0, theme::pal().background);
+                p.rect_filled(Rect::from_min_size(header.min, vec2(4.0, ROW_H)), 0.0, theme::pal().text_faint);
                 let mut h =
                     ui.new_child(egui::UiBuilder::new().max_rect(header.shrink2(vec2(8.0, 3.0))).layout(egui::Layout::top_down(egui::Align::Min)));
                 h.horizontal(|ui| {
@@ -1329,8 +1331,8 @@ fn automation_row(
     let (row, _) = ui.allocate_exact_size(vec2(HEADER_W + width, ROW_H), Sense::hover());
     let header = Rect::from_min_size(row.min, vec2(HEADER_W - 4.0, ROW_H));
     let lane = Rect::from_min_size(pos2(row.left() + HEADER_W, row.top()), vec2(width, ROW_H));
-    ui.painter().rect_filled(header, 3.0, Color32::from_rgb(26, 30, 38));
-    ui.painter().rect_filled(lane, 0.0, Color32::from_rgb(14, 16, 20));
+    ui.painter().rect_filled(header, 3.0, theme::pal().track_header);
+    ui.painter().rect_filled(lane, 0.0, theme::pal().track_lane);
     let mut h = ui.new_child(egui::UiBuilder::new().max_rect(header.shrink2(vec2(8.0, 3.0))).layout(egui::Layout::top_down(egui::Align::Min)));
     let mut choice = param.clone();
     h.horizontal(|ui| {
@@ -1399,9 +1401,9 @@ fn automation_row(
     let p = ui.painter_at(lane);
     let (zero_v, zero_label) = if param == AutoParam::Volume { (0.0, "0 dB") } else { (0.0, "centre") };
     let zy = to_pos(0.0, zero_v).y;
-    p.line_segment([pos2(lane.left(), zy), pos2(lane.right(), zy)], Stroke::new(1.0, Color32::from_gray(60)));
-    p.text(pos2(lane.left() + 3.0, zy - 1.0), egui::Align2::LEFT_BOTTOM, zero_label, egui::FontId::monospace(9.0), Color32::from_gray(110));
-    let line = Color32::from_rgb(240, 190, 70);
+    p.line_segment([pos2(lane.left(), zy), pos2(lane.right(), zy)], Stroke::new(1.0, theme::pal().hairline));
+    p.text(pos2(lane.left() + 3.0, zy - 1.0), egui::Align2::LEFT_BOTTOM, zero_label, egui::FontId::monospace(9.0), theme::pal().text_faint);
+    let line = theme::pal().marker;
     if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
         let mut path = vec![pos2(lane.left(), first.y)];
         path.extend(pts.iter().copied());
@@ -1410,7 +1412,7 @@ fn automation_row(
     }
     for q in &pts {
         p.circle_filled(*q, 4.0, line);
-        p.circle_stroke(*q, 4.0, Stroke::new(1.0, Color32::BLACK));
+        p.circle_stroke(*q, 4.0, Stroke::new(1.0, theme::pal().black));
     }
 }
 
