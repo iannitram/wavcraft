@@ -1,13 +1,18 @@
-//! The real input device for recording: the system default input, opened for a take.
+//! The real input device for recording: the input device the preferences name (`input_device`),
+//! else the system default, opened for a take.
 //!
 //! The callback converts to `f32` in small stack chunks and calls `Ring::push`; it never blocks,
 //! locks or allocates. The stream is built here but not started: the caller starts the writer
 //! first, then calls `play()`.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::traits::DeviceTrait;
 use wavcraft_core::record::{ChannelPick, MonitorRing, RecFormat, Ring};
+
+/// Why the input stopped delivering audio. The stream's error callback only stores it here
+/// (once), so it never waits; the take checks it once a frame.
+pub type Lost = OnceLock<&'static str>;
 
 pub struct Opened {
     pub stream: cpal::Stream,
@@ -17,13 +22,16 @@ pub struct Opened {
     pub device: String,
     /// The software monitoring queue, when asked for (C025).
     pub monitor: Option<Arc<MonitorRing>>,
+    /// Set when the device is unplugged or the stream is invalidated.
+    pub lost: Arc<Lost>,
 }
 
-/// Open the default input device for `want`. When the device can't do that rate and channel
-/// count, its own default is used instead (the dialog's choice is a request, not a promise). A
-/// choice of particular inputs (C034, f77) is not bent: the device must have them, or it is refused.
-pub fn open(want: RecFormat, monitor: bool) -> Result<Opened, String> {
-    let device = cpal::default_host().default_input_device().ok_or("no audio input device")?;
+/// Open the input named `wanted` (else the system default) for `want`. When the device can't do
+/// that rate and channel count, its own default is used instead (the dialog's choice is a request,
+/// not a promise). A choice of particular inputs (C034, f77) is not bent: the device must have
+/// them, or it is refused.
+pub fn open(want: RecFormat, monitor: bool, wanted: Option<&str>) -> Result<Opened, String> {
+    let device = crate::input_monitor::find_input(&cpal::default_host(), wanted).ok_or("no audio input device")?;
     let name = crate::player::device_name(&device).unwrap_or_else(|| "input".to_string());
     let chosen = want.inputs != 0;
     let need = want.pick().needs_device_channels() as u16;
@@ -48,14 +56,15 @@ pub fn open(want: RecFormat, monitor: bool) -> Result<Opened, String> {
     let monitor = monitor.then(|| MonitorRing::new(monitor_frames(fmt.rate), fmt.channels));
     let ring = Ring::with_monitor(fmt.rate as usize * 4, fmt.channels, monitor.clone());
     let pick = fmt.pick();
+    let lost = Arc::new(Lost::new());
     let stream = match supported.sample_format() {
-        cpal::SampleFormat::F32 => build::<f32>(&device, &config, &ring, pick),
-        cpal::SampleFormat::I16 => build::<i16>(&device, &config, &ring, pick),
-        cpal::SampleFormat::U16 => build::<u16>(&device, &config, &ring, pick),
-        cpal::SampleFormat::I32 => build::<i32>(&device, &config, &ring, pick),
+        cpal::SampleFormat::F32 => build::<f32>(&device, &config, &ring, pick, &lost),
+        cpal::SampleFormat::I16 => build::<i16>(&device, &config, &ring, pick, &lost),
+        cpal::SampleFormat::U16 => build::<u16>(&device, &config, &ring, pick, &lost),
+        cpal::SampleFormat::I32 => build::<i32>(&device, &config, &ring, pick, &lost),
         other => Err(format!("unsupported input sample format {other:?}")),
     }?;
-    Ok(Opened { stream, ring, fmt, device: name, monitor })
+    Ok(Opened { stream, ring, fmt, device: name, monitor, lost })
 }
 
 /// The monitoring queue holds a quarter of a second: the most delay it can add.
@@ -63,12 +72,13 @@ pub fn monitor_frames(rate: u32) -> usize {
     rate as usize / 4
 }
 
-fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, ring: &Arc<Ring>, pick: ChannelPick) -> Result<cpal::Stream, String>
+fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, ring: &Arc<Ring>, pick: ChannelPick, lost: &Arc<Lost>) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample,
     f32: cpal::FromSample<T>,
 {
     let ring = Arc::clone(ring);
+    let lost = Arc::clone(lost);
     let dev = usize::from(config.channels.max(1));
     // Whole device frames per pass, so a pass fits the stack buffers (which hold 2048 samples).
     let step = (2048 / dev).max(1) * dev;
@@ -92,8 +102,28 @@ where
                     ring.push(&out[..frames * pick.indices().len()]);
                 }
             },
-            |err| log::warn!(target: "wavcraft", "audio input: {err}"),
+            move |err: cpal::Error| {
+                log::warn!(target: "wavcraft", "audio input: {err}");
+                // A stream on a named device reports DeviceNotAvailable when it is unplugged; a
+                // glitch (Xrun) does not end the take.
+                let why = match err.kind() {
+                    cpal::ErrorKind::DeviceNotAvailable => "input device unplugged",
+                    cpal::ErrorKind::StreamInvalidated => "input device stopped",
+                    _ => return,
+                };
+                let _ = lost.set(why);
+            },
             None,
         )
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_named_input_that_is_gone_falls_back_to_the_default() {
+        let names: Vec<String> = ["Built-in", "USB Mic"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(crate::player::pick(Some("USB Mic"), &names), Some(1));
+        assert_eq!(crate::player::pick(Some("Unplugged Mic"), &names), None, "the default input is used");
+    }
 }

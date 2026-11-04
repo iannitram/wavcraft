@@ -100,7 +100,7 @@ def main():
         a = c.ask("PANELMENU spectral run maximize")
         check("Maximize again restores", a.startswith("OK maximized=none"), a)
         a = c.ask("PANELMENU history run close")
-        check("Close Panel hides the panel", a.endswith("history=0"), a)
+        check("Close Panel hides the panel", a.startswith("OK") and "history=0" in a.split(), a)
         check("settings.txt lists the closed panel", "hidden_panels = history" in "".join(open(os.path.join(d, f)).read() for d, _, fs in os.walk(home) for f in fs if f == "settings.txt"))
         check("METADATA reports the default fields", c.ask("METADATA") == "OK fields=name,duration,rate,channels dialog=0")
         check("METADATA set chooses fields", c.ask("METADATA set name,size,format") == "OK fields=name,format,size")
@@ -108,8 +108,8 @@ def main():
         check("METADATA open shows the dialog", c.ask("METADATA open") == "OK" and c.ask("METADATA").endswith("dialog=1"))
 
     def run2(c):
-        p = c.ask("PANELS")
-        check("closed panel is still closed after a restart", p == "OK waveform=1 spectral=1 history=0", p)
+        p = panels(c)
+        check("closed panel is still closed after a restart", p.get("history") == "0" and p.get("waveform") == "1" and p.get("spectral") == "1", p)
         m = c.ask("METADATA")
         check("metadata fields are kept after a restart", m == "OK fields=name,format,size dialog=0", m)
 

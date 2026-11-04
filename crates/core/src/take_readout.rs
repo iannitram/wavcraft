@@ -2,8 +2,7 @@
 //! size, time left on disk and the dropped-sample count. The level meter and its clip light are
 //! the Levels meter's (`meters`), not here.
 
-// Stub for wav-c-116-c: the builder replaces the body and deletes these two lines.
-#![allow(clippy::todo)]
+use crate::space;
 
 /// What the recorder knows about the take in progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -37,8 +36,23 @@ pub struct TakeReadout {
     pub dropped: String,
 }
 
-/// The recording status texts for `stats`.
+/// The recording status texts for `stats`. A rate, channel count or bit depth of 0 counts as 1, so
+/// nothing divides by zero.
 pub fn take_readout(stats: &TakeStats) -> TakeReadout {
-    let _ = stats;
-    todo!("wav-c-116-c: take_readout")
+    let rate = u64::from(stats.rate.max(1));
+    let block_align = u64::from(stats.channels.max(1)) * u64::from((stats.bits / 8).max(1));
+    TakeReadout {
+        elapsed: clock(stats.frames / rate),
+        size: space::format_bytes(stats.file_bytes),
+        left: match stats.free_bytes {
+            Some(free) => clock(free / (block_align * rate)),
+            None => "?".to_string(),
+        },
+        dropped: stats.dropped_frames.to_string(),
+    }
+}
+
+/// `m:ss`, or `h:mm:ss` from one hour on, for a number of seconds.
+fn clock(secs: u64) -> String {
+    if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) }
 }

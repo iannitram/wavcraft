@@ -201,7 +201,7 @@ Tiers, in order: **T0 Seams** (things many features plug into: the action table 
 | 62 | A221 | T1 | Drag-and-drop open (merged: C318) | Drop files onto window | partial |  |  |  | S |  | #66 |
 | 63 | A297 | T1 | Click state to revert, arrow keys to move through states | History list | partial |  |  | soundcraft-engine pattern (MIT/Apache); undo (MIT/Apache) | S |  |  |
 | 64 | A298 | T1 | Delete single state, Clear History | Free disk by removing states | partial |  |  | soundcraft-engine pattern (MIT/Apache) | S |  |  |
-| 65 | A300 | T1 | Audition-style step names | Crop Audio / Paste Audio etc. | partial |  |  | soundcraft-engine pattern (MIT/Apache) | S |  | #63 |
+| 65 | A300 | T1 | Audition-style step names | One-channel Crop Audio, Cut Audio, Paste Audio and Delete Audio are in the code and tested (checked in Audition 26.5.0.82); every label is pinned by a table test and the Undo text matches the History row; Mix Paste, Silence, Insert Silence and Insert Audio from File are unverified in Audition (the user guide does not list History names) (#63) | partial |  |  | soundcraft-engine pattern (MIT/Apache) | S |  | #63 |
 | 66 | A150 | T1 | Mix Paste types: Insert, Overlap, Overwrite, Modulate | Insert pushes audio right; Overlap sums; Overwrite replaces; Modulate multiplies | partial |  |  |  | M | A149 |  |
 | 67 | A151 | T1 | Mix Paste source: clipboard or file; Loop Paste count | Source from internal clipboard or a file; repeat N times | missing |  |  |  | M | A149 |  |
 | 68 | A184 | T1 | Markers in AIFF (MARK) and other formats | Same for AIFF/others | missing | CP |  | bwavfile (MIT) | M | A183 |  |
