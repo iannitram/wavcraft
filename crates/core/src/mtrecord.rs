@@ -179,25 +179,28 @@ fn err<T>(s: impl Into<String>) -> Result<T, MtError> {
 /// The part of `c` between timeline frames `from..to` (inside the clip), as a new clip: same
 /// source with the offset moved on, fades kept only at the end that is still the clip's own.
 /// `None` for content that has no source offset to move (MIDI), so the caller drops it.
+///
+/// The model's trims keep the gain envelope's value at the cut; the source offset is then set
+/// from the stretch-scaled advance (#976).
 fn cut_piece(c: &Clip, from: Samples, to: Samples, is_left: bool, mut new_id: impl FnMut() -> ClipId) -> Option<Clip> {
     let skip = from - c.start;
     let adv = if (c.stretch - 1.0).abs() < f64::EPSILON { skip } else { (skip as f64 * c.stretch).round() as Samples };
-    let mut n = c.clone();
-    n.content = match &c.content {
+    let content = match &c.content {
         ClipContent::Audio { source, offset } => ClipContent::Audio { source: *source, offset: offset + adv },
         ClipContent::Video { source, offset } => ClipContent::Video { source: *source, offset: offset + adv },
         _ => return None,
     };
+    let mut n = c.clone();
     n.id = new_id();
-    n.start = from;
-    n.length = (to - from).max(1);
-    n.gain_env = c.gain_env.iter().filter(|(t, _)| *t >= skip && *t < skip + n.length).map(|(t, g)| (t - skip, *g)).collect();
-    n.sync_point = (c.sync_point - skip).clamp(0, n.length);
+    // The fade on the cut side goes first, so the trims' fade clamp does not shrink the other one.
     if is_left {
         n.fade_out = Default::default();
     } else {
         n.fade_in = Default::default();
     }
+    n.trim_start_to(from);
+    n.trim_end_to(to);
+    n.content = content;
     Some(n)
 }
 
