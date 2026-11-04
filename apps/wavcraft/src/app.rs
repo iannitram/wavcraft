@@ -426,6 +426,13 @@ fn is_unsaved(editor: &Option<Editor>, saved: &Option<Arc<DocState>>) -> bool {
     }
 }
 
+/// Whether a finished save may close its document: only when the open step is still the one that
+/// was saved (`current` is the editor's step, `None` when no document is open). An edit that landed
+/// while the save ran leaves a different step, so the document stays open.
+fn closes_after_save(current: Option<&Arc<DocState>>, saved: &Arc<DocState>) -> bool {
+    current.is_none_or(|c| Arc::ptr_eq(c, saved))
+}
+
 /// A file added by File › Import (f63): listed in the Files panel, but not open. Only its header
 /// was read (`info`); it gets a session store when it is first made current.
 struct Import {
@@ -7228,6 +7235,9 @@ impl WaveApp {
                 }
             }
             Ok(()) => {
+                // An edit confirmed while the save ran (say, in the Insert Silence dialog) is not in
+                // the file: the document stays open and unsaved rather than closing and losing it.
+                let closes = closes_after_save(self.editor.as_ref().map(|e| e.history.current()), &state);
                 self.saved = Some(state);
                 self.doc_path = path.clone();
                 // The tempo follows the document to its new path; it is written only when there is one to keep.
@@ -7239,7 +7249,16 @@ impl WaveApp {
                 }
                 self.error = None;
                 self.notice = Some(format!("Saved {} ({} {})", path.display(), ty.describe(), label));
-                if then_close && std::mem::take(&mut self.closing_doc) {
+                if then_close && !closes {
+                    self.closing_doc = false;
+                    self.close_all = false;
+                    self.notice = Some(format!(
+                        "Saved {} ({} {}), but a change made while saving is not in the file: the document stays open and unsaved",
+                        path.display(),
+                        ty.describe(),
+                        label
+                    ));
+                } else if then_close && std::mem::take(&mut self.closing_doc) {
                     self.remove_current();
                 } else if then_close {
                     // Not allow_close: another document may still have unsaved changes.
@@ -12909,3 +12928,7 @@ mod issue1000_tests;
 #[cfg(test)]
 #[path = "issue1002_tests.rs"]
 mod issue1002_tests;
+
+#[cfg(test)]
+#[path = "issue369_tests.rs"]
+mod issue369_tests;
