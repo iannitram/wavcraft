@@ -34,7 +34,7 @@ fn the_settings_file_round_trips_and_ignores_what_it_does_not_know() {
     let dir = TempDir::new("file");
     let file = dir.0.join("nested").join("settings.txt");
     assert_eq!(Settings::load(&file), Settings::default(), "a missing file gives the defaults");
-    let s = Settings { session_folder: Some(PathBuf::from("D:/Scratch/wavcraft sessions")), ..Settings::default() };
+    let s = Settings { session_folder: Some(PathBuf::from("/scratch/wavcraft sessions")), ..Settings::default() };
     s.save(&file).unwrap();
     assert_eq!(Settings::load(&file), s);
     Settings::default().save(&file).unwrap();
@@ -614,4 +614,106 @@ fn the_language_is_saved_and_read_back_and_unset_means_english() {
     assert_eq!(Settings::load(&file).language.as_deref(), Some("pseudo"));
     Settings::default().save(&file).unwrap();
     assert_eq!(Settings::load(&file).language, None);
+}
+
+/// The settings text for `folder` after a save and a load back, with the loaded value.
+fn save_and_load(name: &str, folder: PathBuf) -> (String, Settings) {
+    let dir = TempDir::new(name);
+    let file = dir.0.join("settings.txt");
+    let s = Settings { session_folder: Some(folder), ..Settings::default() };
+    s.save(&file).unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    let loaded = Settings::load(&file);
+    assert_eq!(loaded, s, "the folder must come back exactly");
+    (text, s)
+}
+
+/// The file has a hex line for the folder and no plain `session_folder = ` line.
+fn assert_hex_only(text: &str) {
+    assert!(text.lines().any(|l| l.starts_with("session_folder_hex = ")), "no hex line in {text:?}");
+    assert!(!text.lines().any(|l| l.starts_with("session_folder = ")), "a plain session_folder line in {text:?}");
+}
+
+#[test]
+fn a_session_folder_with_a_newline_round_trips_through_hex() {
+    let (text, loaded) = save_and_load("newline", PathBuf::from("/tmp/a\nb"));
+    assert_hex_only(&text);
+    assert_eq!(loaded.session_folder, Some(PathBuf::from("/tmp/a\nb")));
+}
+
+#[test]
+fn a_session_folder_with_a_trailing_space_round_trips_through_hex() {
+    let (text, _) = save_and_load("trailing", PathBuf::from("/tmp/a "));
+    assert_hex_only(&text);
+}
+
+#[test]
+fn a_session_folder_with_a_leading_space_round_trips_through_hex() {
+    let (text, _) = save_and_load("leading", PathBuf::from(" /tmp/x"));
+    assert_hex_only(&text);
+}
+
+#[test]
+fn a_session_folder_with_a_carriage_return_round_trips_through_hex() {
+    let (text, _) = save_and_load("cr", PathBuf::from("/tmp/a\rb"));
+    assert_hex_only(&text);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_session_folder_with_non_utf8_bytes_round_trips_through_hex() {
+    use std::os::unix::ffi::OsStringExt;
+    let folder = PathBuf::from(OsString::from_vec(vec![b'/', b't', 0xff, b'f']));
+    let (text, _) = save_and_load("bytes", folder);
+    assert_hex_only(&text);
+    assert!(text.contains("session_folder_hex = 2f74ff66"), "{text:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_session_folder_with_an_unpaired_surrogate_round_trips_through_hex() {
+    use std::os::windows::ffi::OsStringExt;
+    let folder = PathBuf::from(OsString::from_wide(&[0x2f, 0xd800, 0x66]));
+    let (text, _) = save_and_load("surrogate", folder);
+    assert_hex_only(&text);
+}
+
+#[test]
+fn a_plain_session_folder_with_spaces_inside_keeps_the_plain_line() {
+    let (text, loaded) = save_and_load("inside", PathBuf::from("/scratch/wavcraft sessions"));
+    assert!(text.lines().any(|l| l == "session_folder = /scratch/wavcraft sessions"), "{text:?}");
+    assert!(!text.contains("session_folder_hex"));
+    assert_eq!(loaded.session_folder, Some(PathBuf::from("/scratch/wavcraft sessions")));
+}
+
+#[test]
+fn switching_from_a_hex_folder_to_a_plain_one_drops_the_hex_line() {
+    let dir = TempDir::new("switch");
+    let file = dir.0.join("settings.txt");
+    Settings { session_folder: Some(PathBuf::from("/tmp/a\nb")), ..Settings::default() }.save(&file).unwrap();
+    Settings { session_folder: Some(PathBuf::from("/w-new")), ..Settings::default() }.save(&file).unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("session_folder_hex"), "{text:?}");
+    assert_eq!(Settings::load(&file).session_folder, Some(PathBuf::from("/w-new")));
+}
+
+#[test]
+fn a_bad_session_folder_hex_value_is_refused_and_ignored() {
+    let mut s = Settings::default();
+    assert!(s.set("session_folder_hex", "zz").is_err());
+    assert!(s.set("session_folder_hex", "abc").is_err(), "an odd number of digits");
+    assert!(s.set("session_folder_hex", "").is_err(), "an empty path");
+    assert_eq!(s.session_folder, None, "a refused value changes nothing");
+    assert_eq!(Settings::parse("session_folder_hex = zz\n").session_folder, None);
+    assert!(Settings::validate("session_folder_hex = zz\n").is_err());
+    assert!(Settings::validate("session_folder_hex = 2f74\n").is_ok());
+}
+
+#[test]
+fn the_session_folder_set_by_key_keeps_its_spaces() {
+    let mut s = Settings::default();
+    s.set("session_folder", "/tmp/a ").unwrap();
+    assert_eq!(s.session_folder, Some(PathBuf::from("/tmp/a ")));
+    s.set("session_folder", "").unwrap();
+    assert_eq!(s.session_folder, None);
 }
