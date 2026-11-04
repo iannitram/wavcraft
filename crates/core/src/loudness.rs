@@ -91,6 +91,39 @@ pub fn range_of(short_term: &[f32]) -> f64 {
     at(0.95) - at(0.10)
 }
 
+/// A [`LoudnessMeter`] fed one 100 ms block at a time, so a short-term (3 s) reading can be taken
+/// after each block once 3 s have been measured. [`measure`] and the Episode Check loudness
+/// drift scan share it.
+pub(crate) struct BlockMeter {
+    pub(crate) meter: LoudnessMeter,
+    block: usize,
+    blocks: usize,
+}
+
+impl BlockMeter {
+    pub(crate) fn new(rate: u32, channels: usize) -> BlockMeter {
+        let rate = rate.max(1);
+        BlockMeter { meter: LoudnessMeter::new(rate as f32, channels.max(1)), block: ((f64::from(rate) * 0.1).round() as usize).max(1), blocks: 0 }
+    }
+
+    /// Frames in a full block.
+    pub(crate) fn block(&self) -> usize {
+        self.block
+    }
+
+    /// Feed `got` frames of `planar`; after a full block with 3 s measured, the short-term LUFS.
+    pub(crate) fn process(&mut self, planar: &[Vec<f32>], got: usize) -> Option<f32> {
+        self.meter.process(planar, got);
+        if got == self.block {
+            self.blocks += 1;
+            if self.blocks >= 30 {
+                return Some(self.meter.short_term_lufs());
+            }
+        }
+        None
+    }
+}
+
 /// Measure `range` (frames; clamped to the document) of `doc`. `cancel` stops it early with
 /// `ErrorKind::Interrupted`; `progress` is called with the fraction done after each second or so.
 pub fn measure(doc: &DocState, range: Range<u64>, cancel: &AtomicBool, progress: &mut dyn FnMut(f64)) -> io::Result<Loudness> {
@@ -98,12 +131,12 @@ pub fn measure(doc: &DocState, range: Range<u64>, cancel: &AtomicBool, progress:
     let (start, end) = (range.start.min(len), range.end.min(len).max(range.start.min(len)));
     let channels = doc.channel_count();
     let rate = doc.sample_rate().max(1);
-    let mut meter = LoudnessMeter::new(rate as f32, channels.max(1));
+    let mut meter = BlockMeter::new(rate, channels);
     // One call per 100 ms sub-block, so a short-term reading can be taken after each.
-    let block = ((f64::from(rate) * 0.1).round() as usize).max(1);
+    let block = meter.block();
     let mut planar: Vec<Vec<f32>> = vec![vec![0.0; block]; channels];
     let (mut short_term, mut sample_peak) = (Vec::<f32>::new(), 0.0f32);
-    let (mut at, mut blocks) = (start, 0usize);
+    let mut at = start;
     let mut last_report = 0u64;
     while at < end {
         if cancel.load(Ordering::Relaxed) {
@@ -121,20 +154,15 @@ pub fn measure(doc: &DocState, range: Range<u64>, cancel: &AtomicBool, progress:
         for ch in &planar {
             sample_peak = ch.iter().take(got).filter(|v| v.is_finite()).fold(sample_peak, |m, v| m.max(v.abs()));
         }
-        meter.process(&planar, got);
+        short_term.extend(meter.process(&planar, got));
         at += got as u64;
-        if got == block {
-            blocks += 1;
-            if blocks >= 30 {
-                short_term.push(meter.short_term_lufs());
-            }
-        }
         if at - last_report >= u64::from(rate) * 5 {
             last_report = at;
             progress((at - start) as f64 / (end - start).max(1) as f64);
         }
     }
     progress(1.0);
+    let meter = meter.meter;
     Ok(Loudness {
         frames: at - start,
         integrated_lufs: level(meter.integrated_lufs()),
