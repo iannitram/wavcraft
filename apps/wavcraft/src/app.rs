@@ -5897,7 +5897,9 @@ impl WaveApp {
         // The panel's ≡ menu: a row above its body (the tab strip names the panel).
         let maximized = self.layout.maximized(&self.panels) == Some("history");
         let mut chosen = None;
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| chosen = panel_menu_button(ui, maximized, "history"));
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| chosen = panel_menu_button(ui, maximized, "history"));
+        });
         if let Some(item) = chosen
             && let Err(e) = self.run_panel_item("history", item)
         {
