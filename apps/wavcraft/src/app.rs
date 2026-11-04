@@ -656,6 +656,12 @@ pub struct WaveApp {
     dialog_format: Option<SaveFormat>,
     /// The "save changes before closing?" prompt is up.
     confirm_close: bool,
+    /// The "save changes before opening another file?" prompt is up (issue #366); the files wait
+    /// in `open_queue` until it is answered.
+    open_prompt: bool,
+    /// A save started from the open prompt: when it fails or the file dialog is cancelled, the
+    /// queued files are dropped (the open does not go ahead without the save).
+    open_after_save: bool,
     /// Closing was confirmed (or nothing was unsaved): let the next close request through.
     allow_close: bool,
     /// The editor's width last frame, for zoom keys (which have no pointer to zoom around).
@@ -1010,6 +1016,8 @@ impl WaveApp {
             size_cache: None,
             dialog_format: None,
             confirm_close: false,
+            open_prompt: false,
+            open_after_save: false,
             allow_close: false,
             os_clipboard: crate::oscb::OsClipboard::new(),
             editor_width: 800.0,
@@ -2222,11 +2230,90 @@ impl WaveApp {
         self.open_queue.extend(paths);
     }
 
-    /// Start the next queued file when none is opening; report the failures when none is left.
-    fn pump_open_queue(&mut self, ctx: &egui::Context) {
-        if self.opening.is_some() {
+    /// Ctrl+O, File › Open and a file dropped on the window (issue #366): the files open as
+    /// [`open_many`](Self::open_many) does, but with unsaved edits in the current document they
+    /// wait behind the Save / Don't Save / Cancel prompt, as Close does.
+    fn request_open(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
             return;
         }
+        if self.unsaved() {
+            self.open_prompt = true;
+        }
+        self.open_many(paths);
+    }
+
+    /// Answer the open prompt: `save` saves the current document first (then the files open),
+    /// `discard` drops its edits, `cancel` drops the files. An error when no prompt is up.
+    fn answer_open_prompt(&mut self, answer: &str, ctx: &egui::Context) -> Result<(), String> {
+        if !self.open_prompt {
+            return Err("no open prompt is up".to_string());
+        }
+        self.open_prompt = false;
+        match answer {
+            "save" => match self.save(ctx, false, None, false) {
+                // A save is running: the files open when it has finished, unless it failed.
+                Ok(()) if self.saving.is_some() => self.open_after_save = true,
+                // The file dialog was cancelled (nothing was saved): the open is cancelled too.
+                Ok(()) => self.open_queue.clear(),
+                Err(e) => {
+                    self.open_queue.clear();
+                    return Err(e);
+                }
+            },
+            // Drops the current document's edits (as Close does); the files open after it.
+            "discard" => self.remove_current(),
+            "cancel" => self.open_queue.clear(),
+            _ => {
+                self.open_prompt = true;
+                return Err("OPEN_ANSWER save|discard|cancel".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// The "save changes before opening?" prompt of [`request_open`](Self::request_open).
+    fn open_prompt_dialog(&mut self, ctx: &egui::Context) {
+        if !self.open_prompt || self.confirm_close {
+            return;
+        }
+        if self.open_queue.is_empty() {
+            self.open_prompt = false;
+            return;
+        }
+        let name = path_name(&self.doc_path);
+        let mut choice = None;
+        egui::Window::new(tr("dialog.unsaved")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
+            ctx,
+            |ui| {
+                ui.label(tr_args("dialog.unsaved.body", &[&name]));
+                ui.horizontal(|ui| {
+                    if ui.button(tr("button.save")).clicked() {
+                        choice = Some("save");
+                    }
+                    if ui.button(tr("button.dont_save")).clicked() {
+                        choice = Some("discard");
+                    }
+                    if ui.button(tr("button.cancel")).clicked() {
+                        choice = Some("cancel");
+                    }
+                });
+            },
+        );
+        if let Some(answer) = choice
+            && let Err(e) = self.answer_open_prompt(answer, ctx)
+        {
+            self.error = Some(e);
+        }
+    }
+
+    /// Start the next queued file when none is opening; report the failures when none is left.
+    /// Waits while the open prompt is up or a save is running (the file opens after it).
+    fn pump_open_queue(&mut self, ctx: &egui::Context) {
+        if self.opening.is_some() || self.open_prompt || self.saving.is_some() {
+            return;
+        }
+        self.open_after_save = false;
         if let Some(path) = self.open_queue.pop_front() {
             self.open(path, ctx);
         } else if !self.open_failures.is_empty() {
@@ -3336,7 +3423,7 @@ impl WaveApp {
     /// File › Open: one or several files; several open one after the other, each as its own document.
     fn pick_file(&mut self, _ctx: &egui::Context) {
         if let Some(paths) = Self::audio_dialog().pick_files() {
-            self.open_many(paths);
+            self.request_open(paths);
         }
     }
 
@@ -7249,10 +7336,17 @@ impl WaveApp {
             Err(SaveError::Cancelled) => {
                 self.error = None;
                 self.notice = Some(format!("Save cancelled. {} is unchanged and the file is still unsaved.", path.display()));
+                // The save came from the open prompt: the file does not open without it.
+                if std::mem::take(&mut self.open_after_save) {
+                    self.open_queue.clear();
+                }
             }
             Err(e) => {
                 self.close_all = false;
                 self.closing_doc = false;
+                if std::mem::take(&mut self.open_after_save) {
+                    self.open_queue.clear();
+                }
                 self.error = Some(format!("Not saved: {e}. {} is unchanged.", path.display()));
             }
         }
@@ -8012,6 +8106,19 @@ impl WaveApp {
                 self.open(PathBuf::from(rest), ctx);
                 "OK".to_string()
             }
+            // OPEN_PICK <p1> [...]: what Ctrl+O and a drop do (issue #366): with unsaved edits the
+            // open waits behind the prompt, answered by OPEN_ANSWER. Paths split as OPEN_MANY's.
+            "OPEN_PICK" if !rest.trim().is_empty() => {
+                let paths = split_paths(rest);
+                let n = paths.len();
+                self.request_open(paths);
+                format!("OK queued={n} prompt={}", u8::from(self.open_prompt))
+            }
+            // OPEN_ANSWER save|discard|cancel: answers the open prompt (see request_open).
+            "OPEN_ANSWER" => match self.answer_open_prompt(rest.trim(), ctx) {
+                Ok(()) => format!("OK prompt={}", u8::from(self.open_prompt)),
+                Err(e) => format!("ERR {e}"),
+            },
             // IMPORT_RAW <path> rate=<hz> ch=<n> fmt=<s16le|s24be|f32le|u8|...> [offset=<bytes>]
             "IMPORT_RAW" => match parse_import_raw(rest) {
                 Ok((path, spec)) => {
@@ -11683,6 +11790,7 @@ impl eframe::App for WaveApp {
             }
         }
         self.close_prompt(&ctx);
+        self.open_prompt_dialog(&ctx);
         self.export_window(&ctx);
         self.selection_keys(&ctx);
         // Up and Down belong to the History panel while one of its rows has focus (before the
@@ -11783,7 +11891,7 @@ impl eframe::App for WaveApp {
             )
         });
         if let Some(path) = dropped {
-            self.open(path, &ctx);
+            self.request_open(vec![path]);
         } else if dropped_without_path {
             self.error = Some("The dropped item has no file path here, so it was not opened (use File › Open)".to_string());
         }
@@ -12909,3 +13017,7 @@ mod issue1000_tests;
 #[cfg(test)]
 #[path = "issue1002_tests.rs"]
 mod issue1002_tests;
+
+#[cfg(test)]
+#[path = "issue366_tests.rs"]
+mod issue366_tests;
