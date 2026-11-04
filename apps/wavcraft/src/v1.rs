@@ -4,8 +4,6 @@
 //! panels. A debug build lists them all, so the work on them goes on as before. The panels are
 //! gated in `wavcraft_core::panels::PanelSet`; this module gates the menus and the Tools list.
 
-use wavcraft_core::panels::{self, PanelSet};
-
 /// Whether this is a release build.
 pub const RELEASE: bool = !cfg!(debug_assertions);
 
@@ -61,6 +59,7 @@ pub fn tool_offered_in(release: bool, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wavcraft_core::panels::{self, PanelSet};
 
     #[test]
     fn a_release_build_offers_no_out_of_v1_feature() {
