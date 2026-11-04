@@ -8727,6 +8727,9 @@ impl WaveApp {
                 if self.saving.is_some() {
                     return "ERR wait for the save to finish".to_string();
                 }
+                if self.running.is_some() {
+                    return "ERR wait for the background job to finish, or cancel it".to_string();
+                }
                 let selection = self.selection_range();
                 let Some(editor) = self.editor.as_mut() else { return "ERR no file is open".to_string() };
                 let rate = f64::from(editor.history.current().sample_rate().max(1));
