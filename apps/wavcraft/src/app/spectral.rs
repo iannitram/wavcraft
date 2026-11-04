@@ -3,7 +3,8 @@
 //! Spectral Displays preferences (`spec_resolution`, `spec_window`, `spec_db_range`) plus the
 //! divider's share (`spec_split_pct`); whether the display shows is the Window menu's panel.
 
-use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, pos2, vec2};
+use crate::theme;
+use egui::{CursorIcon, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use wavcraft_core::actions::ActionId;
 use wavcraft_core::freq_axis::{FreqAxis, Scale};
 use wavcraft_core::settings::{MAX_SPEC_DB_RANGE, MAX_SPEC_SPLIT_PCT, MIN_SPEC_DB_RANGE, MIN_SPEC_SPLIT_PCT, SPEC_RESOLUTIONS, SpecWindow};
@@ -17,7 +18,6 @@ use super::{SpectrumCache, WaveApp};
 const RANGES_DB: [u32; 7] = [40, 60, 80, 100, 120, 140, 160];
 /// How tall the draggable divider is, in points.
 const HANDLE: f32 = 8.0;
-const DIVIDER: Color32 = Color32::from_gray(90);
 
 impl WaveApp {
     /// The options as `STATE` reports them.
@@ -278,7 +278,7 @@ pub struct Divider {
 impl Divider {
     pub fn draw(&self, painter: &egui::Painter, body: Rect, show_waveform: bool) {
         if show_waveform {
-            let (width, color) = if self.lit { (3.0, Color32::from_gray(170)) } else { (1.0, DIVIDER) };
+            let (width, color) = if self.lit { (3.0, theme::pal().text_dim) } else { (1.0, theme::pal().divider) };
             painter.line_segment([pos2(body.left(), self.y), pos2(body.right(), self.y)], Stroke::new(width, color));
         }
     }
@@ -339,19 +339,13 @@ pub(super) fn set_axis(params: &mut SpectrogramParams, spectrum: &mut Option<Spe
 /// The frequency ruler for one lane: a darkened strip with a tick and a Hz or kHz label at each mark.
 pub(super) fn draw_freq_ruler(painter: &egui::Painter, lane: Rect, axis: &FreqAxis) {
     let painter = painter.with_clip_rect(lane);
-    painter.rect_filled(lane, 0.0, Color32::from_black_alpha(170));
-    painter.line_segment([pos2(lane.right(), lane.top()), pos2(lane.right(), lane.bottom())], Stroke::new(1.0, Color32::from_gray(90)));
+    painter.rect_filled(lane, 0.0, theme::with_alpha(theme::pal().black, 170));
+    painter.line_segment([pos2(lane.right(), lane.top()), pos2(lane.right(), lane.bottom())], Stroke::new(1.0, theme::pal().divider));
     for tick in axis.ticks(lane.height(), 26.0) {
         let y = lane.bottom() - tick.t * lane.height();
-        painter.line_segment([pos2(lane.right() - 5.0, y), pos2(lane.right(), y)], Stroke::new(1.0, Color32::from_gray(160)));
+        painter.line_segment([pos2(lane.right() - 5.0, y), pos2(lane.right(), y)], Stroke::new(1.0, theme::pal().text_dim));
         // Keep the label inside the lane at the very top and bottom.
         let label_y = y.clamp(lane.top() + 6.0, lane.bottom() - 6.0);
-        painter.text(
-            pos2(lane.right() - 8.0, label_y),
-            egui::Align2::RIGHT_CENTER,
-            tick.label,
-            egui::FontId::monospace(10.0),
-            Color32::from_gray(210),
-        );
+        painter.text(pos2(lane.right() - 8.0, label_y), egui::Align2::RIGHT_CENTER, tick.label, egui::FontId::monospace(10.0), theme::pal().text);
     }
 }
