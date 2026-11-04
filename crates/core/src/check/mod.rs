@@ -1,5 +1,5 @@
-//! Episode Check detectors, part 1 (K2): clipped runs, true peak over a ceiling, DC offset and
-//! dead air.
+//! Episode Check detectors (K2): clipped runs, true peak over a ceiling, DC offset, dead air,
+//! loudness drift, mains hum and plosives.
 //!
 //! Each scan reads its channels through [`Samples`], a chunk at a time, so an hour of audio never
 //! sits in RAM, and returns [`Finding`]s in frame order. The scans are pure: they change no
@@ -14,6 +14,16 @@
 //!   [`Config::dc_threshold`] in magnitude, with one sign, for at least [`Config::dc_min_ms`].
 //! - Dead air: stretches where every channel stays under [`Config::silence_threshold_db`] for at
 //!   least [`Config::silence_min_ms`].
+//! - Loudness drift (`drift`): short-term (3 s) loudness more than [`Config::drift_lu`] from the
+//!   integrated loudness for at least [`Config::drift_min_s`] seconds.
+//! - Mains hum (`hum`): at least [`Config::hum_harmonics`] of the first five harmonics of 50 or
+//!   60 Hz stand [`Config::hum_margin_db`] over their neighbouring bins in long STFT windows.
+//! - Plosives (`plosive`): frames whose energy under [`Config::plosive_band_hz`] is
+//!   [`Config::plosive_ratio`] times both the rest of the spectrum and the low band's local median.
+
+mod drift;
+mod hum;
+mod plosive;
 
 use std::f64::consts::PI;
 
@@ -49,9 +59,12 @@ pub enum Kind {
     TruePeak,
     DcOffset,
     DeadAir,
+    LoudnessDrift,
+    MainsHum,
+    Plosive,
 }
 
-/// How bad a finding is. Clipping and true peak are errors; DC offset and dead air are warnings.
+/// How bad a finding is. Clipping and true peak are errors; the rest are warnings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
     Warning,
@@ -63,7 +76,7 @@ pub enum Severity {
 pub struct Finding {
     pub kind: Kind,
     pub severity: Severity,
-    /// The channel, or `None` when the finding covers every channel (dead air).
+    /// The channel, or `None` when the finding covers every channel (dead air, loudness drift).
     pub channel: Option<usize>,
     /// First frame of the finding.
     pub start: u64,
@@ -71,7 +84,9 @@ pub struct Finding {
     pub end: u64,
     /// Clipping: the largest magnitude in the run (linear). True peak: the highest interpolated
     /// peak (dBTP). DC offset: the mean over the region (linear). Dead air: the loudest sample in
-    /// it (dBFS).
+    /// it (dBFS). Loudness drift: the largest distance of a short-term reading from the integrated
+    /// loudness (LU). Mains hum: the fundamental (Hz). Plosive: the loudest low-band frame RMS
+    /// (dBFS).
     pub value: f64,
 }
 
@@ -107,11 +122,34 @@ pub struct Config {
     pub silence_threshold_db: f64,
     /// Shortest dead air reported, ms.
     pub silence_min_ms: u32,
+    /// Short-term loudness this far from the integrated loudness (LU) is drift.
+    pub drift_lu: f64,
+    /// Shortest loudness drift reported, s.
+    pub drift_min_s: u32,
+    /// Mains fundamentals tried, Hz.
+    pub hum_hz: [f64; 2],
+    /// Harmonics (of 1x to 5x) that must stand out for a window to count as hum.
+    pub hum_harmonics: u32,
+    /// How far (dB) a harmonic must stand over the median of the bins around it.
+    pub hum_margin_db: f64,
+    /// Shortest hum reported, ms.
+    pub hum_min_ms: u32,
+    /// Plosive energy is measured below this frequency, Hz.
+    pub plosive_band_hz: f64,
+    /// Plosive analysis frame, ms.
+    pub plosive_frame_ms: u32,
+    /// Low-band RMS must be this many times the RMS of the rest of the spectrum, and of the local
+    /// median low-band RMS (linear).
+    pub plosive_ratio: f32,
+    /// Shortest plosive burst reported, ms.
+    pub plosive_min_ms: u32,
 }
 
 impl Config {
     /// The defaults: clipping at [`CLIP_LEVEL`], true peak over -1 dBTP, DC windows of 20 ms at
-    /// 0.02 (-34 dBFS) held for 200 ms, and dead air under -60 dBFS for 3 s.
+    /// 0.02 (-34 dBFS) held for 200 ms, dead air under -60 dBFS for 3 s, loudness drift of 6 LU for
+    /// 10 s, hum of 3 harmonics 15 dB up held for 1 s, and plosives 4x (12 dB) over their
+    /// surroundings in the band under 120 Hz for 20 ms.
     pub fn new(sample_rate: u32) -> Config {
         Config {
             sample_rate,
@@ -124,6 +162,16 @@ impl Config {
             dc_min_ms: 200,
             silence_threshold_db: -60.0,
             silence_min_ms: 3_000,
+            drift_lu: 6.0,
+            drift_min_s: 10,
+            hum_hz: [50.0, 60.0],
+            hum_harmonics: 3,
+            hum_margin_db: 15.0,
+            hum_min_ms: 1_000,
+            plosive_band_hz: 120.0,
+            plosive_frame_ms: 10,
+            plosive_ratio: 4.0,
+            plosive_min_ms: 20,
         }
     }
 
@@ -213,7 +261,10 @@ pub fn scan(channels: &[&dyn Samples], cfg: &Config) -> Report {
     }
     for (c, src) in channels.iter().enumerate() {
         dc_pass(*src, c, cfg, &mut sink);
+        hum::hum_pass(*src, c, cfg, &mut sink);
+        plosive::plosive_pass(*src, c, cfg, &mut sink);
     }
+    drift::drift_pass(channels, len, cfg, &mut sink);
 
     sink.findings.sort_by_key(|f| (f.start, f.channel));
     Report { findings: sink.findings, truncated: sink.truncated }
