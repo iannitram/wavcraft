@@ -6,7 +6,8 @@
 //! on their playlists.
 //!
 //! Arming reuses SoundCraft's: `mixer.record_arm` plus `mixer.input` as `Route::Hardware("In 3")`
-//! (stereo tracks "In 3-4"), the form `plan_takes` in the engine reads.
+//! (stereo tracks "In 3-4", a 5.1 track "In 3-8": first to last input), the form `plan_takes` in
+//! the engine reads.
 //!
 //! Never lose a take: a take is written straight to its own file as it arrives, and the WAV
 //! header's sizes are rewritten and synced every [`PATCH_EVERY`] seconds of audio, so a killed
@@ -207,7 +208,7 @@ fn file_stem(name: &str) -> String {
 
 impl Multitrack {
     /// Arm a track for recording, on input channel `input` (1-based, as the interface labels
-    /// it; a stereo track takes `input` and the next one). `None` keeps the route it has
+    /// it; a track of n channels takes `input` and the next n-1). `None` keeps the route it has
     /// (channel 1 when it has none).
     pub fn arm_track(&mut self, id: TrackId, input: Option<usize>) -> Result<(), MtError> {
         let Some(t) = self.session.track_mut(id) else { return err("no such track") };
@@ -220,7 +221,8 @@ impl Multitrack {
             Some(n) => n,
             None => first_input(&t.mixer.input) + 1,
         };
-        t.mixer.input = Route::Hardware(if t.channels() == 2 { format!("In {ch}-{}", ch + 1) } else { format!("In {ch}") });
+        let n = t.channels();
+        t.mixer.input = Route::Hardware(if n >= 2 { format!("In {ch}-{}", ch.saturating_add(n - 1)) } else { format!("In {ch}") });
         t.mixer.record_arm = true;
         Ok(())
     }
