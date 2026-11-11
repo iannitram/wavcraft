@@ -2,7 +2,7 @@
 
 Everything you need to work here is in this repo. The full pipeline and rules live in the pipeline repo (private): `PIPELINE.md`, `RULES.md`, `RUBRIC.md`, `roles/`; this is the short copy.
 
-1. **Find the stage** in `PIPELINE.md`. The spec is `SPEC.md` (the v1 list in `docs/v1/v1.md`), the plan `ROADMAP.md`, the code map `docs/code-map.md`. While the stage is Roadmap (stage 0, the merge plan), take no issues here.
+1. **Find the stage** in `PIPELINE.md`. The spec is `SPEC.md` (the v1 list in `docs/v1/v1.md`), the plan `ROADMAP.md`, the code map `docs/code-map.md`. The stage is Dev Loop: take the lowest-numbered unblocked step of the earliest unfinished stage in `ROADMAP.md`; each step id (`C5.3`) starts its issue's title.
 2. **Work from an issue.** Take one that is not `in-progress` and not blocked; add `in-progress` before you start. Its body is your brief; an Easy issue has a "Qwen brief" section with the expected results and the code map snippet. Only v1 items are built before 1.0; `after-1.0` issues wait.
 3. **Your own platform's issues first.** Mac, Windows and Linux all matter: say which you built on.
 4. **Check that it builds**, then open the PR. CI and the review do the rest.

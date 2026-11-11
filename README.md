@@ -10,7 +10,7 @@ audiobooks, files of one to three hours.
 **Clean room:** its behaviour is copied from Audition's published behaviour and documentation only.
 No code from Audacity (GPL) or any other GPL-family project is read or used. See [Rules](#rules).
 
-**Stage and status:** [PIPELINE.md](PIPELINE.md) and [ROADMAP.md](ROADMAP.md) (2026-10-26); the spec is [SPEC.md](SPEC.md). The paragraph and table below are from 2026-10-12 and kept as history.
+**Stage and status:** [PIPELINE.md](PIPELINE.md) and [ROADMAP.md](ROADMAP.md) (rewritten 2026-11-11); the spec is [SPEC.md](SPEC.md). The paragraph and table below are from 2026-10-12 and kept as history.
 
 **Status (2026-10-12): Phase 1, viewer; Phase 2 under way.** It opens a file, draws it, zooms, scrolls and
 plays, and edits and saves WAV in the app (tasks 06a, 07a, 07b). Underneath, the editor's storage is in place (task 03):
@@ -19,7 +19,7 @@ edits and the undo history (task 04: delete, cut, copy, paste, silence, insert s
 the streamed `replace_range` effects will use, with Audition's edit crossfades), not yet wired to
 the app's menus (tasks 05 and 07).
 
-**Roadmap:** the ranked plan to Audition parity, with what is built and what is next, is in [docs/roadmap-audition-parity.md](docs/roadmap-audition-parity.md).
+**Roadmap:** what is built, what remains and each remaining step with its check is in [ROADMAP.md](ROADMAP.md). The older ranked plan to Audition parity, [docs/roadmap-audition-parity.md](docs/roadmap-audition-parity.md), is history; its rows outside v1 are after 1.0.
 
 ## Run it
 
@@ -169,7 +169,7 @@ run `cargo update -p soundcraft-audio-io`, run the tests. Pin a commit or a tag,
   is GPL: its code is never read or copied. No GPL, LGPL or AGPL code or dependencies. Dependencies are MIT, Apache-2.0, BSD, Zlib or ISC compatible, with two
   exceptions that come in unmodified: the `symphonia` decoders (MPL-2.0, through
   `soundcraft-audio-io`) and egui's default fonts (OFL-1.1 and the Ubuntu Font Licence). Both
-  need a third-party notices file before any binary is handed out; there is none yet.
+  are listed in `THIRD-PARTY-NOTICES.txt`, which is compiled into every binary (Help, About).
 - **Never crash.** No `unwrap`, `expect` or `panic!` outside tests, no `unsafe`. Numbers that come
   from a file or the mouse are checked before use. The audio callback never blocks or allocates.
 - Before a commit: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,

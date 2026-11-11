@@ -46,15 +46,15 @@ Read that branch first: its commits, the code, and the nightly logs on the fork'
 ## Where the code lives
 
 - **`github.com/iannitram/craft-mp3`, public** (my decision, 2026-10-15): the public SoundCraft fork and GitHub Actions release builds must fetch it without a login. Licence: MIT OR Apache-2.0, like the Craft apps. **Because it's public, nothing private goes in:** no real episode audio, no show names, no vault paths. Install the depot's pre-push private-words check (`depot-sync.sh start` does it for depot apps; until the repo has a depot entry, copy the hook the same way by hand). Commits are authored under my no-reply address (`iannitram <4624371+iannitram@users.noreply.github.com>`), as for upstream PRs.
-- Clone at `~/dev/craft/<repo>` on the Z13, never in the vault.
+- Clone under the dev folder of the 64 GB Linux tablet, never in the synced notes vault.
 - **Bundles:** until the Coordinator gives it a depot folder and a `depot.json` entry, write `<repo>.z13.bundle` into `apps/WavCraft/code/`. `depot-sync.sh` ignores files there that aren't `wavcraft.<machine>.bundle`, so it does no harm.
 - WavCraft depends on it as a git dependency pinned to a tag, as it does SoundCraft.
 
 ## Test kit and measurement
 
-- **Signals:** sine sweeps, pink noise, silence, clicks, full-scale square, a stereo file with different left and right, and **clean speech**. Lani and I supply real speech clips. These are never committed: keep them in `~/dev/craft/mp3-testkit/` on the Z13 and copy them through the vault's scratch only if they say so. Until then, the synthetic signals and any public-domain speech recording (LibriVox readings are public domain; check each one) will do.
+- **Signals:** sine sweeps, pink noise, silence, clicks, full-scale square, a stereo file with different left and right, and **clean speech**. A second listener and I supply real speech clips. These are never committed: keep them in an `mp3-testkit` folder beside the clone and copy them elsewhere only if I say so. Until then, the synthetic signals and any public-domain speech recording (LibriVox readings are public domain; check each one) will do.
 - **Every step reports:** speed (× realtime); decoded-vs-source **segmental SNR** at 128 kbps on the speech clip (a regression number, not the goal); a spectrogram of the difference signal; any decoder warnings from `symphonia`; and, from M4 on, a short listening note.
-- **ABX tool:** a tiny script or page that plays A, B and X at random and logs answers, for Lani and me. Keep it in the repo's `tools/`.
+- **ABX tool:** a tiny script or page that plays A, B and X at random and logs answers, for the second listener and me. Keep it in the repo's `tools/`.
 
 ## Steps (one build-and-test cycle each)
 
