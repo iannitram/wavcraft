@@ -4,7 +4,7 @@
 (`plan/tasks/02-code-map-test-kit-baseline.md` in the vault). Code: commit `4176652` (the binaries
 were built from `50e8dfe`; `4176652` only reformats the source). Tool: `wavcraft-bench FILE`
 (`crates/testkit`), run through the build gate in the default slot. Files from
-`wavcraft-testkit OUT --long` (seed 1463899717), in `B:\dev\craft\wavcraft-testkit-out\`.*
+`wavcraft-testkit OUT --long` (seed 1463899717), in `<dev root>/craft/wavcraft-testkit-out/`.*
 
 **What else was running.** Gate status just before the 3-hour run: 11.0 GB free, GPU at 0 %, upscaler
 not seen. The build slot was held by Adobe After Effects test renders (`ae_render_one.py`, 6–7 s
@@ -46,8 +46,8 @@ samples made in memory):
 - Open's memory peak is the file's bytes plus the decoded samples plus the peaks (2.07 + 4.15 +
   about 0.35 GB), as the code map says. That is the number task 03's blocks should not make worse.
 
-To repeat: `wavcraft-testkit B:/dev/craft/wavcraft-testkit-out --long`, then
-`wavcraft-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav`, both through the gate.
+To repeat: `wavcraft-testkit <dev root>/craft/wavcraft-testkit-out --long`, then
+`wavcraft-bench <dev root>/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav`, both through the gate.
 
 ## Task 03: the store and streamed open (2026-10-15, the Windows dev machine)
 
@@ -87,14 +87,14 @@ limit) opens: 720,000,000 frames, as expected, and the right channel's frame cou
 four places including the last 1,000 frames. Open 3.31 s (5.760 GB written), 6.2 MB above rest;
 sequential read 2.0-2.1 s; random reads median 53.1 µs.
 
-To repeat: `wavcraft-testkit B:/dev/craft/wavcraft-testkit-out --long --huge`, then
-`wavcraft-store-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav` and
-`wavcraft-store-bench B:/dev/craft/wavcraft-testkit-out/huge-4h10m-48k-stereo-24-rf64.wav --huge`,
+To repeat: `wavcraft-testkit <dev root>/craft/wavcraft-testkit-out --long --huge`, then
+`wavcraft-store-bench <dev root>/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav` and
+`wavcraft-store-bench <dev root>/craft/wavcraft-testkit-out/huge-4h10m-48k-stereo-24-rf64.wav --huge`,
 all through the gate.
 
 ## Task 04: edits and undo history (2026-10-15, the Windows dev machine)
 
-*Release build, `wavcraft-edit-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav`
+*Release build, `wavcraft-edit-bench <dev root>/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav`
 (block cache 512 MB, as on an 8 GB Mac) and test 10 (`cargo test --release -p wavcraft-testkit
 --test edits -- --ignored --nocapture`), both through the build gate in the default slot. Session
 store on C: (Samsung 970 EVO Plus NVMe), history cap 78 GB (half the free space). Gate status
@@ -121,7 +121,7 @@ The slowest push of a run (310 to 450 ms) is always the first after the whole-fi
 4.1 GB of packs on the calling thread. Moving pack deletion off the UI thread is left for task 05
 or 07.
 
-To repeat: `wavcraft-edit-bench B:/dev/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav` and
+To repeat: `wavcraft-edit-bench <dev root>/craft/wavcraft-testkit-out/long-3h-48k-stereo-16.wav` and
 test 10 as above, through the gate.
 
 ## Issue #68: zoomed-out spectrogram, floor and picture lag (2026-11-03)

@@ -2,6 +2,7 @@
 
 Newest first. One line per change of stage, release or decision that the next session needs.
 
+- 2026-11-11 Docs: machine paths in docs/baseline.md, docs/v1/architecture.md and the MP3 brief became <dev root> placeholders (repo-lint, R01).
 - 2026-11-03 My decision: v1 grows by section N, Automation (N1 core #1107, N2 command line #845, N3 MCP server #1108, N4 scripts #879), as Stage 1b right after the Editor stage; 70 items become 74. #845 and #879 leave after-1.0; bounce from the command line (#818) stays after-1.0.
 - 2026-11-02 Code map refreshed to ad3f4c1: the Fade In and Fade Out files, the soundcraft pin e3c5c67 and cpal 0.18.
 - 2026-11-01 cpal 0.16 to 0.18 and the soundcraft pin 274f788 to e3c5c67 (soundcraft main, for `Vst3Plugin::reactivate()`); soundcraft main itself needs cpal 0.18 (#1077).
