@@ -32,7 +32,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 - **built, check not recorded**: the code is on `main`, but part of the Done check (a measurement, a test or a by-hand check) is not written down yet. The steps say which part.
 - **partial**: part of the item is on `main`; the steps build the rest.
 - **not started**: nothing of the item is on `main`.
-- A **step** is one change with one check. Its id is `<item>.<n>` (for example `C5.3`) and is the start of its issue's title. **Verify** names the test, measurement or by-hand check that proves it.
+- A **step** is one change with one check. Its id is `<item>.<n>` (for example `C5.3`) and is the start of its issue's title. **Verify** names the test, measurement or by-hand check that proves it. A number dropped during the audit is not reused, so H1.2, J3.4 and F3.1 do not exist.
 - **By**: `script` means an automated test or tool proves it; `hand` means someone runs the app; `hand, me` means only I can do it (by ear, or on a machine only I have). An operating system after it means the step needs that system.
 - Sizes (`easy`, `medium`, `hard`) and kinds follow the pipeline's rubric. Each step gets one issue on the `1.0` milestone with one `feature:` label from the block above; the Issue column is filled when it is filed.
 
@@ -1242,7 +1242,7 @@ Everything outside v1.md's sections A to N: multitrack sessions and the mixer, C
 - **Code skeleton:** the tree the code map describes: one Cargo workspace, the app in `apps/wavcraft`, the engine in `crates/core`, the same code on all three systems.
 - **Memory target:** an 8 GB Mac. All audio lives in the on-disk store; RAM holds a bounded cache; undo costs disk, not RAM (I7, [docs/v1/architecture.md](docs/v1/architecture.md)).
 - **Platform-specific code:** audio output and input through `cpal` (WASAPI on Windows, CoreAudio on macOS, ALSA/PipeWire on Linux), including recording devices, their unplug handling (J5) and the macOS microphone permission prompt (J6); file dialogs through `rfd`; free disk space through `sysinfo` and `rustix`; folder access rules on Windows (`apps/wavcraft/src/win_acl.rs`). The code map's "Mac, PC and Linux" section lists every site.
-- **Machines:** Windows (the build machine; no microphone, so recording is tested there with a fake input), Linux (the 64 GB Linux tablet and a SteamOS handheld in Desktop Mode; the real microphone tests), macOS on Apple Silicon (the M1 Mac mini first, then the 8 GB Mac, which is the memory target). The steps use these names: the Windows build machine, the 64 GB Linux tablet, the M1 Mac mini, the 8 GB Mac.
+- **Machines:** Windows (the build machine; no microphone, so recording is tested there with a fake input), Linux (the 64 GB Linux tablet and a SteamOS handheld in Desktop Mode; the real microphone tests), macOS on Apple Silicon (the M1 Mac mini first, then the 8 GB Mac, which is the memory target). The steps use these names: the Windows build machine, the 64 GB Linux tablet, a Linux handheld (the tablet or the SteamOS handheld), the M1 Mac mini, the 8 GB Mac.
 - **CI:** `.github/workflows/check.yml` runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` on Linux, Windows and macOS runners, on every push to `main` and every pull request. It cannot play or record audio or open a window, which is why the hand steps exist.
 - **Steps that need one system:** linux 41, mac 11, windows 20. The "By" column names it.
 
