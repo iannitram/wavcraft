@@ -357,6 +357,13 @@ fn a_real_clean_speech_file_reports_nothing() {
     let channels: Vec<StoreChannel> = (0..state.channel_count()).map(|ch| StoreChannel::new(&state, ch)).collect();
     let refs: Vec<&dyn Samples> = channels.iter().map(|c| c as &dyn Samples).collect();
     let report = check::scan(&refs, &cfg);
+    drop(refs);
+    // A failed store read gives silence, which would pass as clean: fail on the read error instead.
+    for c in channels {
+        if let Some(e) = c.into_error() {
+            panic!("reading the clean speech file from the store failed: {e}");
+        }
+    }
     assert!(!report.truncated);
     assert!(report.findings.is_empty(), "clean speech reported {:?}", report.findings);
 }
