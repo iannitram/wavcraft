@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use wavcraft_core::markers::Shift;
 use wavcraft_core::transcript::{self, Transcript, Word};
 
 fn word(text: &str, start: u64, end: u64) -> Word {
@@ -133,6 +134,64 @@ fn word_at_start_end_and_gap() {
     let empty = Transcript::new(48_000, Vec::new());
     assert_eq!(empty.word_at(0), None);
     assert_eq!(empty.word_at(u64::MAX), None);
+}
+
+/// The words of the moved_by tests: `a` 48000..72000, `b` 80000..90000, `c` 1488000..1512000.
+fn moved_fixture() -> Transcript {
+    Transcript::new(48_000, vec![word("a", 48_000, 72_000), word("b", 80_000, 90_000), word("c", 1_488_000, 1_512_000)])
+}
+
+fn spans(t: &Transcript) -> Vec<(u64, u64)> {
+    t.words.iter().map(|w| (w.start, w.end)).collect()
+}
+
+#[test]
+fn delete_shifts_later_words() {
+    let t = moved_fixture().moved_by(&Shift::Delete(48_000..90_000));
+    assert_eq!(t.words.len(), 1);
+    assert_eq!(t.words[0].text, "c");
+    assert_eq!(spans(&t), vec![(1_446_000, 1_470_000)]);
+}
+
+#[test]
+fn a_straddling_word_is_trimmed() {
+    let t = moved_fixture().moved_by(&Shift::Delete(60_000..80_000));
+    assert_eq!(t.words[0].text, "a");
+    assert_eq!(t.words[0].start, 48_000);
+    assert_eq!(t.words[0].end, 60_000);
+    assert_eq!(spans(&t), vec![(48_000, 60_000), (60_000, 70_000), (1_468_000, 1_492_000)]);
+}
+
+#[test]
+fn insert_shifts_later_words() {
+    let t = moved_fixture().moved_by(&Shift::Insert { at: 0, len: 1_000 });
+    assert_eq!(t.words[0].text, "a");
+    assert_eq!(t.words[0].start, 49_000);
+    assert_eq!(t.words[0].end, 73_000);
+    assert_eq!(spans(&t), vec![(49_000, 73_000), (81_000, 91_000), (1_489_000, 1_513_000)]);
+}
+
+#[test]
+fn replace_drops_inside_and_shifts_later() {
+    let t = moved_fixture().moved_by(&Shift::Replace { range: 48_000..90_000, len: 1_000 });
+    assert_eq!(t.words.len(), 1);
+    assert_eq!(t.words[0].text, "c");
+    assert_eq!(spans(&t), vec![(1_447_000, 1_471_000)]);
+}
+
+#[test]
+fn crop_keeps_only_words_inside() {
+    let t = moved_fixture().moved_by(&Shift::Crop(40_000..100_000));
+    assert_eq!(t.words.len(), 2);
+    assert_eq!(t.words[0].text, "a");
+    assert_eq!(t.words[1].text, "b");
+    assert_eq!(spans(&t), vec![(8_000, 32_000), (40_000, 50_000)]);
+}
+
+#[test]
+fn none_changes_nothing() {
+    let before = moved_fixture();
+    assert_eq!(before.moved_by(&Shift::None), before);
 }
 
 #[test]
