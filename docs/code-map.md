@@ -4,7 +4,7 @@ Describes `main` at `52296e2` for the file tables and the Planned table; the `ap
 
 **Status words:** *present, wired* (on `main` and reached from the app or a binary); *present, core only* (on `main` with tests, but nothing in the app calls it yet); *present, out of v1* (on `main`, belongs to an after-1.0 feature); *stub* (the body is `todo!()` or `unimplemented!()`); *dead code* (no caller and no test).
 
-**Counts:** 454 files and folders described: 283 present, wired, 123 present, core only, 43 present, out of v1, 4 stub, 1 dead code.
+**Counts:** 455 files and folders described: 283 present, wired, 124 present, core only, 43 present, out of v1, 4 stub, 1 dead code.
 
 ## Contents
 
@@ -425,6 +425,7 @@ Paths are from the repo root. "Items" are v1 item ids from the roadmap; "Uses" a
 
 | File | What it owns | Key names | Uses | Status | Items | Tests |
 |---|---|---|---|---|---|---|
+| `apps/wavcraft/src/cli.rs` | The command line as a pure parser. No subcommand is the window, with today's `--session-dir`, `--reset-preferences` and FILE; `run`, `convert` and `inspect` take their operands, and `run` takes `-o`. An unknown flag, or a missing or extra operand, is an error whose message names it and gives the usage line. It opens no file and prints nothing. | `Command`, `parse` | crate `Args` and `parse_args` (main.rs) | present, core only | N2.1 | 6 in-file tests. Nothing calls it yet: main.rs still reads the window's arguments with `parse_args`, and the module is `#[allow(dead_code)]`. |
 | `apps/wavcraft/src/control.rs` | The loopback control channel: a TCP listener on 127.0.0.1 that checks the token line, forwards each request line to the window thread and writes back the answer. Its header comment is the verb reference. **Platform:** The token file check and creation differ: Unix uses mode 0600 and permission bits; Windows calls win_acl for an owner-only ACL. Tests are split by cfg(unix) and cfg(windows). | `Request`, `start_from_env`, `TOKEN`, `WAVCRAFT_CONTROL_PORT`, `WAVCRAFT_CONTROL_TOKEN_FILE` | std::net; wavcraft_core::random; win_acl (Windows); log | present, wired | N1 | 4 in-file tests (3 run on Unix, 2 on Windows) |
 | `crates/core/src/bundle.rs` | Export and import of the settings folder (settings, shortcut overrides, saved workspaces) as one checked text file, and the preference reset that moves the settings file aside. | `Bundle`, `export`, `import`, `read_checked`, `reset_preferences`, `is_bundle_name` | settings::Settings | present, wired | I2, I3 | preferences.rs; 12 in-file. Called from apps/wavcraft/src/app.rs (control verb SETTINGS export/import, preference reset). |
 | `crates/core/src/shortcut_sets.rs` | Stores named keyboard shortcut sets as files in the config folder, lists, loads, saves and deletes them, and remembers which set is active. The built-in default set is never stored. | `SetStore`, `DEFAULT_SET`, `valid_name`, `SetStore::startup`. The control verbs `SHORTCUTSETS` and `SHORTCUTSET` that use it are handled in apps/wavcraft/src/app.rs. | shortcuts | present, wired | I3 | crates/core/tests/shortcut_sets.rs; 0 in-file |
