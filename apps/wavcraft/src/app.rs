@@ -9766,6 +9766,12 @@ impl WaveApp {
                 }
             }
         });
+        // Snapping (f09, f49): the same switches as View › Snapping and the ruler's menu.
+        let mut snap_chosen = None;
+        ui.menu_button("Snapping", |ui| snap_chosen = snap_items(ui, &self.settings.snap));
+        if let Some(id) = snap_chosen {
+            self.toggle_snap_menu(id);
+        }
         ui.separator();
         for a in TABLE.iter().filter(|a| a.name.starts_with("marker.")) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
@@ -12417,8 +12423,8 @@ fn brighten(c: Color32, b: f32) -> Color32 {
     theme::rgba(m(c.r()), m(c.g()), m(c.b()), c.a())
 }
 
-/// The check items for every snap target, shared by View › Snapping: the action whose item was
-/// clicked.
+/// The check items for every snap target, shared by Edit › Snapping and View › Snapping: the action
+/// whose item was clicked.
 fn snap_items(ui: &mut egui::Ui, snap: &SnapSettings) -> Option<ActionId> {
     let mut chosen = None;
     for a in TABLE.iter().filter(|a| a.name.starts_with("view.snap.")) {
@@ -13204,3 +13210,7 @@ mod issue377_tests;
 #[cfg(test)]
 #[path = "a1_open_cancel_tests.rs"]
 mod a1_open_cancel_tests;
+
+#[cfg(test)]
+#[path = "issue1173_tests.rs"]
+mod issue1173_tests;
