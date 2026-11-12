@@ -63,7 +63,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", required=True)
     exe = os.path.abspath(parser.parse_args().exe)
-    work = tempfile.mkdtemp(prefix="k1.", dir=os.getcwd())
+    work = tempfile.mkdtemp(prefix="k1.")  # system temp, never the repo root; removed in finally
     proc = None
     try:
         good = os.path.join(work, "clipped.wav")
@@ -109,6 +109,7 @@ def main():
                 break
             time.sleep(.1)
         c.ask("ACTION check.run")
+        assert c.check_state().get("running") == "1", "the 30-minute scan did not start"
         cancelled_at = time.monotonic()
         c.ask("CHECK cancel")
         deadline = cancelled_at + 1
