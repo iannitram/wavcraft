@@ -251,6 +251,7 @@ fn a_40_hz_burst_in_a_gap_is_a_plosive() {
     assert_eq!(plosive.len(), 1, "{plosive:?}");
     assert_eq!((plosive[0].channel, plosive[0].severity), (Some(0), Severity::Warning));
     assert_near("plosive start", plosive[0].start, at);
+    assert_near("plosive end", plosive[0].end, at + 3_840);
 }
 
 #[test]
