@@ -858,7 +858,7 @@ impl Editor {
     fn toggle_channel(&mut self, ch: usize, selection: Range<u64>) -> Outcome {
         let count = self.channel_count();
         let cur = self.channels.within(count);
-        let next = if cur.contains(ch) { ChannelMask::from_bits(cur.bits() & !ChannelMask::only(ch).bits()) } else { cur.with(ch) };
+        let next = if cur.contains(ch) { cur.without(ch) } else { cur.with(ch) };
         let message = if next == ChannelMask::NONE {
             "At least one channel stays enabled".to_string()
         } else {
