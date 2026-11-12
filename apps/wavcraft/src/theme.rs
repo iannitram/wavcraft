@@ -78,6 +78,15 @@ pub struct Palette {
     pub band_outline: Color32,
     /// Markers, and the default marker colour.
     pub marker: Color32,
+    /// Episode Map (M2) columns: silence (peak under -60 dBFS), a shade above the well so the
+    /// strip's extent still shows.
+    pub map_silence: Color32,
+    /// Episode Map columns of speech (peak from -60 up to -6 dBFS): a muted teal, kept off the
+    /// accent blue of the view handle and the amber of markers that are drawn on top of it.
+    pub map_speech: Color32,
+    /// Episode Map columns that are loud (peak from -6 dBFS): a burnt orange, warm like the level
+    /// meter's hot zone but duller than `alert` and `caution`, so finding pins stay readable on it.
+    pub map_loud: Color32,
 }
 
 /// The dark set: the values the app drew before M3, so a dark session looks as it did.
@@ -113,6 +122,9 @@ pub static DARK: Palette = Palette {
     band_fill: Color32::from_rgba_premultiplied(60, 70, 20, 60),
     band_outline: Color32::from_rgb(240, 220, 90),
     marker: Color32::from_rgb(240, 190, 70),
+    map_silence: Color32::from_rgb(36, 40, 48),
+    map_speech: Color32::from_rgb(46, 112, 104),
+    map_loud: Color32::from_rgb(196, 104, 48),
 };
 
 /// The light set: the same roles, with values that read on a light ground.
@@ -148,6 +160,9 @@ pub static LIGHT: Palette = Palette {
     band_fill: Color32::from_rgba_premultiplied(40, 60, 20, 50),
     band_outline: Color32::from_rgb(150, 120, 0),
     marker: Color32::from_rgb(170, 110, 0),
+    map_silence: Color32::from_rgb(208, 212, 220),
+    map_speech: Color32::from_rgb(112, 178, 166),
+    map_loud: Color32::from_rgb(222, 132, 72),
 };
 
 /// The four channel colours of the frequency display (same in both sets).
@@ -286,6 +301,9 @@ mod tests {
             ("band_fill", p.band_fill),
             ("band_outline", p.band_outline),
             ("marker", p.marker),
+            ("map_silence", p.map_silence),
+            ("map_speech", p.map_speech),
+            ("map_loud", p.map_loud),
         ]
     }
 
