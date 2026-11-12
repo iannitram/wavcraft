@@ -50,6 +50,7 @@ pub mod channels;
 pub mod check;
 pub mod clipboard;
 pub mod convert;
+pub mod cut_edges;
 pub mod diagnostics;
 pub mod dither;
 pub mod doc;

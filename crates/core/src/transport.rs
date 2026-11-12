@@ -460,6 +460,15 @@ pub fn marker_jump(markers: &crate::Markers, playhead: u64, forward: bool) -> Op
     if forward { markers.next_after(playhead) } else { markers.prev_before(playhead) }
 }
 
+/// The next stop for the playhead after `playhead` (forward) or the last one before it (backward):
+/// the nearest marker or selection edge in that direction, strictly past the playhead. `None`
+/// when there is no stop left that way.
+pub fn playhead_stop(markers: &crate::Markers, selection: &Range<u64>, playhead: u64, forward: bool) -> Option<u64> {
+    let edges = [selection.start, selection.end];
+    let stops = markers.iter().map(|m| m.start).chain(edges);
+    if forward { stops.filter(|&s| s > playhead).min() } else { stops.filter(|&s| s < playhead).max() }
+}
+
 /// How far back (seconds) a marker must be for "previous marker" during play to count it as
 /// the previous one; a marker the playhead has only just passed is the one being left.
 pub const PREV_MARKER_GRACE_SECS: f64 = 0.5;
@@ -619,6 +628,30 @@ mod tests {
         assert_eq!(marker_jump(&m, 300, true), None);
         assert_eq!(marker_jump(&m, 300, false), Some(100));
         assert_eq!(marker_jump(&m, 100, false), None);
+    }
+
+    #[test]
+    fn playhead_stops_at_markers_and_selection_edges() {
+        let m = crate::Markers::new().with_added(1_000..1_000, None).unwrap().with_added(9_000..9_000, None).unwrap();
+        let sel = 4_000..6_000;
+        // Forward from 0: each stop in turn, then nothing.
+        let mut p = 0;
+        let mut forward = Vec::new();
+        while let Some(s) = playhead_stop(&m, &sel, p, true) {
+            forward.push(s);
+            p = s;
+        }
+        assert_eq!(forward, vec![1_000, 4_000, 6_000, 9_000]);
+        assert_eq!(playhead_stop(&m, &sel, 9_000, true), None);
+        // Backward from 9_500: each stop in turn, then nothing.
+        let mut p = 9_500;
+        let mut backward = Vec::new();
+        while let Some(s) = playhead_stop(&m, &sel, p, false) {
+            backward.push(s);
+            p = s;
+        }
+        assert_eq!(backward, vec![9_000, 6_000, 4_000, 1_000]);
+        assert_eq!(playhead_stop(&m, &sel, 1_000, false), None);
     }
 
     #[test]
