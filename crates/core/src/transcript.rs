@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod filler;
 pub mod mel;
 mod run;
 
@@ -48,6 +49,18 @@ impl Transcript {
     /// A transcript of the current version.
     pub fn new(sample_rate: u32, words: Vec<Word>) -> Transcript {
         Transcript { version: VERSION, sample_rate, words }
+    }
+
+    /// The index of the word that covers `frame`: its start is at or before `frame` and its end
+    /// after it (start inclusive, end exclusive). `None` for a frame in a gap between words, before
+    /// the first word, after the last, or in an empty transcript. Found by binary search, so the
+    /// words must be in order and not overlap, as [`Transcript::check`] requires.
+    pub fn word_at(&self, frame: u64) -> Option<usize> {
+        // The words starting at or before `frame` form a prefix; the last of them is the only
+        // candidate, since no earlier word can reach past a later word's start.
+        let after = self.words.partition_point(|w| w.start <= frame);
+        let i = after.checked_sub(1)?;
+        (frame < self.words[i].end).then_some(i)
     }
 
     /// Whether this transcript is one [`Transcript::from_json`] would accept: the current
