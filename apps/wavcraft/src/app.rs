@@ -13182,3 +13182,7 @@ mod issue369_tests;
 #[cfg(test)]
 #[path = "issue377_tests.rs"]
 mod issue377_tests;
+
+#[cfg(test)]
+#[path = "a2_close_prompt_tests.rs"]
+mod a2_close_prompt_tests;
