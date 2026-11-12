@@ -716,6 +716,48 @@ fn m6_rename_and_move_a_marker_are_one_undo_step_each() {
 }
 
 #[test]
+fn h2_set_marker_extent_is_one_move_marker_step() {
+    let fresh = |name: &str| {
+        let t = TempDir::new(name);
+        let mut e = editor(&t.0, &stereo(48_000));
+        e.run(ActionId::MarkerAdd, 10_000..10_000).unwrap();
+        let id = e.history.current().markers().id_at(0).unwrap();
+        (t, e, id)
+    };
+    // (1) A point becomes a range, as one "Move Marker" step that undo takes back.
+    let (_t, mut e, id) = fresh("h2-extent-range");
+    let steps = e.history.steps().len();
+    assert!(e.set_marker_extent(id, 10_000..20_000));
+    assert_eq!(markers(&e), [(10_000, 20_000)]);
+    assert_eq!(e.history.steps().len(), steps + 1);
+    assert_eq!(e.history.undo_label(), Some("Move Marker"));
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e), [(10_000, 10_000)]);
+    // (2) An empty range moves the point.
+    let (_t, mut e, id) = fresh("h2-extent-point");
+    let steps = e.history.steps().len();
+    assert!(e.set_marker_extent(id, 5_000..5_000));
+    assert_eq!(markers(&e), [(5_000, 5_000)]);
+    assert_eq!(e.history.steps().len(), steps + 1);
+    // (3) A range past the end of the file is refused and nothing changes.
+    let (_t, mut e, id) = fresh("h2-extent-past-end");
+    let steps = e.history.steps().len();
+    assert!(!e.set_marker_extent(id, 40_000..50_000), "50_000 is past the end");
+    assert_eq!(markers(&e), [(10_000, 10_000)]);
+    assert_eq!(e.history.steps().len(), steps);
+    // (4) An unknown id is refused.
+    let (_t, mut e, id) = fresh("h2-extent-unknown");
+    let steps = e.history.steps().len();
+    assert!(!e.set_marker_extent(id + 1_000, 10_000..20_000));
+    assert_eq!(markers(&e), [(10_000, 10_000)]);
+    assert_eq!(e.history.steps().len(), steps);
+    // A range ending exactly at the end of the file is allowed.
+    let (_t, mut e, id) = fresh("h2-extent-to-end");
+    assert!(e.set_marker_extent(id, 40_000..48_000));
+    assert_eq!(markers(&e), [(40_000, 48_000)]);
+}
+
+#[test]
 fn f42_select_actions_and_their_control_names() {
     let t = TempDir::new("f42select");
     let mut e = editor(&t.0, &stereo(1000));
