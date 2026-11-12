@@ -38,19 +38,19 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 
 ## Where v1 stands
 
-**75 items** (v1.md's 74 plus L0, the speech-to-text choice)**:** complete 14 · built, check not recorded 14 · partial 31 · not started 16.
+**75 items** (v1.md's 74 plus L0, the speech-to-text choice)**:** complete 14 · built, check not recorded 14 · partial 32 · not started 15.
 
-**337 steps remain:** 246 easy, 86 medium, 5 hard. 266 are proved by a script, 71 by hand (44 of those only by me).
+**333 steps remain:** 242 easy, 86 medium, 5 hard. 262 are proved by a script, 71 by hand (44 of those only by me).
 
 | Stage | Items | Complete | Steps left | Done when |
 |---|---|---|---|---|
 | Stage 0: merge plan | - | done 2026-10-27 | 0 | the old branches are merged into `main` and CI exists |
-| Stage 1: Editor | 19 | 9 | 33 | a full rough-cut edit of an episode is saved, reopened and identical. |
+| Stage 1: Editor | 19 | 9 | 32 | a full rough-cut edit of an episode is saved, reopened and identical. |
 | Stage 1b: Automation | 4 | 0 | 28 | an AI agent completes 10 real editing tasks through the MCP server with no window. |
 | Stage 2: Recording | 7 | 0 | 27 | I record a real 10-minute take on each machine, kill the app once mid-take, and get everything back. |
 | Stage 3: Repair | 14 | 3 | 49 | I clean a real episode end to end and prefer the result to my current tool's, by ear. |
 | Stage 4: Feel | 12 | 0 | 55 | I work without hunting for things. |
-| Stage 4b: Episode Check, transcript and faces | 16 | 1 | 127 | the Podcast face's user cleans a real episode in it without help. |
+| Stage 4b: Episode Check, transcript and faces | 16 | 1 | 124 | the Podcast face's user cleans a real episode in it without help. |
 | Alongside: the MP3 encoder | 1 | 0 | 12 | a 1-hour episode exports to MP3 and passes A3's Done check. |
 | Stage 5: Platform checks | 2 | 1 | 6 | the app is built, launched and checked by hand on Windows, Linux and the 8 GB Mac, and every hand step in the earlier stages that names a machine is recorded. |
 | Stage 6: Design pass | - | not started | filed when it runs | every `design-pass` issue is closed or moved after 1.0 |
@@ -72,7 +72,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | B5 | Selection/View panel and time formats | display | 4 | built, check not recorded | 1 | #19 |
 | C1 | Time Selection tool gestures | selection | 1 | complete | 0 | #20, #69 |
 | C2 | One channel of a stereo file | selection | 1 | partial | 1 | #21 |
-| C3 | Snapping: markers, ruler, zero crossings, key S | selection | 1 | partial | 3 | #22 |
+| C3 | Snapping: markers, ruler, zero crossings, key S | selection | 1 | partial | 2 | #22 |
 | C4 | Spectral selection: Marquee and Lasso | selection | 4 | partial | 8 | #23 |
 | C5 | Transport | transport | 1 | partial | 10 | #24, #67, #1081, #69 |
 | C6 | Scrub by dragging the playhead | transport | 4 | built, check not recorded | 2 | #25 |
@@ -128,7 +128,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | M1 | Studio and Podcast face switch | faces | 4b | not started | 12 | #1063 |
 | M2 | Episode Map replaces the zoom navigator | faces | 4b | not started | 8 | #1052 |
 | M3 | One theme from named design values | faces | 4b | partial | 10 | none |
-| M4 | Large controls preference, 44 px minimum | faces | 4b | not started | 7 | #1062 |
+| M4 | Large controls preference, 44 px minimum | faces | 4b | partial | 4 | #1062 |
 | M5 | Out-of-v1 panels hidden in release | faces | 4b | partial | 8 | #1051 |
 | N1 | Automation core: one Backend, two ways | automation | 1b | partial | 8 | #1107 |
 | N2 | Command line: run, convert, inspect | automation | 1b | not started | 5 | #845 |
@@ -226,7 +226,7 @@ The store, the edit model, selection, transport and markers. I7's Mac measuremen
 
 #### C3: Snapping: markers, ruler, zero crossings, key S (partial)
 
-- **On main:** crates/core/src/snap.rs (snap_frame, six switches), key S in shortcuts.rs, View > Snapping submenu and ruler context menu (apps/wavcraft/src/app.rs, menus.rs); clicks and selection drags snap. Tests: crates/core/tests/snap.rs. Missing: toolbar toggle button, snapping of the playhead drag (C3.4). Merged 2026-11-12: C3.3, the Edit > Snapping submenu sharing snap_items with the ruler menu (#1200).
+- **On main:** crates/core/src/snap.rs (snap_frame, six switches), key S in shortcuts.rs, View > Snapping submenu and ruler context menu (apps/wavcraft/src/app.rs, menus.rs); clicks and selection drags snap. Tests: crates/core/tests/snap.rs. The playhead drag along the ruler snaps too (apps/wavcraft/src/c3_playhead_snap_tests.rs). Missing: toolbar toggle button. Merged 2026-11-12: C3.3, the Edit > Snapping submenu sharing snap_items with the ruler menu (#1200); C3.4, the playhead drag snap (#1201).
 - **Done check:** Edges snap to within 0 samples of a marker when snapping is on.
 - **Recorded so far:** crates/core/tests/snap.rs frames_snap_to_point_markers_and_range_edges_when_asked (7_000 snaps to 7_300, 11_500 to 12_000, 16_600 to 16_000).
 - **Item issue:** #22
@@ -235,7 +235,6 @@ The store, the edit model, selection, transport and markers. I7's Mac measuremen
 |---|---|---|---|---|---|---|---|
 | C3.1 | Add the Snapping toggle to the toolbar table, with the short text "Snap". | apps/wavcraft/src/menus.rs tests, new fn the_toolbar_has_the_snapping_toggle: toolbar_item("view.snap.toggle").map(\|i\| i.cmd) == Some(Cmd::Action(ActionId::SnapToggle)) and glyph(&item) == "Snap". The existing toolbar_has_the_common_commands_and_unique_names still passes. | easy | ui | script | none |  |
 | C3.2 | Show the toolbar Snap button as pressed while snapping is on. Pull the pressed rule into a small function used by the toolbar drawing. | apps/wavcraft/src/app.rs tests, new fn the_snap_button_is_pressed_while_snapping_is_on: toolbar_item_on(snap_item, playing=false, snap_on=true) == true; (snap_item, false, false) == false; (play_item, true, false) == true. Control line TOOLBAR run view.snap.toggle replies OK. | easy | ui | script | C3.1 |  |
-| C3.4 | Snap the playhead when it is dragged along the ruler. Today that drag uses the raw frame (app.rs line 11211). Add one function that snaps a dragged frame with the current snap settings and call it from the pointer drag only. Leave the SCRUB control verb exact. | New apps/wavcraft/src/c3_playhead_snap_tests.rs, built on the headless window used in issue377_tests.rs. With a point marker at 48_000 and snapping on, the new drag function turns a frame a few pixels from the marker into 48_000. With snapping off it returns the frame unchanged. The control line SCRUB 47_900 still reports 47_900 with snapping on. tools/alpha/f36.py still passes. | easy | wiring | script | none | #1174 |
 
 #### C5: Transport (partial)
 
@@ -1104,20 +1103,17 @@ My ruling, 2026-11-01: "Into v1". Order: M3 and M5 first; K1, K2 and L1 can star
 | M1.11 | Publish step tools: the Match Loudness panel and a Save As MP3 button. | Test the_publish_step_matches_and_saves_mp3 in apps/wavcraft/src/m1_face_tests.rs: FACE podcast, STEP publish, STEPTOOL match.run with the podcast preset, wait for busy=0, SAVE <scratch>/out.mp3, wait for busy=0; out.mp3 exists; after OPEN of out.mp3 the LOUDNESS reply is -16 LUFS within 0.5 LU. | medium | wiring | script | M1.6, #11, #38 |  |
 | M1.12 | Hand check on the 8 GB Mac with the second user: record, clean, check and export one real episode in Podcast only. | On the 8 GB Mac I watch the second user do all four steps without opening a Studio panel. I write the date, commit, each step's pass or fail and any place the second user got stuck into docs/checklists/M1.md. No episode name goes in the file. | easy | docs | hand, me, mac | M1.4, M1.7, M1.9, M1.10, M1.11, M2.8, I5.6 |  |
 
-#### M4: Large controls preference, 44 px minimum (not started)
+#### M4: Large controls preference, 44 px minimum (partial)
 
-- **On main:** Nothing on main. No large_controls key in crates/core/src/settings.rs, no 44 px minimum anywhere, no Preferences entry. apply_look in apps/wavcraft/src/app.rs sets colours only. theme.rs has no size values to scale.
+- **On main:** the large_controls setting in crates/core/src/settings.rs (default off, tested in crates/core/tests/settings.rs); theme::metrics_for in apps/wavcraft/src/theme.rs (44 px control height and 22 px handle grab when large); navigator edges (crates/core/src/view.rs nav_hit) and marker flags (apps/wavcraft/src/markers_panel.rs) take their grab width from theme::metrics().handle_grab. Missing: apply_look does not yet switch the metrics from the setting (M4.3), no Preferences checkbox (M4.4), Podcast buttons have no 44 px minimum (M4.6). Merged 2026-11-12: M4.1, M4.2 and M4.5 (#1207).
 - **Done check:** Every control in Podcast is usable by touch on the Linux handheld with the touch screen, by hand.
 - **Recorded so far:** not recorded
 - **Item issue:** #1062
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| M4.1 | Add the large_controls boolean to core settings under the key large_controls, default off, saved and read. | New test large_controls_is_saved_and_defaults_to_off in crates/core/tests/settings.rs: default get("large_controls") is "false"; set to "true" survives save and load; "banana" is refused and the value stays "false". | easy | data-shape | script | none |  |
-| M4.2 | Add theme::metrics_for(large: bool): with large on, control_height is 44 and handle_grab is 22 (44 px across); with it off, the M3 defaults. metrics() reads a set_large switch. | Unit test large_controls_are_at_least_44_px in apps/wavcraft/src/theme.rs: metrics_for(true).control_height is 44.0 and handle_grab is 22.0; metrics_for(false) equals the defaults (18.0 and 6.0). | easy | pure-fn | script | M3.1 |  |
 | M4.3 | Make apply_look call theme::set_large from the setting and set egui's spacing.interact_size to at least control_height in both directions; include the setting in the applied_look key. | Test large_controls_set_the_interact_size in apps/wavcraft/src/m4_large_tests.rs (hooked from app.rs), on a window built as in issue366_tests.rs: after PREF set large_controls true and one apply_look, ctx.style().spacing.interact_size.y is 44.0 and .x is at least 44.0; after PREF set large_controls false the y is 18.0. | easy | state | script | M4.1, M4.2 |  |
 | M4.4 | Add a Large controls checkbox to Preferences, Appearance using pref_check with the key large_controls. | Test the_large_controls_pref_answers_on_the_control_channel in apps/wavcraft/src/m4_large_tests.rs: PREF set large_controls true answers OK; PREF get large_controls answers OK true; PREF set large_controls banana answers ERR. By hand in a debug build: Preferences, Appearance shows a Large controls checkbox, and ticking it makes the toolbar buttons taller at once. | easy | ui | script | M4.3 |  |
-| M4.5 | Make the navigator handle edges and the marker flags take their grab width from theme::metrics().handle_grab. In nav_hit let the reach outside the handle grow with edge_px above 6 (it is capped at 3 px today), so both are 44 px targets with Large controls on. | Test large_grab_widens_the_navigator_edges in crates/core/src/view.rs: nav_hit((100.0, 200.0), 115.0, 22.0) is Some(Left) and with 6.0 is Some(Body); nav_hit((100.0, 200.0), 80.0, 22.0) is Some(Left) and with 6.0 is None; navigator_hit_testing_finds_edges_body_and_outside still passes. Test large_grab_widens_the_marker_flags in apps/wavcraft/src/markers_panel.rs: a marker 20 px from the pointer is picked with Large controls on and not with it off. | easy | wiring | script | M4.2, M3.2 |  |
 | M4.6 | Add faces::button_min_size() returning control_height in both directions, and give it to every Podcast step bar button and step tool button as its minimum size. | Test podcast_buttons_are_44_px_with_large_controls in apps/wavcraft/src/faces.rs: with Large controls on, button_min_size() is (44.0, 44.0); with it off it is (18.0, 18.0). | easy | ui | script | M4.3, M1.8 |  |
 | M4.7 | Hand check on the Linux handheld with the touch screen: Large controls on, Podcast face, tap every button and drag every handle with a finger. | In SteamOS Desktop Mode, in each of the four steps, tap each button and drag the map handle and a marker by finger. Each must respond on the first try. Write each control with pass or fail, date and commit into docs/checklists/M4.md. | easy | docs | hand, me, linux | M4.4, M4.5, M4.6, M1.7, M1.10, M1.11, M2.8 |  |
 
