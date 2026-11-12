@@ -12372,6 +12372,17 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec
                 || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
             (i.consume_key(mods, key) && fresh).then_some(*command)
         }));
+        // egui 0.36 has no key for numpad multiply, so a typed "*" adds a marker (H1.1, #1178). The
+        // text event is taken here, so nothing else reads it. With a text field focused it is typed.
+        if !typing {
+            i.events.retain(|e| {
+                let star = matches!(e, egui::Event::Text(t) if t == "*");
+                if star {
+                    pressed.push(Command::Action(ActionId::MarkerAdd));
+                }
+                !star
+            });
+        }
         pressed
     })
 }
@@ -13089,6 +13100,10 @@ mod tests {
         assert!(settings.save_include_metadata);
     }
 }
+
+#[cfg(test)]
+#[path = "h1_star_marker_tests.rs"]
+mod h1_star_marker_tests;
 
 #[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
