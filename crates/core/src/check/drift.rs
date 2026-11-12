@@ -2,7 +2,7 @@
 //! [`Config::drift_lu`] from the integrated loudness of the whole file for at least
 //! [`Config::drift_min_s`] seconds.
 
-use super::{Config, Finding, Kind, Severity, Sink};
+use super::{Config, Finding, Kind, Severity, Sink, Ticker};
 use crate::loudness::BlockMeter;
 use crate::spectrogram::Samples;
 
@@ -11,7 +11,8 @@ const SUBS: usize = 10;
 /// Sub-blocks either side of a candidate edge that are averaged to score it (0.5 s).
 const EDGE_SUBS: usize = 50;
 
-pub(super) fn drift_pass(channels: &[&dyn Samples], len: u64, cfg: &Config, sink: &mut Sink) {
+/// `None` when the scan was cancelled.
+pub(super) fn drift_pass(channels: &[&dyn Samples], len: u64, cfg: &Config, sink: &mut Sink, tick: &mut Ticker) -> Option<()> {
     let mut meter = BlockMeter::new(cfg.sample_rate, channels.len());
     let block = meter.block();
     let sub = (block / SUBS).max(1);
@@ -36,10 +37,11 @@ pub(super) fn drift_pass(channels: &[&dyn Samples], len: u64, cfg: &Config, sink
         if let Some(st) = meter.process(&planar, want) {
             readings.push((at, f64::from(st)));
         }
+        tick.step(want as u64)?;
     }
     let integrated = f64::from(meter.meter.integrated_lufs());
     if !integrated.is_finite() || integrated <= -143.0 {
-        return;
+        return Some(());
     }
     let mut prefix = vec![0f64; power.len() + 1];
     for (i, p) in power.iter().enumerate() {
@@ -68,6 +70,7 @@ pub(super) fn drift_pass(channels: &[&dyn Samples], len: u64, cfg: &Config, sink
             }
         }
     }
+    Some(())
 }
 
 struct Edges<'a> {

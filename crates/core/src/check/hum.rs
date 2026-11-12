@@ -2,7 +2,7 @@
 
 use rustfft::num_complex::Complex32;
 
-use super::{Config, Finding, Kind, Severity, Sink, read_padded};
+use super::{Config, Finding, Kind, Severity, Sink, Ticker, read_padded};
 use crate::spectrogram::Samples;
 use crate::stft::Stft;
 
@@ -17,13 +17,14 @@ const REACH: usize = 12;
 /// Windows without hum that a region bridges: speech over the hum hides it for a moment.
 const MAX_MISSES: u32 = 4;
 
-pub(super) fn hum_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink: &mut Sink) {
+/// `None` when the scan was cancelled.
+pub(super) fn hum_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink: &mut Sink, tick: &mut Ticker) -> Option<()> {
     let len = src.len();
     let rate = f64::from(cfg.sample_rate);
     if len < FFT || rate / 2.0 <= cfg.hum_hz.iter().copied().fold(0.0, f64::max) * HARMONICS as f64 {
-        return;
+        return tick.step(len as u64);
     }
-    let Ok(stft) = Stft::new(FFT, 50) else { return };
+    let Ok(stft) = Stft::new(FFT, 50) else { return tick.step(len as u64) };
     let (mut buf, mut scratch) = (vec![0f32; FFT], Vec::new());
     let mut spec = vec![Complex32::new(0.0, 0.0); stft.bins()];
     let mut mag = vec![0f32; stft.bins()];
@@ -56,8 +57,10 @@ pub(super) fn hum_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink: &m
             }
         };
         start += stft.hop();
+        tick.step(stft.hop() as u64)?;
     }
     close(open, sink);
+    Some(())
 }
 
 /// The candidate fundamental with the most harmonics (of 1x to 5x) standing [`Config::hum_margin_db`]

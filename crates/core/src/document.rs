@@ -8,8 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::doc::span::EditSpan;
 
@@ -594,16 +594,22 @@ fn coarser(prev: &Level, old: Option<(&Level, &Level)>) -> Level {
 }
 
 /// One channel of a [`DocState`] as [`Samples`] for the spectrogram: reads go through the store's
-/// block cache. A read that fails gives silence (and one log line), never a panic.
+/// block cache. A read that fails gives silence (and one log line), never a panic; the first
+/// error is kept for [`StoreChannel::into_error`].
 pub struct StoreChannel<'a> {
     state: &'a DocState,
     ch: usize,
-    complained: AtomicBool,
+    error: OnceLock<std::io::Error>,
 }
 
 impl<'a> StoreChannel<'a> {
     pub fn new(state: &'a DocState, ch: usize) -> StoreChannel<'a> {
-        StoreChannel { state, ch, complained: AtomicBool::new(false) }
+        StoreChannel { state, ch, error: OnceLock::new() }
+    }
+
+    /// The first read error, if any read failed (those reads gave silence).
+    pub fn into_error(self) -> Option<std::io::Error> {
+        self.error.into_inner()
     }
 }
 
@@ -616,7 +622,10 @@ impl Samples for StoreChannel<'_> {
         let got = match self.state.read(self.ch, start as u64, out) {
             Ok(n) => n,
             Err(e) => {
-                if !self.complained.swap(true, Ordering::Relaxed) {
+                // Only the first error is kept and logged; later ones are dropped unformatted.
+                if self.error.set(e).is_ok()
+                    && let Some(e) = self.error.get()
+                {
                     log::warn!(target: "wavcraft", "reading channel {} from the store failed: {e}", self.ch);
                 }
                 0

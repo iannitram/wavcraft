@@ -141,6 +141,8 @@ pub enum ActionId {
     StatsGotoPeak,
     StatsNextClip,
     StatsPrevClip,
+    /// Effects › Run Episode Check (K1): scan the whole file on a worker thread; the window runs it.
+    EpisodeCheck,
     TimeDecimal,
     TimeCompact,
     TimeSamples,
@@ -314,6 +316,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::StatsGotoPeak, "stats.goto_peak", "Go to Peak"),
     window(ActionId::StatsNextClip, "stats.next_clip", "Next Possibly Clipped Run"),
     window(ActionId::StatsPrevClip, "stats.prev_clip", "Previous Possibly Clipped Run"),
+    window(ActionId::EpisodeCheck, "check.run", "Run Episode Check"),
     window(ActionId::TimeDecimal, "view.time_display.decimal", "Decimal (mm:ss.ddd)"),
     window(ActionId::TimeCompact, "view.time_display.compact", "Compact"),
     window(ActionId::TimeSamples, "view.time_display.samples", "Samples"),
@@ -702,6 +705,7 @@ impl Editor {
             ActionId::ConvertSampleType | ActionId::InterpretSampleRate => self.len() > 0,
             ActionId::ToggleChannel(n) => usize::from(n) < self.channel_count(),
             ActionId::StatsShow | ActionId::StatsGotoPeak | ActionId::StatsNextClip | ActionId::StatsPrevClip => self.len() > 0,
+            ActionId::EpisodeCheck => self.len() > 0,
             ActionId::MarkerAdd => self.len() > 0,
             ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
             ActionId::MarkerPrev => self.history.current().markers().prev_before(selection.start).is_some(),
@@ -1442,6 +1446,7 @@ impl Editor {
             | ActionId::StatsGotoPeak
             | ActionId::StatsNextClip
             | ActionId::StatsPrevClip
+            | ActionId::EpisodeCheck
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -1523,5 +1528,35 @@ mod hud_tests {
         assert!(!hud_visible(true, false, true));
         assert!(!hud_visible(true, true, false));
         assert!(!hud_visible(true, true, true));
+    }
+}
+
+#[cfg(test)]
+mod episode_check_tests {
+    use super::*;
+    use crate::doc::history::History;
+    use crate::doc::{Channel, DocState, Piece, SourceFormat};
+    use crate::store::{Store, StoreOptions};
+
+    /// An editor over a mono document of `frames` frames, in a temp store removed afterwards.
+    fn with_editor(label: &str, frames: usize, check: impl FnOnce(&Editor)) {
+        let dir = std::env::temp_dir().join(format!("wavcraft-actions-k14-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::create_with(&dir, StoreOptions::default()).unwrap();
+        let channel =
+            if frames == 0 { Channel::new() } else { Channel::from_pieces([Piece::whole(store.append(&vec![0.25; frames]).unwrap()).unwrap()]) };
+        let doc = DocState::new(store, vec![channel], 48_000, SourceFormat::synthetic(48_000, 1)).unwrap();
+        check(&Editor::new(History::new(doc, u64::MAX)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn episode_check_is_in_the_table() {
+        let a = by_name("check.run").unwrap();
+        assert_eq!(a.id, ActionId::EpisodeCheck);
+        assert_eq!(a.menu, "Run Episode Check");
+        with_editor("empty", 0, |e| assert!(!e.enabled(ActionId::EpisodeCheck, &(0..0)), "enabled on an empty document"));
+        with_editor("one", 1, |e| assert!(e.enabled(ActionId::EpisodeCheck, &(0..0)), "disabled on a 1-frame document"));
     }
 }
