@@ -11771,6 +11771,9 @@ impl eframe::App for WaveApp {
                 self.error = Some(format!("{why}, take saved: {}", take.path.display()));
             }
         }
+        if let Some(hint) = self.rec.take_hint(std::env::consts::OS) {
+            self.notice = Some(hint);
+        }
         if self.rec.max_reached() {
             log::info!(target: "wavcraft", "recording: the time limit is reached, stopping");
             self.finish_recording(true, ctx);

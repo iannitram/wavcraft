@@ -98,6 +98,9 @@ struct Active {
     /// The newest peak, decaying; and whether any sample reached full scale.
     peak: f32,
     clipped: bool,
+    /// The loudest sample of the whole take, and whether its silence hint has been handed out.
+    top_peak: f32,
+    hint_shown: bool,
     /// Stop by itself after this many recorded frames (C028); paused time does not count.
     max_frames: Option<u64>,
     /// Where in the file (frames) each resume after a pause begins (C029).
@@ -252,24 +255,45 @@ fn clock(secs: u64) -> String {
     if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) }
 }
 
+/// What to do about a microphone that macOS blocks (the privacy setting).
+const MIC_PERMISSION: &str =
+    "macOS may be blocking the microphone. Allow WavCraft in System Settings > Privacy & Security > Microphone, then record again.";
+
 /// The hint for a take that is silent on macOS, where the microphone is often blocked by the
 /// privacy setting. `frames` and `rate` say how much audio has arrived and `peak_so_far` is the
 /// loudest sample so far. Returns the hint once at least two seconds have arrived and every
 /// sample has been exact zero; otherwise `None`. A rate of 0 is never a hint.
-#[allow(dead_code)] // nothing calls it yet; a later step wires it in
 pub fn mic_blocked_hint(os: &str, frames: u64, rate: u32, peak_so_far: f32) -> Option<String> {
     if os != "macos" || rate == 0 || frames < 2 * u64::from(rate) || peak_so_far != 0.0 {
         return None;
     }
-    Some(
-        "No sound is coming in. macOS may be blocking the microphone. Allow WavCraft in System Settings > Privacy & Security > Microphone, then record again."
-            .to_string(),
-    )
+    Some(format!("No sound is coming in. {MIC_PERMISSION}"))
+}
+
+/// The text of an error from opening the input. On macOS the permission is named after it, since
+/// a blocked microphone often fails to open; elsewhere the error is returned unchanged.
+pub fn open_error_text(os: &str, err: &str) -> String {
+    if os != "macos" {
+        return err.to_string();
+    }
+    format!("{err}. {MIC_PERMISSION}")
 }
 
 impl Recording {
     pub fn is_active(&self) -> bool {
         self.active.is_some()
+    }
+
+    /// The silence hint for the take running now, given once: `Some` the first time
+    /// [`mic_blocked_hint`] applies to it on `os`, then `None` for the rest of that take.
+    pub fn take_hint(&mut self, os: &str) -> Option<String> {
+        let a = self.active.as_mut()?;
+        if a.hint_shown {
+            return None;
+        }
+        let hint = mic_blocked_hint(os, a.recorder.status().frames, a.recorder.format().rate, a.top_peak)?;
+        a.hint_shown = true;
+        Some(hint)
     }
 
     /// The last format used, else the default (48 kHz, mono, 24-bit).
@@ -407,7 +431,8 @@ impl Recording {
                 (recorder, Source::Fake(fake), ring, device, Arc::new(Lost::new()))
             }
             None => {
-                let opened = crate::rec_input::open(want, want_monitor, self.input_device.as_deref())?;
+                let opened = crate::rec_input::open(want, want_monitor, self.input_device.as_deref())
+                    .map_err(|e| open_error_text(std::env::consts::OS, &e))?;
                 monitor = opened.monitor.clone().map(|m| (m, opened.fmt.rate));
                 opened.ring.set_paused(held);
                 let recorder = Recorder::start(make(opened.fmt)?, opened.ring.clone()).map_err(|e| e.to_string())?;
@@ -436,6 +461,8 @@ impl Recording {
             free_at: Instant::now() - Duration::from_secs(10),
             peak: 0.0,
             clipped: false,
+            top_peak: 0.0,
+            hint_shown: false,
             max_frames: max.map(|m| match m {
                 Max::Secs(s) => s * u64::from(fmt.rate),
                 Max::Frames(f) => f,
@@ -495,6 +522,7 @@ impl Recording {
         let p = a.ring.take_peak();
         a.peak = p.max(a.peak * 0.9);
         a.clipped |= p >= 0.999;
+        a.top_peak = a.top_peak.max(p);
         let dropped = a.ring.dropped_frames();
         if dropped > a.logged_dropped && a.warn_at.elapsed() >= Duration::from_secs(1) {
             a.warn_at = Instant::now();
@@ -811,6 +839,65 @@ mod tests {
     }
 
     #[test]
+    fn an_input_open_error_on_macos_names_the_permission() {
+        let text = super::open_error_text("macos", "no audio input device");
+        assert!(text.contains("Privacy & Security"), "{text}");
+        assert_eq!(super::open_error_text("linux", "no audio input device"), "no audio input device");
+    }
+
+    #[test]
+    fn a_silent_take_raises_the_hint_once() {
+        use super::{Active, Recording, Source};
+        use std::sync::Arc;
+        use wavcraft_core::record::{FakeInput, FakeSpec, Recorder, Ring, create_take};
+
+        let dir = std::env::temp_dir().join(format!("wavcraft-silent-take-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fmt = RecFormat::default();
+        let ring = Ring::new(96_000, fmt.channels);
+        let recorder = Recorder::start(create_take(&dir, fmt, 0).unwrap(), ring.clone()).unwrap();
+        // The fake input is only there to be the take's source; it writes into a spare queue that
+        // nothing reads, so the take's own queue holds exactly the zeros fed below.
+        let spec = FakeSpec::parse(Some("sine:440")).unwrap().unwrap();
+        let spare = Ring::new(fmt.rate as usize, fmt.channels);
+        let fake = FakeInput::spawn(spec, fmt, Arc::clone(&spare)).unwrap();
+        let mut rec = Recording {
+            active: Some(Active {
+                monitor: None,
+                recorder,
+                source: Source::Fake(fake),
+                ring: ring.clone(),
+                lost: Arc::new(crate::rec_input::Lost::new()),
+                dir: dir.clone(),
+                device: "silent test input".to_string(),
+                free: None,
+                free_at: Instant::now(),
+                peak: 0.0,
+                clipped: false,
+                top_peak: 0.0,
+                hint_shown: false,
+                max_frames: None,
+                resumes: Vec::new(),
+                logged_dropped: 0,
+                warn_at: Instant::now(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(ring.push(&vec![0.0; 96_000]), 96_000);
+        let t = Instant::now();
+        while rec.active.as_ref().is_some_and(|a| a.recorder.status().frames < 96_000) && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(rec.refresh().is_none(), "a silent input is not an error");
+        assert!(rec.take_hint("linux").is_none(), "the hint is for macOS only");
+        let hint = rec.take_hint("macos").expect("the hint");
+        assert!(hint.contains("Privacy & Security"), "{hint}");
+        assert!(rec.take_hint("macos").is_none(), "the hint is given once per take");
+        let _ = rec.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn the_clock_reads_minutes_then_hours() {
         assert_eq!(clock(0), "0:00");
         assert_eq!(clock(65), "1:05");
@@ -845,6 +932,8 @@ mod tests {
                 free_at: Instant::now(),
                 peak: 0.0,
                 clipped: false,
+                top_peak: 0.0,
+                hint_shown: false,
                 max_frames: None,
                 resumes: Vec::new(),
                 logged_dropped: 0,
