@@ -1,5 +1,6 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
+use crate::check_panel::CheckRun;
 use crate::theme;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
@@ -622,6 +623,8 @@ pub struct WaveApp {
     title: String,
     /// The open file's editing state: its history, the active channels, the clipboard.
     editor: Option<Editor>,
+    /// Episode Check worker and its report for the document state it scanned (K1.6).
+    check_run: CheckRun,
     /// Where the open file came from (kept while an edit leaves the document empty).
     doc_path: PathBuf,
     /// Names the current document (the save in flight belongs to one).
@@ -1016,6 +1019,7 @@ impl WaveApp {
             fit_on_next_frame: false,
             title: String::new(),
             editor: None,
+            check_run: CheckRun::default(),
             doc_path: PathBuf::new(),
             doc_id: 0,
             doc_serial: 0,
@@ -5165,6 +5169,11 @@ impl WaveApp {
     /// Run an action from the table on the open file (menu, key or control channel). Returns
     /// whether the document changed.
     fn run_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
+        if id == ActionId::EpisodeCheck {
+            let Some(state) = self.editor.as_ref().map(|e| e.history.current().clone()) else { return Err("no file is open".to_string()) };
+            self.check_run.start(state, ctx);
+            return Ok(false);
+        }
         // The snapping switches are settings: they flip with no file open too.
         if self.editor.is_none() && actions::snap_flag_value(&self.settings.snap, id).is_some() {
             self.toggle_snap_menu(id);
@@ -8029,6 +8038,25 @@ impl WaveApp {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
+            "CHECK" => match rest.trim() {
+                "run" => match self.run_action(ActionId::EpisodeCheck, ctx) {
+                    Ok(_) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                },
+                "cancel" => {
+                    self.check_run.cancel();
+                    "OK".to_string()
+                }
+                "state" => {
+                    let running = u8::from(self.check_run.running());
+                    let progress = (self.check_run.progress() * 100.0).round() as u32;
+                    let findings = self.check_run.report().map_or(0, |r| r.findings.len());
+                    let stale =
+                        self.check_run.checked().is_some_and(|c| self.editor.as_ref().is_none_or(|e| !Arc::ptr_eq(e.history.current(), &c.state)));
+                    format!("OK running={running} progress={progress} findings={findings} stale={}", u8::from(stale))
+                }
+                _ => "ERR CHECK run|cancel|state".to_string(),
+            },
             "EPISODEMAP" => {
                 // The Episode Map as the navigator last painted it: its columns, and how many are each class.
                 let count = |class: Class| self.map_classes.iter().filter(|&&c| c == class).count();
@@ -10681,6 +10709,18 @@ impl WaveApp {
                 if ui.button("Cancel").clicked() {
                     cancel_job = true;
                 }
+            } else if self.check_run.running() {
+                ui.spinner();
+                let progress = self.check_run.progress();
+                ui.label(format!("Run Episode Check… {:.0}%", progress * 100.0));
+                ui.add(egui::ProgressBar::new(progress).desired_width(120.0));
+                if ui.button("Cancel").clicked() {
+                    self.check_run.cancel();
+                }
+            } else if self.check_run.checked().is_some_and(|c| self.editor.as_ref().is_none_or(|e| !Arc::ptr_eq(e.history.current(), &c.state))) {
+                ui.label("Episode Check report is stale; run it again");
+            } else if let Some(e) = self.check_run.error() {
+                ui.colored_label(theme::pal().cursor, e);
             } else if let Some(i) = &self.inserting {
                 ui.spinner();
                 ui.label(format!("Inserting {}… {}%", i.path.display(), i.progress.load(Ordering::Relaxed) / 10));
@@ -12003,6 +12043,7 @@ impl eframe::App for WaveApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.check_run.poll();
         self.apply_look(&ctx);
         if self.rec.is_active() {
             // Closing the window ends the take cleanly; a kill is covered by the header.
