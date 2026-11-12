@@ -722,3 +722,20 @@ fn the_session_folder_set_by_key_keeps_its_spaces() {
     s.set("session_folder", "").unwrap();
     assert_eq!(s.session_folder, None);
 }
+
+#[test]
+fn large_controls_is_saved_and_defaults_to_off() {
+    let mut s = Settings::default();
+    assert_eq!(s.get("large_controls").unwrap(), "false", "off by default");
+    assert!(wavcraft_core::settings::KEYS.contains(&"large_controls"), "large_controls is in KEYS");
+    let dir = TempDir::new("large-controls");
+    let file = dir.0.join("settings.txt");
+    s.set("large_controls", "true").unwrap();
+    s.save(&file).unwrap();
+    let back = Settings::load(&file);
+    assert_eq!(back.get("large_controls").unwrap(), "true", "survives save and load");
+    assert!(back.large_controls);
+    let mut fresh = Settings::default();
+    assert!(fresh.set("large_controls", "banana").is_err(), "banana is refused");
+    assert_eq!(fresh.get("large_controls").unwrap(), "false", "the value stays false");
+}
