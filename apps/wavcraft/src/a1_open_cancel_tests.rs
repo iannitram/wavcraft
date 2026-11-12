@@ -114,3 +114,24 @@ fn open_cancel_over_the_control_channel() {
     let again = app.control_request("OPEN_CANCEL", &ctx);
     assert!(again.starts_with("ERR"), "a second OPEN_CANCEL answers ERR, got {again}");
 }
+
+/// A1.2: the status bar's opening branch draws a Cancel button, and the frame calls
+/// `cancel_opening` when it is clicked. Read from the source: the live code only (the test
+/// module is cut off the end), the opening branch up to the running-job branch.
+#[test]
+fn the_status_bar_offers_cancel_while_opening() {
+    let full = include_str!("app.rs");
+    let src = full.split("#[cfg(test)]").next().unwrap_or(full);
+    let start = src.find("} else if let Some(o) = &self.opening {").expect("the status bar has an opening branch");
+    let rest = &src[start..];
+    let end = rest.find("} else if let Some(r) = &self.running {").expect("the opening branch ends before the running one");
+    let branch = &rest[..end];
+    assert!(branch.contains("ui.spinner()"), "the opening branch shows the spinner");
+    assert!(branch.contains(r#"ui.button("Cancel")"#), "the opening branch holds a Cancel button");
+    assert!(branch.contains("cancel_open = true"), "the Cancel click sets cancel_open");
+
+    let frame = src.find("if cancel_open {").expect("the frame reads cancel_open");
+    let after = &src[frame..];
+    let call = after.find("self.cancel_opening();").expect("the frame calls self.cancel_opening()");
+    assert!(call < 60, "the call follows the cancel_open check, got {call} bytes after it");
+}
