@@ -5155,6 +5155,8 @@ impl WaveApp {
             return self.run_window_action(id, ctx);
         }
         let mut sel = self.selection_range();
+        // Add Marker during play keeps the selection the user made: only the marker moves to the playhead.
+        let keeps_selection = id == ActionId::MarkerAdd && self.player.is_playing();
         // Markers go where play is, when it is playing (a point at the playhead).
         if matches!(id, ActionId::MarkerAdd | ActionId::MarkerNext | ActionId::MarkerPrev) && self.player.is_playing() {
             let at = self.player.position() as u64;
@@ -5183,7 +5185,9 @@ impl WaveApp {
                 if out.doc_changed {
                     self.last_op = Some((actions::action(id).menu.to_string(), began.elapsed()));
                 }
-                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                if !keeps_selection {
+                    self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                }
                 if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::MarkerNext | ActionId::MarkerPrev) {
                     self.halt_play();
                     let frames = self.doc.as_ref().map_or(0, Document::frames);
@@ -13144,6 +13148,10 @@ mod tests {
 #[cfg(test)]
 #[path = "h1_star_marker_tests.rs"]
 mod h1_star_marker_tests;
+
+#[cfg(test)]
+#[path = "h1_3_marker_selection_tests.rs"]
+mod h1_3_marker_selection_tests;
 
 #[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
