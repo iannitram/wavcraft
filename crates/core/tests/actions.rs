@@ -829,6 +829,20 @@ fn f68_toggling_a_channel_enables_and_disables_it_for_edits() {
 }
 
 #[test]
+fn f68_switching_one_channel_off_keeps_the_others_past_sixty_four_selected() {
+    let dir = TempDir::new("f68-65");
+    let data: Vec<Vec<f32>> = (0..65).map(|_| vec![1.0; 1000]).collect();
+    let mut e = editor(&dir.0, &data);
+    assert_eq!(e.channels, wavcraft_core::ChannelMask::ALL, "all on to start with");
+    e.run(ActionId::ToggleChannel(0), 0..0).unwrap();
+    assert_eq!(e.channels.active(65), (1..65).collect::<Vec<_>>(), "channel 1 off, the other 64 still on");
+    assert!(e.channels.contains(64), "channel 65 (index 64) stays selected");
+    assert!(!e.channels.contains(0));
+    e.run(ActionId::ToggleChannel(0), 0..0).unwrap();
+    assert_eq!(e.channels, wavcraft_core::ChannelMask::ALL, "all on is the plain 'every channel' mask again");
+}
+
+#[test]
 fn f68_the_last_enabled_channel_cannot_be_turned_off_and_a_missing_channel_is_refused() {
     let dir = TempDir::new("f68-last");
     let mut e = editor(&dir.0, &stereo(100));
