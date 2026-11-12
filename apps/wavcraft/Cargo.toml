@@ -25,6 +25,11 @@ dirs.workspace = true
 soundcraft-video.workspace = true
 arboard.workspace = true
 
+[dev-dependencies]
+# N1.5's parity test (n1_parity_tests.rs) runs the same requests through the headless backend.
+# A test-only edge: the app itself does not depend on wavcraft-automation.
+wavcraft-automation.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 # The token file's owner-only DACL (win_acl.rs). Already in Cargo.lock (0.61.2: wavcraft-testkit,
 # dirs-sys), so no new crate; these features add the Win32 security calls. MIT OR Apache-2.0.
