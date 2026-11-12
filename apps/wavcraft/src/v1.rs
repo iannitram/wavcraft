@@ -168,7 +168,8 @@ mod tests {
 
     #[test]
     fn a_release_effects_menu_and_rack_list_no_dehummer_or_dereverb() {
-        let menu = |release| effect_rows_in(release).iter().map(|a| a.menu).collect::<Vec<&str>>();
+        // Through the fn the Effects menu calls (app.rs `effects_menu`), not `effect_rows_in`.
+        let menu = |release| crate::app::WaveApp::effects_menu_rows(release).iter().map(|a| a.menu).collect::<Vec<&str>>();
         let (release, debug) = (menu(true), menu(false));
         assert!(release.contains(&"Noise Reduction") && release.contains(&"Reverse"), "{release:?}");
         assert!(!release.contains(&"DeHummer") && !release.contains(&"DeReverb"), "{release:?}");
