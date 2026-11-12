@@ -574,6 +574,9 @@ pub struct WaveApp {
     /// A text field has keyboard focus inside a floated panel. Keyboard focus is kept per
     /// viewport, so the root window cannot see it; `floating_windows` records it each frame.
     float_typing: bool,
+    /// Another widget (a button, checkbox or slider) has keyboard focus inside a floated panel.
+    /// It is not typing, so Space still plays (#1219), as in the root window (#1081).
+    float_focus: bool,
     /// The monitors, when they are faked (`MONITORS simulate`, `WAVCRAFT_MONITORS`); `None` means
     /// the real ones, which this build cannot list (egui reports only the size of the one
     /// monitor), so floating windows are then neither tagged nor moved.
@@ -975,6 +978,7 @@ impl WaveApp {
             layout_dirty: false,
             float_kind: None,
             float_typing: false,
+            float_focus: false,
             monitors: std::env::var("WAVCRAFT_MONITORS").ok().and_then(|t| match monitors::parse(&t) {
                 Ok(m) => Some(m),
                 Err(e) => {
@@ -3863,6 +3867,7 @@ impl WaveApp {
         let floats: Vec<panels::Float> = self.layout.floats(&self.panels).into_iter().cloned().collect();
         let mut dock_back: Vec<String> = Vec::new();
         self.float_typing = false;
+        self.float_focus = false;
         for f in floats {
             let title = panels::by_id(&f.id).map_or("Panel", |p| p.title);
             let vid = egui::ViewportId::from_hash_of(("float", f.id.as_str()));
@@ -3874,7 +3879,7 @@ impl WaveApp {
             let mut dock = false;
             let mut kind = "os";
             let mut rect: Option<([f32; 2], [f32; 2])> = None;
-            let mut typing = false;
+            let mut focus = ViewportFocus::default();
             ctx.show_viewport_immediate(vid, builder, |ui, class| {
                 let mut body = |ui: &mut egui::Ui| {
                     ui.horizontal(|ui| {
@@ -3902,10 +3907,12 @@ impl WaveApp {
                         rect = Some(([o.min.x, o.min.y], [i.width(), i.height()]));
                     }
                 }
-                // This viewport's own focus: a text field in this float has the keyboard.
-                typing = ui.ctx().egui_wants_keyboard_input();
+                // This viewport's own focus: a text field in this float is typing; another widget
+                // there only holds focus (#1219).
+                focus = ViewportFocus::of(ui.ctx());
             });
-            self.float_typing |= typing;
+            self.float_typing |= focus.typing;
+            self.float_focus |= focus.other;
             self.float_kind = Some(kind);
             if dock {
                 dock_back.push(f.id.clone());
@@ -11955,7 +11962,7 @@ impl eframe::App for WaveApp {
             }
         }
         // ` maximises the panel under the pointer (and restores); Ctrl+W closes it.
-        let typing = ctx.egui_wants_keyboard_input() || self.float_typing;
+        let typing = ctx.egui_wants_keyboard_input() || self.float_typing || self.float_focus;
         let (grave, close) =
             ctx.input_mut(|i| (!typing && i.consume_key(egui::Modifiers::NONE, Key::Backtick), i.consume_key(egui::Modifiers::COMMAND, Key::W)));
         if grave {
@@ -11982,7 +11989,7 @@ impl eframe::App for WaveApp {
         // are not commands (f46).
         let keys_for_dialog =
             self.shortcut_dialog.as_ref().is_some_and(|d| d.capturing()) || (self.shortcut_dialog.is_some() && ctx.egui_wants_keyboard_input());
-        let pressed = if keys_for_dialog { Vec::new() } else { pressed_commands(&ctx, &self.keymap, self.float_typing) };
+        let pressed = if keys_for_dialog { Vec::new() } else { pressed_commands(&ctx, &self.keymap, self.float_typing, self.float_focus) };
         for command in pressed {
             if let Err(e) = self.run_command(command, &ctx) {
                 // A key that can't act now (no file open, a save running) is not an error to show,
@@ -12378,16 +12385,33 @@ fn tool_labels(keymap: &Keymap, mac: bool) -> Vec<(Tool, String)> {
         .collect()
 }
 
+/// What a floated panel's own viewport holds (#1219): a text field being edited (`typing`), or
+/// another widget with focus, which is not typing (`other`). Keyboard focus is kept per viewport,
+/// so it is read in that viewport's frame, not the root window's.
+#[derive(Default)]
+struct ViewportFocus {
+    typing: bool,
+    other: bool,
+}
+
+impl ViewportFocus {
+    fn of(ctx: &egui::Context) -> ViewportFocus {
+        let typing = ctx.text_edit_focused();
+        ViewportFocus { typing, other: !typing && ctx.egui_wants_keyboard_input() }
+    }
+}
+
 /// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
 /// so Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
-fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec<Command> {
+fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool, float_focus: bool) -> Vec<Command> {
     // A text field being edited owns the keyboard: Space types a space, and Backspace, Delete and
     // Cmd+Z edit the text, not the audio (#368, #434). Cmd+S and Cmd+O keep working. `in_float` is
     // a text field focused in a floated panel's own viewport, which this window cannot see.
     let typing = in_float || ctx.text_edit_focused();
     // A focused button, checkbox or slider is not typing: Space still plays (and is consumed here,
     // so the widget never reads it as a click), but its other keys stay held back as before (#1081).
-    let other_focus = !typing && ctx.egui_wants_keyboard_input();
+    // `float_focus` is such a widget in a floated panel's viewport (#1219).
+    let other_focus = !typing && (float_focus || ctx.egui_wants_keyboard_input());
     let mut rows: Vec<(Command, Shortcut)> = keymap.bindings().iter().map(|b| (b.command, b.chord)).collect();
     rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
@@ -12919,7 +12943,7 @@ mod tests {
                 if ask_focus {
                     r.request_focus();
                 }
-                found = pressed_commands(ui.ctx(), &keymap, false);
+                found = pressed_commands(ui.ctx(), &keymap, false, false);
             });
             output.textures_delta.clear();
             found
@@ -13068,7 +13092,7 @@ mod tests {
         let keymap = Keymap::new();
         let mut got = Vec::new();
         let mut output = ctx.run_ui(egui::RawInput { events: vec![press], ..Default::default() }, |ui| {
-            got = pressed_commands(ui.ctx(), &keymap, in_float);
+            got = pressed_commands(ui.ctx(), &keymap, in_float, false);
         });
         output.textures_delta.clear();
         got
@@ -13325,6 +13349,10 @@ mod c3_playhead_snap_tests;
 #[cfg(test)]
 #[path = "issue1173_tests.rs"]
 mod issue1173_tests;
+
+#[cfg(test)]
+#[path = "issue1219_tests.rs"]
+mod issue1219_tests;
 
 #[cfg(test)]
 #[path = "d2_new_from_clip_tests.rs"]

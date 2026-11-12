@@ -24,7 +24,7 @@ fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> (bool, Vec<Command>) 
     let mut out = (false, Vec::new());
     let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
         out.0 = consume_record_now(ui.ctx());
-        out.1 = pressed_commands(ui.ctx(), &keymap, false);
+        out.1 = pressed_commands(ui.ctx(), &keymap, false, false);
     });
     output.textures_delta.clear();
     out

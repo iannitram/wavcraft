@@ -35,7 +35,7 @@ fn key_action(key: Key, cmd: bool, shift: bool) -> Vec<ActionId> {
     let keymap = Keymap::new();
     let mut found = Vec::new();
     let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-        found = pressed_commands(ui.ctx(), &keymap, false)
+        found = pressed_commands(ui.ctx(), &keymap, false, false)
             .into_iter()
             .filter_map(|command| match command {
                 Command::Action(id) => Some(id),

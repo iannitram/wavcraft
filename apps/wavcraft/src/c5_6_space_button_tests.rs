@@ -20,7 +20,7 @@ fn events_on_a_focused_button(events: Vec<egui::Event>) -> (Vec<Command>, bool) 
     let mut got = Vec::new();
     let mut clicked = false;
     let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-        got = pressed_commands(ui.ctx(), &keymap, false);
+        got = pressed_commands(ui.ctx(), &keymap, false, false);
         clicked = ui.button("Go").clicked();
     });
     output.textures_delta.clear();
