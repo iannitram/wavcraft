@@ -28,6 +28,7 @@
 mod drift;
 mod hum;
 mod plosive;
+pub mod summary;
 
 use std::f64::consts::PI;
 use std::io;
