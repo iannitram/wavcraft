@@ -78,7 +78,9 @@ impl CheckRun {
 
     /// How far the running scan is, 0 to 1 (0 when none runs).
     pub fn progress(&self) -> f32 {
-        self.job.as_ref().map_or(0.0, |j| j.progress.load(Ordering::Relaxed).min(STEPS) as f32 / STEPS as f32)
+        self.job
+            .as_ref()
+            .map_or_else(|| if self.checked.is_some() { 1.0 } else { 0.0 }, |j| j.progress.load(Ordering::Relaxed).min(STEPS) as f32 / STEPS as f32)
     }
 
     /// Take a finished scan's result (call every frame). True when a run ended this call.

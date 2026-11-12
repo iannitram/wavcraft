@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 wavcraft-core.workspace = true
+wavcraft-automation.workspace = true
 soundcraft-playback.workspace = true
 serde_json.workspace = true
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "wayland", "x11"] }
@@ -24,11 +25,6 @@ soundcraft-dsp.workspace = true
 dirs.workspace = true
 soundcraft-video.workspace = true
 arboard.workspace = true
-
-[dev-dependencies]
-# N1.5's parity test (n1_parity_tests.rs) runs the same requests through the headless backend.
-# A test-only edge: the app itself does not depend on wavcraft-automation.
-wavcraft-automation.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # The token file's owner-only DACL (win_acl.rs). Already in Cargo.lock (0.61.2: wavcraft-testkit,
