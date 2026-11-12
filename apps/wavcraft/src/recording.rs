@@ -540,6 +540,12 @@ impl Recording {
         a.recorder.status().error
     }
 
+    /// The take's meter for the status readout: the newest peak (decaying, as `refresh` keeps it)
+    /// and whether the take has clipped, which latches until the take ends. `None` with no take.
+    pub fn meter(&self) -> Option<(f32, bool)> {
+        self.active.as_ref().map(|a| (a.peak, a.clipped))
+    }
+
     /// Whole seconds until an armed take starts, else -1.
     fn armed_in(&self) -> i64 {
         self.armed.as_ref().map_or(-1, |a| a.at.saturating_duration_since(Instant::now()).as_secs() as i64)
@@ -602,10 +608,11 @@ impl Recording {
             return Some((format!("Recording starts in {} (Cancel to give up)", clock(secs)), false));
         }
         let a = self.active.as_ref()?;
+        let (peak, clipped) = self.meter()?;
         let (s, fmt) = (a.recorder.status(), a.recorder.format());
         let elapsed = s.frames / u64::from(fmt.rate.max(1));
         let left = Self::left_secs(a).map_or_else(|| "?".to_string(), clock);
-        let db = if a.peak > 0.0 { format!("{:.1} dB", 20.0 * a.peak.log10()) } else { "-inf dB".to_string() };
+        let db = if peak > 0.0 { format!("{:.1} dB", 20.0 * peak.log10()) } else { "-inf dB".to_string() };
         let lost_ms = s.dropped_frames * 1000 / u64::from(fmt.rate.max(1));
         let warn = if s.dropped_frames > 0 { format!("⚠ DROPPED {} frames ({lost_ms} ms) · ", s.dropped_frames) } else { String::new() };
         let state = match self.into.as_ref() {
@@ -622,7 +629,7 @@ impl Recording {
             "{warn}{state} {}{limit} · {} · {left} left on disk · peak {db}{} · {} Hz {} ch {}-bit{} · {}",
             clock(elapsed),
             format_bytes(s.file_bytes),
-            if a.clipped { " CLIP" } else { "" },
+            if clipped { " CLIP" } else { "" },
             fmt.rate,
             fmt.channels,
             fmt.bits,
@@ -632,7 +639,7 @@ impl Recording {
         if let Some(e) = s.error {
             text = format!("{text} · {e}");
         }
-        Some((text, a.clipped || s.dropped_frames > 0))
+        Some((text, clipped || s.dropped_frames > 0))
     }
 
     /// The new-recording dialog. Returns the format when Start is clicked.
@@ -894,6 +901,61 @@ mod tests {
         assert!(hint.contains("Privacy & Security"), "{hint}");
         assert!(rec.take_hint("macos").is_none(), "the hint is given once per take");
         let _ = rec.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_take_meter_follows_the_input_and_latches_clip() {
+        use super::{Active, Recording, Source};
+        use std::sync::Arc;
+        use wavcraft_core::record::{FakeInput, FakeSpec, Recorder, Ring, create_take};
+
+        assert!(Recording::default().meter().is_none(), "no take, no meter");
+        let dir = std::env::temp_dir().join(format!("wavcraft-take-meter-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fmt = RecFormat::default();
+        // The take's ring is fed only by this test; the fake input is the take's source and writes
+        // into a spare queue that nothing reads.
+        let ring = Ring::new(96_000, fmt.channels);
+        let recorder = Recorder::start(create_take(&dir, fmt, 0).unwrap(), ring.clone()).unwrap();
+        let spec = FakeSpec::parse(Some("sine:440")).unwrap().unwrap();
+        let spare = Ring::new(fmt.rate as usize, fmt.channels);
+        let fake = FakeInput::spawn(spec, fmt, Arc::clone(&spare)).unwrap();
+        let mut rec = Recording {
+            active: Some(Active {
+                monitor: None,
+                recorder,
+                source: Source::Fake(fake),
+                ring: ring.clone(),
+                lost: Arc::new(crate::rec_input::Lost::new()),
+                dir: dir.clone(),
+                device: "meter test input".to_string(),
+                free: None,
+                free_at: Instant::now(),
+                peak: 0.0,
+                clipped: false,
+                top_peak: 0.0,
+                hint_shown: false,
+                max_frames: None,
+                resumes: Vec::new(),
+                logged_dropped: 0,
+                warn_at: Instant::now(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(rec.meter(), Some((0.0, false)), "before any audio");
+        assert_eq!(ring.push(&[0.5; 480]), 480);
+        rec.refresh();
+        assert_eq!(rec.meter(), Some((0.5, false)));
+        assert_eq!(ring.push(&[1.0]), 1);
+        rec.refresh();
+        assert_eq!(rec.meter(), Some((1.0, true)), "full scale clips");
+        for _ in 0..2 {
+            rec.refresh();
+        }
+        assert!(rec.meter().is_some_and(|(_, clip)| clip), "the clip flag stays latched with no new audio");
+        let _ = rec.stop();
+        assert!(rec.meter().is_none(), "no take, no meter");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
