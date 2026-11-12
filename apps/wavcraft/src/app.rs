@@ -2328,6 +2328,17 @@ impl WaveApp {
         }
     }
 
+    /// Cancel the file that is opening (A1.1, the status bar's Cancel): stop its worker, which
+    /// removes its session folder and whose answer is never read, drop the files queued behind it,
+    /// and say so. No document is added.
+    fn cancel_opening(&mut self) {
+        if let Some(old) = self.opening.take() {
+            old.cancel.store(true, Ordering::Relaxed);
+        }
+        self.open_queue.clear();
+        self.notice = Some("Open cancelled".to_string());
+    }
+
     /// File › Open Append: add `paths` to the end of the current document (`to_new` false) as one
     /// undo step, or make a new document of them back to back, on a worker thread.
     fn start_append(&mut self, to_new: bool, paths: Vec<PathBuf>, ctx: &egui::Context) -> Result<(), String> {
@@ -10498,6 +10509,7 @@ impl WaveApp {
 
     fn status(&mut self, ui: &mut egui::Ui) {
         let mut cancel_job = false;
+        let mut cancel_open = false;
         // The whole bar answers a right-click with the menu of fields; registered first, so the
         // labels drawn after it keep their own hover text.
         let top = ui.available_rect_before_wrap();
@@ -10527,6 +10539,9 @@ impl WaveApp {
                 ui.spinner();
                 let permille = o.progress.load(Ordering::Relaxed);
                 ui.label(tr_args("status.opening", &[&o.path.display().to_string(), &(permille / 10).to_string()]));
+                if ui.button("Cancel").on_hover_text("Stop opening: no document is added").clicked() {
+                    cancel_open = true;
+                }
             } else if let Some(r) = &self.running {
                 ui.spinner();
                 ui.label(format!("{}… {}%", r.job.label(), r.job.permille() / 10));
@@ -10669,6 +10684,9 @@ impl WaveApp {
         }
         if cancel_job && let Some(r) = &self.running {
             r.job.cancel();
+        }
+        if cancel_open {
+            self.cancel_opening();
         }
     }
 
@@ -13182,3 +13200,7 @@ mod issue369_tests;
 #[cfg(test)]
 #[path = "issue377_tests.rs"]
 mod issue377_tests;
+
+#[cfg(test)]
+#[path = "a1_open_cancel_tests.rs"]
+mod a1_open_cancel_tests;
