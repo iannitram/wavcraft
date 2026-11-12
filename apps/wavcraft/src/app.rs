@@ -9414,6 +9414,15 @@ impl WaveApp {
                 Some(_) => "ERR this save cannot be cancelled (only a WAV save of the whole file can)".to_string(),
                 None => "ERR no save is running".to_string(),
             },
+            // `OPEN_CANCEL`: the status bar's Cancel for a file that is opening (A1.6).
+            "OPEN_CANCEL" => {
+                if self.opening.is_some() {
+                    self.cancel_opening();
+                    "OK".to_string()
+                } else {
+                    "ERR no file is opening".to_string()
+                }
+            }
             // `EXPORT_RANGES <folder> [pattern=<p>]`: every range marker as its own WAV (f79).
             "EXPORT_RANGES" => {
                 let (folder, pattern) = match rest.split_once(" pattern=") {

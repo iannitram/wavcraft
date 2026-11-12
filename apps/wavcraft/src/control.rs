@@ -87,6 +87,8 @@
 //! - `I18N missing` → `OK <n> <keys>`; `I18N get <key>` → `OK <text now>` (e.g. a menu title)
 //! - `RECORD start [mode=… monitor=1|0 …]` etc. (see `recording.rs`); `STATE` carries `mon_*` and `rec_offset_*`
 //! - `SAVE_CANCEL` → `OK` (stops the running save: temp file removed, target untouched, still unsaved)
+//! - `OPEN_CANCEL` → `OK` (stops the file that is opening, as the status bar's Cancel does: no document is added,
+//!   the files queued behind it are dropped); `ERR no file is opening` when none is opening
 //! - `SAVEOPTS estimate <wav|aiff|flac> <16|24|32|float> [aiff=<kind>]` → `OK bytes=<n> exact=<0|1>` (the file size a save
 //!   would make; exact for WAV/AIFF, an estimate for FLAC); `SAVEOPTS set …` chooses the export options (the Save As
 //!   dialog's choice) and `SAVEOPTS show` prints them
