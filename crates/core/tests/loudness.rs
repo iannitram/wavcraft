@@ -102,10 +102,92 @@ fn true_peak_sees_what_the_samples_miss() {
     let want_sample = 20.0 * (a * 0.5f64.sqrt()).log10();
     let want_true = 20.0 * a.log10();
     assert!((m.sample_peak_dbfs - want_sample).abs() < 0.01, "{m:?}");
-    // soundcraft-dsp's 12-tap-a-phase interpolator reads this worst case (a quarter of the sample
-    // rate, 45 degrees) about 0.5 dB high; it never reads low here. Measured: -0.40 against -0.92.
+    // The true peak is the full amplitude: this is the worst case for the 12-tap-a-phase 4x
+    // interpolator in soundcraft-dsp (a quarter of the sample rate, 45 degrees), so it may read a
+    // little high but not low. The window is -0.1 dB to +0.6 dB around the analytic -0.92 dBTP.
     assert!(m.true_peak_dbtp > want_true - 0.1 && m.true_peak_dbtp < want_true + 0.6, "true peak {} vs {want_true}: {m:?}", m.true_peak_dbtp);
     assert!(m.true_peak_dbtp > m.sample_peak_dbfs + 2.5);
+}
+
+/// #1277: soundcraft-dsp's true-peak interpolator used to drop a sample at every chunk seam, so a
+/// reading depended on where the input was cut. A short tone burst at a quarter of the sample rate
+/// (its intersample peaks are the loudest part) is read in one call, then cut at every position and
+/// read in two; the 0.1 dB budget is the issue's. The burst is under 256 frames, so the one-call
+/// reading has no seam of its own on any pin.
+#[test]
+fn true_peak_does_not_change_across_a_chunk_seam() {
+    use soundcraft_dsp::meter::LoudnessMeter;
+    let len = 200usize;
+    let burst: Vec<f32> = (0..len)
+        .map(|n| {
+            let env = (PI * (n as f64 + 0.5) / len as f64).sin().powi(2);
+            (0.9 * env * (PI * n as f64 / 2.0 + PI / 4.0).sin()) as f32
+        })
+        .collect();
+    let read = |parts: &[&[f32]]| {
+        let mut m = LoudnessMeter::new(RATE as f32, 1);
+        for p in parts {
+            m.process(&[p.to_vec()], p.len());
+        }
+        f64::from(m.true_peak_db())
+    };
+    let whole = read(&[&burst]);
+    let (mut worst, mut worst_at) = (0.0f64, 0);
+    for at in 1..len {
+        let d = (read(&[&burst[..at], &burst[at..]]) - whole).abs();
+        if d > worst {
+            (worst, worst_at) = (d, at);
+        }
+    }
+    assert!(worst < 0.1, "true peak moves {worst:.3} dB when cut at frame {worst_at}; one call reads {whole:.3} dBTP");
+}
+
+/// #1277: `LoudnessMeter::process` runs its channels on threads from 65 536 frames up
+/// (`process_parallel`), and the serial path below that. Both must read the same true peak, for each
+/// channel, with the loudest intersample peak sitting on a seam between two calls. Two channels carry
+/// different bursts (left loud, right quieter and offset); each channel alone is read by a mono
+/// meter, and the stereo readings must equal the louder one, bit for bit.
+#[test]
+fn parallel_and_serial_true_peak_agree_per_channel_with_the_peak_on_a_seam() {
+    use soundcraft_dsp::meter::LoudnessMeter;
+    let total = 140_000usize;
+    let cut = 70_000usize;
+    let burst = |amp: f64, start: usize| -> Vec<f32> {
+        let mut v = vec![0.0f32; total];
+        for n in 0..200 {
+            let env = (PI * (n as f64 + 0.5) / 200.0).sin().powi(2);
+            v[start + n] = (amp * env * (PI * n as f64 / 2.0 + PI / 4.0).sin()) as f32;
+        }
+        v
+    };
+    // The middle of each burst (its peak) lands on the cut, or one frame past it.
+    let left = burst(0.9, cut - 100);
+    let right = burst(0.5, cut - 99);
+    let bits = |chans: &[&Vec<f32>], pieces: &mut dyn Iterator<Item = std::ops::Range<usize>>| {
+        let mut m = LoudnessMeter::new(RATE as f32, chans.len());
+        for r in pieces {
+            let io: Vec<Vec<f32>> = chans.iter().map(|c| c[r.clone()].to_vec()).collect();
+            m.process(&io, r.len());
+        }
+        m.true_peak_db().to_bits()
+    };
+    let chunked = |step: usize| (0..total).step_by(step).map(move |a| a..(a + step).min(total));
+    // Parallel: two calls of 70 000 frames, the seam inside both bursts.
+    let par = bits(&[&left, &right], &mut [0..cut, cut..total].into_iter());
+    // Parallel in one call, and serial in 1 000- and 997-frame calls (seams on and off the cut).
+    assert_eq!(par, bits(&[&left, &right], &mut std::iter::once(0..total)), "parallel, one call");
+    assert_eq!(par, bits(&[&left, &right], &mut chunked(1_000)), "serial, 1000-frame calls");
+    assert_eq!(par, bits(&[&left, &right], &mut chunked(997)), "serial, 997-frame calls");
+    // Per channel: a mono meter (always serial) on each; the stereo reading is the louder one.
+    let l_only = f32::from_bits(bits(&[&left], &mut std::iter::once(0..total)));
+    let r_only = f32::from_bits(bits(&[&right], &mut std::iter::once(0..total)));
+    assert!(l_only > r_only + 3.0, "left {l_only} right {r_only}");
+    assert_eq!(f32::from_bits(par), l_only.max(r_only));
+    // The quiet channel alone, in parallel with a silent partner, still reads its own peak.
+    let silent = vec![0.0f32; total];
+    let swapped = f32::from_bits(bits(&[&silent, &right], &mut [0..cut, cut..total].into_iter()));
+    assert_eq!(swapped, r_only);
+    assert!(l_only > -2.0, "burst should be loud: {l_only}");
 }
 
 #[test]

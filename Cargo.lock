@@ -2824,7 +2824,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-au-host"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "log",
  "serde",
@@ -2835,7 +2835,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-audio-io"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "log",
  "serde",
@@ -2846,7 +2846,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-clap-host"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "clap-sys",
  "libloading 0.9.0",
@@ -2860,7 +2860,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-dsp"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "log",
  "rustfft",
@@ -2870,7 +2870,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-midi"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2879,7 +2879,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-mix"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "log",
  "rayon",
@@ -2897,7 +2897,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-model"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "serde",
  "serde_json",
@@ -2910,7 +2910,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-playback"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "cpal",
  "log",
@@ -2925,7 +2925,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-time"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2934,7 +2934,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-video"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "craft-media",
  "image",
@@ -2945,7 +2945,7 @@ dependencies = [
 [[package]]
 name = "soundcraft-vst3-host"
 version = "0.13.1"
-source = "git+https://github.com/iannitram/soundcraft?rev=e3c5c672f7579c706071355a96826df19a7a1c40#e3c5c672f7579c706071355a96826df19a7a1c40"
+source = "git+https://github.com/iannitram/soundcraft?rev=1435fd2874ed7d668cfe0b2f1ef884bce045dd91#1435fd2874ed7d668cfe0b2f1ef884bce045dd91"
 dependencies = [
  "libloading 0.9.0",
  "log",
