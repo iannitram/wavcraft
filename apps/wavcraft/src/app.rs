@@ -4872,6 +4872,30 @@ impl WaveApp {
         }
     }
 
+    /// Move Playhead to Previous / Next (C5.3): the stops are the marker starts and the two edges of
+    /// the selection, searched from where the playhead is. While playing or paused the play seeks
+    /// there; when stopped the drawn playhead moves (`head_scrub.pos`) and the selection stays.
+    fn move_playhead(&mut self, next: bool) {
+        let Some(doc) = self.doc.as_ref() else { return };
+        let frames = doc.frames() as u64;
+        // The markers the window shows are the open editor's current state.
+        let marker_starts: Vec<u64> = match self.editor.as_ref() {
+            Some(e) => e.history.current().markers().iter().map(|m| m.start).collect(),
+            None => doc.state.markers().iter().map(|m| m.start).collect(),
+        };
+        let here = if self.playhead_live() { self.player.position() } else { self.head_scrub.pos.unwrap_or(self.selection.start()) };
+        let from = here as u64;
+        let stops = marker_starts.into_iter().chain([self.selection.start() as u64, self.selection.end() as u64]);
+        let target = if next { stops.filter(|&s| s > from).min() } else { stops.filter(|&s| s < from).max() };
+        let Some(target) = target.filter(|&t| t <= frames) else { return };
+        if self.playhead_live() {
+            self.player.seek(target as f64);
+            self.view.reveal(target as f64, self.editor_width, frames as usize);
+        } else {
+            self.head_scrub.pos = Some(target as usize);
+        }
+    }
+
     /// Play the grain for the playhead the drag has reached, and finish a drag that ended.
     fn run_scrub(&mut self) {
         if let Some(frame) = self.head_scrub.pending.take() {
@@ -5445,6 +5469,8 @@ impl WaveApp {
             }
             ActionId::Rewind => self.step_playhead(-1),
             ActionId::FastForward => self.step_playhead(1),
+            ActionId::PlayheadPrev => self.move_playhead(false),
+            ActionId::PlayheadNext => self.move_playhead(true),
             ActionId::ToggleRoll => self.transport.roll = !self.transport.roll,
             ActionId::ToggleSkipSelection => self.transport.skip_selection = !self.transport.skip_selection,
             ActionId::ToggleReturnOnStop => self.transport.return_on_stop = !self.transport.return_on_stop,
@@ -13414,6 +13440,10 @@ mod a2_close_prompt_tests;
 #[cfg(test)]
 #[path = "c5_space_return_tests.rs"]
 mod c5_space_return_tests;
+
+#[cfg(test)]
+#[path = "c5_playhead_move_tests.rs"]
+mod c5_playhead_move_tests;
 
 #[cfg(test)]
 #[path = "d5_drop_notice_tests.rs"]
