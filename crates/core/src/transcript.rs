@@ -11,6 +11,7 @@
 
 use std::ffi::OsString;
 use std::io::{self, Read};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -62,6 +63,16 @@ impl Transcript {
         let after = self.words.partition_point(|w| w.start <= frame);
         let i = after.checked_sub(1)?;
         (frame < self.words[i].end).then_some(i)
+    }
+
+    /// The frames from the start of the word at `first` to the end of the word at `last`, for a
+    /// selection dragged either way: the two indices may come in either order. An index past the
+    /// last word gives the empty range `0..0`, never a panic.
+    pub fn range_of(&self, first: usize, last: usize) -> Range<u64> {
+        let (Some(a), Some(b)) = (self.words.get(first.min(last)), self.words.get(first.max(last))) else {
+            return 0..0;
+        };
+        a.start..b.end
     }
 
     /// Whether this transcript is one [`Transcript::from_json`] would accept: the current
