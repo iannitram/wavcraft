@@ -40,7 +40,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 
 **75 items** (v1.md's 74 plus L0, the speech-to-text choice)**:** complete 15 · built, check not recorded 14 · partial 42 · not started 4.
 
-**280 steps remain:** 199 easy, 76 medium, 5 hard. 196 are proved by a script, 84 by hand (44 of those only by me).
+**280 steps remain:** 199 easy, 76 medium, 5 hard. 209 are proved by a script, 71 by hand (44 of those only by me).
 
 | Stage | Items | Complete | Steps left | Done when |
 |---|---|---|---|---|
