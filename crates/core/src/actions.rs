@@ -1569,7 +1569,7 @@ mod episode_check_tests {
         let a = by_name("transcript.run").unwrap();
         assert_eq!(a.id, ActionId::TranscriptRun);
         assert_eq!(a.menu, "Transcribe");
-        with_editor("empty", 0, |e| assert!(!e.enabled(ActionId::TranscriptRun, &(0..0)), "enabled on an empty document"));
-        with_editor("one", 1, |e| assert!(e.enabled(ActionId::TranscriptRun, &(0..0)), "disabled on a 1-frame document"));
+        with_editor("transcript-empty", 0, |e| assert!(!e.enabled(ActionId::TranscriptRun, &(0..0)), "enabled on an empty document"));
+        with_editor("transcript-one", 1, |e| assert!(e.enabled(ActionId::TranscriptRun, &(0..0)), "disabled on a 1-frame document"));
     }
 }

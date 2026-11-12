@@ -1,5 +1,6 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
+use crate::check_panel::CheckRun;
 use crate::theme;
 use crate::transcript_run::TranscriptRun;
 use std::collections::{HashMap, VecDeque};
@@ -578,6 +579,8 @@ pub struct WaveApp {
     /// A text field has keyboard focus inside a floated panel. Keyboard focus is kept per
     /// viewport, so the root window cannot see it; `floating_windows` records it each frame.
     float_typing: bool,
+    /// Non-text widget focus in a float, kept separate so Space can still play.
+    float_other_focus: bool,
     /// The monitors, when they are faked (`MONITORS simulate`, `WAVCRAFT_MONITORS`); `None` means
     /// the real ones, which this build cannot list (egui reports only the size of the one
     /// monitor), so floating windows are then neither tagged nor moved.
@@ -623,6 +626,8 @@ pub struct WaveApp {
     title: String,
     /// The open file's editing state: its history, the active channels, the clipboard.
     editor: Option<Editor>,
+    /// Episode Check worker and its report for the document state it scanned (K1.6).
+    check_run: CheckRun,
     /// Where the open file came from (kept while an edit leaves the document empty).
     doc_path: PathBuf,
     /// Names the current document (the save in flight belongs to one).
@@ -984,6 +989,7 @@ impl WaveApp {
             layout_dirty: false,
             float_kind: None,
             float_typing: false,
+            float_other_focus: false,
             monitors: std::env::var("WAVCRAFT_MONITORS").ok().and_then(|t| match monitors::parse(&t) {
                 Ok(m) => Some(m),
                 Err(e) => {
@@ -1019,6 +1025,7 @@ impl WaveApp {
             fit_on_next_frame: false,
             title: String::new(),
             editor: None,
+            check_run: CheckRun::default(),
             doc_path: PathBuf::new(),
             doc_id: 0,
             doc_serial: 0,
@@ -3886,6 +3893,8 @@ impl WaveApp {
         let floats: Vec<panels::Float> = self.layout.floats(&self.panels).into_iter().cloned().collect();
         let mut dock_back: Vec<String> = Vec::new();
         self.float_typing = false;
+        self.float_other_focus = false;
+        let mut commands = Vec::new();
         for f in floats {
             let title = panels::by_id(&f.id).map_or("Panel", |p| p.title);
             let vid = egui::ViewportId::from_hash_of(("float", f.id.as_str()));
@@ -3898,7 +3907,13 @@ impl WaveApp {
             let mut kind = "os";
             let mut rect: Option<([f32; 2], [f32; 2])> = None;
             let mut typing = false;
+            let mut other_focus = false;
             ctx.show_viewport_immediate(vid, builder, |ui, class| {
+                // OS floats receive their own input. Consume Space before even the Dock button
+                // reads it. Embedded floats already went through the root key pass.
+                if class != egui::ViewportClass::EmbeddedWindow {
+                    commands.extend(float_space_commands(ui.ctx(), &self.keymap));
+                }
                 let mut body = |ui: &mut egui::Ui| {
                     ui.horizontal(|ui| {
                         if ui.button("Dock").on_hover_text("Put the panel back in a zone").clicked() {
@@ -3926,9 +3941,11 @@ impl WaveApp {
                     }
                 }
                 // This viewport's own focus: a text field in this float has the keyboard.
-                typing = ui.ctx().egui_wants_keyboard_input();
+                typing = ui.ctx().text_edit_focused();
+                other_focus = !typing && ui.ctx().egui_wants_keyboard_input();
             });
             self.float_typing |= typing;
+            self.float_other_focus |= other_focus;
             self.float_kind = Some(kind);
             if dock {
                 dock_back.push(f.id.clone());
@@ -3938,6 +3955,11 @@ impl WaveApp {
             {
                 self.layout_dirty = true;
             }
+        }
+        // Run commands against the root after leaving the viewport frames. The root key pass
+        // has already run and cannot consume these viewport-local events a second time.
+        for command in commands {
+            let _ = self.run_command(command, ctx);
         }
         if self.layout.floats(&self.panels).is_empty() {
             self.float_kind = None;
@@ -5184,6 +5206,11 @@ impl WaveApp {
         if id == ActionId::TranscriptRun {
             let Some(state) = self.editor.as_ref().map(|e| e.history.current().clone()) else { return Err("no file is open".to_string()) };
             self.transcript_run.start(state, ctx);
+            return Ok(false);
+        }
+        if id == ActionId::EpisodeCheck {
+            let Some(state) = self.editor.as_ref().map(|e| e.history.current().clone()) else { return Err("no file is open".to_string()) };
+            self.check_run.start(state, ctx);
             return Ok(false);
         }
         // The snapping switches are settings: they flip with no file open too.
@@ -8070,6 +8097,25 @@ impl WaveApp {
                 }
                 _ => "ERR TRANSCRIPT run|cancel|state".to_string(),
             },
+            "CHECK" => match rest.trim() {
+                "run" => match self.run_action(ActionId::EpisodeCheck, ctx) {
+                    Ok(_) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                },
+                "cancel" => {
+                    self.check_run.cancel();
+                    "OK".to_string()
+                }
+                "state" => {
+                    let running = u8::from(self.check_run.running());
+                    let progress = (self.check_run.progress() * 100.0).round() as u32;
+                    let findings = self.check_run.report().map_or(0, |r| r.findings.len());
+                    let stale =
+                        self.check_run.checked().is_some_and(|c| self.editor.as_ref().is_none_or(|e| !Arc::ptr_eq(e.history.current(), &c.state)));
+                    format!("OK running={running} progress={progress} findings={findings} stale={}", u8::from(stale))
+                }
+                _ => "ERR CHECK run|cancel|state".to_string(),
+            },
             "EPISODEMAP" => {
                 // The Episode Map as the navigator last painted it: its columns, and how many are each class.
                 let count = |class: Class| self.map_classes.iter().filter(|&&c| c == class).count();
@@ -10730,7 +10776,17 @@ impl WaveApp {
                 if ui.button("Cancel").clicked() {
                     self.transcript_run.cancel();
                 }
-            } else if let Some(e) = self.transcript_run.error() {
+            } else if self.check_run.running() {
+                ui.spinner();
+                let progress = self.check_run.progress();
+                ui.label(format!("Run Episode Check… {:.0}%", progress * 100.0));
+                ui.add(egui::ProgressBar::new(progress).desired_width(120.0));
+                if ui.button("Cancel").clicked() {
+                    self.check_run.cancel();
+                }
+            } else if self.check_run.checked().is_some_and(|c| self.editor.as_ref().is_none_or(|e| !Arc::ptr_eq(e.history.current(), &c.state))) {
+                ui.label("Episode Check report is stale; run it again");
+            } else if let Some(e) = self.transcript_run.error().or_else(|| self.check_run.error()) {
                 ui.colored_label(theme::pal().cursor, e);
             } else if let Some(i) = &self.inserting {
                 ui.spinner();
@@ -12055,6 +12111,7 @@ impl eframe::App for WaveApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.check_run.poll();
         self.apply_look(&ctx);
         if self.rec.is_active() {
             // Closing the window ends the take cleanly; a kill is covered by the header.
@@ -12089,7 +12146,7 @@ impl eframe::App for WaveApp {
             }
         }
         // ` maximises the panel under the pointer (and restores); Ctrl+W closes it.
-        let typing = ctx.egui_wants_keyboard_input() || self.float_typing;
+        let typing = ctx.egui_wants_keyboard_input() || self.float_typing || self.float_other_focus;
         let (grave, close) =
             ctx.input_mut(|i| (!typing && i.consume_key(egui::Modifiers::NONE, Key::Backtick), i.consume_key(egui::Modifiers::COMMAND, Key::W)));
         if grave {
@@ -12116,7 +12173,13 @@ impl eframe::App for WaveApp {
         // are not commands (f46).
         let keys_for_dialog =
             self.shortcut_dialog.as_ref().is_some_and(|d| d.capturing()) || (self.shortcut_dialog.is_some() && ctx.egui_wants_keyboard_input());
-        let pressed = if keys_for_dialog { Vec::new() } else { pressed_commands(&ctx, &self.keymap, self.float_typing) };
+        let pressed = if keys_for_dialog {
+            Vec::new()
+        } else if self.float_other_focus {
+            pressed_commands_with_focus(&ctx, &self.keymap, self.float_typing, true)
+        } else {
+            pressed_commands(&ctx, &self.keymap, self.float_typing)
+        };
         for command in pressed {
             if let Err(e) = self.run_command(command, &ctx) {
                 // A key that can't act now (no file open, a save running) is not an error to show,
@@ -12515,18 +12578,37 @@ fn tool_labels(keymap: &Keymap, mac: bool) -> Vec<(Tool, String)> {
 /// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
 /// so Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
 fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec<Command> {
+    pressed_commands_with_focus(ctx, keymap, in_float, false)
+}
+
+fn pressed_commands_with_focus(ctx: &egui::Context, keymap: &Keymap, in_float: bool, in_float_other: bool) -> Vec<Command> {
     // A text field being edited owns the keyboard: Space types a space, and Backspace, Delete and
     // Cmd+Z edit the text, not the audio (#368, #434). Cmd+S and Cmd+O keep working. `in_float` is
     // a text field focused in a floated panel's own viewport, which this window cannot see.
     let typing = in_float || ctx.text_edit_focused();
     // A focused button, checkbox or slider is not typing: Space still plays (and is consumed here,
     // so the widget never reads it as a click), but its other keys stay held back as before (#1081).
-    let other_focus = !typing && ctx.egui_wants_keyboard_input();
-    let mut rows: Vec<(Command, Shortcut)> = keymap.bindings().iter().map(|b| (b.command, b.chord)).collect();
+    let other_focus = !typing && (in_float_other || ctx.egui_wants_keyboard_input());
+    command_key_pass(ctx, keymap, typing, other_focus, false)
+}
+
+/// Read only Space-to-Play/Stop in the float's own frame, before its widgets.
+fn float_space_commands(ctx: &egui::Context, keymap: &Keymap) -> Vec<Command> {
+    let typing = ctx.text_edit_focused();
+    command_key_pass(ctx, keymap, typing, !typing && ctx.egui_wants_keyboard_input(), true)
+}
+
+fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_focus: bool, float_space_only: bool) -> Vec<Command> {
+    let mut rows: Vec<(Command, Shortcut)> = keymap
+        .bindings()
+        .iter()
+        .filter(|b| !float_space_only || (b.command == Command::PlayStop && b.chord.key == "Space"))
+        .map(|b| (b.command, b.chord))
+        .collect();
     rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
         // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
-        let mut pressed: Vec<Command> = if typing || other_focus {
+        let mut pressed: Vec<Command> = if typing || other_focus || float_space_only {
             Vec::new()
         } else {
             [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
@@ -12558,7 +12640,7 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec
         }));
         // egui 0.36 has no key for numpad multiply, so a typed "*" adds a marker (H1.1, #1178). The
         // text event is taken here, so nothing else reads it. With a text field focused it is typed.
-        if !typing && !other_focus {
+        if !typing && !other_focus && !float_space_only {
             i.events.retain(|e| {
                 let star = matches!(e, egui::Event::Text(t) if t == "*");
                 if star {
@@ -13209,6 +13291,10 @@ mod tests {
         assert!(settings.save_include_metadata);
     }
 }
+
+#[cfg(test)]
+#[path = "issue1219_tests.rs"]
+mod issue1219_tests;
 
 #[cfg(test)]
 #[path = "c5_6_space_button_tests.rs"]
