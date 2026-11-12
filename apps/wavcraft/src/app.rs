@@ -4097,6 +4097,14 @@ impl WaveApp {
         editor.snap_with(frame, frames_per_px, targets, Some((major, minor)))
     }
 
+    /// A playhead dragged along the ruler (f36) pulled to the nearest snap target under the current
+    /// snap settings: markers, ruler ticks, zero crossings and the selection's edges. `frame` is
+    /// returned unchanged when snapping is off.
+    fn snap_playhead_drag(&self, frame: usize, frames_per_px: f64) -> usize {
+        let targets = [self.selection.start() as u64, self.selection.end() as u64];
+        self.editor.as_ref().map_or(frame, |e| self.snap_at(e, frame as u64, frames_per_px, &targets) as usize)
+    }
+
     /// A frame set from the ruler, snapped to a timecode frame boundary when the display is SMPTE
     /// and snapping to frames is on.
     fn snap_gesture(&self, frame: usize) -> usize {
@@ -5147,6 +5155,8 @@ impl WaveApp {
             return self.run_window_action(id, ctx);
         }
         let mut sel = self.selection_range();
+        // Add Marker during play keeps the selection the user made: only the marker moves to the playhead.
+        let keeps_selection = id == ActionId::MarkerAdd && self.player.is_playing();
         // Markers go where play is, when it is playing (a point at the playhead).
         if matches!(id, ActionId::MarkerAdd | ActionId::MarkerNext | ActionId::MarkerPrev) && self.player.is_playing() {
             let at = self.player.position() as u64;
@@ -5175,7 +5185,9 @@ impl WaveApp {
                 if out.doc_changed {
                     self.last_op = Some((actions::action(id).menu.to_string(), began.elapsed()));
                 }
-                self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                if !keeps_selection {
+                    self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
+                }
                 if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::MarkerNext | ActionId::MarkerPrev) {
                     self.halt_play();
                     let frames = self.doc.as_ref().map_or(0, Document::frames);
@@ -5893,6 +5905,21 @@ impl WaveApp {
         let mac = cfg!(target_os = "macos");
         let mut chosen = None;
         for e in entries {
+            // The ruler's snap block uses the same tick items as Edit and View.
+            if let Entry::Item(Item { cmd: Cmd::Action(id), .. }) = e
+                && actions::snap_flag_value(&self.settings.snap, *id).is_some()
+            {
+                if *id == ActionId::SnapToggle
+                    && let Some(id) = snap_items(ui, &self.settings.snap)
+                {
+                    chosen = entries.iter().find_map(|entry| match entry {
+                        Entry::Item(item) if item.cmd == Cmd::Action(id) => Some(*item),
+                        _ => None,
+                    });
+                    ui.close();
+                }
+                continue;
+            }
             match e {
                 Entry::Sep => {
                     ui.separator();
@@ -9785,6 +9812,12 @@ impl WaveApp {
                 }
             }
         });
+        // Snapping (f09, f49): the same switches as View › Snapping and the ruler's menu.
+        let mut snap_chosen = None;
+        ui.menu_button("Snapping", |ui| snap_chosen = snap_items(ui, &self.settings.snap));
+        if let Some(id) = snap_chosen {
+            self.toggle_snap_menu(id);
+        }
         ui.separator();
         for a in TABLE.iter().filter(|a| a.name.starts_with("marker.")) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
@@ -11245,7 +11278,7 @@ impl WaveApp {
             if response.dragged()
                 && let Some(pos) = response.interact_pointer_pos()
             {
-                self.head_scrub.pending = Some(frame_at(&self.view, pos));
+                self.head_scrub.pending = Some(self.snap_playhead_drag(frame_at(&self.view, pos), self.view.frames_per_px));
             }
             if response.drag_stopped() {
                 self.head_scrub.ended = true;
@@ -11483,7 +11516,8 @@ impl WaveApp {
                             if let Some(e) = self.editor.as_mut() {
                                 let now = e.channels.within(channels);
                                 e.channels = if multi {
-                                    wavcraft_core::ChannelMask::from_bits(now.bits() ^ wavcraft_core::ChannelMask::only(ch).bits()).within(channels)
+                                    let next = if now.contains(ch) { now.without(ch) } else { now.with(ch) };
+                                    next.within(channels)
                                 } else if now == wavcraft_core::ChannelMask::only(ch) {
                                     wavcraft_core::ChannelMask::ALL
                                 } else {
@@ -12338,12 +12372,15 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec
     // A text field being edited owns the keyboard: Space types a space, and Backspace, Delete and
     // Cmd+Z edit the text, not the audio (#368, #434). Cmd+S and Cmd+O keep working. `in_float` is
     // a text field focused in a floated panel's own viewport, which this window cannot see.
-    let typing = in_float || ctx.egui_wants_keyboard_input();
+    let typing = in_float || ctx.text_edit_focused();
+    // A focused button, checkbox or slider is not typing: Space still plays (and is consumed here,
+    // so the widget never reads it as a click), but its other keys stay held back as before (#1081).
+    let other_focus = !typing && ctx.egui_wants_keyboard_input();
     let mut rows: Vec<(Command, Shortcut)> = keymap.bindings().iter().map(|b| (b.command, b.chord)).collect();
     rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
         // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
-        let mut pressed: Vec<Command> = if typing {
+        let mut pressed: Vec<Command> = if typing || other_focus {
             Vec::new()
         } else {
             [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
@@ -12353,7 +12390,8 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec
                 .collect()
         };
         pressed.extend(rows.iter().filter_map(|(command, k)| {
-            if typing && !matches!(command, Command::Save | Command::SaveAs | Command::Open) {
+            let play_stop = *command == Command::PlayStop && !typing;
+            if (typing || other_focus) && !play_stop && !matches!(command, Command::Save | Command::SaveAs | Command::Open) {
                 return None;
             }
             let key = Key::from_name(k.key)?;
@@ -12372,6 +12410,17 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec
                 || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
             (i.consume_key(mods, key) && fresh).then_some(*command)
         }));
+        // egui 0.36 has no key for numpad multiply, so a typed "*" adds a marker (H1.1, #1178). The
+        // text event is taken here, so nothing else reads it. With a text field focused it is typed.
+        if !typing && !other_focus {
+            i.events.retain(|e| {
+                let star = matches!(e, egui::Event::Text(t) if t == "*");
+                if star {
+                    pressed.push(Command::Action(ActionId::MarkerAdd));
+                }
+                !star
+            });
+        }
         pressed
     })
 }
@@ -12431,8 +12480,8 @@ fn brighten(c: Color32, b: f32) -> Color32 {
     theme::rgba(m(c.r()), m(c.g()), m(c.b()), c.a())
 }
 
-/// The check items for every snap target, shared by View › Snapping: the action whose item was
-/// clicked.
+/// The check items for every snap target, shared by Edit › Snapping and View › Snapping: the action
+/// whose item was clicked.
 fn snap_items(ui: &mut egui::Ui, snap: &SnapSettings) -> Option<ActionId> {
     let mut chosen = None;
     for a in TABLE.iter().filter(|a| a.name.starts_with("view.snap.")) {
@@ -13101,8 +13150,24 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "c5_6_space_button_tests.rs"]
+mod c5_6_space_button_tests;
+
+#[cfg(test)]
+#[path = "h1_star_marker_tests.rs"]
+mod h1_star_marker_tests;
+
+#[cfg(test)]
+#[path = "h1_3_marker_selection_tests.rs"]
+mod h1_3_marker_selection_tests;
+
+#[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
 mod i3_shortcut_help_tests;
+
+#[cfg(test)]
+#[path = "n1_parity_tests.rs"]
+mod n1_parity_tests;
 
 #[cfg(test)]
 mod reset_tests {
@@ -13244,3 +13309,15 @@ mod c5_space_return_tests;
 #[cfg(test)]
 #[path = "d5_drop_notice_tests.rs"]
 mod d5_drop_notice_tests;
+
+#[cfg(test)]
+#[path = "c3_playhead_snap_tests.rs"]
+mod c3_playhead_snap_tests;
+
+#[cfg(test)]
+#[path = "issue1173_tests.rs"]
+mod issue1173_tests;
+
+#[cfg(test)]
+#[path = "d2_new_from_clip_tests.rs"]
+mod d2_new_from_clip_tests;

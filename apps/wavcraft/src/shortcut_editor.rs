@@ -8,6 +8,12 @@ use wavcraft_core::keyboard::{ANSI_ROWS, Mods};
 use wavcraft_core::shortcut_sets::DEFAULT_SET;
 use wavcraft_core::shortcuts::{Command, Keymap, Shortcut};
 
+/// The commands the list shows: a release build leaves out the ones v1 rules out
+/// ([`crate::v1::command_offered_in`]).
+pub fn listed(release: bool) -> impl Iterator<Item = Command> {
+    Command::all().into_iter().filter(move |c| crate::v1::command_offered_in(release, c.name()))
+}
+
 /// What the user chose in the dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -79,7 +85,7 @@ impl ShortcutDialog {
             let on_key = self.key_filter.map(|k| keymap.commands_on_key(k));
             egui::ScrollArea::vertical().max_height(300.0).auto_shrink([false, true]).show(ui, |ui| {
                 egui::Grid::new("shortcut_list").striped(true).num_columns(2).min_col_width(200.0).show(ui, |ui| {
-                    for command in Command::all() {
+                    for command in listed(crate::v1::RELEASE) {
                         let chords: Vec<String> = keymap.chords(command).map(|c| c.text(mac)).collect();
                         let shown = if chords.is_empty() { "—".to_string() } else { chords.join(", ") };
                         let hay = format!("{} {} {}", command.label(), command.name(), shown).to_lowercase();
@@ -264,5 +270,22 @@ impl ShortcutDialog {
             }
             None => Some(Change::Assign { command, chord, reassign: false }),
         }
+    }
+}
+
+#[cfg(test)]
+mod m5_tests {
+    use super::*;
+
+    #[test]
+    fn a_release_shortcut_list_leaves_out_the_out_of_v1_commands() {
+        let release: Vec<&str> = listed(true).map(|c| c.name()).collect();
+        let debug: Vec<&str> = listed(false).map(|c| c.name()).collect();
+        assert_eq!(debug.len(), Command::all().len());
+        for n in ["diagnostics.declip", "diagnostics.declick", "diagnostics.autoClickRemover"] {
+            assert!(!release.contains(&n) && debug.contains(&n), "{n}");
+        }
+        assert!(release.iter().all(|n| crate::v1::command_offered_in(true, n)), "{release:?}");
+        assert!(release.contains(&"edit.delete") && release.contains(&"file.open"));
     }
 }

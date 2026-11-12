@@ -11,6 +11,7 @@ publish = false
 
 [workspace.dependencies]
 wavcraft-core = { path = "crates/core" }
+wavcraft-automation = { path = "crates/automation" }
 # Self-logging (SELF-LOGGING.md), the same crates the Craft forks carry, copied from PhotoCraft `ours`.
 craft-log = { path = "crates/craft-log" }
 

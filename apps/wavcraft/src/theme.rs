@@ -8,6 +8,9 @@
 //! fails on any other `Color32` constructor or named colour in the UI sources.
 //!
 //! The fixed values at the bottom (`white`, `black`, `CHANNEL`) are the same in both sets on purpose.
+//!
+//! Sizes are named here too, in [`Metrics`]: panels read [`metrics`], which gives the defaults or,
+//! with Large controls on ([`set_large`], M4), 44 px controls and handle grabs.
 
 use egui::Color32;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -75,6 +78,15 @@ pub struct Palette {
     pub band_outline: Color32,
     /// Markers, and the default marker colour.
     pub marker: Color32,
+    /// Episode Map (M2) columns: silence (peak under -60 dBFS), a shade above the well so the
+    /// strip's extent still shows.
+    pub map_silence: Color32,
+    /// Episode Map columns of speech (peak from -60 up to -6 dBFS): a muted teal, kept off the
+    /// accent blue of the view handle and the amber of markers that are drawn on top of it.
+    pub map_speech: Color32,
+    /// Episode Map columns that are loud (peak from -6 dBFS): a burnt orange, warm like the level
+    /// meter's hot zone but duller than `alert` and `caution`, so finding pins stay readable on it.
+    pub map_loud: Color32,
 }
 
 /// The dark set: the values the app drew before M3, so a dark session looks as it did.
@@ -110,6 +122,9 @@ pub static DARK: Palette = Palette {
     band_fill: Color32::from_rgba_premultiplied(60, 70, 20, 60),
     band_outline: Color32::from_rgb(240, 220, 90),
     marker: Color32::from_rgb(240, 190, 70),
+    map_silence: Color32::from_rgb(36, 40, 48),
+    map_speech: Color32::from_rgb(46, 112, 104),
+    map_loud: Color32::from_rgb(196, 104, 48),
 };
 
 /// The light set: the same roles, with values that read on a light ground.
@@ -145,6 +160,9 @@ pub static LIGHT: Palette = Palette {
     band_fill: Color32::from_rgba_premultiplied(40, 60, 20, 50),
     band_outline: Color32::from_rgb(150, 120, 0),
     marker: Color32::from_rgb(170, 110, 0),
+    map_silence: Color32::from_rgb(208, 212, 220),
+    map_speech: Color32::from_rgb(112, 178, 166),
+    map_loud: Color32::from_rgb(222, 132, 72),
 };
 
 /// The four channel colours of the frequency display (same in both sets).
@@ -162,6 +180,68 @@ pub fn set_dark(dark: bool) {
 /// The set that is showing now. Panels call this when they paint.
 pub fn pal() -> &'static Palette {
     if DARK_SHOWING.load(Ordering::Relaxed) { &DARK } else { &LIGHT }
+}
+
+/// The named sizes the UI lays out with (M3), in points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Metrics {
+    /// The navigator strip's height.
+    pub nav_height: f32,
+    /// The time ruler's height.
+    pub ruler_height: f32,
+    /// The frequency ruler's width.
+    pub freq_ruler_width: f32,
+    /// The amplitude ruler's width.
+    pub amp_ruler_width: f32,
+    /// How far either side of a handle edge or a marker flag a press grabs it.
+    pub handle_grab: f32,
+    /// The least height of a button or other control.
+    pub control_height: f32,
+    /// Small text.
+    pub text_small: f32,
+    /// Spacing, from extra small to large.
+    pub space_xs: f32,
+    pub space_s: f32,
+    pub space_m: f32,
+    pub space_l: f32,
+}
+
+/// The sizes as drawn with Large controls off.
+pub const DEFAULT_METRICS: Metrics = Metrics {
+    nav_height: 34.0,
+    ruler_height: 22.0,
+    freq_ruler_width: 54.0,
+    amp_ruler_width: 46.0,
+    handle_grab: 6.0,
+    control_height: 18.0,
+    text_small: 11.0,
+    space_xs: 2.0,
+    space_s: 4.0,
+    space_m: 8.0,
+    space_l: 12.0,
+};
+
+/// The least size of a touch target with Large controls on (M4).
+const TOUCH_TARGET: f32 = 44.0;
+
+/// The sizes with Large controls on (`large`) or off: on, every control is at least 44 px high
+/// and a handle grabs 22 px either side, a 44 px target.
+pub fn metrics_for(large: bool) -> Metrics {
+    if large { Metrics { control_height: TOUCH_TARGET, handle_grab: TOUCH_TARGET / 2.0, ..DEFAULT_METRICS } } else { DEFAULT_METRICS }
+}
+
+/// Whether Large controls is on. The app sets it from the setting.
+static LARGE_SHOWING: AtomicBool = AtomicBool::new(false);
+
+/// Turn Large controls on or off for everything that reads [`metrics`].
+#[allow(dead_code)] // M4.3 calls it from WaveApp::apply_look
+pub fn set_large(large: bool) {
+    LARGE_SHOWING.store(large, Ordering::Relaxed);
+}
+
+/// The sizes in use now. Panels call this when they lay out or hit-test.
+pub fn metrics() -> Metrics {
+    metrics_for(LARGE_SHOWING.load(Ordering::Relaxed))
 }
 
 /// A colour from user settings (track, marker, wave and ground colours) or computed channels.
@@ -221,6 +301,9 @@ mod tests {
             ("band_fill", p.band_fill),
             ("band_outline", p.band_outline),
             ("marker", p.marker),
+            ("map_silence", p.map_silence),
+            ("map_speech", p.map_speech),
+            ("map_loud", p.map_loud),
         ]
     }
 
@@ -229,6 +312,47 @@ mod tests {
         for ((name, dark), (_, light)) in themed(&DARK).into_iter().zip(themed(&LIGHT)) {
             assert_ne!(dark, light, "role {name} is the same in both sets");
         }
+    }
+
+    #[test]
+    fn metrics_have_the_default_values() {
+        let m = metrics_for(false);
+        assert_eq!(m.nav_height, 34.0);
+        assert_eq!(m.ruler_height, 22.0);
+        assert_eq!(m.handle_grab, 6.0);
+        assert_eq!(m.space_m, 8.0);
+        let all = [
+            m.nav_height,
+            m.ruler_height,
+            m.freq_ruler_width,
+            m.amp_ruler_width,
+            m.handle_grab,
+            m.control_height,
+            m.text_small,
+            m.space_xs,
+            m.space_s,
+            m.space_m,
+            m.space_l,
+        ];
+        assert!(all.iter().all(|v| *v > 0.0), "every size is above 0: {all:?}");
+        let _guard = SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_large(false);
+        assert_eq!(metrics(), m, "metrics() gives the defaults with Large controls off");
+    }
+
+    #[test]
+    fn large_controls_are_at_least_44_px() {
+        let large = metrics_for(true);
+        assert_eq!(large.control_height, 44.0);
+        assert_eq!(large.handle_grab, 22.0, "22 px each side: a 44 px target");
+        let normal = metrics_for(false);
+        assert_eq!(normal, DEFAULT_METRICS);
+        assert_eq!((normal.control_height, normal.handle_grab), (18.0, 6.0));
+        let _guard = SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_large(true);
+        assert_eq!(metrics(), large);
+        set_large(false);
+        assert_eq!(metrics(), normal);
     }
 
     #[test]

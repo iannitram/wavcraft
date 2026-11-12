@@ -64,49 +64,57 @@ pub const CUT_AUDIO: &str = "Cut Audio";
 pub const PASTE_AUDIO: &str = "Paste Audio";
 pub const CROP_AUDIO: &str = "Crop Audio";
 
-/// Which channels an edit acts on: bit `n` is channel `n`.
+/// Which channels an edit acts on: bit `n` of `low` is channel `n` for `n` below 64, and `high`
+/// says whether every channel from 64 up is in the mask.
 ///
-/// [`ALL`](ChannelMask::ALL) means every channel, whatever the document's count, including
-/// channels 64 and up. Every other mask addresses only channels 0-63: [`only`](ChannelMask::only),
-/// [`with`](ChannelMask::with) and [`without`](ChannelMask::without) ignore channels past 63, so
-/// `ALL.without(70)` stays `ALL` (channel 70 cannot be removed) and `ALL.without(0)` is the mask of
-/// channels 1-63, no longer "every channel".
+/// [`ALL`](ChannelMask::ALL) means every channel, whatever the document's count. Channels 64 and up
+/// are all in or all out together, so a 65-channel document with channel 1 off is `low` without
+/// bit 0 and `high` set. Channels past 63 cannot be switched one at a time: [`only`](ChannelMask::only),
+/// [`with`](ChannelMask::with) and [`without`](ChannelMask::without) ignore them, so `ALL.without(70)`
+/// stays `ALL`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ChannelMask(u64);
+pub struct ChannelMask {
+    low: u64,
+    high: bool,
+}
 
 impl ChannelMask {
     /// Every channel, whatever the count.
-    pub const ALL: ChannelMask = ChannelMask(u64::MAX);
-    pub const NONE: ChannelMask = ChannelMask(0);
+    pub const ALL: ChannelMask = ChannelMask { low: u64::MAX, high: true };
+    pub const NONE: ChannelMask = ChannelMask { low: 0, high: false };
 
     /// Only channel `ch`; channels past 63 are not addressable and give [`NONE`](ChannelMask::NONE).
     pub fn only(ch: usize) -> ChannelMask {
-        ChannelMask(if ch < 64 { 1 << ch } else { 0 })
+        ChannelMask { low: if ch < 64 { 1 << ch } else { 0 }, high: false }
     }
 
+    /// The mask of channels 0-63 given as bits. `u64::MAX` is [`ALL`](ChannelMask::ALL).
     pub fn from_bits(bits: u64) -> ChannelMask {
-        ChannelMask(bits)
+        ChannelMask { low: bits, high: bits == u64::MAX }
     }
 
+    /// Bits of channels 0-63 (bit `n` is channel `n`). `ALL` gives `u64::MAX`; this does not show
+    /// whether channels 64 and up are in.
     pub fn bits(self) -> u64 {
-        self.0
+        self.low
     }
 
     /// This mask plus channel `ch`. `ALL` stays `ALL`, and channels past 63 are ignored.
     pub fn with(self, ch: usize) -> ChannelMask {
-        ChannelMask(self.0 | ChannelMask::only(ch).0)
+        if ch < 64 { ChannelMask { low: self.low | (1 << ch), high: self.high } } else { self }
     }
 
-    /// This mask without channel `ch`. On `ALL` it clears channels 0-63; channels past 63 cannot be
-    /// removed, so they stay (`ALL.without(70)` is `ALL`).
+    /// This mask without channel `ch`. On `ALL` it clears channel `ch` and keeps the rest, channels
+    /// 64 and up included. Channels past 63 cannot be removed one at a time, so `ALL.without(70)`
+    /// is `ALL`.
     pub fn without(self, ch: usize) -> ChannelMask {
-        ChannelMask(self.0 & !ChannelMask::only(ch).0)
+        if ch < 64 { ChannelMask { low: self.low & !(1 << ch), high: self.high } } else { self }
     }
 
     /// Whether `ch` is in the mask. [`ALL`](ChannelMask::ALL) contains every channel, whatever its
     /// number.
     pub fn contains(self, ch: usize) -> bool {
-        self.0 == u64::MAX || (ch < 64 && self.0 & (1 << ch) != 0)
+        if ch < 64 { self.low & (1 << ch) != 0 } else { self.high }
     }
 
     /// The channels of a `channels`-channel document in this mask, in order. `ALL` gives `0..channels`.
@@ -123,14 +131,16 @@ impl ChannelMask {
     /// stays `ALL` from 64 channels up; below that it becomes the mask of every channel up to the
     /// document's last, which means the same for that document.
     pub fn within(self, channels: usize) -> ChannelMask {
-        let keep = if channels >= 64 { u64::MAX } else { (1u64 << channels) - 1 };
-        ChannelMask(self.0 & keep)
+        if channels >= 64 {
+            return self;
+        }
+        ChannelMask { low: self.low & ((1u64 << channels) - 1), high: false }
     }
 }
 
 impl fmt::Debug for ChannelMask {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ChannelMask({:#b})", self.0)
+        write!(f, "ChannelMask({:#b}, high: {})", self.low, self.high)
     }
 }
 
@@ -848,6 +858,11 @@ fn finish(doc: &DocState, channels: Vec<Arc<Channel>>, label: &str, change: Chan
     let base = doc.markers().moved_by(&shift).map_or_else(|| doc.markers().clone(), Arc::new);
     let markers = base.clamped(state.len_frames()).map_or(base, Arc::new);
     state = state.with_markers(markers);
+    // The transcript's word times stay right while no audio moves. An edit that moves audio drops
+    // it until edits move words (L3); undo brings it back with the audio.
+    if matches!(shift, Shift::None) && state.len_frames() == doc.len_frames() {
+        state = state.with_transcript(doc.transcript().cloned());
+    }
     Ok(Edit { state, label: label.to_string(), change })
 }
 
@@ -1043,5 +1058,7 @@ mod tests {
         assert!(ChannelMask::ALL.without(70).contains(64));
         assert!(!ChannelMask::ALL.without(0).contains(0));
         assert!(ChannelMask::ALL.without(0).contains(1));
+        assert!(ChannelMask::ALL.without(0).contains(64), "channels past 63 stay when one below 64 is removed");
+        assert_eq!(ChannelMask::ALL.without(0).without(0), ChannelMask::ALL.without(0));
     }
 }
