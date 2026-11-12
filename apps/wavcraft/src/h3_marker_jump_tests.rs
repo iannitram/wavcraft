@@ -2,8 +2,8 @@
 //! the marker. Play stops, as before, only when the marker is outside what is being played.
 //!
 //! Each test runs on the headless window (`WaveApp::new` on eframe's headless creation context)
-//! with the silent sink (the tests set `WAVCRAFT_NO_AUDIO=1` themselves, once, so no device is opened).
-use std::sync::Once;
+//! with the silent sink in subprocesses given `WAVCRAFT_NO_AUDIO=1` before their threads start.
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -30,11 +30,7 @@ impl Drop for Scratch {
 
 /// The window as the program builds it, with its session folder in `scratch`. Its settings file and
 /// recent-files list are cut loose at once, so nothing a test does is written to the user's own.
-#[allow(unsafe_code)]
 fn a_window(scratch: &Scratch) -> WaveApp {
-    static SET: Once = Once::new();
-    // SAFETY: set once, before any window of this module builds its player; nothing here changes it again.
-    SET.call_once(|| unsafe { std::env::set_var("WAVCRAFT_NO_AUDIO", "1") });
     let cc = eframe::CreationContext::_new_kittest(egui::Context::default());
     let mut app = WaveApp::new(&cc, None, Some(scratch.0.join("sessions")), false);
     assert!(app.sessions.path.starts_with(&scratch.0), "the window's sessions are in the scratch folder, not {}", app.sessions.path.display());
@@ -42,6 +38,20 @@ fn a_window(scratch: &Scratch) -> WaveApp {
     app.settings_path = None;
     app.recent_path = None;
     app
+}
+
+/// Set the silent-sink environment before the child process starts any threads.
+fn in_silent_subprocess(name: &str) -> bool {
+    if std::env::var_os("WAVCRAFT_NO_AUDIO").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        return false;
+    }
+    let status = Command::new(std::env::current_exe().expect("the test executable"))
+        .args(["--exact", &format!("app::h3_marker_jump_tests::{name}"), "--nocapture"])
+        .env("WAVCRAFT_NO_AUDIO", "1")
+        .status()
+        .expect("run the silent-sink test subprocess");
+    assert!(status.success(), "the silent-sink test subprocess must pass");
+    true
 }
 
 /// 3 s of 48 kHz audio on the window, with point markers at 24_000 and 72_000 and no selection.
@@ -71,6 +81,9 @@ fn wait_for_the_play_to_end(app: &WaveApp) {
 /// Case 1: play from 0, Next Marker: the play goes on from the marker at 24_000.
 #[test]
 fn next_marker_during_a_play_from_the_start_carries_on_from_the_marker() {
+    if in_silent_subprocess("next_marker_during_a_play_from_the_start_carries_on_from_the_marker") {
+        return;
+    }
     let scratch = Scratch::new("case1");
     let mut app = a_window(&scratch);
     let ctx = app.ctx.clone();
@@ -90,6 +103,9 @@ fn next_marker_during_a_play_from_the_start_carries_on_from_the_marker() {
 /// both still playing.
 #[test]
 fn next_then_previous_marker_keep_the_play_going() {
+    if in_silent_subprocess("next_then_previous_marker_keep_the_play_going") {
+        return;
+    }
     let scratch = Scratch::new("case2");
     let mut app = a_window(&scratch);
     let ctx = app.ctx.clone();
@@ -115,6 +131,9 @@ fn next_then_previous_marker_keep_the_play_going() {
 /// Case 3: a play of the selection 0..12_000 stops on Next Marker to 24_000, which is outside it.
 #[test]
 fn next_marker_outside_the_selection_being_played_stops_the_play() {
+    if in_silent_subprocess("next_marker_outside_the_selection_being_played_stops_the_play") {
+        return;
+    }
     let scratch = Scratch::new("case3");
     let mut app = a_window(&scratch);
     let ctx = app.ctx.clone();
