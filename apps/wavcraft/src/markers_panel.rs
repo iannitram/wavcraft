@@ -271,10 +271,99 @@ impl MarkersUi {
     }
 }
 
+/// Which end of a marker's extent typed text sets. Not called by the panel yet (the typed-edit step
+/// wires it in), so the binary sees it as unused.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Start,
+    End,
+}
+
+/// A run of ASCII digits as a number; None for an empty, signed or non-digit text.
+#[allow(dead_code)]
+fn digits(s: &str) -> Option<u64> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) { None } else { s.parse().ok() }
+}
+
+/// Parses a time in the form the panel shows (`format_time`): `m:ss.mmm`, or `h:mm:ss.mmm` from an
+/// hour on. Minutes and seconds are 0..=59; the fraction is one to three digits. Returns the frame
+/// at `rate`; None for any other text, a zero rate, or a time too large to count.
+#[allow(dead_code)]
+pub fn parse_time(text: &str, rate: u32) -> Option<u64> {
+    if rate == 0 {
+        return None;
+    }
+    let parts: Vec<&str> = text.trim().split(':').collect();
+    let (hours, minutes, secs) = match parts.as_slice() {
+        [m, s] => (0, digits(m)?, *s),
+        [h, m, s] => (digits(h)?, digits(m)?, *s),
+        _ => return None,
+    };
+    let (whole, fraction) = match secs.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (secs, None),
+    };
+    let sec = digits(whole)?;
+    if minutes >= 60 || sec >= 60 {
+        return None;
+    }
+    let ms = match fraction {
+        None => 0,
+        Some(f) if (1..=3).contains(&f.len()) => digits(f)?.checked_mul(10u64.pow(3 - f.len() as u32))?,
+        Some(_) => return None,
+    };
+    let total_ms = ((hours.checked_mul(60)?.checked_add(minutes)?).checked_mul(60)?.checked_add(sec)?).checked_mul(1000)?.checked_add(ms)?;
+    Some(total_ms.checked_mul(u64::from(rate))? / 1000)
+}
+
+/// The extent that typed `text` gives the marker covering `range`, in a file of `len` frames at
+/// `rate`. The Start or the End moves to the typed time. None when the text is not a time, the time
+/// is past the file, or it would put the end before the start. A start equal to the end is a point.
+#[allow(dead_code)]
+pub fn typed_extent(range: Range<u64>, edge: Edge, text: &str, rate: u32, len: u64) -> Option<Range<u64>> {
+    let frame = parse_time(text, rate)?;
+    if frame > len {
+        return None;
+    }
+    match edge {
+        Edge::Start if frame <= range.end => Some(frame..range.end),
+        Edge::End if frame >= range.start => Some(range.start..frame),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use egui::pos2;
+
+    #[test]
+    fn typed_start_and_end_give_the_new_extent() {
+        // 48 kHz; the marker covers 1.000..2.000 s in a 4 s file.
+        let (rate, len, range) = (48_000, 192_000, 48_000..96_000);
+        assert_eq!(typed_extent(range.clone(), Edge::Start, "0:00.500", rate, len), Some(24_000..96_000));
+        assert_eq!(typed_extent(range.clone(), Edge::End, "0:03.000", rate, len), Some(48_000..144_000));
+        assert_eq!(typed_extent(range.clone(), Edge::End, "0:00.500", rate, len), None, "an end before the start");
+        assert_eq!(typed_extent(range.clone(), Edge::Start, "0:02.500", rate, len), None, "a start after the end");
+        assert_eq!(typed_extent(range.clone(), Edge::Start, "abc", rate, len), None);
+        assert_eq!(typed_extent(range.clone(), Edge::End, "0:05.000", rate, len), None, "past the 4 s file");
+        assert_eq!(typed_extent(range.clone(), Edge::End, "0:04.000", rate, len), Some(48_000..192_000), "the file's last frame is in it");
+        assert_eq!(typed_extent(range, Edge::Start, "0:02.000", rate, len), Some(96_000..96_000), "a start at the end is a point");
+    }
+
+    #[test]
+    fn parse_time_reads_the_panel_form_and_refuses_the_rest() {
+        assert_eq!(parse_time("1:02.250", 44_100), Some(62 * 44_100 + 11_025));
+        assert_eq!(parse_time("1:00:00.000", 48_000), Some(3600 * 48_000));
+        assert_eq!(parse_time("0:00.5", 48_000), Some(24_000), "a short fraction is tenths");
+        assert_eq!(parse_time("0:60.000", 48_000), None, "seconds stop at 59");
+        assert_eq!(parse_time("60:00.000", 48_000), None, "minutes stop at 59");
+        assert_eq!(parse_time("-1:00.000", 48_000), None);
+        assert_eq!(parse_time("0:00.1234", 48_000), None, "at most three fraction digits");
+        assert_eq!(parse_time("", 48_000), None);
+        assert_eq!(parse_time("0:00.500", 0), None, "a zero rate");
+    }
 
     #[test]
     fn a_press_near_a_flag_grabs_it_and_dragging_keeps_the_grab_offset() {
