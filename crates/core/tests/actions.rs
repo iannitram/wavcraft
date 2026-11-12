@@ -572,6 +572,32 @@ fn m10_convert_point_to_range_uses_the_selection_and_range_to_point_keeps_its_st
     assert_eq!(markers(&e)[0], (100, 100));
 }
 
+#[test]
+fn h2_delete_markers_by_id_is_one_undo_step() {
+    let t = TempDir::new("marker-delete-ids");
+    let mut e = marked(&t.0);
+    let id_of = |e: &Editor, frame: u64| e.history.current().markers().iter().find(|m| m.start == frame).unwrap().id;
+    let ids = [id_of(&e, 100), id_of(&e, 450)];
+    let (steps, cursor) = (e.history.steps().len(), e.history.cursor());
+    assert!(e.delete_markers(&ids));
+    assert_eq!(markers(&e), [(300, 400), (700, 900), (950, 950)]);
+    assert_eq!(e.history.undo_label(), Some("Delete Marker"));
+    // Both markers went in one step.
+    assert_eq!((e.history.steps().len(), e.history.cursor()), (steps + 1, cursor + 1));
+    // An empty id list returns false and adds no step, even right after a "Delete Marker".
+    assert!(!e.delete_markers(&[]));
+    assert_eq!((e.history.steps().len(), e.history.cursor()), (steps + 1, cursor + 1));
+    assert_eq!(markers(&e).len(), 3);
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e).len(), 5);
+    assert_eq!(e.history.cursor(), cursor);
+    // Nor after the Undo: the Redo step is kept.
+    assert!(!e.delete_markers(&[]));
+    assert_eq!((e.history.steps().len(), e.history.cursor()), (steps + 1, cursor));
+    assert_eq!(e.history.redo_label(), Some("Delete Marker"));
+    assert_eq!(markers(&e).len(), 5);
+}
+
 // ---- Insert > Audio from File (A169) ----
 
 /// Write `data` at `rate` as a 32-bit float WAV in `dir` (a file to insert), made in its own store.
