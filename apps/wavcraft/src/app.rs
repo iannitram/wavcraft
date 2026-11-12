@@ -625,6 +625,8 @@ pub struct WaveApp {
     doc_id: u64,
     /// Counts the files opened in this window; the next `doc_id`.
     doc_serial: u64,
+    /// The open document's dropped-step count as the last frame saw it, with the document's id (D5.3).
+    drop_seen: Option<(u64, u64)>,
     /// The other open documents; the fields above and below hold the current one.
     docs: DocList<DocSlot>,
     /// The "save changes?" prompt is for closing the current document, not the window.
@@ -1013,6 +1015,7 @@ impl WaveApp {
             doc_path: PathBuf::new(),
             doc_id: 0,
             doc_serial: 0,
+            drop_seen: None,
             docs: DocList::new(),
             closing_doc: false,
             rebuilding: None,
@@ -6036,6 +6039,25 @@ impl WaveApp {
             Ok(changed) => format!("OK selection={}-{} changed={}", self.selection.start(), self.selection.end(), u8::from(changed)),
             Err(e) => format!("ERR {e}"),
         }
+    }
+
+    /// D5.3: each frame, the steps the byte cap dropped since the last frame put `drop_notice` in
+    /// the status bar. The seen count restarts at the count the document has when it first shows
+    /// (or the count was lost), so drops from before a switch are not announced again.
+    fn check_drop_notice(&mut self) {
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        let now = editor.history.dropped_total() as u64;
+        let cap = editor.history.cap_disk_bytes();
+        let seen = match self.drop_seen {
+            Some((id, seen)) if id == self.doc_id => seen.min(now),
+            _ => now,
+        };
+        if let Some(text) = drop_notice(seen, now, cap) {
+            self.notice = Some(text);
+        }
+        self.drop_seen = Some((self.doc_id, now));
     }
 
     /// Window › History: every step, the current one highlighted; click one to go to it.
@@ -11796,6 +11818,7 @@ impl eframe::App for WaveApp {
         self.finish_rebuild();
         self.finish_job(ctx);
         self.finish_saving(ctx);
+        self.check_drop_notice();
         self.finish_making(ctx);
         self.pump_save_all(ctx);
         self.pump_close_all();
@@ -12818,7 +12841,6 @@ fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffK
 
 /// The History panel's notice for steps the byte cap removed since `seen` was last shown: the same
 /// `history.dropped` text as the panel line, or `None` unless the dropped count has risen.
-#[allow(dead_code)] // D5.3 wires it in
 fn drop_notice(seen: u64, now: u64, cap_bytes: u64) -> Option<String> {
     (now > seen).then(|| {
         let (n, gb) = ((now - seen).to_string(), format!("{:.1}", cap_bytes as f64 / 1e9));
