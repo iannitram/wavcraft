@@ -20,13 +20,21 @@
 //!   60 Hz stand [`Config::hum_margin_db`] over their neighbouring bins in long STFT windows.
 //! - Plosives (`plosive`): frames whose energy under [`Config::plosive_band_hz`] is
 //!   [`Config::plosive_ratio`] times both the rest of the spectrum and the low band's local median.
+//!
+//! [`scan_with`] (K1) is the same scan with a cancel flag and progress: the main chunk loop
+//! reports 0 to 0.5 and the per-channel passes (DC, hum, plosive) and the drift pass 0.5 to 1.0,
+//! checking the flag once per chunk or window. [`scan_doc`] scans a document from its store.
 
 mod drift;
 mod hum;
 mod plosive;
 
 use std::f64::consts::PI;
+use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::doc::DocState;
+use crate::document::StoreChannel;
 use crate::spectrogram::Samples;
 use crate::stats::{CLIP_LEVEL, MIN_CLIP_RUN};
 
@@ -183,6 +191,13 @@ impl Config {
 
 /// Scan `channels` (all the same length; the shortest one counts) for every detector.
 pub fn scan(channels: &[&dyn Samples], cfg: &Config) -> Report {
+    scan_with(channels, cfg, &AtomicBool::new(false), &mut |_| {}).unwrap_or_else(|| Report { findings: Vec::new(), truncated: false })
+}
+
+/// [`scan`] that stops when `cancel` is set (giving `None`) and reports its progress, 0 to 1,
+/// to `progress`. The flag is checked before any work and once per chunk or analysis window; a
+/// scan cancelled before it starts never calls `progress`. The last value reported is 1.0.
+pub fn scan_with(channels: &[&dyn Samples], cfg: &Config, cancel: &AtomicBool, progress: &mut dyn FnMut(f64)) -> Option<Report> {
     let len = channels.iter().map(|c| c.len()).min().unwrap_or(0) as u64;
     let mut sink = Sink::default();
     let mut carry: Vec<Carry> = channels.iter().map(|_| Carry::default()).collect();
@@ -196,7 +211,13 @@ pub fn scan(channels: &[&dyn Samples], cfg: &Config) -> Report {
     let mut frame_peak = vec![0f32; CHUNK_FRAMES];
 
     let mut start = 0u64;
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
     while start < len {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
         let n = (len - start).min(CHUNK_FRAMES as u64) as usize;
         frame_peak[..n].fill(0.0);
         for (c, src) in channels.iter().enumerate() {
@@ -246,6 +267,7 @@ pub fn scan(channels: &[&dyn Samples], cfg: &Config) -> Report {
             }
         }
         start += n as u64;
+        progress(0.5 * start as f64 / len as f64);
     }
 
     for (c, cy) in carry.iter().enumerate() {
@@ -259,15 +281,60 @@ pub fn scan(channels: &[&dyn Samples], cfg: &Config) -> Report {
     if let Some((s, top)) = silence.filter(|&(s, _)| len - s >= silence_min) {
         sink.push(dead_air_finding(s, len, top));
     }
+    // Each channel's DC, hum and plosive passes and the drift pass read the file once each.
+    let total = len.saturating_mul(3 * channels.len() as u64 + 1);
+    let mut tick = Ticker { cancel, progress, done: 0, total };
     for (c, src) in channels.iter().enumerate() {
-        dc_pass(*src, c, cfg, &mut sink);
-        hum::hum_pass(*src, c, cfg, &mut sink);
-        plosive::plosive_pass(*src, c, cfg, &mut sink);
+        dc_pass(*src, c, cfg, &mut sink, &mut tick)?;
+        hum::hum_pass(*src, c, cfg, &mut sink, &mut tick)?;
+        plosive::plosive_pass(*src, c, cfg, &mut sink, &mut tick)?;
     }
-    drift::drift_pass(channels, len, cfg, &mut sink);
+    drift::drift_pass(channels, len, cfg, &mut sink, &mut tick)?;
+    if cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    (tick.progress)(1.0);
 
     sink.findings.sort_by_key(|f| (f.start, f.channel));
-    Report { findings: sink.findings, truncated: sink.truncated }
+    Some(Report { findings: sink.findings, truncated: sink.truncated })
+}
+
+/// [`scan_with`] over `state` read from its store, one [`StoreChannel`] per channel, with
+/// [`Config::new`] at the document's rate. `Ok(None)` when cancelled; an error when a read from
+/// the store failed (the scan would have seen silence there).
+pub fn scan_doc(state: &DocState, cancel: &AtomicBool, progress: &mut dyn FnMut(f64)) -> io::Result<Option<Report>> {
+    let cfg = Config::new(state.sample_rate());
+    let sources: Vec<StoreChannel> = (0..state.channel_count()).map(|ch| StoreChannel::new(state, ch)).collect();
+    let refs: Vec<&dyn Samples> = sources.iter().map(|s| s as &dyn Samples).collect();
+    let report = scan_with(&refs, &cfg, cancel, progress);
+    drop(refs);
+    if let Some(e) = sources.into_iter().find_map(StoreChannel::into_error) {
+        return Err(e);
+    }
+    Ok(report)
+}
+
+/// Progress through the passes after the main loop: 0.5 to 1.0 by frames read, with the cancel
+/// flag checked at each step.
+pub(super) struct Ticker<'a> {
+    cancel: &'a AtomicBool,
+    progress: &'a mut dyn FnMut(f64),
+    done: u64,
+    total: u64,
+}
+
+impl Ticker<'_> {
+    /// `frames` more of the passes' work is done. `None` when the scan is cancelled (and then
+    /// nothing is reported).
+    pub(super) fn step(&mut self, frames: u64) -> Option<()> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.done = self.done.saturating_add(frames).min(self.total);
+        let part = if self.total == 0 { 1.0 } else { self.done as f64 / self.total as f64 };
+        (self.progress)(0.5 + 0.5 * part);
+        Some(())
+    }
 }
 
 /// Findings kept so far, and whether any were dropped past [`MAX_FINDINGS`].
@@ -386,7 +453,7 @@ fn dc_close(run: DcRun, channel: usize, cfg: &Config, sink: &mut Sink) {
     }
 }
 
-fn dc_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink: &mut Sink) {
+fn dc_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink: &mut Sink, tick: &mut Ticker) -> Option<()> {
     let len = src.len() as u64;
     let window = cfg.ms(cfg.dc_window_ms).max(1);
     let mut buf = vec![0f32; window as usize];
@@ -414,8 +481,10 @@ fn dc_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink: &mut Sink) {
             dc_close(r, channel, cfg, sink);
         }
         pos = end;
+        tick.step(n as u64)?;
     }
     if let Some(r) = run.take() {
         dc_close(r, channel, cfg, sink);
     }
+    Some(())
 }

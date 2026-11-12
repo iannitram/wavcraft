@@ -3,7 +3,7 @@
 
 use std::f64::consts::{PI, SQRT_2};
 
-use super::{Config, Finding, Kind, Severity, Sink, db};
+use super::{Config, Finding, Kind, Severity, Sink, Ticker, db};
 use crate::spectrogram::Samples;
 
 /// Frames either side of a frame whose median low-band level it is compared with (0.5 s).
@@ -37,7 +37,8 @@ impl Filter {
     }
 }
 
-pub(super) fn plosive_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink: &mut Sink) {
+/// `None` when the scan was cancelled.
+pub(super) fn plosive_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink: &mut Sink, tick: &mut Ticker) -> Option<()> {
     let len = src.len();
     let frame = (cfg.ms(cfg.plosive_frame_ms) as usize).max(1);
     // The rest of the spectrum starts an octave above the band, so a voice's fundamental, which sits
@@ -62,6 +63,7 @@ pub(super) fn plosive_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink
             frames.push(((lo / n).sqrt(), (hi / n).sqrt(), clipped));
         }
         pos += n - n % frame;
+        tick.step((n - n % frame) as u64)?;
     }
 
     let ratio = f64::from(cfg.plosive_ratio);
@@ -99,4 +101,5 @@ pub(super) fn plosive_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink
         }
         i = j;
     }
+    Some(())
 }

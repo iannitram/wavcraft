@@ -2,6 +2,11 @@
 //! hum, plosives), on synthetic audio. The speech-like signal is generated here (it is not a recording). A copy with four
 //! planted faults must report each one within 50 ms of where it was planted, and the clean copy
 //! must report nothing. Runs that cross the 64 K-frame chunk joins must come out whole.
+//!
+//! K1: `scan_with` stops when cancelled and reports progress from 0 to 1.
+
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use wavcraft_core::check::{self, Config, Finding, Kind, Report, Severity};
 use wavcraft_core::spectrogram::Samples;
@@ -73,8 +78,10 @@ fn clean_speech_reports_nothing() {
     assert!(report.findings.is_empty(), "clean speech reported {:?}", report.findings);
 }
 
-#[test]
-fn each_planted_fault_is_reported_within_50_ms() {
+/// The clean signal with the four planted faults of [`each_planted_fault_is_reported_within_50_ms`]:
+/// clipping at 3.0 s, true peak at 7.0 s, DC at 12.0 s, dead air at 16.0 s. Also returns their
+/// ranges in that order.
+fn planted() -> (Vec<f32>, Vec<f32>, [(u64, u64); 4]) {
     let (mut ch0, mut ch1) = clean();
 
     // Clipping on channel 0: 20 ms of full scale at 3.0 s.
@@ -100,7 +107,12 @@ fn each_planted_fault_is_reported_within_50_ms() {
     let dead = (frame(16.0), frame(19.5));
     ch0[dead.0 as usize..dead.1 as usize].fill(0.0);
     ch1[dead.0 as usize..dead.1 as usize].fill(0.0);
+    (ch0, ch1, [clip, tp, dc, dead])
+}
 
+#[test]
+fn each_planted_fault_is_reported_within_50_ms() {
+    let (ch0, ch1, [clip, tp, dc, dead]) = planted();
     let report = scan(&ch0, &ch1);
     assert!(!report.truncated);
 
@@ -248,4 +260,64 @@ fn clean_long_speech_reports_none_of_the_new_kinds() {
     for kind in [Kind::LoudnessDrift, Kind::MainsHum, Kind::Plosive] {
         assert!(of_kind(&report, kind).is_empty(), "{kind:?}: {:?}", of_kind(&report, kind));
     }
+}
+
+/// `scan_with` over two slices, with every progress value it reports.
+fn scan_with(ch0: &[f32], ch1: &[f32], cancel: &AtomicBool, mut on_progress: impl FnMut(f64)) -> Option<Report> {
+    let cfg = Config::new(RATE);
+    let (a, b): (&[f32], &[f32]) = (ch0, ch1);
+    let sources: [&dyn Samples; 2] = [&a, &b];
+    check::scan_with(&sources, &cfg, cancel, &mut on_progress)
+}
+
+#[test]
+fn a_cancelled_scan_returns_none() {
+    let (ch0, ch1, _) = planted();
+    let cancel = AtomicBool::new(true);
+    let calls = Cell::new(0u32);
+    let report = scan_with(&ch0, &ch1, &cancel, |_| calls.set(calls.get() + 1));
+    assert!(report.is_none(), "a scan cancelled before it starts gives no report");
+    assert_eq!(calls.get(), 0, "a scan cancelled before it starts reports no progress");
+}
+
+#[test]
+fn progress_rises_to_one() {
+    let (ch0, ch1, _) = planted();
+    let mut seen: Vec<f64> = Vec::new();
+    let report = scan_with(&ch0, &ch1, &AtomicBool::new(false), |p| seen.push(p));
+    assert!(report.is_some());
+    assert!(!seen.is_empty(), "no progress reported");
+    for w in seen.windows(2) {
+        assert!(w[1] >= w[0], "progress went down: {} then {}", w[0], w[1]);
+    }
+    assert!(seen.iter().all(|p| (0.0..=1.0).contains(p)), "progress outside 0..=1");
+    assert_eq!(seen.last().copied(), Some(1.0));
+}
+
+#[test]
+fn scan_with_matches_scan() {
+    let (ch0, ch1, _) = planted();
+    let plain = scan(&ch0, &ch1);
+    let with = scan_with(&ch0, &ch1, &AtomicBool::new(false), |_| {});
+    assert_eq!(with, Some(plain));
+}
+
+#[test]
+fn cancel_after_the_main_loop_stops_the_passes() {
+    // The callback sets cancel at the first progress above 0.5 (the passes after the main loop);
+    // the scan must stop with at most one more progress call.
+    let (ch0, ch1) = long_clean();
+    let cancel = AtomicBool::new(false);
+    let mut after = None::<u32>;
+    let report = scan_with(&ch0, &ch1, &cancel, |p| match after.as_mut() {
+        Some(n) => *n += 1,
+        None if p > 0.5 => {
+            cancel.store(true, Ordering::Relaxed);
+            after = Some(0);
+        }
+        None => {}
+    });
+    assert!(report.is_none(), "a scan cancelled in the passes gives no report");
+    let after = after.unwrap_or_else(|| panic!("no progress above 0.5 was reported"));
+    assert!(after <= 1, "{after} progress calls after cancel");
 }
