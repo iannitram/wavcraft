@@ -1,18 +1,36 @@
 //! Locked #997 expectations: under `WAVCRAFT_NO_AUDIO=1` each simulated device change gives the silent
 //! sink a new name, the play goes on from the same place, and replacing the audio with nothing stops it.
 //! The builder must not edit this file; `player.rs` declares it as a test-only module.
-use std::sync::Once;
+use std::ffi::OsStr;
+use std::process::Command;
 use std::time::Duration;
 
 use super::*;
 use wavcraft_core::{AudioBuffer, Document};
 
-/// A player on the silent sink (the env var is set once for the test process; no test needs a device).
-#[allow(unsafe_code)]
+/// Runs the test at `path` (its full path) again in a child process that has `WAVCRAFT_NO_AUDIO=1`
+/// before its threads start, and returns true when it did, so the caller returns. Nothing sets the
+/// variable in this process: `set_var` is unsafe while other test threads may read the environment.
+fn silent_child(path: &str) -> bool {
+    if std::env::var_os("WAVCRAFT_NO_AUDIO").as_deref() == Some(OsStr::new("1")) {
+        return false;
+    }
+    let out = Command::new(std::env::current_exe().expect("the test executable"))
+        .args(["--exact", path])
+        .env("WAVCRAFT_NO_AUDIO", "1")
+        .output()
+        .expect("run the test with silent output");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "{path} failed with silent output:\n{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    true
+}
+
+/// A player on the silent sink (no test needs a device). A test that calls this starts with `silent_child`.
 fn silent_player() -> Player {
-    static SET: Once = Once::new();
-    // SAFETY: set once, before any player of this module reads it; nothing here ever changes it again.
-    SET.call_once(|| unsafe { std::env::set_var("WAVCRAFT_NO_AUDIO", "1") });
     let p = Player::new(OutputChoice::default(), ChannelMap::default(), Quality::default());
     assert!(p.has_output() && p.info().test_sink, "the silent sink is the output");
     p
@@ -32,11 +50,17 @@ fn the_sink_name_counts_the_simulated_device_changes() {
 
 #[test]
 fn the_first_open_keeps_the_plain_sink_name() {
+    if silent_child("player::f48_device_change_tests::the_first_open_keeps_the_plain_sink_name") {
+        return;
+    }
     assert_eq!(silent_player().device, "test sink (no audio)");
 }
 
 #[test]
 fn each_simulated_device_change_gives_the_sink_a_new_name_and_one_more_reopen() {
+    if silent_child("player::f48_device_change_tests::each_simulated_device_change_gives_the_sink_a_new_name_and_one_more_reopen") {
+        return;
+    }
     let mut p = silent_player();
     let first = p.device.clone();
     assert_eq!(p.reopens(), 0);
@@ -52,6 +76,9 @@ fn each_simulated_device_change_gives_the_sink_a_new_name_and_one_more_reopen() 
 
 #[test]
 fn without_a_device_change_maintain_reopens_nothing_and_the_name_stays() {
+    if silent_child("player::f48_device_change_tests::without_a_device_change_maintain_reopens_nothing_and_the_name_stays") {
+        return;
+    }
     let mut p = silent_player();
     assert!(!p.maintain());
     assert_eq!((p.device.as_str(), p.reopens()), ("test sink (no audio)", 0));
@@ -59,6 +86,9 @@ fn without_a_device_change_maintain_reopens_nothing_and_the_name_stays() {
 
 #[test]
 fn a_simulated_device_change_keeps_the_play_going_from_the_same_position() {
+    if silent_child("player::f48_device_change_tests::a_simulated_device_change_keeps_the_play_going_from_the_same_position") {
+        return;
+    }
     let mut p = silent_player();
     p.set_audio(Some(ramp(480_000)));
     assert!(p.start(&Plan::new(0.0, 480_000.0), 100_000.0));
@@ -76,6 +106,9 @@ fn a_simulated_device_change_keeps_the_play_going_from_the_same_position() {
 
 #[test]
 fn replacing_with_nothing_stops_playback() {
+    if silent_child("player::f48_device_change_tests::replacing_with_nothing_stops_playback") {
+        return;
+    }
     let mut p = silent_player();
     p.set_audio(Some(ramp(480_000)));
     assert!(p.start(&Plan::new(0.0, 480_000.0), 0.0));
