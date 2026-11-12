@@ -442,3 +442,23 @@ fn huge_counter_wraps_every_2_24_frames() {
     assert_eq!(huge_counter(1 << 24), -(1 << 23));
     assert_eq!(HUGE_FRAMES, 720_000_000);
 }
+
+/// A real MP3 (made with ffmpeg's libmp3lame: 1 s, 1 kHz tone at half scale, 44.1 kHz stereo,
+/// 128 kbit/s) opens as Mp3 with its rate, channels and length, a peak near half scale, and no
+/// warnings.
+#[test]
+fn a_real_mp3_opens_with_its_rate_channels_and_length() {
+    let root = TempDir::new("real-mp3-sessions");
+    let path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/tone-1k-44k1-stereo.mp3"));
+    let doc = stream(&path, &root.0).unwrap();
+    let src = doc.source();
+    assert_eq!(src.format, FileFormat::Mp3);
+    assert_eq!(doc.sample_rate(), 44_100);
+    assert_eq!(doc.channel_count(), 2);
+    assert!((44_100..=47_000).contains(&doc.len_frames()), "{} frames", doc.len_frames());
+    assert!(src.warnings.is_empty(), "{:?}", src.warnings);
+
+    let buf = doc.to_audio_buffer().unwrap();
+    let peak = buf.channels.iter().flatten().fold(0.0f32, |p, v| p.max(v.abs()));
+    assert!((0.4..=0.6).contains(&peak), "peak is {peak}");
+}
