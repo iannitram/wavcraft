@@ -19,6 +19,7 @@ use wavcraft_core::doc::append::{self, AppendReport, NewReport};
 use wavcraft_core::doc::edit as doc_edit;
 use wavcraft_core::doc::newdoc::{self, NewDocOptions};
 use wavcraft_core::doc::span::EditSpan;
+use wavcraft_core::episode_map::{self, Class};
 use wavcraft_core::export::{self, DEFAULT_CHANNEL_PATTERN, DEFAULT_RANGE_PATTERN, ExportOptions};
 use wavcraft_core::export_presets::{ExportChoice, ExportPresets};
 use wavcraft_core::freq_axis::FreqAxis;
@@ -548,6 +549,8 @@ pub struct WaveApp {
     /// The zoom navigator drag in progress: the part grabbed and the frames between the view's
     /// start and the pointer when it was grabbed.
     nav_drag: Option<(NavPart, f64)>,
+    /// The class of each column the navigator last painted (the Episode Map), for `EPISODEMAP`.
+    map_classes: Vec<Class>,
     selection: Selection,
     player: Player,
     /// Play mode and options (loop, skip selection, return on stop, pre/post-roll).
@@ -946,6 +949,7 @@ impl WaveApp {
             view: Viewport { start: 0.0, frames_per_px: 1.0 },
             amp_zoom: AmpZoom::full(),
             nav_drag: None,
+            map_classes: Vec::new(),
             tool: Tool::default(),
             menu_area: Menu::Editor,
             band: None,
@@ -8025,6 +8029,17 @@ impl WaveApp {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
+            "EPISODEMAP" => {
+                // The Episode Map as the navigator last painted it: its columns, and how many are each class.
+                let count = |class: Class| self.map_classes.iter().filter(|&&c| c == class).count();
+                format!(
+                    "OK cols={} silence={} speech={} loud={}",
+                    self.map_classes.len(),
+                    count(Class::Silence),
+                    count(Class::Speech),
+                    count(Class::Loud)
+                )
+            }
             "STATE" => {
                 let busy = self.op_running()
                     || self.opening.is_some()
@@ -11022,6 +11037,7 @@ impl WaveApp {
         let (resp, painter) = ui.allocate_painter(vec2(ui.available_width(), NAV_HEIGHT), Sense::click_and_drag());
         let rect = resp.rect;
         painter.rect_filled(rect, 2.0, theme::pal().well);
+        self.map_classes.clear();
         let Some(doc) = &self.doc else { return };
         let (frames, channels) = (doc.frames(), doc.channels().max(1));
         let (nav_px, view_px) = (rect.width().max(1.0), self.editor_width.max(1.0));
@@ -11033,12 +11049,20 @@ impl WaveApp {
                 *m = (m.0.min(lo), m.1.max(hi));
             }
         }
+        // Each column in its class colour (silence, speech or loud, from its peak).
+        let classes = episode_map::columns(&merged);
         let (mid, half) = (rect.center().y, rect.height() * 0.5 - 2.0);
-        for (i, (lo, hi)) in merged.into_iter().enumerate() {
+        for (i, ((lo, hi), class)) in merged.into_iter().zip(classes.iter().copied()).enumerate() {
+            let colour = match class {
+                Class::Silence => theme::pal().map_silence,
+                Class::Speech => theme::pal().map_speech,
+                Class::Loud => theme::pal().map_loud,
+            };
             let x = rect.left() + i as f32 + 0.5;
             let (top, bottom) = (mid - hi.clamp(-1.0, 1.0) * half, mid - lo.clamp(-1.0, 1.0) * half);
-            painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, theme::pal().ok_dim));
+            painter.line_segment([pos2(x, top.min(bottom - 1.0)), pos2(x, bottom)], Stroke::new(1.0, colour));
         }
+        self.map_classes = classes;
 
         // Presses and drags.
         let frame_at = |x: f32| f64::from((x / nav_px).clamp(0.0, 1.0)) * frames as f64;
@@ -13237,6 +13261,10 @@ mod h1_3_marker_selection_tests;
 #[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
 mod i3_shortcut_help_tests;
+
+#[cfg(test)]
+#[path = "m2_map_tests.rs"]
+mod m2_map_tests;
 
 #[cfg(test)]
 #[path = "n1_parity_tests.rs"]

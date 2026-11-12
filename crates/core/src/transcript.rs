@@ -123,6 +123,16 @@ impl Transcript {
         Transcript { version: self.version, sample_rate: self.sample_rate, words }
     }
 
+    /// The frames from the start of the word at `first` to the end of the word at `last`, for a
+    /// selection dragged either way: the two indices may come in either order. An index past the
+    /// last word gives the empty range `0..0`, never a panic.
+    pub fn range_of(&self, first: usize, last: usize) -> Range<u64> {
+        let (Some(a), Some(b)) = (self.words.get(first.min(last)), self.words.get(first.max(last))) else {
+            return 0..0;
+        };
+        a.start..b.end
+    }
+
     /// Whether this transcript is one [`Transcript::from_json`] would accept: the current
     /// version, a sample rate above 0, every word `start < end`, none starting before the
     /// previous one's end.
