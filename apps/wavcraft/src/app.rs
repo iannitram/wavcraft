@@ -13339,6 +13339,10 @@ mod a1_open_cancel_tests;
 mod a2_close_prompt_tests;
 
 #[cfg(test)]
+#[path = "c5_space_return_tests.rs"]
+mod c5_space_return_tests;
+
+#[cfg(test)]
 #[path = "d5_drop_notice_tests.rs"]
 mod d5_drop_notice_tests;
 
