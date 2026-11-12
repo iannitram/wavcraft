@@ -23,8 +23,23 @@ fn scratch() -> PathBuf {
     dir
 }
 
-/// The child test never returns: the parent terminates this process after the WAV header reaches
-/// two seconds. Keeping the recorder and fake input alive is the point of this helper.
+/// On drop, kills the recording child and removes the scratch directory, also when a wait or an
+/// assertion fails first.
+struct Guard {
+    child: Child,
+    dir: PathBuf,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The parent normally kills this process once the WAV header reaches two seconds. The loop also
+/// ends by itself after two minutes, so an orphaned copy cannot record forever.
 fn record_in_child() {
     let dir = PathBuf::from(std::env::var_os(CHILD_DIR).expect("child directory is set"));
     let fmt = RecFormat { rate: 48_000, channels: 1, bits: 24, inputs: 0 };
@@ -32,8 +47,8 @@ fn record_in_child() {
     let writer = create_take(&dir, fmt, 1).unwrap();
     let _recorder = Recorder::start(writer, ring.clone()).unwrap();
     let _fake = FakeInput::spawn(FakeSpec::parse(Some("sine:440")).unwrap().unwrap(), fmt, ring).unwrap();
-    loop {
-        std::thread::sleep(Duration::from_secs(60));
+    for _ in 0..120 {
+        std::thread::sleep(Duration::from_secs(1));
     }
 }
 
@@ -71,7 +86,7 @@ fn a_killed_process_leaves_a_take_that_repairs() {
 
     let dir = scratch();
     let exe = std::env::current_exe().unwrap();
-    let mut child = Command::new(exe)
+    let spawned = Command::new(exe)
         .arg("--exact")
         .arg(TEST_NAME)
         .arg("--nocapture")
@@ -82,6 +97,7 @@ fn a_killed_process_leaves_a_take_that_repairs() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+    let mut child = Guard { child: spawned, dir: dir.clone() };
 
     // The header updates every second; wait for the second update, which claims 96,000 frames.
     // If child setup fails, the loop reports its exit rather than hanging indefinitely.
@@ -90,14 +106,14 @@ fn a_killed_process_leaves_a_take_that_repairs() {
     while path.is_none() {
         path =
             std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).map(|entry| entry.path()).find(|p| p.extension().is_some_and(|ext| ext == "wav"));
-        if child.try_wait().unwrap().is_some() {
+        if child.child.try_wait().unwrap().is_some() {
             panic!("recording child exited before creating its take");
         }
         assert!(Instant::now() < deadline, "timed out waiting for the child to create its take");
         std::thread::sleep(Duration::from_millis(20));
     }
     let path = path.unwrap();
-    kill_when_header_reaches(&mut child, &path, 96_000);
+    kill_when_header_reaches(&mut child.child, &path, 96_000);
 
     let found = unfinished_takes(&dir);
     assert_eq!(found.len(), 1, "one killed take should be offered for recovery");
@@ -114,5 +130,4 @@ fn a_killed_process_leaves_a_take_that_repairs() {
     assert_eq!(doc.sample_rate(), 48_000);
     assert_eq!(doc.channels(), 1);
     drop(doc);
-    let _ = std::fs::remove_dir_all(&dir);
 }
