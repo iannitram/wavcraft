@@ -318,6 +318,8 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("marker.add", "Add Marker", "M".to_string()),
         ("marker.prev", "Playhead to Previous Marker", "Ctrl+Alt+ArrowLeft".to_string()),
         ("marker.next", "Playhead to Next Marker", "Ctrl+Alt+ArrowRight".to_string()),
+        ("view.playhead.prev", "Move Playhead to Previous", "Alt+ArrowLeft".to_string()),
+        ("view.playhead.next", "Move Playhead to Next", "Alt+ArrowRight".to_string()),
         ("view.zoomIn", "Zoom In", "=".to_string()),
         ("view.zoomOut", "Zoom Out", "−".to_string()),
         ("view.zoomToSelection", "Zoom to Selection", "Shift+S".to_string()),
