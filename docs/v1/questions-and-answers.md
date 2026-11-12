@@ -78,3 +78,12 @@ When only one channel of a stereo file is active, Audition pastes by writing ove
 2. **A range is selected, not just a cursor:** WavCraft writes the whole clip starting at the selection's start, whatever the selection's length.
 
 **Default:** keep both choices. They are written down in the code map under "Known differences from Audition". If you'd like, the next time Audition is open we can try both cases (2 minutes, on test copies) and match it exactly.
+
+## Q10. Which tool fixes Clipping, and which fixes True peak? (2026-11-12, roadmap K4.2)
+
+The check finds clipped runs and true-peak overs, but [fix.rs](../../crates/core/src/check/fix.rs) suggests no fix for either. K4.6 adds the two fixes to `suggest` and `apply`, and waits on this answer.
+
+**Answer (2026-11-12, via the project manager):**
+
+- **Clipping: DeClipper** (`diagnostics/declip.rs`, label "DeClipper") on the finding's range and channels, with its default settings: `threshold_db=-0.1 min_run=3`. My words: "DeClipper (Recommended)".
+- **True peak: the Dynamics limiter** (`effects/dynamics.rs`) on the finding's range and channels. `limit_db` is the `true_peak_ceiling_dbtp` setting (default −1.0), and the other Dynamics settings stay at their defaults. My words: "Dynamics limiter (Recommended)".
