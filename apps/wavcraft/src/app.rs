@@ -1,6 +1,7 @@
 //! The window: menu, the editor (time ruler, waveform, spectral display) and the status bar.
 
 use crate::theme;
+use crate::transcript_run::TranscriptRun;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -819,6 +820,8 @@ pub struct WaveApp {
     shift_frames: u32,
     /// Window › Sample Statistics.
     stats: StatsPanel,
+    /// Background transcription worker (L1.11).
+    transcript_run: TranscriptRun,
     /// View › Time Display (kept in the settings file).
     time_format: TimeFormat,
     /// The open document's tempo and time signature (Bars and Beats).
@@ -1059,6 +1062,7 @@ impl WaveApp {
             scrub: None,
             insert_silence: None,
             stats: StatsPanel::default(),
+            transcript_run: TranscriptRun::default(),
             raw_import: None,
             mix_paste: None,
             custom_fps_dialog: None,
@@ -1439,6 +1443,18 @@ impl WaveApp {
             d.result = Some((stats, source));
         }
         self.sync_input();
+    }
+
+    /// Check whether a background transcription finished; if so, push its result as a "Transcribe" step.
+    fn poll_transcript(&mut self) {
+        if let Some((scanned_state, transcript)) = self.transcript_run.poll() {
+            let Some(editor) = self.editor.as_mut() else { return };
+            if Arc::ptr_eq(&scanned_state, editor.history.current()) {
+                editor.history.push_transcript("Transcribe", Arc::new(transcript));
+            } else {
+                log::warn!(target: "wavcraft", "transcript discarded: document changed while transcribing");
+            }
+        }
     }
 
     /// The row above the bars: what they show, and the input switch.
@@ -5165,6 +5181,11 @@ impl WaveApp {
     /// Run an action from the table on the open file (menu, key or control channel). Returns
     /// whether the document changed.
     fn run_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
+        if id == ActionId::TranscriptRun {
+            let Some(state) = self.editor.as_ref().map(|e| e.history.current().clone()) else { return Err("no file is open".to_string()) };
+            self.transcript_run.start(state, ctx);
+            return Ok(false);
+        }
         // The snapping switches are settings: they flip with no file open too.
         if self.editor.is_none() && actions::snap_flag_value(&self.settings.snap, id).is_some() {
             self.toggle_snap_menu(id);
@@ -8029,6 +8050,26 @@ impl WaveApp {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
         let sel = |s: &Self| format!("{}-{}", s.selection.start(), s.selection.end());
         match cmd {
+            "TRANSCRIPT" => match rest.trim() {
+                "run" => match self.run_action(ActionId::TranscriptRun, ctx) {
+                    Ok(_) => "OK".to_string(),
+                    Err(e) => format!("ERR {e}"),
+                },
+                "cancel" => {
+                    self.transcript_run.cancel();
+                    "OK".to_string()
+                }
+                "state" => {
+                    self.poll_transcript();
+                    let running = u8::from(self.transcript_run.running());
+                    let (words, first) = match self.editor.as_ref().and_then(|e| e.history.current().transcript()) {
+                        Some(t) => (t.words.len(), t.words.first().map_or_else(String::new, |w| format!(" first={}-{}", w.start, w.end))),
+                        None => (0, String::new()),
+                    };
+                    format!("OK running={running} words={words}{first}")
+                }
+                _ => "ERR TRANSCRIPT run|cancel|state".to_string(),
+            },
             "EPISODEMAP" => {
                 // The Episode Map as the navigator last painted it: its columns, and how many are each class.
                 let count = |class: Class| self.map_classes.iter().filter(|&&c| c == class).count();
@@ -10681,6 +10722,16 @@ impl WaveApp {
                 if ui.button("Cancel").clicked() {
                     cancel_job = true;
                 }
+            } else if self.transcript_run.running() {
+                ui.spinner();
+                let progress = self.transcript_run.progress();
+                ui.label(format!("Transcribe… {:.0}%", progress * 100.0));
+                ui.add(egui::ProgressBar::new(progress).desired_width(120.0));
+                if ui.button("Cancel").clicked() {
+                    self.transcript_run.cancel();
+                }
+            } else if let Some(e) = self.transcript_run.error() {
+                ui.colored_label(theme::pal().cursor, e);
             } else if let Some(i) = &self.inserting {
                 ui.spinner();
                 ui.label(format!("Inserting {}… {}%", i.path.display(), i.progress.load(Ordering::Relaxed) / 10));
@@ -11930,6 +11981,7 @@ impl eframe::App for WaveApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
         self.stats.poll();
+        self.poll_transcript();
         self.recovery.poll();
         let unsaved = self.unsaved();
         self.recovery.configure(self.settings.autosave_enabled, self.settings.autosave_interval_secs);

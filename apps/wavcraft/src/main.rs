@@ -46,6 +46,7 @@ mod shortcut_editor;
 mod spectrum;
 mod statspanel;
 mod theme;
+mod transcript_run;
 mod v1;
 mod video;
 #[cfg(windows)]
