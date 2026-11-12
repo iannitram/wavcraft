@@ -624,7 +624,7 @@ impl Default for Settings {
             true_peak_ceiling_dbtp: DEFAULT_TRUE_PEAK_DBTP,
             zoom_factor: DEFAULT_ZOOM_FACTOR,
             extend_selection: ExtendSelection::Nearest,
-            context_channel_editing: true,
+            context_channel_editing: false,
             theme: Theme::Dark,
             waveform_colour: WaveColour::Green,
             ui_brightness: DEFAULT_BRIGHTNESS,
