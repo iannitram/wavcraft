@@ -10060,7 +10060,7 @@ impl WaveApp {
     fn effects_menu(&mut self, ui: &mut egui::Ui) {
         let sel = self.selection_range();
         let mut chosen = None;
-        for a in actions::all_actions().filter(|a| a.name.starts_with("effect.")) {
+        for a in v1::effect_rows_in(v1::RELEASE) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none() && self.running.is_none();
             // An effect with settings opens its dialog (a "…" entry); one without runs at once.
             let has_dialog =
