@@ -11,9 +11,6 @@ use wavcraft_core::actions::Editor;
 use wavcraft_core::settings::{MarkerColumns, Settings};
 use wavcraft_core::{MarkerPick, Markers, Viewport, format_time};
 
-/// How close (in pixels) to a marker's flag a press grabs it.
-const GRAB_PX: f32 = 6.0;
-
 /// A marker being dragged in the ruler: the move is applied (one history step) on release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Drag {
@@ -56,12 +53,14 @@ impl MarkersUi {
         self.pick.span(markers)
     }
 
-    /// The marker whose flag is under `pos` in the ruler, if any.
+    /// The marker whose flag is under `pos` in the ruler, if any: within the theme's handle grab
+    /// of it (6 px, or 22 px with Large controls on).
     pub fn handle_at(&self, markers: &Markers, view: &Viewport, ruler: Rect, pos: Pos2) -> Option<u64> {
         if !ruler.contains(pos) {
             return None;
         }
-        markers.iter().rev().find(|m| (ruler.left() + view.x_of(m.start as f64) - pos.x).abs() <= GRAB_PX).map(|m| m.id)
+        let grab = theme::metrics().handle_grab;
+        markers.iter().rev().find(|m| (ruler.left() + view.x_of(m.start as f64) - pos.x).abs() <= grab).map(|m| m.id)
     }
 
     /// Start dragging marker `id`, grabbed at `frame`.
@@ -236,6 +235,9 @@ mod tests {
 
     #[test]
     fn a_press_near_a_flag_grabs_it_and_dragging_keeps_the_grab_offset() {
+        // The grab width comes from the theme's Large controls switch: hold it off.
+        let _guard = theme::SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        theme::set_large(false);
         let m = Markers::from_items(vec![("a".into(), 1000, 1000), ("b".into(), 5000, 5400)]);
         let view = Viewport { start: 0.0, frames_per_px: 10.0 };
         let ruler = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 20.0));
@@ -250,5 +252,21 @@ mod tests {
         assert_eq!(ui.shown(&m, 10_000).as_slice()[1].range(), 6000..6400);
         ui.drag_to(0);
         assert_eq!(ui.drag.unwrap().start, 0, "held at the start of the file");
+    }
+
+    #[test]
+    fn large_grab_widens_the_marker_flags() {
+        let m = Markers::from_items(vec![("a".into(), 5000, 5000)]);
+        let view = Viewport { start: 0.0, frames_per_px: 10.0 };
+        let ruler = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 20.0));
+        let ui = MarkersUi::new();
+        let a = m.id_at(0).unwrap();
+        let _guard = theme::SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        theme::set_large(true);
+        let large = ui.handle_at(&m, &view, ruler, pos2(520.0, 5.0));
+        theme::set_large(false);
+        let normal = ui.handle_at(&m, &view, ruler, pos2(520.0, 5.0));
+        assert_eq!(large, Some(a), "20 px from the flag is picked with Large controls on");
+        assert_eq!(normal, None, "and not with it off");
     }
 }
