@@ -611,6 +611,47 @@ mod tests {
         assert_eq!(buf, b"ok\n");
     }
 
+    /// Fails every other read with `Interrupted`, as a signal can.
+    struct FlakyReader {
+        inner: std::io::Cursor<Vec<u8>>,
+        calls: usize,
+    }
+
+    impl std::io::Read for FlakyReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            if self.calls.is_multiple_of(2) {
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            self.inner.read(buf)
+        }
+    }
+
+    #[test]
+    fn a_line_split_over_several_reads_is_capped_and_joined_correctly() {
+        // A 4-byte buffer makes every line arrive over several fill_buf calls, and every other read is interrupted.
+        let mut data = vec![b'a'; 30];
+        data.extend_from_slice(b"\nbc\n");
+        data.extend_from_slice(&[b'd'; 9]);
+        data.extend_from_slice(b"\n");
+        data.extend_from_slice(b"eeeeeeee\n");
+        data.extend_from_slice(b"ff\n");
+        let mut input = std::io::BufReader::with_capacity(4, FlakyReader { inner: std::io::Cursor::new(data), calls: 0 });
+        let mut lines = Vec::new();
+        loop {
+            let mut buf = Vec::new();
+            let n = read_line_capped(&mut input, &mut buf, 9).unwrap();
+            if n == 0 {
+                break;
+            }
+            lines.push((n, buf));
+        }
+        assert_eq!(
+            lines,
+            vec![(31, b"aaaaaaaaa".to_vec()), (3, b"bc\n".to_vec()), (10, b"ddddddddd".to_vec()), (9, b"eeeeeeee\n".to_vec()), (3, b"ff\n".to_vec()),]
+        );
+    }
+
     #[test]
     fn short_lines_are_read_unchanged() {
         let mut input = std::io::Cursor::new(b"a\nbb\nno newline".to_vec());
