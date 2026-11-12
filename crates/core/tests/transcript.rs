@@ -134,3 +134,15 @@ fn word_at_start_end_and_gap() {
     assert_eq!(empty.word_at(0), None);
     assert_eq!(empty.word_at(u64::MAX), None);
 }
+
+#[test]
+fn range_of_words() {
+    let t = Transcript::new(48_000, vec![word("first", 48_000, 72_000), word("second", 80_000, 90_000), word("third", 1_488_000, 1_512_000)]);
+    assert_eq!(t.range_of(0, 1), 48_000..90_000);
+    // Dragging the other way gives the same range.
+    assert_eq!(t.range_of(1, 0), 48_000..90_000);
+    assert_eq!(t.range_of(2, 2), 1_488_000..1_512_000);
+    assert_eq!(t.range_of(0, 2), 48_000..1_512_000);
+    // An index past the last word gives the empty range, not a panic.
+    assert_eq!(t.range_of(0, 3), 0..0);
+}
