@@ -4097,6 +4097,14 @@ impl WaveApp {
         editor.snap_with(frame, frames_per_px, targets, Some((major, minor)))
     }
 
+    /// A playhead dragged along the ruler (f36) pulled to the nearest snap target under the current
+    /// snap settings: markers, ruler ticks, zero crossings and the selection's edges. `frame` is
+    /// returned unchanged when snapping is off.
+    fn snap_playhead_drag(&self, frame: usize, frames_per_px: f64) -> usize {
+        let targets = [self.selection.start() as u64, self.selection.end() as u64];
+        self.editor.as_ref().map_or(frame, |e| self.snap_at(e, frame as u64, frames_per_px, &targets) as usize)
+    }
+
     /// A frame set from the ruler, snapped to a timecode frame boundary when the display is SMPTE
     /// and snapping to frames is on.
     fn snap_gesture(&self, frame: usize) -> usize {
@@ -11266,7 +11274,7 @@ impl WaveApp {
             if response.dragged()
                 && let Some(pos) = response.interact_pointer_pos()
             {
-                self.head_scrub.pending = Some(frame_at(&self.view, pos));
+                self.head_scrub.pending = Some(self.snap_playhead_drag(frame_at(&self.view, pos), self.view.frames_per_px));
             }
             if response.drag_stopped() {
                 self.head_scrub.ended = true;
@@ -13276,6 +13284,10 @@ mod a2_close_prompt_tests;
 #[cfg(test)]
 #[path = "d5_drop_notice_tests.rs"]
 mod d5_drop_notice_tests;
+
+#[cfg(test)]
+#[path = "c3_playhead_snap_tests.rs"]
+mod c3_playhead_snap_tests;
 
 #[cfg(test)]
 #[path = "issue1173_tests.rs"]
