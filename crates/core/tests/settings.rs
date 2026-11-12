@@ -68,7 +68,9 @@ fn the_panel_layout_is_kept_in_the_settings_file() {
     assert_eq!(Layout::decode(&back.panel_layout, &back.zone_sizes), layout);
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
-        text.contains("panel_layout = left:tools,files;right:markers,playlist,match;bottom:selection,freq,properties,transport,time,zoom,history*"),
+        text.contains(
+            "panel_layout = left:tools,files;right:markers,playlist,match,findings;bottom:selection,freq,properties,transport,time,zoom,history*"
+        ),
         "{text}"
     );
 }

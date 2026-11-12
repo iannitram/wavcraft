@@ -143,6 +143,9 @@ pub enum ActionId {
     StatsPrevClip,
     /// Effects › Run Episode Check (K1): scan the whole file on a worker thread; the window runs it.
     EpisodeCheck,
+    /// Findings navigation (K3.2): move to the next / previous finding.
+    CheckNext,
+    CheckPrev,
     /// Transcribe the open file on a worker thread (L1.11).
     TranscriptRun,
     TimeDecimal,
@@ -319,6 +322,8 @@ pub const TABLE: &[Action] = &[
     window(ActionId::StatsNextClip, "stats.next_clip", "Next Possibly Clipped Run"),
     window(ActionId::StatsPrevClip, "stats.prev_clip", "Previous Possibly Clipped Run"),
     window(ActionId::EpisodeCheck, "check.run", "Run Episode Check"),
+    window(ActionId::CheckNext, "check.next", "Next Finding"),
+    window(ActionId::CheckPrev, "check.prev", "Previous Finding"),
     window(ActionId::TranscriptRun, "transcript.run", "Transcribe"),
     window(ActionId::TimeDecimal, "view.time_display.decimal", "Decimal (mm:ss.ddd)"),
     window(ActionId::TimeCompact, "view.time_display.compact", "Compact"),
@@ -708,7 +713,7 @@ impl Editor {
             ActionId::ConvertSampleType | ActionId::InterpretSampleRate => self.len() > 0,
             ActionId::ToggleChannel(n) => usize::from(n) < self.channel_count(),
             ActionId::StatsShow | ActionId::StatsGotoPeak | ActionId::StatsNextClip | ActionId::StatsPrevClip => self.len() > 0,
-            ActionId::EpisodeCheck | ActionId::TranscriptRun => self.len() > 0,
+            ActionId::EpisodeCheck | ActionId::CheckNext | ActionId::CheckPrev | ActionId::TranscriptRun => self.len() > 0,
             ActionId::MarkerAdd => self.len() > 0,
             ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
             ActionId::MarkerPrev => self.history.current().markers().prev_before(selection.start).is_some(),
@@ -1450,6 +1455,8 @@ impl Editor {
             | ActionId::StatsNextClip
             | ActionId::StatsPrevClip
             | ActionId::EpisodeCheck
+            | ActionId::CheckNext
+            | ActionId::CheckPrev
             | ActionId::TranscriptRun
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
@@ -1562,6 +1569,24 @@ mod episode_check_tests {
         assert_eq!(a.menu, "Run Episode Check");
         with_editor("empty", 0, |e| assert!(!e.enabled(ActionId::EpisodeCheck, &(0..0)), "enabled on an empty document"));
         with_editor("one", 1, |e| assert!(e.enabled(ActionId::EpisodeCheck, &(0..0)), "disabled on a 1-frame document"));
+    }
+
+    #[test]
+    fn check_next_and_prev_are_in_the_table() {
+        let next = by_name("check.next").unwrap();
+        assert_eq!(next.id, ActionId::CheckNext);
+        assert_eq!(next.menu, "Next Finding");
+        let prev = by_name("check.prev").unwrap();
+        assert_eq!(prev.id, ActionId::CheckPrev);
+        assert_eq!(prev.menu, "Previous Finding");
+        with_editor("empty-nav", 0, |e| {
+            assert!(!e.enabled(ActionId::CheckNext, &(0..0)));
+            assert!(!e.enabled(ActionId::CheckPrev, &(0..0)));
+        });
+        with_editor("one-nav", 1, |e| {
+            assert!(e.enabled(ActionId::CheckNext, &(0..0)));
+            assert!(e.enabled(ActionId::CheckPrev, &(0..0)));
+        });
     }
 
     #[test]
