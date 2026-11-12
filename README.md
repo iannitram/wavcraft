@@ -29,6 +29,8 @@ cargo run --release -p wavcraft -- path/to/file.wav
 
 Rust 1.95 or later. On Linux the audio output needs the ALSA headers (`libasound2-dev`).
 
+**macOS app bundle.** On a Mac, `bash tools/macos/bundle.sh` builds the release binary and wraps it as `WavCraft.app` in the build folder (`target/release/WavCraft.app`, or `$CARGO_TARGET_DIR/release/` if that is set). Rerunning it replaces the old bundle, and its last line prints the bundle's path. Open it with `open target/release/WavCraft.app`. The bundle id is `app.wavcraft.WavCraft`, the minimum system is macOS 11.0, and `Info.plist` (from `tools/macos/Info.plist`) carries the microphone usage text, so macOS asks for the microphone with it on the first Record. The bundle is ad-hoc signed, not notarised.
+
 **The session folder** (where an opened file is kept while you work on it, about 1.4 GB per hour
 of 48 kHz stereo; see "Where the samples live" below) is under the system cache folder unless
 you choose another, for example a bigger disk. The first of these that is set wins:
