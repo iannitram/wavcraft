@@ -13222,3 +13222,7 @@ mod a2_title_star_tests;
 #[cfg(test)]
 #[path = "a1_open_cancel_tests.rs"]
 mod a1_open_cancel_tests;
+
+#[cfg(test)]
+#[path = "a2_close_prompt_tests.rs"]
+mod a2_close_prompt_tests;
