@@ -146,6 +146,8 @@ pub enum ActionId {
     /// Findings navigation (K3.2): move to the next / previous finding.
     CheckNext,
     CheckPrev,
+    /// Transcribe the open file on a worker thread (L1.11).
+    TranscriptRun,
     TimeDecimal,
     TimeCompact,
     TimeSamples,
@@ -322,6 +324,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::EpisodeCheck, "check.run", "Run Episode Check"),
     window(ActionId::CheckNext, "check.next", "Next Finding"),
     window(ActionId::CheckPrev, "check.prev", "Previous Finding"),
+    window(ActionId::TranscriptRun, "transcript.run", "Transcribe"),
     window(ActionId::TimeDecimal, "view.time_display.decimal", "Decimal (mm:ss.ddd)"),
     window(ActionId::TimeCompact, "view.time_display.compact", "Compact"),
     window(ActionId::TimeSamples, "view.time_display.samples", "Samples"),
@@ -710,7 +713,7 @@ impl Editor {
             ActionId::ConvertSampleType | ActionId::InterpretSampleRate => self.len() > 0,
             ActionId::ToggleChannel(n) => usize::from(n) < self.channel_count(),
             ActionId::StatsShow | ActionId::StatsGotoPeak | ActionId::StatsNextClip | ActionId::StatsPrevClip => self.len() > 0,
-            ActionId::EpisodeCheck | ActionId::CheckNext | ActionId::CheckPrev => self.len() > 0,
+            ActionId::EpisodeCheck | ActionId::CheckNext | ActionId::CheckPrev | ActionId::TranscriptRun => self.len() > 0,
             ActionId::MarkerAdd => self.len() > 0,
             ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
             ActionId::MarkerPrev => self.history.current().markers().prev_before(selection.start).is_some(),
@@ -1454,6 +1457,7 @@ impl Editor {
             | ActionId::EpisodeCheck
             | ActionId::CheckNext
             | ActionId::CheckPrev
+            | ActionId::TranscriptRun
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -1583,5 +1587,14 @@ mod episode_check_tests {
             assert!(e.enabled(ActionId::CheckNext, &(0..0)));
             assert!(e.enabled(ActionId::CheckPrev, &(0..0)));
         });
+    }
+
+    #[test]
+    fn transcript_run_is_in_the_table() {
+        let a = by_name("transcript.run").unwrap();
+        assert_eq!(a.id, ActionId::TranscriptRun);
+        assert_eq!(a.menu, "Transcribe");
+        with_editor("transcript-empty", 0, |e| assert!(!e.enabled(ActionId::TranscriptRun, &(0..0)), "enabled on an empty document"));
+        with_editor("transcript-one", 1, |e| assert!(e.enabled(ActionId::TranscriptRun, &(0..0)), "disabled on a 1-frame document"));
     }
 }
