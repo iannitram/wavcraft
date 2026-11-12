@@ -824,7 +824,7 @@ My ruling, 2026-11-01: "Into v1". Order: M3 and M5 first; K1, K2 and L1 can star
 
 **Complete:**
 
-- **L0 Speech-to-text library, model and licence.** The choice is written in docs/v1/architecture.md, section "Transcription (L0, 2026-11-03)": candle runner, Whisper base multilingual. The weights' licence is in THIRD-PARTY-NOTICES.txt, written by tools/notices.py (tools/test_notices.py). Done check: v1.md has no L0 row. Section L's intro: a pure-Rust MIT or Apache runner; the weights' licence checked and written into the notices file before the model ships. Recorded: docs/v1/architecture.md (Transcription section) and THIRD-PARTY-NOTICES.txt ("Speech-to-text model weights"). Open issue to close: #1056.
+- **L0 Speech-to-text library, model and licence.** The choice is written in docs/v1/architecture.md, section "Transcription (L0, 2026-11-03)": candle runner, Whisper base multilingual. The weights' licence is in THIRD-PARTY-NOTICES.txt, written by tools/notices.py (tools/test_notices.py). Done check: v1.md has the L0 row (my ruling of 2026-11-12: "Yes, spec 75 items"). Section L's intro: a pure-Rust MIT or Apache runner; the weights' licence checked and written into the notices file before the model ships. Recorded: docs/v1/architecture.md (Transcription section) and THIRD-PARTY-NOTICES.txt ("Speech-to-text model weights"). Open issue to close: #1056.
 
 **Remains:**
 
