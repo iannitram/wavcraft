@@ -565,8 +565,8 @@ dependencies = [
 
 [[package]]
 name = "craft-mp3"
-version = "1.0.0"
-source = "git+https://github.com/iannitram/craft-mp3?rev=c09ff5e70ebd824569bef995dfbe5113d8a44904#c09ff5e70ebd824569bef995dfbe5113d8a44904"
+version = "1.1.0"
+source = "git+https://github.com/iannitram/craft-mp3?rev=456f04906efa02082bbf81eb3e32aaaadf42391b#456f04906efa02082bbf81eb3e32aaaadf42391b"
 
 [[package]]
 name = "craft-stage"
