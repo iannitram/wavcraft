@@ -123,10 +123,14 @@ pub fn quiet_edge(edge: u64, mono: &[f32], first: u64, reach: &Reach) -> u64 {
 
 /// [`quiet_edge`] on both edges of each cut in `ranges` (sorted, non-overlapping) in a file of
 /// `len` frames. `read(frames)` gives the mono window for one edge, or `None` (that edge then
-/// stays). A cut keeps its order and never starts before the previous cut's end; a cut whose
-/// moved edges would meet or cross keeps its original edges.
+/// stays). An edge at the start or end of the file stays, since nothing is joined there. A cut
+/// keeps its order and never starts before the previous cut's end; a cut whose moved edges would
+/// meet or cross keeps its original edges.
 pub fn quiet_ranges(ranges: &[Range<u64>], len: u64, reach: &Reach, mut read: impl FnMut(Range<u64>) -> Option<Vec<f32>>) -> Vec<Range<u64>> {
     let mut move_edge = |edge: u64| {
+        if edge == 0 || edge >= len {
+            return edge.min(len);
+        }
         let frames = window(edge, reach, len);
         let first = frames.start;
         match read(frames) {
@@ -254,6 +258,19 @@ mod tests {
         let read = |r: Range<u64>| Some(mono[r.start as usize..r.end as usize].to_vec());
         let out = quiet_ranges(&[10_000..10_100], 20_000, &reach, read);
         assert_eq!(out, vec![10_000..10_100]);
+    }
+
+    #[test]
+    fn edges_at_the_file_bounds_stay() {
+        // Speech with a short gap 7 ms in from each end: a cut from the start or to the end
+        // must not leave a sliver of the deleted word before the gap.
+        let len = 20_000;
+        let mono = tone(20_000, 200.0, |i| if (300..492).contains(&i) || (19_500..19_700).contains(&i) { 0.0 } else { 0.5 });
+        let reach = Reach::at_rate(RATE);
+        let read = |r: Range<u64>| Some(mono[r.start as usize..r.end as usize].to_vec());
+        assert_eq!(quiet_ranges(&[0..len], len, &reach, read)[0], 0..len);
+        assert_eq!(quiet_ranges(&[0..5_000], len, &reach, read)[0].start, 0);
+        assert_eq!(quiet_ranges(&[10_000..len], len, &reach, read)[0].end, len);
     }
 
     #[test]
