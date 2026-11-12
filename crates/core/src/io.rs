@@ -119,6 +119,15 @@ pub(crate) fn unsupported(what: impl std::fmt::Display) -> OpenError {
     OpenError::Decode(format!("unsupported audio: {what}"))
 }
 
+/// Refuses a file of `format` with more channels than WavCraft opens. Called as soon as the
+/// header gives the count, before any buffer is reserved for the channels.
+fn check_channel_count(format: &str, channels: usize) -> Result<(), OpenError> {
+    if channels > crate::channels::MAX_CHANNELS {
+        return Err(unsupported(format!("{format} with {channels} channels (at most {} are supported)", crate::channels::MAX_CHANNELS)));
+    }
+    Ok(())
+}
+
 /// The highest sample rate a file may declare (Hz). 768 kHz is the top of what converters and
 /// DXD work use; a header above it is damaged or hostile, and is refused before anything is
 /// written (the README's rule: numbers from a file are checked before use).
@@ -829,9 +838,7 @@ fn open_wav(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result<
             }
         }
     }
-    if channels > crate::channels::MAX_CHANNELS {
-        return Err(unsupported(format!("WAV with {channels} channels (at most {} are supported)", crate::channels::MAX_CHANNELS)));
-    }
+    check_channel_count("WAV", channels)?;
     if fmt.channel_mask != 0 {
         if crate::channels::usable_mask(Some(fmt.channel_mask), channels).is_some() {
             src.channel_mask = Some(fmt.channel_mask);
@@ -966,6 +973,7 @@ fn open_aiff(job: &mut Job<'_>, store: &Store, src: &mut SourceFormat) -> Result
     if channels <= 0 {
         return Err(malformed("AIFF declares zero or negative channels"));
     }
+    check_channel_count("AIFF", channels as usize)?;
     if !(1.0..=MAX_SAMPLE_RATE).contains(&rate) {
         return Err(malformed(format!("AIFF sample rate {rate} out of range")));
     }
@@ -1158,7 +1166,9 @@ fn decode_symphonia(
     src.sample_rate = params.sample_rate.filter(|&r| r > 0).ok_or_else(|| malformed("unknown sample rate"))?;
     check_rate(src.sample_rate, "the file")?;
     job.check_expected_rate(src.sample_rate)?;
-    src.channels = u16::try_from(params.channels.map(|c| c.count()).unwrap_or(0)).map_err(|_| unsupported("too many channels"))?;
+    let channel_count = params.channels.map_or(0, |c| c.count());
+    check_channel_count(&format!("{detected:?}"), channel_count)?;
+    src.channels = u16::try_from(channel_count).map_err(|_| unsupported("too many channels"))?;
     src.format = format_from_codec(params.codec, detected);
     src.sample_format = sample_format_of(&params);
     let mut decoder = symphonia::default::get_codecs().make(&params, &DecoderOptions::default()).map_err(sym_err)?;
@@ -1335,6 +1345,13 @@ mod tests {
             Ok(doc) => (doc.len_frames(), doc.source().warnings.clone()),
             Err(_) => (0, Vec::new()),
         }
+    }
+
+    #[test]
+    fn the_channel_limit_is_32_and_names_the_count() {
+        assert!(super::check_channel_count("WAV", 32).is_ok());
+        let e = super::check_channel_count("WAV", 33).unwrap_err();
+        assert!(e.to_string().contains("33 channels"), "{e}");
     }
 
     #[test]
