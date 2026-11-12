@@ -10,7 +10,32 @@ use std::ops::Range;
 use egui::{Key, Pos2, Rect};
 use wavcraft_core::actions::Editor;
 use wavcraft_core::settings::{MarkerColumns, Settings};
-use wavcraft_core::{MarkerPick, Markers, Viewport, format_time};
+use wavcraft_core::{Marker, MarkerPick, Markers, Viewport, format_time};
+
+/// Which of the panel's buttons are enabled for the picked rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PickButtons {
+    pub delete: bool,
+    pub merge: bool,
+    pub to_range: bool,
+    pub to_point: bool,
+}
+
+/// The buttons enabled for the picked markers: Delete for one or more, Merge for two or more,
+/// To Range for one point, To Point for one range. Nothing picked enables none.
+pub fn buttons_for(markers: &Markers, pick: &MarkerPick) -> PickButtons {
+    let picked: Vec<&Marker> = markers.iter().filter(|m| pick.ids.contains(&m.id)).collect();
+    let one = match picked[..] {
+        [m] => Some(m),
+        _ => None,
+    };
+    PickButtons {
+        delete: !picked.is_empty(),
+        merge: picked.len() >= 2,
+        to_range: one.is_some_and(Marker::is_point),
+        to_point: one.is_some_and(|m| !m.is_point()),
+    }
+}
 
 /// A marker being dragged in the ruler: the move is applied (one history step) on release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,8 +241,9 @@ impl MarkersUi {
         let mut merge = false;
         let mut set_color = None;
         let mut set_desc: Option<(u64, String)> = None;
+        let enabled = buttons_for(&markers, &self.pick);
         ui.horizontal(|ui| {
-            merge = ui.add_enabled(picked_ids.len() >= 2, egui::Button::new("Merge")).on_hover_text("Make the picked markers one range").clicked();
+            merge = ui.add_enabled(enabled.merge, egui::Button::new("Merge")).on_hover_text("Make the picked markers one range").clicked();
             if let [id] = picked_ids[..] {
                 let current = markers.iter().find(|m| m.id == id).map_or(0, |m| m.color);
                 if ui.selectable_label(current == 0, "No colour").clicked() {
@@ -384,6 +410,35 @@ mod tests {
         assert_eq!(ui.shown(&m, 10_000).as_slice()[1].range(), 6000..6400);
         ui.drag_to(0);
         assert_eq!(ui.drag.unwrap().start, 0, "held at the start of the file");
+    }
+
+    #[test]
+    fn buttons_follow_the_picked_rows() {
+        let m = Markers::from_items(vec![("p".into(), 1000, 1000), ("r".into(), 5000, 6000)]);
+        let none = PickButtons::default();
+        assert_eq!(buttons_for(&m, &MarkerPick::default()), none, "nothing picked: all false");
+
+        let mut pick = MarkerPick::default();
+        pick.click(&m, 0, false, false);
+        assert_eq!(
+            buttons_for(&m, &pick),
+            PickButtons { delete: true, merge: false, to_range: true, to_point: false },
+            "one point: delete and to_range"
+        );
+
+        pick.click(&m, 1, false, false);
+        assert_eq!(
+            buttons_for(&m, &pick),
+            PickButtons { delete: true, merge: false, to_range: false, to_point: true },
+            "one range: delete and to_point"
+        );
+
+        pick.click(&m, 0, false, true);
+        assert_eq!(
+            buttons_for(&m, &pick),
+            PickButtons { delete: true, merge: true, to_range: false, to_point: false },
+            "a point and a range: delete and merge only"
+        );
     }
 
     #[test]
