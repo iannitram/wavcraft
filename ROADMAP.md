@@ -40,7 +40,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 
 **75 items** (v1.md's 74 plus L0, the speech-to-text choice)**:** complete 14 · built, check not recorded 14 · partial 32 · not started 15.
 
-**333 steps remain:** 242 easy, 86 medium, 5 hard. 262 are proved by a script, 71 by hand (44 of those only by me).
+**334 steps remain:** 243 easy, 86 medium, 5 hard. 263 are proved by a script, 71 by hand (44 of those only by me).
 
 | Stage | Items | Complete | Steps left | Done when |
 |---|---|---|---|---|
@@ -50,7 +50,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | Stage 2: Recording | 7 | 0 | 27 | I record a real 10-minute take on each machine, kill the app once mid-take, and get everything back. |
 | Stage 3: Repair | 14 | 3 | 49 | I clean a real episode end to end and prefer the result to my current tool's, by ear. |
 | Stage 4: Feel | 12 | 0 | 55 | I work without hunting for things. |
-| Stage 4b: Episode Check, transcript and faces | 16 | 1 | 124 | the Podcast face's user cleans a real episode in it without help. |
+| Stage 4b: Episode Check, transcript and faces | 16 | 1 | 125 | the Podcast face's user cleans a real episode in it without help. |
 | Alongside: the MP3 encoder | 1 | 0 | 12 | a 1-hour episode exports to MP3 and passes A3's Done check. |
 | Stage 5: Platform checks | 2 | 1 | 6 | the app is built, launched and checked by hand on Windows, Linux and the 8 GB Mac, and every hand step in the earlier stages that names a machine is recorded. |
 | Stage 6: Design pass | - | not started | filed when it runs | every `design-pass` issue is closed or moved after 1.0 |
@@ -128,7 +128,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | M1 | Studio and Podcast face switch | faces | 4b | not started | 12 | #1063 |
 | M2 | Episode Map replaces the zoom navigator | faces | 4b | not started | 8 | #1052 |
 | M3 | One theme from named design values | faces | 4b | partial | 10 | none |
-| M4 | Large controls preference, 44 px minimum | faces | 4b | partial | 4 | #1062 |
+| M4 | Large controls preference, 44 px minimum | faces | 4b | partial | 5 | #1062 |
 | M5 | Out-of-v1 panels hidden in release | faces | 4b | partial | 8 | #1051 |
 | N1 | Automation core: one Backend, two ways | automation | 1b | partial | 8 | #1107 |
 | N2 | Command line: run, convert, inspect | automation | 1b | not started | 5 | #845 |
@@ -1105,7 +1105,7 @@ My ruling, 2026-11-01: "Into v1". Order: M3 and M5 first; K1, K2 and L1 can star
 
 #### M4: Large controls preference, 44 px minimum (partial)
 
-- **On main:** the large_controls setting in crates/core/src/settings.rs (default off, tested in crates/core/tests/settings.rs); theme::metrics_for in apps/wavcraft/src/theme.rs (44 px control height and 22 px handle grab when large); marker flags (apps/wavcraft/src/markers_panel.rs handle_at) take their grab width from theme::metrics().handle_grab; nav_hit in crates/core/src/view.rs widens its reach for an edge width above 6 px. Missing: the window still calls nav_hit with a fixed 6.0 (apps/wavcraft/src/app.rs), not handle_grab, so the navigator edges do not grow yet; apply_look does not yet switch the metrics from the setting (M4.3), no Preferences checkbox (M4.4), Podcast buttons have no 44 px minimum (M4.6). Merged 2026-11-12: M4.1, M4.2 and M4.5 (#1207).
+- **On main:** the large_controls setting in crates/core/src/settings.rs (default off, tested in crates/core/tests/settings.rs); theme::metrics_for in apps/wavcraft/src/theme.rs (44 px control height and 22 px handle grab when large); marker flags (apps/wavcraft/src/markers_panel.rs handle_at) take their grab width from theme::metrics().handle_grab; nav_hit in crates/core/src/view.rs widens its reach for an edge width above 6 px. Missing: the window still calls nav_hit with a fixed 6.0 (apps/wavcraft/src/app.rs), not handle_grab, so the navigator edges do not grow yet; apply_look does not yet switch the metrics from the setting (M4.3), no Preferences checkbox (M4.4), Podcast buttons have no 44 px minimum (M4.6). Merged 2026-11-12: M4.1, M4.2 and the nav_hit and marker-flag half of M4.5 with its two tests (#1207); M4.5 stays open for the window wiring.
 - **Done check:** Every control in Podcast is usable by touch on the Linux handheld with the touch screen, by hand.
 - **Recorded so far:** not recorded
 - **Item issue:** #1062
@@ -1114,6 +1114,7 @@ My ruling, 2026-11-01: "Into v1". Order: M3 and M5 first; K1, K2 and L1 can star
 |---|---|---|---|---|---|---|---|
 | M4.3 | Make apply_look call theme::set_large from the setting and set egui's spacing.interact_size to at least control_height in both directions; include the setting in the applied_look key. | Test large_controls_set_the_interact_size in apps/wavcraft/src/m4_large_tests.rs (hooked from app.rs), on a window built as in issue366_tests.rs: after PREF set large_controls true and one apply_look, ctx.style().spacing.interact_size.y is 44.0 and .x is at least 44.0; after PREF set large_controls false the y is 18.0. | easy | state | script | M4.1, M4.2 |  |
 | M4.4 | Add a Large controls checkbox to Preferences, Appearance using pref_check with the key large_controls. | Test the_large_controls_pref_answers_on_the_control_channel in apps/wavcraft/src/m4_large_tests.rs: PREF set large_controls true answers OK; PREF get large_controls answers OK true; PREF set large_controls banana answers ERR. By hand in a debug build: Preferences, Appearance shows a Large controls checkbox, and ticking it makes the toolbar buttons taller at once. | easy | ui | script | M4.3 |  |
+| M4.5 | Finish the navigator half: pass theme::metrics().handle_grab instead of the fixed 6.0 to the three nav_hit calls in apps/wavcraft/src/app.rs (the navigator press, the hover check and the drag). nav_hit's wider reach and the marker flags are already on main (#1207). | grep -n "nav_hit(" apps/wavcraft/src/app.rs shows every call passing theme::metrics().handle_grab and none passing 6.0. large_grab_widens_the_navigator_edges in crates/core/src/view.rs and large_grab_widens_the_marker_flags in apps/wavcraft/src/markers_panel.rs still pass. | easy | wiring | script | M3.2 |  |
 | M4.6 | Add faces::button_min_size() returning control_height in both directions, and give it to every Podcast step bar button and step tool button as its minimum size. | Test podcast_buttons_are_44_px_with_large_controls in apps/wavcraft/src/faces.rs: with Large controls on, button_min_size() is (44.0, 44.0); with it off it is (18.0, 18.0). | easy | ui | script | M4.3, M1.8 |  |
 | M4.7 | Hand check on the Linux handheld with the touch screen: Large controls on, Podcast face, tap every button and drag every handle with a finger. | In SteamOS Desktop Mode, in each of the four steps, tap each button and drag the map handle and a marker by finger. Each must respond on the first try. Write each control with pass or fail, date and commit into docs/checklists/M4.md. | easy | docs | hand, me, linux | M4.4, M4.5, M4.6, M1.7, M1.10, M1.11, M2.8 |  |
 
