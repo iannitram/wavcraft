@@ -263,3 +263,153 @@ fn action_effect_with_no_selection_runs_on_the_whole_file_but_other_actions_do_n
     assert_eq!(current(&b), source_with(0..FRAMES, |v| -v), "every frame of both channels is negated");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn effect_reverse_runs_the_one_shot() {
+    let dir = scratch("effect-reverse");
+    let src = dir.join("src.wav");
+    write_wav(&src, &[vec![1, 2, 3, 4]]);
+    let mut b = Headless::with_crossfades(&dir, Crossfades::NONE);
+
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    assert_eq!(b.answer_line("SELECT 0 4"), "OK selection=0-4");
+    assert_eq!(b.answer_line("EFFECT reverse"), "OK selection=0-4 changed=1");
+    assert_eq!(current(&b), vec![vec![4, 3, 2, 1]], "the four frames run backwards");
+    assert_eq!(b.answer_line("EFFECT reverse x=1"), "ERR reverse takes no settings here: set them with PARAM");
+    assert_eq!(current(&b), vec![vec![4, 3, 2, 1]], "a refused one-shot changes nothing");
+    let reply = b.answer_line("EFFECT nope");
+    assert!(reply.starts_with("ERR ") && reply.contains("no effect named"), "{reply}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `write_wav`'s file with one more chunk (`note`, 12 bytes) after `data`, the kind a save
+/// copies when "Include markers and other metadata" is on.
+fn write_wav_with_a_chunk(path: &Path, channels: &[Vec<i32>]) {
+    write_wav(path, channels);
+    let mut bytes = std::fs::read(path).expect("read the test WAV back");
+    bytes.extend_from_slice(b"note");
+    bytes.extend_from_slice(&12u32.to_le_bytes());
+    bytes.extend_from_slice(b"twelve bytes");
+    let riff = (bytes.len() - 8) as u32;
+    bytes[4..8].copy_from_slice(&riff.to_le_bytes());
+    std::fs::write(path, bytes).expect("write the test WAV");
+}
+
+/// The sample format a fresh backend reads `path` back as.
+fn reopened_format(dir: &Path, path: &Path) -> wavcraft_core::SampleFormat {
+    let mut reread = Headless::new(dir);
+    assert_eq!(reread.answer_line(&format!("OPEN {}", path.display())), "OK");
+    reread.document().expect("a document is open").source().sample_format
+}
+
+#[test]
+fn save_bits_24_writes_a_24_bit_file() {
+    let dir = scratch("save-bits");
+    let src = dir.join("src.wav");
+    let out = dir.join("out.wav");
+    write_wav(&src, &source_samples());
+    let mut b = Headless::with_crossfades(&dir, Crossfades::NONE);
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+
+    assert_eq!(b.answer_line(&format!("SAVE {} bits=24", out.display())), "OK");
+    assert_eq!(reopened_format(&dir, &out), wavcraft_core::SampleFormat::Int24, "bits=24 gives a 24-bit file");
+    assert!(!dir.join("out.wav bits=24").exists(), "the option is not part of the file name");
+    assert_eq!(current(&b), source_samples());
+
+    assert_eq!(b.answer_line(&format!("SAVE {}", out.display())), "OK");
+    assert_eq!(reopened_format(&dir, &out), wavcraft_core::SampleFormat::Int16, "without the option the source's 16 bits are kept");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn save_flac_float_is_refused() {
+    let dir = scratch("save-flac-float");
+    let src = dir.join("src.wav");
+    let out = dir.join("out.flac");
+    write_wav(&src, &source_samples());
+    let mut b = Headless::new(&dir);
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    let reply = b.answer_line(&format!("SAVE {} float=1", out.display()));
+    assert!(reply.starts_with("ERR ") && reply.contains("FLAC cannot hold"), "{reply}");
+    assert!(!out.exists(), "nothing is written");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn save_aiff_sowt() {
+    let dir = scratch("save-sowt");
+    let src = dir.join("src.wav");
+    let out = dir.join("o.aiff");
+    write_wav(&src, &source_samples());
+    let mut b = Headless::new(&dir);
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    assert_eq!(b.answer_line(&format!("SAVE {} aiff=sowt", out.display())), "OK");
+    let bytes = std::fs::read(&out).expect("the AIFF file");
+    assert!(bytes.windows(4).any(|w| w == b"sowt"), "an AIFF-C sowt file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn save_quality_changes_the_ogg() {
+    let dir = scratch("save-quality");
+    let src = dir.join("src.wav");
+    let (low, high) = (dir.join("q0.ogg"), dir.join("q8.ogg"));
+    write_wav(&src, &source_samples());
+    let mut b = Headless::new(&dir);
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    assert_eq!(b.answer_line(&format!("SAVE {} quality=0", low.display())), "OK");
+    assert_eq!(b.answer_line(&format!("SAVE {} quality=8", high.display())), "OK");
+    let size = |p: &Path| std::fs::metadata(p).expect("an Ogg file").len();
+    assert!(size(&high) > size(&low), "quality=8 ({} bytes) is larger than quality=0 ({} bytes)", size(&high), size(&low));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn save_meta_0_writes_only_audio() {
+    let dir = scratch("save-meta");
+    let src = dir.join("src.wav");
+    let (with, without) = (dir.join("with.wav"), dir.join("without.wav"));
+    write_wav_with_a_chunk(&src, &source_samples());
+    let mut b = Headless::new(&dir);
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    let data = (FRAMES * 2 * 2) as u64;
+
+    assert_eq!(b.answer_line(&format!("SAVE {}", with.display())), "OK");
+    assert!(std::fs::metadata(&with).expect("saved").len() > 44 + data, "metadata is on by default: the chunk is kept");
+    assert_eq!(b.answer_line(&format!("SAVE {} meta=0", without.display())), "OK");
+    assert_eq!(std::fs::metadata(&without).expect("saved").len(), 44 + data, "only the header and the samples");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn save_with_no_path_overwrites_the_source() {
+    let dir = scratch("save-in-place");
+    let src = dir.join("src.wav");
+    write_wav(&src, &source_samples());
+    let mut b = Headless::with_crossfades(&dir, Crossfades::NONE);
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    assert_eq!(b.answer_line("SELECT 100 200"), "OK selection=100-200");
+    assert!(b.answer_line("EFFECT invert").ends_with("changed=1"));
+    assert_eq!(b.answer_line("SAVE"), "OK");
+
+    let mut reread = Headless::new(&dir);
+    assert_eq!(reread.answer_line(&format!("OPEN {}", src.display())), "OK");
+    assert_eq!(current(&reread), source_with(100..200, |v| -v), "the opened file now holds the edit");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn save_picks_the_window_s_format_for_a_name_without_one_or_a_container() {
+    let dir = scratch("save-containers");
+    let src = dir.join("src.wav");
+    write_wav(&src, &source_samples());
+    let mut b = Headless::new(&dir);
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    assert_eq!(b.answer_line(&format!("SAVE {}", dir.join("plain").display())), "OK");
+    assert!(dir.join("plain.wav").exists(), "a name without an extension is saved as a WAV");
+    assert_eq!(b.answer_line(&format!("SAVE {}", dir.join("o.w64").display())), "OK");
+    let mut reread = Headless::new(&dir);
+    assert_eq!(reread.answer_line(&format!("OPEN {}", dir.join("o.w64").display())), "OK");
+    assert_eq!(current(&reread), source_samples(), "the Wave64 file holds the samples");
+    let _ = std::fs::remove_dir_all(&dir);
+}

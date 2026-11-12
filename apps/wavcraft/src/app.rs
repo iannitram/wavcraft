@@ -13120,6 +13120,10 @@ mod h1_star_marker_tests;
 mod i3_shortcut_help_tests;
 
 #[cfg(test)]
+#[path = "n1_parity_tests.rs"]
+mod n1_parity_tests;
+
+#[cfg(test)]
 mod reset_tests {
     use super::*;
 
