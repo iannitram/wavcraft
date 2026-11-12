@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use super::{Kind, Report, Severity};
+use super::{Finding, Kind, Report, Severity};
 
 /// One line of the findings list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +68,32 @@ pub fn next_after(report: &Report, frame: u64) -> Option<usize> {
 /// last finding. `None` when there are no findings.
 pub fn prev_before(report: &Report, frame: u64) -> Option<usize> {
     report.findings.iter().rposition(|f| f.start < frame).or_else(|| report.findings.len().checked_sub(1))
+}
+
+/// `report` after the finding at index `row` is fixed by deleting `removed_range`: that finding is
+/// dropped and the others move with the audio. A frame before `removed_range` stays, a frame at or
+/// after its end moves back by the range's length, and a frame inside it moves to the range's
+/// start. An empty `removed_range` deleted nothing, so only the row is dropped. A `row` past the
+/// end drops nothing. Pure: `report` is not changed.
+pub fn after_fix(report: &Report, row: usize, removed_range: Range<u64>) -> Report {
+    let len = removed_range.end.saturating_sub(removed_range.start);
+    let shift = |frame: u64| {
+        if frame < removed_range.start {
+            frame
+        } else if frame < removed_range.end {
+            removed_range.start
+        } else {
+            frame.saturating_sub(len)
+        }
+    };
+    let findings = report
+        .findings
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != row)
+        .map(|(_, f)| Finding { start: shift(f.start), end: shift(f.end), ..*f })
+        .collect();
+    Report { findings, truncated: report.truncated }
 }
 
 /// The pixel column of `frame` on a map strip `width_px` wide, for a file of `total_frames`.
@@ -133,6 +159,23 @@ mod tests {
     #[test]
     fn time_of_frame_144000_at_48k_is_0_03_000() {
         assert_eq!(time_text(144_000, 48_000), "0:03.000");
+    }
+
+    #[test]
+    fn a_delete_fix_shifts_later_rows() {
+        let r = report(vec![
+            finding(Kind::Clipping, Severity::Error, 100_000, 100_480),
+            finding(Kind::DeadAir, Severity::Warning, 768_000, 936_000),
+            finding(Kind::Plosive, Severity::Warning, 2_000_000, 2_000_480),
+        ]);
+        let after = after_fix(&r, 1, 768_000..936_000);
+        assert_eq!(after.findings.len(), 2);
+        assert_eq!(after.findings.iter().map(|f| f.start).collect::<Vec<_>>(), vec![100_000, 1_832_000]);
+        assert_eq!(after.findings.iter().map(|f| f.start..f.end).collect::<Vec<_>>(), vec![100_000..100_480, 1_832_000..1_832_480]);
+        assert_eq!(after.findings[1].kind, Kind::Plosive);
+        // The input is unchanged.
+        assert_eq!(r.findings.len(), 3);
+        assert_eq!(r.findings[2].start, 2_000_000);
     }
 
     #[test]
