@@ -2,8 +2,9 @@
 //! at the playhead (a point), the selection stays where it was, and playback goes on.
 //!
 //! These run on the headless window (`WaveApp::new` on eframe's headless creation context) with the
-//! silent output: run them with `WAVCRAFT_NO_AUDIO=1` set, as the step's Verify says. The test checks
-//! that the silent sink is in use, so it never plays through a real device.
+//! silent output: the test sets `WAVCRAFT_NO_AUDIO=1` itself, once, so it never plays through a
+//! real device.
+use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -30,7 +31,11 @@ impl Drop for Scratch {
 
 /// The window as the program builds it, with its session folder in `scratch`. Its settings file and
 /// recent-files list are cut loose at once, so nothing a test does is written to the user's own.
+#[allow(unsafe_code)]
 fn a_window(scratch: &Scratch) -> WaveApp {
+    static SET: Once = Once::new();
+    // SAFETY: set once, before any window of this module builds its player; nothing here changes it again.
+    SET.call_once(|| unsafe { std::env::set_var("WAVCRAFT_NO_AUDIO", "1") });
     let cc = eframe::CreationContext::_new_kittest(egui::Context::default());
     let mut app = WaveApp::new(&cc, None, Some(scratch.0.join("sessions")), false);
     assert!(app.sessions.path.starts_with(&scratch.0), "the window's sessions are in the scratch folder, not {}", app.sessions.path.display());
@@ -63,7 +68,7 @@ fn three_seconds(app: &mut WaveApp, ctx: &egui::Context) {
 fn add_marker_during_playback_keeps_the_selection() {
     let scratch = Scratch::new("keeps-selection");
     let mut app = a_window(&scratch);
-    assert!(app.player.info().test_sink, "run with WAVCRAFT_NO_AUDIO=1: the silent output is not in use");
+    assert!(app.player.info().test_sink, "the silent output is in use");
     let ctx = app.ctx.clone();
     three_seconds(&mut app, &ctx);
 
