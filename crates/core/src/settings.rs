@@ -93,6 +93,7 @@ const KEY_CONTEXT_CHANNELS: &str = "context_channel_editing";
 const KEY_THEME: &str = "theme";
 const KEY_WAVE_COLOUR: &str = "waveform_colour";
 const KEY_BRIGHTNESS: &str = "ui_brightness";
+const KEY_LARGE_CONTROLS: &str = "large_controls";
 const KEY_SPEC_PALETTE: &str = "spec_palette";
 const KEY_CONTRAST: &str = "ui_contrast";
 /// The settings-file key that holds one appearance preset per line.
@@ -115,7 +116,7 @@ pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
 /// menu and is not one of them).
-pub const KEYS: [&str; 44] = [
+pub const KEYS: [&str; 45] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
@@ -160,6 +161,7 @@ pub const KEYS: [&str; 44] = [
     KEY_BUFFER,
     KEY_OUT_MAP,
     KEY_IN_MAP,
+    KEY_LARGE_CONTROLS,
 ];
 
 /// The keys a settings file may carry that [`Settings::set`] does not take on its own: a list, a
@@ -546,6 +548,8 @@ pub struct Settings {
     pub theme: Theme,
     pub waveform_colour: WaveColour,
     pub ui_brightness: f32,
+    /// Large controls (M4): every button and handle grab at least 44 px, for touch. Off by default.
+    pub large_controls: bool,
     /// Colour overrides (`color.<item>`), the spectrogram palette, contrast, and the named presets.
     pub colors: Colors,
     pub spec_palette: SpecPalette,
@@ -624,10 +628,11 @@ impl Default for Settings {
             true_peak_ceiling_dbtp: DEFAULT_TRUE_PEAK_DBTP,
             zoom_factor: DEFAULT_ZOOM_FACTOR,
             extend_selection: ExtendSelection::Nearest,
-            context_channel_editing: true,
+            context_channel_editing: false,
             theme: Theme::Dark,
             waveform_colour: WaveColour::Green,
             ui_brightness: DEFAULT_BRIGHTNESS,
+            large_controls: false,
             colors: Colors::default(),
             spec_palette: SpecPalette::Ember,
             ui_contrast: DEFAULT_CONTRAST,
@@ -861,6 +866,7 @@ impl Settings {
             KEY_ZOOM_FACTOR => self.zoom_factor.to_string(),
             KEY_EXTEND_SELECTION => self.extend_selection.name().to_string(),
             KEY_CONTEXT_CHANNELS => self.context_channel_editing.to_string(),
+            KEY_LARGE_CONTROLS => self.large_controls.to_string(),
             KEY_THEME => self.theme.name().to_string(),
             KEY_WAVE_COLOUR => self.waveform_colour.name().to_string(),
             KEY_BRIGHTNESS => self.ui_brightness.to_string(),
@@ -986,6 +992,7 @@ impl Settings {
             KEY_RIGHT_CLICK => self.right_click_menu = value.eq_ignore_ascii_case("menu"),
             KEY_EXTEND_SELECTION => self.extend_selection = choose(key, value, ExtendSelection::from_name, ExtendSelection::NAMES)?,
             KEY_CONTEXT_CHANNELS => self.context_channel_editing = parse_bool(key, value)?,
+            KEY_LARGE_CONTROLS => self.large_controls = parse_bool(key, value)?,
             KEY_THEME => self.theme = choose(key, value, Theme::from_name, Theme::NAMES)?,
             KEY_WAVE_COLOUR => self.waveform_colour = choose(key, value, WaveColour::from_name, WaveColour::NAMES)?,
             KEY_BRIGHTNESS => self.ui_brightness = parse_range(key, value, MIN_BRIGHTNESS, MAX_BRIGHTNESS, "(1 is normal)")?,

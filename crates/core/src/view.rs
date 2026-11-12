@@ -262,11 +262,16 @@ pub enum NavPart {
 
 /// What is under pixel `x` of a navigator whose handle runs `handle.0..handle.1`: an edge when
 /// within `edge_px` of it, the body between, `None` outside (a click there jumps).
+///
+/// Outside the handle an edge reaches 3 px at the default 6 px grab, so a click just beside a
+/// small handle still jumps. Above 6 px the reach grows with the grab until it equals it at the
+/// Large controls grab of 22 px (a 44 px touch target across the edge), and stays equal beyond.
 pub fn nav_hit(handle: (f32, f32), x: f32, edge_px: f32) -> Option<NavPart> {
     let (l, r) = handle;
     // Narrow handles still get a body: the edges share the width.
     let edge = edge_px.min(((r - l) / 3.0).max(1.0));
-    if x < l - edge_px.min(3.0) || x > r + edge_px.min(3.0) {
+    let reach = if edge_px > 6.0 { (3.0 + (edge_px - 6.0) * (19.0 / 16.0)).min(edge_px) } else { edge_px.min(3.0) };
+    if x < l - reach || x > r + reach {
         None
     } else if x <= l + edge {
         Some(NavPart::Left)
@@ -1082,7 +1087,7 @@ pub fn hz_at_fraction(lo: f32, hi: f32, log: bool, t: f32) -> f32 {
 }
 
 /// Which channels a drag that starts at `y_fraction` of the editor's height (0 is the top of the
-/// waveform area, 1 the bottom) selects. With `context` on (the default) and a stereo file, the
+/// waveform area, 1 the bottom) selects. With `context` on and a stereo file, the
 /// top quarter selects the left channel only, the bottom quarter the right only, and the middle
 /// both. Files with other channel counts, or `context` off, always select every channel.
 pub fn channels_for_drag(y_fraction: f32, channels: usize, context: bool) -> ChannelMask {
@@ -1643,6 +1648,20 @@ mod tests {
         assert_eq!(nav_hit(handle, 260.0, 6.0), None);
         // A sliver of a handle can still be grabbed and still has a middle.
         assert_eq!(nav_hit((100.0, 103.0), 101.5, 6.0), Some(NavPart::Body));
+    }
+
+    #[test]
+    fn large_grab_widens_the_navigator_edges() {
+        let handle = (100.0, 200.0);
+        // Inside the handle: a 22 px grab takes 15 px in as the edge; the default 6 px does not.
+        assert_eq!(nav_hit(handle, 115.0, 22.0), Some(NavPart::Left));
+        assert_eq!(nav_hit(handle, 115.0, 6.0), Some(NavPart::Body));
+        // Outside it: the reach grows with the grab, so 20 px out still takes the edge.
+        assert_eq!(nav_hit(handle, 80.0, 22.0), Some(NavPart::Left));
+        assert_eq!(nav_hit(handle, 80.0, 6.0), None);
+        assert_eq!(nav_hit(handle, 220.0, 22.0), Some(NavPart::Right));
+        // A 22 px grab is a 44 px target across the edge, no wider.
+        assert_eq!(nav_hit(handle, 77.0, 22.0), None);
     }
 
     #[test]
