@@ -7,9 +7,9 @@
 //! Hook-up, in apps/wavcraft/src/app.rs: `#[cfg(test)] #[path = "c5_6_space_button_tests.rs"] mod c5_6_space_button_tests;`
 use super::*;
 
-/// Focus a button in one frame, then press Space in the next. Returns the commands the keys gave
+/// Focus a button in one frame, then send events in the next. Returns the commands the keys gave
 /// and whether the button was clicked.
-fn space_on_a_focused_button() -> (Vec<Command>, bool) {
+fn events_on_a_focused_button(events: Vec<egui::Event>) -> (Vec<Command>, bool) {
     let ctx = egui::Context::default();
     let keymap = Keymap::new();
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -17,10 +17,9 @@ fn space_on_a_focused_button() -> (Vec<Command>, bool) {
     });
     output.textures_delta.clear();
 
-    let press = egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
     let mut got = Vec::new();
     let mut clicked = false;
-    let mut output = ctx.run_ui(egui::RawInput { events: vec![press], ..Default::default() }, |ui| {
+    let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
         got = pressed_commands(ui.ctx(), &keymap, false);
         clicked = ui.button("Go").clicked();
     });
@@ -30,7 +29,15 @@ fn space_on_a_focused_button() -> (Vec<Command>, bool) {
 
 #[test]
 fn space_on_a_focused_button_plays_and_does_not_click() {
-    let (got, clicked) = space_on_a_focused_button();
+    let press = egui::Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    let (got, clicked) = events_on_a_focused_button(vec![press]);
     assert_eq!(got, vec![Command::PlayStop]);
+    assert!(!clicked);
+}
+
+#[test]
+fn star_on_a_focused_button_does_not_add_a_marker() {
+    let (got, clicked) = events_on_a_focused_button(vec![egui::Event::Text("*".to_string())]);
+    assert!(got.is_empty());
     assert!(!clicked);
 }

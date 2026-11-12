@@ -12408,7 +12408,7 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec
         }));
         // egui 0.36 has no key for numpad multiply, so a typed "*" adds a marker (H1.1, #1178). The
         // text event is taken here, so nothing else reads it. With a text field focused it is typed.
-        if !typing {
+        if !typing && !other_focus {
             i.events.retain(|e| {
                 let star = matches!(e, egui::Event::Text(t) if t == "*");
                 if star {
