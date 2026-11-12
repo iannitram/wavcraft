@@ -26,6 +26,7 @@
 //! checking the flag once per chunk or window. [`scan_doc`] scans a document from its store.
 
 mod drift;
+pub mod fix;
 mod hum;
 pub mod list;
 mod plosive;
