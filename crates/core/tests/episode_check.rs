@@ -284,6 +284,121 @@ fn clean_long_speech_reports_none_of_the_new_kinds() {
     }
 }
 
+/// Overwrite `ch` from `from` to `to` seconds with the noise floor of [`speechlike_for`]: uniform
+/// noise at 0.003, from `seed`.
+fn set_noise_floor(ch: &mut [f32], seed: u32, from: f64, to: f64) {
+    let mut lcg = seed;
+    for x in &mut ch[frame(from) as usize..frame(to) as usize] {
+        lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *x = ((f64::from(lcg >> 8) / f64::from(1u32 << 24) * 2.0 - 1.0) * 0.003) as f32;
+    }
+}
+
+/// The 240 s two-channel signal with all seven faults at fixed times (K2.3). Returns their planted
+/// ranges in frames, in this order: clipping, true peak, DC, dead air, hum, drift, plosive.
+fn every_fault() -> (Vec<f32>, Vec<f32>, [(u64, u64); 7]) {
+    let (mut ch0, mut ch1) = long_clean();
+
+    // Clipping on channel 0: 20 ms of full scale at 3.0 s.
+    let clip = (frame(3.0), frame(3.02));
+    ch0[clip.0 as usize..clip.1 as usize].fill(1.0);
+
+    // True peak on channel 1, 7 to 8 s: the quarter-rate sine of `planted`.
+    let tp = (frame(7.0), frame(8.0));
+    for n in tp.0..tp.1 {
+        let phase = std::f64::consts::FRAC_PI_4 + (n as f64) * std::f64::consts::FRAC_PI_2;
+        ch1[n as usize] = (0.95 * phase.sin()) as f32;
+    }
+
+    // DC offset on channel 0: +0.1 for 2 s from 12.0 s.
+    let dc = (frame(12.0), frame(14.0));
+    for x in &mut ch0[dc.0 as usize..dc.1 as usize] {
+        *x += 0.1;
+    }
+
+    // Dead air on both channels: 3.5 s of digital silence from 16.0 s.
+    let dead = (frame(16.0), frame(19.5));
+    ch0[dead.0 as usize..dead.1 as usize].fill(0.0);
+    ch1[dead.0 as usize..dead.1 as usize].fill(0.0);
+
+    // 50 Hz mains hum on channel 0, 30 to 40 s.
+    let hum = (frame(30.0), frame(40.0));
+    add_hum(&mut ch0, 50.0, 30.0, 40.0);
+
+    // +9 LU on both channels, 101 to 113 s (x2.82, as in `loudness_drift_is_reported_at_the_planted_start`).
+    let drift = (frame(101.0), frame(113.0));
+    for ch in [&mut ch0, &mut ch1] {
+        for x in &mut ch[drift.0 as usize..drift.1 as usize] {
+            *x *= 2.818_383;
+        }
+    }
+
+    // Plosive on channel 0: the stretch 65.5 to 66.0 s is set to the noise floor, then an 80 ms
+    // 40 Hz burst starts at 65.55 s.
+    set_noise_floor(&mut ch0, 3, 65.5, 66.0);
+    let plosive = (frame(65.55), frame(65.63));
+    for n in 0..plosive.1 - plosive.0 {
+        let t = n as f64 / f64::from(RATE);
+        ch0[(plosive.0 + n) as usize] += (0.3 * (-t / 0.025).exp() * (2.0 * PI_F * 40.0 * t).sin()) as f32;
+    }
+    (ch0, ch1, [clip, tp, dc, dead, hum, drift, plosive])
+}
+
+#[test]
+fn one_file_with_every_fault_reports_each_within_50_ms() {
+    let (ch0, ch1, [clip, tp, dc, dead, hum, drift, plosive]) = every_fault();
+    let report = scan(&ch0, &ch1);
+    assert!(!report.truncated);
+
+    // The clipped run is also over the true peak ceiling on channel 0. That finding is expected,
+    // so drop it before counting.
+    let over_clip = |x: &Finding| x.kind == Kind::TruePeak && x.channel == Some(0) && x.start < clip.1 && x.end > clip.0;
+    assert!(report.findings.iter().any(over_clip), "the clipped run should also be over the true peak ceiling");
+    let f: Vec<Finding> = report.findings.iter().filter(|x| !over_clip(x)).copied().collect();
+    assert_eq!(f.len(), 7, "expected one finding per planted fault, got {f:?}");
+
+    let by_kind = |k: Kind| -> Finding {
+        let hits: Vec<&Finding> = f.iter().filter(|x| x.kind == k).collect();
+        assert_eq!(hits.len(), 1, "{k:?}: {hits:?}");
+        *hits[0]
+    };
+
+    let c = by_kind(Kind::Clipping);
+    assert_eq!((c.channel, c.severity), (Some(0), Severity::Error));
+    assert_near("clipping start", c.start, clip.0);
+    assert_near("clipping end", c.end, clip.1);
+
+    let t = by_kind(Kind::TruePeak);
+    assert_eq!((t.channel, t.severity), (Some(1), Severity::Error));
+    assert_near("true peak start", t.start, tp.0);
+    assert_near("true peak end", t.end, tp.1);
+
+    let d = by_kind(Kind::DcOffset);
+    assert_eq!((d.channel, d.severity), (Some(0), Severity::Warning));
+    assert_near("DC start", d.start, dc.0);
+    assert_near("DC end", d.end, dc.1);
+
+    let a = by_kind(Kind::DeadAir);
+    assert_eq!((a.channel, a.severity), (None, Severity::Warning));
+    assert_near("dead air start", a.start, dead.0);
+    assert_near("dead air end", a.end, dead.1);
+
+    let h = by_kind(Kind::MainsHum);
+    assert_eq!((h.channel, h.severity, h.value), (Some(0), Severity::Warning, 50.0));
+    assert_near("hum start", h.start, hum.0);
+    assert_near("hum end", h.end, hum.1);
+
+    let l = by_kind(Kind::LoudnessDrift);
+    assert_eq!((l.channel, l.severity), (None, Severity::Warning));
+    assert_near("drift start", l.start, drift.0);
+    assert_near("drift end", l.end, drift.1);
+
+    let p = by_kind(Kind::Plosive);
+    assert_eq!((p.channel, p.severity), (Some(0), Severity::Warning));
+    assert_near("plosive start", p.start, plosive.0);
+    assert_near("plosive end", p.end, plosive.1);
+}
+
 /// `scan_with` over two slices, with every progress value it reports.
 fn scan_with(ch0: &[f32], ch1: &[f32], cancel: &AtomicBool, mut on_progress: impl FnMut(f64)) -> Option<Report> {
     let cfg = Config::new(RATE);
