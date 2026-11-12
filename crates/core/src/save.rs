@@ -1,4 +1,4 @@
-//! Save (task 06): WAV, AIFF, FLAC and Ogg Vorbis (f93), and Sony Wave64, Apple CAF and Sun/NeXT AU (f91). The document is streamed out 64 K frames at a time with
+//! Save (task 06): WAV, AIFF, FLAC and Ogg Vorbis (f93), MP3 as a format only until its writer lands (A3.3), and Sony Wave64, Apple CAF and Sun/NeXT AU (f91). The document is streamed out 64 K frames at a time with
 //! [`DocState::read`], never flattened, so a three-hour file saves on an 8 GB machine. Integer
 //! samples are `round(x · 2^(bits−1))`, clamped (dither and noise shaping, [`crate::dither`], only
 //! when the document's `SourceFormat::dither` asks for them, A163): the exact inverse of how they
@@ -266,6 +266,9 @@ pub enum SaveFormat {
     Flac,
     /// Lossy, VBR by quality (-1 to 10); the sample type is ignored (f93).
     Vorbis,
+    /// Lossy MP3 (A3.3): the format is known, but its writer has not landed, so a save refuses it
+    /// with [`SaveError::Unsupported`]. The sample type is ignored, as for Vorbis.
+    Mp3,
 }
 
 /// Lowest and highest Vorbis VBR quality (the libvorbis scale: -1 smallest, 10 best).
@@ -281,6 +284,7 @@ impl SaveFormat {
             "aif" | "aiff" => Some(SaveFormat::Aiff),
             "flac" => Some(SaveFormat::Flac),
             "ogg" | "oga" => Some(SaveFormat::Vorbis),
+            "mp3" => Some(SaveFormat::Mp3),
             _ => None,
         }
     }
@@ -307,6 +311,7 @@ impl SaveFormat {
             "aiff" | "aif" => Some(SaveFormat::Aiff),
             "flac" => Some(SaveFormat::Flac),
             "ogg" | "oga" => Some(SaveFormat::Vorbis),
+            "mp3" => Some(SaveFormat::Mp3),
             _ => None,
         }
     }
@@ -317,6 +322,7 @@ impl SaveFormat {
             SaveFormat::Aiff => "AIFF",
             SaveFormat::Flac => "FLAC",
             SaveFormat::Vorbis => "Ogg Vorbis",
+            SaveFormat::Mp3 => "MP3",
         }
     }
 
@@ -326,13 +332,14 @@ impl SaveFormat {
             SaveFormat::Aiff => "aiff",
             SaveFormat::Flac => "flac",
             SaveFormat::Vorbis => "ogg",
+            SaveFormat::Mp3 => "mp3",
         }
     }
 
     /// Whether this format can hold `ty` samples.
     pub fn accepts(self, ty: SampleType) -> bool {
         match self {
-            SaveFormat::Wav | SaveFormat::Vorbis => true,
+            SaveFormat::Wav | SaveFormat::Vorbis | SaveFormat::Mp3 => true,
             SaveFormat::Aiff => ty != SampleType::Float64,
             SaveFormat::Flac => matches!(ty, SampleType::Int16 | SampleType::Int24),
         }
@@ -684,6 +691,9 @@ fn save_inner(
     if !format.accepts(ty) {
         return Err(SaveError::Unsupported(format!("{} cannot hold {} samples", format.name(), ty.describe())));
     }
+    if format == SaveFormat::Mp3 {
+        return Err(SaveError::Unsupported("MP3 saving is not available yet".into()));
+    }
     remove_leftover_temps(target);
     let tmp = TempFile::create(target, false).map_err(SaveError::Io)?;
     let TempFile { path: tmp, file } = tmp;
@@ -981,6 +991,7 @@ fn write_stream(
             })?;
         }
         SaveFormat::Vorbis => return Err(invalid("Vorbis has its own writer")),
+        SaveFormat::Mp3 => return Err(invalid("MP3 has no writer yet")),
     }
     let file = out.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
@@ -1344,7 +1355,7 @@ fn pcm_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) 
             let data = write_aiff_header(&mut c, ch16, rate, ty, frames, kind, marks)?;
             Ok(c.0 + data + (data & 1) + marks)
         }
-        SaveFormat::Flac | SaveFormat::Vorbis => Err(invalid("not PCM")),
+        SaveFormat::Flac | SaveFormat::Vorbis | SaveFormat::Mp3 => Err(invalid("not PCM")),
     }
 }
 

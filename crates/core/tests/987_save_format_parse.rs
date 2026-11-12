@@ -1,9 +1,9 @@
-//! #987: `SaveFormat::parse` is the inverse of `SaveFormat::key` for all four formats (Vorbis
-//! included), and Cargo.toml keeps the Task 03 comment directly above the `symphonia` line.
+//! #987: `SaveFormat::parse` is the inverse of `SaveFormat::key` for all five formats (Vorbis
+//! and MP3 included), and Cargo.toml keeps the Task 03 comment directly above the `symphonia` line.
 
 use wavcraft_core::save::SaveFormat;
 
-const ALL: [SaveFormat; 4] = [SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac, SaveFormat::Vorbis];
+const ALL: [SaveFormat; 5] = [SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac, SaveFormat::Vorbis, SaveFormat::Mp3];
 
 #[test]
 fn parse_gives_back_every_format_from_its_key() {
@@ -26,7 +26,8 @@ fn oga_parses_as_vorbis() {
 fn parse_still_accepts_aif_and_ignores_case_and_spaces() {
     assert_eq!(SaveFormat::parse("aif"), Some(SaveFormat::Aiff));
     assert_eq!(SaveFormat::parse(" OGG "), Some(SaveFormat::Vorbis));
-    assert_eq!(SaveFormat::parse("mp3"), None);
+    assert_eq!(SaveFormat::parse("mp3"), Some(SaveFormat::Mp3));
+    assert_eq!(SaveFormat::parse("m4a"), None);
 }
 
 #[test]

@@ -113,6 +113,7 @@ impl Headless {
                 let opts = SaveOptions { include_metadata: s.include_meta, ..SaveOptions::default() };
                 save::save_wav_with(&doc, &path, ty, &opts, &mut |_| {})
             }
+            (None, SaveFormat::Mp3) => Err(save::SaveError::Unsupported("MP3 saving is not available yet".into())),
             (None, SaveFormat::Aiff | SaveFormat::Flac) => {
                 save::save_aiff_kind(&doc, &path, format, ty, args.aiff.unwrap_or(AiffKind::Aiff), &mut |_| {})
             }
