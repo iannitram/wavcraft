@@ -2,7 +2,8 @@
 //! the marker. Play stops, as before, only when the marker is outside what is being played.
 //!
 //! Each test runs on the headless window (`WaveApp::new` on eframe's headless creation context)
-//! with the silent sink. Run them under `WAVCRAFT_NO_AUDIO=1`: the window must not open a device.
+//! with the silent sink (the tests set `WAVCRAFT_NO_AUDIO=1` themselves, once, so no device is opened).
+use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -29,11 +30,15 @@ impl Drop for Scratch {
 
 /// The window as the program builds it, with its session folder in `scratch`. Its settings file and
 /// recent-files list are cut loose at once, so nothing a test does is written to the user's own.
+#[allow(unsafe_code)]
 fn a_window(scratch: &Scratch) -> WaveApp {
+    static SET: Once = Once::new();
+    // SAFETY: set once, before any window of this module builds its player; nothing here changes it again.
+    SET.call_once(|| unsafe { std::env::set_var("WAVCRAFT_NO_AUDIO", "1") });
     let cc = eframe::CreationContext::_new_kittest(egui::Context::default());
     let mut app = WaveApp::new(&cc, None, Some(scratch.0.join("sessions")), false);
     assert!(app.sessions.path.starts_with(&scratch.0), "the window's sessions are in the scratch folder, not {}", app.sessions.path.display());
-    assert!(app.player.info().test_sink, "run under WAVCRAFT_NO_AUDIO=1: the window must use the silent sink");
+    assert!(app.player.info().test_sink, "the window must use the silent sink");
     app.settings_path = None;
     app.recent_path = None;
     app
