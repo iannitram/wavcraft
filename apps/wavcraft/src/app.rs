@@ -11512,7 +11512,8 @@ impl WaveApp {
                             if let Some(e) = self.editor.as_mut() {
                                 let now = e.channels.within(channels);
                                 e.channels = if multi {
-                                    wavcraft_core::ChannelMask::from_bits(now.bits() ^ wavcraft_core::ChannelMask::only(ch).bits()).within(channels)
+                                    let next = if now.contains(ch) { now.without(ch) } else { now.with(ch) };
+                                    next.within(channels)
                                 } else if now == wavcraft_core::ChannelMask::only(ch) {
                                     wavcraft_core::ChannelMask::ALL
                                 } else {
