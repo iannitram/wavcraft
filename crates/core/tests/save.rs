@@ -488,6 +488,29 @@ fn m1_markers_round_trip_through_save_and_reopen_for_every_sample_type() {
 }
 
 #[test]
+fn a6_five_markers_round_trip_in_wav_and_aiff() {
+    let t = TempDir::new("five-markers");
+    let frames = 3_001;
+    let d = doc_from(&t.0.join("s"), &exact(16, frames));
+    let markers = wavcraft_core::Markers::from_items(vec![
+        ("Start".into(), 0, 0),
+        ("Café Ünïcode".into(), 1_000, 1_000),
+        ("Verse".into(), 2_000, 2_500),
+        ("Hook".into(), 2_600, 2_600),
+        ("End".into(), 3_000, 3_000),
+    ]);
+    let doc = d.with_markers(std::sync::Arc::new(markers));
+    for (format, name) in [(SaveFormat::Wav, "five.wav"), (SaveFormat::Aiff, "five.aiff")] {
+        let path = t.0.join(name);
+        save(&doc, &path, format, SampleType::Int16, &mut |_| {}).unwrap();
+        let back = reopen(&path, &t.0.join("r"));
+        assert_eq!(back.len_frames(), frames as u64, "{format:?}: the audio is whole");
+        assert_eq!(marker_view(&back), marker_view(&doc), "{format:?}");
+        assert_eq!(marker_view(&back).len(), 5, "{format:?}: five markers");
+    }
+}
+
+#[test]
 fn m2_a_file_without_markers_saves_and_opens_without_them_and_damaged_marker_chunks_still_open() {
     let t = TempDir::new("marker-none");
     let doc = doc_from(&t.0.join("s"), &exact(16, 2_000));
