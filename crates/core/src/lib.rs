@@ -124,6 +124,7 @@ pub mod take_recovery;
 pub mod take_repair;
 pub mod tempo;
 pub mod timepitch;
+pub mod transcript;
 pub mod transcript_cut;
 pub mod transport;
 pub mod video_snap;

@@ -20,6 +20,7 @@ use soundcraft_audio_io::{AudioBuffer, BwfInfo, FileFormat, SampleFormat};
 use crate::markers::Markers;
 use crate::meta::Metadata;
 use crate::store::{BLOCK_FRAMES, BlockHandle, BlockId, Store};
+use crate::transcript::Transcript;
 
 pub mod append;
 pub mod edit;
@@ -358,6 +359,8 @@ pub struct DocState {
     sample_rate: u32,
     source: Arc<SourceFormat>,
     markers: Arc<Markers>,
+    /// The word-timed transcript (L1), when the document has been transcribed.
+    transcript: Option<Arc<Transcript>>,
     /// Stand-in for the per-document state other rows add (markers on A170): positions in
     /// frames. Tests only; it proves [`DocState::with_parts`] carries state through and
     /// [`DocState::rescale_positions`] moves it.
@@ -386,6 +389,7 @@ impl DocState {
             sample_rate,
             source,
             markers: Arc::default(),
+            transcript: None,
             #[cfg(test)]
             standin: Vec::new(),
         };
@@ -401,6 +405,16 @@ impl DocState {
     /// This state with other markers (the audio is shared, not copied).
     pub fn with_markers(&self, markers: Arc<Markers>) -> DocState {
         DocState { markers, ..self.clone() }
+    }
+
+    /// The transcript of this state (L1), if any; undo and redo restore it with the audio.
+    pub fn transcript(&self) -> Option<&Arc<Transcript>> {
+        self.transcript.as_ref()
+    }
+
+    /// This state with another transcript, or none (the audio is shared, not copied).
+    pub fn with_transcript(&self, transcript: Option<Arc<Transcript>>) -> DocState {
+        DocState { transcript, ..self.clone() }
     }
 
     /// This state with other audio parts and **every other field carried over** (markers and
@@ -420,6 +434,17 @@ impl DocState {
         if !self.markers.is_empty() {
             let scaled = self.markers.map_positions(|f| rescale_frame(f, old_rate, new_rate));
             self.markers = Arc::new(scaled);
+        }
+        if let Some(t) = &self.transcript {
+            let mut scaled = (**t).clone();
+            scaled.sample_rate = new_rate;
+            for w in &mut scaled.words {
+                w.start = rescale_frame(w.start, old_rate, new_rate);
+                w.end = rescale_frame(w.end, old_rate, new_rate);
+            }
+            // Rounding can make a very short word empty; drop it rather than keep a backwards one.
+            scaled.words.retain(|w| w.start < w.end);
+            self.transcript = Some(Arc::new(scaled));
         }
         #[cfg(test)]
         for p in &mut self.standin {
