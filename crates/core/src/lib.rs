@@ -84,6 +84,7 @@ pub mod mix;
 pub mod mixdown;
 pub mod mixer_sections;
 pub mod monitors;
+pub mod mp3_options;
 pub mod mtplay;
 pub mod mtpunch;
 pub mod mtrecord;
