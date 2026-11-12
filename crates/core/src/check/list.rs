@@ -70,10 +70,32 @@ pub fn prev_before(report: &Report, frame: u64) -> Option<usize> {
     report.findings.iter().rposition(|f| f.start < frame).or_else(|| report.findings.len().checked_sub(1))
 }
 
+/// The pixel column of `frame` on a map strip `width_px` wide, for a file of `total_frames`.
+/// Frame 0 is column 0, and the last frame is the last column, `width_px - 1`. Frames past the
+/// end read as the last frame. Returns 0 when the file or the strip is empty.
+pub fn pin_x(frame: u64, total_frames: u64, width_px: u32) -> u32 {
+    if total_frames == 0 || width_px == 0 {
+        return 0;
+    }
+    let frame = frame.min(total_frames - 1);
+    let x = u128::from(frame) * u128::from(width_px) / u128::from(total_frames);
+    u32::try_from(x).unwrap_or(width_px - 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::check::Finding;
+
+    #[test]
+    fn pin_x_maps_frame_to_pixel() {
+        assert_eq!(pin_x(0, 1000, 200), 0);
+        assert_eq!(pin_x(500, 1000, 200), 100);
+        assert_eq!(pin_x(999, 1000, 200), 199);
+        assert_eq!(pin_x(5000, 1000, 200), 199);
+        assert_eq!(pin_x(0, 0, 200), 0);
+        assert_eq!(pin_x(0, 1000, 0), 0);
+    }
 
     fn finding(kind: Kind, severity: Severity, start: u64, end: u64) -> Finding {
         Finding { kind, severity, channel: Some(0), start, end, value: 0.0 }

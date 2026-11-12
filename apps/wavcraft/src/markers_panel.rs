@@ -1,6 +1,6 @@
 //! The Markers panel (A172-A175, A181): a table of the markers and ranges. A click picks a row,
-//! a double-click goes to it (makes it the time selection), a click on the only picked row
-//! renames it; plus the state for dragging a marker's handle in the ruler.
+//! a double-click goes to it (makes it the time selection), a click on the name of the only
+//! picked row renames it; plus the state for dragging a marker's handle in the ruler.
 //!
 //! Kept out of `app.rs` so that file only gains the few lines that call it.
 
@@ -82,11 +82,12 @@ impl MarkersUi {
         self.pick.span(markers)
     }
 
-    /// A click on a cell of row `index` in the panel. A double-click goes to the row: picks it and
-    /// returns the selection it makes, and starts no rename. A single click only picks, and
-    /// returns `None`; a plain single click on the row that is already the only picked one starts
-    /// renaming it instead (the Name is the one cell edited in the table).
-    pub fn row_click(&mut self, markers: &Markers, index: usize, shift: bool, ctrl: bool, double: bool) -> Option<Range<u64>> {
+    /// A click on a cell of row `index` in the panel (`name` says it was the Name cell). A
+    /// double-click goes to the row: picks it and returns the selection it makes, and starts no
+    /// rename. A single click only picks, and returns `None`. A plain single click on the Name of
+    /// the row that is already the only picked one starts renaming it (a click on any other cell
+    /// of that row only picks it).
+    pub fn row_click(&mut self, markers: &Markers, index: usize, shift: bool, ctrl: bool, double: bool, name: bool) -> Option<Range<u64>> {
         let id = markers.id_at(index)?;
         if double {
             // The first click of a double-click on the picked row may have started a rename.
@@ -95,7 +96,7 @@ impl MarkersUi {
             }
             return self.click(markers, index, shift, ctrl);
         }
-        if !shift && !ctrl && self.pick.ids == [id] {
+        if name && !shift && !ctrl && self.pick.ids == [id] {
             let name = markers.iter().find(|m| m.id == id).map(|m| m.name.clone()).unwrap_or_default();
             self.renaming = Some((id, name));
             self.focus_rename = true;
@@ -160,7 +161,8 @@ impl MarkersUi {
         let (shift, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
         let time = |frame: u64| format_time(frame as usize, rate);
         let (now, delay) = (ui.input(|i| i.time), ui.ctx().options(|o| o.input_options.max_double_click_delay));
-        let mut clicked = None;
+        // The clicked row, whether it was a double-click, and whether it was the Name cell.
+        let mut clicked: Option<(usize, bool, bool)> = None;
         let mut commit: Option<(u64, String)> = None;
         egui::ScrollArea::both().show(ui, |ui| {
             egui::Grid::new("markers-table").striped(true).num_columns(6).show(ui, |ui| {
@@ -195,7 +197,7 @@ impl MarkersUi {
                             }
                             // The click that opened this editor, then a second one in it: a double-click.
                             if edit.double_clicked() && self.rename_opened.is_some_and(|t| now - t <= delay) {
-                                clicked = Some((index, true));
+                                clicked = Some((index, true, true));
                             }
                             let (esc, enter) = ui.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::Enter)));
                             if esc {
@@ -207,13 +209,13 @@ impl MarkersUi {
                         }
                         _ => {
                             if let Some(double) = cell(ui, m.name.clone()) {
-                                clicked = Some((index, double));
+                                clicked = Some((index, double, true));
                             }
                         }
                     }
                     let mut take = |c: Option<bool>| {
                         if let Some(double) = c {
-                            clicked = Some((index, double));
+                            clicked = Some((index, double, false));
                         }
                     };
                     if cols.start {
@@ -286,8 +288,8 @@ impl MarkersUi {
             editor.set_marker_description(id, &text);
             self.desc_edit = None;
         }
-        if let Some((index, double)) = clicked {
-            out.select = self.row_click(&markers, index, shift, ctrl, double);
+        if let Some((index, double, name)) = clicked {
+            out.select = self.row_click(&markers, index, shift, ctrl, double, name);
             self.rename_opened = (self.renaming.is_some() && self.focus_rename).then_some(now);
         }
         if let Some((id, name)) = commit {
@@ -462,18 +464,32 @@ mod tests {
         let m = Markers::from_items(vec![("a".into(), 1000, 1000), ("b".into(), 5000, 5400)]);
         let mut ui = MarkersUi::new();
         let (a, b) = (m.id_at(0).unwrap(), m.id_at(1).unwrap());
-        assert_eq!(ui.row_click(&m, 1, false, false, false), None, "a single click only picks");
+        assert_eq!(ui.row_click(&m, 1, false, false, false, true), None, "a single click only picks");
         assert_eq!(ui.pick.ids, vec![b]);
         assert_eq!(ui.renaming, None);
-        assert_eq!(ui.row_click(&m, 1, false, false, true), Some(5000..5400), "a double click goes");
+        assert_eq!(ui.row_click(&m, 1, false, false, true, true), Some(5000..5400), "a double click goes");
         assert_eq!(ui.pick.ids, vec![b]);
-        assert_eq!(ui.row_click(&m, 0, false, false, true), Some(1000..1000));
+        assert_eq!(ui.row_click(&m, 0, false, false, true, false), Some(1000..1000), "a double click on another cell goes too");
         assert_eq!(ui.pick.ids, vec![a]);
         assert_eq!(ui.renaming, None, "a double click starts no rename");
-        assert_eq!(ui.row_click(&m, 0, false, false, false), None, "a click on the only picked row edits it");
+        assert_eq!(ui.row_click(&m, 0, false, false, false, true), None, "a click on the Name of the only picked row edits it");
         assert_eq!(ui.renaming, Some((a, "a".to_string())));
-        assert_eq!(ui.row_click(&m, 1, false, false, false), None);
+        assert_eq!(ui.row_click(&m, 1, false, false, false, true), None);
         assert_eq!(ui.pick.ids, vec![b]);
         assert_eq!(ui.renaming, None, "picking another row ends the edit");
+    }
+
+    #[test]
+    fn a_click_on_another_cell_of_the_picked_row_does_not_rename() {
+        let m = Markers::from_items(vec![("a".into(), 1000, 1000), ("b".into(), 5000, 5400)]);
+        let mut ui = MarkersUi::new();
+        let a = m.id_at(0).unwrap();
+        assert_eq!(ui.row_click(&m, 0, false, false, false, true), None);
+        assert_eq!(ui.renaming, None, "the first click only picks the row");
+        assert_eq!(ui.row_click(&m, 0, false, false, false, false), None, "a click on its Start cell");
+        assert_eq!(ui.renaming, None, "starts no rename");
+        assert_eq!(ui.pick.ids, vec![a], "and keeps the pick");
+        assert_eq!(ui.row_click(&m, 0, false, false, false, true), None);
+        assert_eq!(ui.renaming, Some((a, "a".to_string())), "a click on the Name does");
     }
 }
