@@ -8271,10 +8271,14 @@ impl WaveApp {
                 }
                 Err(_) => "ERR HOLD_BUSY <ms>".to_string(),
             },
-            "OPEN" if !rest.is_empty() => {
-                self.open(PathBuf::from(rest), ctx);
-                "OK".to_string()
-            }
+            "OPEN" => match wavcraft_automation::Request::parse(line) {
+                Ok(wavcraft_automation::Request::Open(path)) => {
+                    self.open(path, ctx);
+                    "OK".to_string()
+                }
+                Err(e) => format!("ERR {e}"),
+                _ => "ERR OPEN <path>".to_string(),
+            },
             // OPEN_PICK <p1> [...]: what Ctrl+O and a drop do (issue #366): with unsaved edits the
             // open waits behind the prompt, answered by OPEN_ANSWER. Paths split as OPEN_MANY's.
             "OPEN_PICK" if !rest.trim().is_empty() => {
@@ -8402,17 +8406,16 @@ impl WaveApp {
             }
             // What the last Open Append / OPEN_MANY reported (empty when nothing went wrong).
             "LASTERROR" => format!("OK {}", self.error.as_deref().unwrap_or("-")),
-            "SELECT" => {
-                let mut it = rest.split_whitespace().map(str::parse::<usize>);
-                match (it.next(), it.next()) {
-                    (Some(Ok(a)), Some(Ok(b))) => {
-                        let len = self.editor.as_ref().map_or(0, |e| e.history.current().len_frames() as usize);
-                        self.selection = Selection { anchor: a.min(len), head: b.min(len) };
-                        format!("OK selection={}", sel(self))
-                    }
-                    _ => "ERR SELECT <start> <end>, in frames".to_string(),
+            "SELECT" => match wavcraft_automation::Request::parse(line) {
+                Ok(wavcraft_automation::Request::Select { start, end }) if start <= usize::MAX as u64 && end <= usize::MAX as u64 => {
+                    let (a, b) = (start as usize, end as usize);
+                    let len = self.editor.as_ref().map_or(0, |e| e.history.current().len_frames() as usize);
+                    self.selection = Selection { anchor: a.min(len), head: b.min(len) };
+                    format!("OK selection={}", sel(self))
                 }
-            }
+                Ok(_) => "ERR SELECT <start> <end>, in frames".to_string(),
+                Err(e) => format!("ERR {e}"),
+            },
             // Window › <panel>: `window.toggle.<id>`, `window.show.<id>`, `window.hide.<id>`.
             "ACTION" if rest.starts_with("window.") => {
                 let mut next = self.panels.clone();
@@ -8564,16 +8567,20 @@ impl WaveApp {
                     Err(e) => format!("ERR {e}"),
                 }
             }
-            "ACTION" => match actions::id_by_name(rest) {
-                Some(id) => match if matches!(id, ActionId::CopyToNew | ActionId::PasteToNew | ActionId::CloseAll | ActionId::SaveAll) {
-                    self.run_doc_action(id, ctx, false)
-                } else {
-                    self.run_action(id, ctx)
-                } {
-                    Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
-                    Err(e) => format!("ERR {e}"),
+            "ACTION" => match wavcraft_automation::Request::parse(line) {
+                Ok(wavcraft_automation::Request::Action(name)) => match actions::id_by_name(&name) {
+                    Some(id) => match if matches!(id, ActionId::CopyToNew | ActionId::PasteToNew | ActionId::CloseAll | ActionId::SaveAll) {
+                        self.run_doc_action(id, ctx, false)
+                    } else {
+                        self.run_action(id, ctx)
+                    } {
+                        Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
+                        Err(e) => format!("ERR {e}"),
+                    },
+                    None => format!("ERR no action named {name:?}"),
                 },
-                None => format!("ERR no action named {rest:?}"),
+                Err(e) => format!("ERR {e}"),
+                _ => "ERR ACTION <name>".to_string(),
             },
             // Press a shortcut: `KEY Ctrl+Z` runs what the table binds it to, as the key would.
             // (Open is refused: it would wait for a file dialog nobody can answer.)
@@ -8657,11 +8664,14 @@ impl WaveApp {
                 format!("OK {}", all.join("; "))
             }
             "EFFECT" => {
-                let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-                let name = name.strip_prefix("effect.").unwrap_or(name);
-                match wavcraft_core::effects::all().iter().position(|e| e.id() == name) {
+                let (name, args) = match wavcraft_automation::Request::parse(line) {
+                    Ok(wavcraft_automation::Request::Effect { name, args }) => (name, args),
+                    Err(e) => return format!("ERR {e}"),
+                    _ => return "ERR EFFECT <name>".to_string(),
+                };
+                match wavcraft_core::effects::all().iter().position(|e| e.id() == name.as_str()) {
                     // A one-shot (reverse, the fades) runs as `ACTION effect.<name>` does (#935).
-                    None => match one_shot_effect(name) {
+                    None => match one_shot_effect(&name) {
                         Some(_) if !args.trim().is_empty() => {
                             format!("ERR {name} takes no settings here: set them with PARAM")
                         }
@@ -8671,7 +8681,7 @@ impl WaveApp {
                         },
                         None => format!("ERR no effect named {name:?}"),
                     },
-                    Some(i) => match wavcraft_core::effects::parse_params(wavcraft_core::effects::all()[i], args) {
+                    Some(i) => match wavcraft_core::effects::parse_params(wavcraft_core::effects::all()[i], &args) {
                         Err(e) => format!("ERR {e}"),
                         Ok(params) => match self.run_effect(i as u16, params, ctx) {
                             Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
@@ -9618,24 +9628,17 @@ impl WaveApp {
             }
             "SAVE" => {
                 // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10] [meta=0|1]`: the options end the line.
-                let meta = match take_meta(rest) {
-                    Ok(m) => m,
-                    Err(e) => return format!("ERR {e}"),
-                };
-                let quality = match take_quality(rest) {
-                    Ok(q) => q,
-                    Err(e) => return format!("ERR {e}"),
-                };
-                match parse_save_args(rest) {
+                match wavcraft_automation::Request::parse(line) {
                     Err(e) => format!("ERR {e}"),
-                    Ok((path, ty, aiff)) => {
+                    Ok(wavcraft_automation::Request::Save { path, args }) => {
+                        let (ty, aiff, quality, meta) = (args.ty, args.aiff, args.quality, args.meta);
                         if let Some(q) = quality {
                             self.vorbis_quality = q;
                         }
                         if let Some(m) = meta {
                             self.set_include_meta(m);
                         }
-                        let to = (!path.is_empty()).then(|| PathBuf::from(path));
+                        let to = path;
                         // `aiff=` is for this save only.
                         let kept = self.aiff_kind;
                         self.aiff_kind = aiff.unwrap_or(kept);
@@ -9646,6 +9649,7 @@ impl WaveApp {
                             Err(e) => format!("ERR {e}"),
                         }
                     }
+                    _ => "ERR SAVE [<path>] [options]".to_string(),
                 }
             }
             "SAVE_SELECTION" | "EXPORT" if !rest.is_empty() => match self.save_copy(ctx, cmd == "SAVE_SELECTION", Some(PathBuf::from(rest))) {
@@ -12816,34 +12820,6 @@ fn format_size_label(e: &SizeEstimate) -> String {
     }
 }
 
-/// Reads the `quality=<-1..10>` option (Ogg Vorbis VBR) out of `SAVE`'s arguments, if given.
-/// `parse_save_args` skips that token.
-fn take_quality(rest: &str) -> Result<Option<f32>, String> {
-    let mut quality = None;
-    for tok in rest.split_whitespace() {
-        if let Some(v) = tok.strip_prefix("quality=") {
-            let q: f32 = v.parse().ok().filter(|q: &f32| (-1.0..=10.0).contains(q)).ok_or_else(|| format!("quality=<-1..10>, not {v}"))?;
-            quality = Some(q);
-        }
-    }
-    Ok(quality)
-}
-
-/// `SAVE`'s `meta=0|1` (A262): "Include markers and other metadata" for this document, if given.
-fn take_meta(rest: &str) -> Result<Option<bool>, String> {
-    let mut meta = None;
-    for tok in rest.split_whitespace() {
-        if let Some(v) = tok.strip_prefix("meta=") {
-            meta = Some(match v {
-                "0" => false,
-                "1" => true,
-                _ => return Err(format!("meta=<0|1>, not {v}")),
-            });
-        }
-    }
-    Ok(meta)
-}
-
 /// The extra chunks a save writes when "Include markers and other metadata" is on. This is
 /// the one place the marker and metadata features add theirs. Test only: with
 /// `WAVCRAFT_TEST_SAVE_CHUNK` set, a `TEST` chunk, so the switch can be checked on a file.
@@ -12859,42 +12835,6 @@ fn metadata_chunks() -> Vec<ExtraChunk> {
 fn test_block_delay() -> std::time::Duration {
     let ms = std::env::var("WAVCRAFT_TEST_SAVE_DELAY_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
     std::time::Duration::from_millis(ms)
-}
-
-/// `SAVE`'s arguments: a path (may hold spaces) then `bits=<16|24|32>` and `float=<0|1>` in any
-/// order. Returns the path and the sample type they name, if any.
-fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffKind>), String> {
-    let (mut path, mut bits, mut float, mut aiff) = (rest.trim(), None, None, None);
-    while let Some((head, last)) = path.rsplit_once(char::is_whitespace).or(if path.contains('=') { Some(("", path)) } else { None }) {
-        if let Some(v) = last.strip_prefix("bits=") {
-            bits = Some(v.parse::<u32>().map_err(|_| format!("bits=<16|24|32>, not {v}"))?);
-        } else if let Some(v) = last.strip_prefix("aiff=") {
-            aiff = Some(AiffKind::parse(v).ok_or_else(|| format!("aiff=<aiff|aifc|sowt>, not {v}"))?);
-        } else if let Some(v) = last.strip_prefix("float=") {
-            float = Some(match v {
-                "0" => false,
-                "1" => true,
-                _ => return Err(format!("float=<0|1>, not {v}")),
-            });
-        } else if last.starts_with("quality=") {
-            // Read by `take_quality`.
-        } else if last.starts_with("meta=") {
-            // Read by `take_meta`.
-        } else {
-            break;
-        }
-        path = head.trim();
-    }
-    let ty = match (bits, float) {
-        (None, None) => None,
-        (Some(16), None | Some(false)) => Some(SampleType::Int16),
-        (Some(24), None | Some(false)) => Some(SampleType::Int24),
-        (Some(32), None | Some(false)) => Some(SampleType::Int32),
-        (None | Some(32), Some(true)) => Some(SampleType::Float32),
-        (None, Some(false)) => None,
-        (b, f) => return Err(format!("no sample type for bits={b:?} float={f:?}: 16, 24, 32 bit integer or float=1 (32 bit)")),
-    };
-    Ok((path, ty, aiff))
 }
 
 /// The History panel's notice for steps the byte cap removed since `seen` was last shown: the same
@@ -13175,26 +13115,6 @@ mod tests {
         assert_eq!((seed, rest.as_str()), (Ok(7), "freq=440 dur=2"));
         assert!(split_seed("seed=x").0.is_err());
         assert!(split_seed("dur=2").0.is_ok());
-    }
-
-    #[test]
-    fn save_arguments_name_the_path_and_the_sample_type() {
-        assert_eq!(parse_save_args("/a b/c.wav"), Ok(("/a b/c.wav", None, None)));
-        assert_eq!(parse_save_args("/a b/c.wav bits=24 float=0"), Ok(("/a b/c.wav", Some(SampleType::Int24), None)));
-        assert_eq!(parse_save_args("x.aiff float=1"), Ok(("x.aiff", Some(SampleType::Float32), None)));
-        assert_eq!(parse_save_args("x.aiff bits=32 float=1"), Ok(("x.aiff", Some(SampleType::Float32), None)));
-        assert_eq!(parse_save_args("x.flac bits=16"), Ok(("x.flac", Some(SampleType::Int16), None)));
-        assert_eq!(parse_save_args(""), Ok(("", None, None)));
-        assert_eq!(parse_save_args("/a b/c.aiff aiff=sowt"), Ok(("/a b/c.aiff", None, Some(AiffKind::AifcSowt))));
-        assert_eq!(parse_save_args("x.aiff bits=24 aiff=aifc"), Ok(("x.aiff", Some(SampleType::Int24), Some(AiffKind::Aifc))));
-        assert!(parse_save_args("x.aiff aiff=big").is_err());
-        assert_eq!(parse_save_args("a b.ogg quality=7.5 bits=16"), Ok(("a b.ogg", Some(SampleType::Int16), None)));
-        assert_eq!(take_quality("a b.ogg quality=7.5 bits=16"), Ok(Some(7.5)));
-        assert_eq!(take_quality("x.ogg"), Ok(None));
-        assert!(take_quality("x.ogg quality=11").is_err() && take_quality("x.ogg quality=loud").is_err());
-        assert!(parse_save_args("x.wav bits=20").is_err());
-        assert!(parse_save_args("x.wav bits=24 float=1").is_err());
-        assert!(parse_save_args("x.wav float=2").is_err());
     }
 
     struct TempDir(PathBuf);
