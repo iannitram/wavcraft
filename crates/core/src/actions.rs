@@ -1076,6 +1076,17 @@ impl Editor {
         true
     }
 
+    /// Give marker `id` the extent `range` (an empty range is a point; one history step, "Move
+    /// Marker"). A range past the end of the file is refused. Returns whether anything changed.
+    pub fn set_marker_extent(&mut self, id: u64, range: Range<u64>) -> bool {
+        if range.end.max(range.start) > self.len() {
+            return false;
+        }
+        let Some(markers) = self.history.current().markers().with_extent(id, range) else { return false };
+        self.history.push_markers("Move Marker", Arc::new(markers));
+        true
+    }
+
     /// Run `id` on `selection`. A disabled action does nothing and says why.
     pub fn run(&mut self, id: ActionId, selection: Range<u64>) -> Result<Outcome, EditError> {
         self.run_with(id, selection, None)
