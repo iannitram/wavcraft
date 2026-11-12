@@ -1082,7 +1082,7 @@ pub fn hz_at_fraction(lo: f32, hi: f32, log: bool, t: f32) -> f32 {
 }
 
 /// Which channels a drag that starts at `y_fraction` of the editor's height (0 is the top of the
-/// waveform area, 1 the bottom) selects. With `context` on (the default) and a stereo file, the
+/// waveform area, 1 the bottom) selects. With `context` on and a stereo file, the
 /// top quarter selects the left channel only, the bottom quarter the right only, and the middle
 /// both. Files with other channel counts, or `context` off, always select every channel.
 pub fn channels_for_drag(y_fraction: f32, channels: usize, context: bool) -> ChannelMask {
