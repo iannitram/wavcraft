@@ -3,7 +3,7 @@
 //! The submenu calls `snap_items`, the same function View › Snapping uses, and a tick goes through
 //! `toggle_snap_menu`. The first test checks the six labels in menu order. The second renders the
 //! real Edit menu in headless egui frames and clicks its submenu and checkbox before checking the
-//! shared state used by View and the label used by the ruler.
+//! shared state used by View and the checkbox tick drawn by the ruler.
 use super::*;
 
 /// The labels `snap_items` draws, in table order: the Edit menu's six tick items.
@@ -106,12 +106,17 @@ fn ticking_snap_to_zero_crossings_in_edit_shows_in_view_and_the_ruler() {
     frame(pointer(zero, false));
     assert!(app.settings.snap.zero_crossings);
     assert_eq!(app.notice.as_deref(), Some("Snap to zero crossings on"));
-    // View uses snap_flag_value; the ruler uses Editor::label via menu_rows.
-    // The ruler currently displays "(on)" rather than a checkbox tick.
+    // View and the ruler render the same snap state through snap_items.
     assert_eq!(actions::snap_flag_value(&app.settings.snap, ActionId::SnapZeroToggle), Some(true));
+    ctx.enable_accesskit();
     let mut ruler = ctx.run_ui(egui::RawInput::default(), |ui| {
         app.menu_rows(ui, &Menu::Ruler.entries());
     });
     ruler.textures_delta.clear();
-    label_position(&ruler, "Snap to Zero Crossings (on)");
+    label_position(&ruler, "Snap to Zero Crossings");
+    let update = ruler.platform_output.accesskit_update.expect("ruler accessibility tree");
+    let checkbox =
+        update.nodes.iter().map(|(_, node)| node).find(|node| node.label() == Some("Snap to Zero Crossings")).expect("ruler zero-crossings checkbox");
+    assert_eq!(checkbox.role(), egui::accesskit::Role::CheckBox);
+    assert_eq!(checkbox.toggled(), Some(egui::accesskit::Toggled::True));
 }

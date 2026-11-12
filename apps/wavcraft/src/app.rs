@@ -5893,6 +5893,21 @@ impl WaveApp {
         let mac = cfg!(target_os = "macos");
         let mut chosen = None;
         for e in entries {
+            // The ruler's snap block uses the same tick items as Edit and View.
+            if let Entry::Item(Item { cmd: Cmd::Action(id), .. }) = e
+                && actions::snap_flag_value(&self.settings.snap, *id).is_some()
+            {
+                if *id == ActionId::SnapToggle
+                    && let Some(id) = snap_items(ui, &self.settings.snap)
+                {
+                    chosen = entries.iter().find_map(|entry| match entry {
+                        Entry::Item(item) if item.cmd == Cmd::Action(id) => Some(*item),
+                        _ => None,
+                    });
+                    ui.close();
+                }
+                continue;
+            }
             match e {
                 Entry::Sep => {
                     ui.separator();
