@@ -1054,6 +1054,13 @@ impl Editor {
         true
     }
 
+    /// Delete markers `ids` (one history step, "Delete Marker"). Returns whether anything changed.
+    pub fn delete_markers(&mut self, ids: &[u64]) -> bool {
+        let Some(markers) = self.history.current().markers().without(ids) else { return false };
+        self.history.push_markers("Delete Marker", Arc::new(markers));
+        true
+    }
+
     /// Give marker `id` colour `color` (0 clears; one history step, "Marker Colour", f58).
     pub fn set_marker_color(&mut self, id: u64, color: u8) -> bool {
         let Some(markers) = self.history.current().markers().with_color(id, color) else { return false };
@@ -1072,6 +1079,17 @@ impl Editor {
     /// "Move Marker"). Returns whether anything changed.
     pub fn move_marker(&mut self, id: u64, start: u64) -> bool {
         let Some(markers) = self.history.current().markers().with_moved(id, start, self.len()) else { return false };
+        self.history.push_markers("Move Marker", Arc::new(markers));
+        true
+    }
+
+    /// Give marker `id` the extent `range` (an empty range is a point; one history step, "Move
+    /// Marker"). A range past the end of the file is refused. Returns whether anything changed.
+    pub fn set_marker_extent(&mut self, id: u64, range: Range<u64>) -> bool {
+        if range.end.max(range.start) > self.len() {
+            return false;
+        }
+        let Some(markers) = self.history.current().markers().with_extent(id, range) else { return false };
         self.history.push_markers("Move Marker", Arc::new(markers));
         true
     }
