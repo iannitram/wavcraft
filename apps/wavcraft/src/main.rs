@@ -11,8 +11,6 @@
 mod app;
 mod batch_panel;
 mod cd_ui;
-// Not called yet: K1.6 starts, polls and draws CheckRun from app.rs.
-#[allow(dead_code)]
 mod check_panel;
 mod control;
 mod convert_ui;
