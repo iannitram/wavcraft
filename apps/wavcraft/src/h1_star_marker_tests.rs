@@ -8,7 +8,7 @@ fn press_events(events: Vec<egui::Event>) -> Vec<Command> {
     let keymap = Keymap::new();
     let mut got = Vec::new();
     let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-        got = pressed_commands(ui.ctx(), &keymap, false);
+        got = pressed_commands(ui.ctx(), &keymap, false, false);
     });
     output.textures_delta.clear();
     got
@@ -31,7 +31,7 @@ fn a_typed_star_adds_a_marker() {
             if ask_focus {
                 r.request_focus();
             }
-            found = pressed_commands(ui.ctx(), &keymap, false);
+            found = pressed_commands(ui.ctx(), &keymap, false, false);
         });
         output.textures_delta.clear();
         found

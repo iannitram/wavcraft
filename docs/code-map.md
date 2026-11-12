@@ -561,8 +561,8 @@ One struct, `WaveApp`, holds the whole window. Almost everything is a method in 
 | 10966-11678 | `editor`: the central view. Time ruler, amplitude ruler, waveform lanes, spectral display with frequency ruler and divider, markers, selection and edge drags, fade handles, marquee and lasso, scrubbing, wheel zoom. |
 | 11680-11693 | `panel_menu_button` helper (a free function, after the `impl` block). |
 | 11694-11838 | `impl eframe::App`: `logic` runs every frame, shown or not. It collects worker results, ticks recording, transport, meters, recovery, batch, playlist, and answers control channel requests. `on_exit` saves the window state. |
-| 11839-12171 | `ui`: per-frame drawing. Keyboard handling (history arrows, panel keys, record key, JKL), Shift-held reset, drag and drop, then menu, status, panels, editor, and every dialog. |
-| 12172-12740 | Free helpers: reset of preference files, Import Raw parsing, pressed-command lookup, preference widgets, ruler and marker drawing, colours and palette, preview seed, save-argument parsing (`parse_save_args`, `take_quality`, `take_meta`), test-only save hooks. |
+| 11839-12288 | `ui`: per-frame drawing. Keyboard handling (history arrows, panel keys, record key, JKL), Shift-held reset, drag and drop, then menu, status, panels, editor, and every dialog. |
+| 12289-12897 | Free helpers: reset of preference files, Import Raw parsing, pressed-command lookup (`float_focus` splits a floated viewport's text focus from other focus, `pressed_commands` reads the keys), preference widgets, ruler and marker drawing, colours and palette, preview seed, save-argument parsing (`parse_save_args`, `take_quality`, `take_meta`), test-only save hooks. |
 | 12741-13184 | Tests: 30 in-file tests in four modules, plus six test files pulled in with `#[path]` (39 more tests) from `apps/wavcraft/src/`. |
 
 ## Tests
