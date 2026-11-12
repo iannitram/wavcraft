@@ -162,3 +162,34 @@ fn the_window_and_headless_save_the_same_samples() {
     }
     assert!(from_window == from_headless, "the window and headless saved different samples");
 }
+
+#[test]
+fn select_with_a_third_number_is_refused() {
+    let scratch = Scratch::new("select-arity");
+    let mut app = a_window(&scratch);
+    assert_eq!(ask(&mut app, "SELECT 1 2 3"), "ERR SELECT <start> <end>, in frames");
+}
+
+#[test]
+fn a_bare_effect_still_lists() {
+    let scratch = Scratch::new("effect-list");
+    let mut app = a_window(&scratch);
+    let answer = ask(&mut app, "EFFECT");
+    assert!(answer.starts_with("OK ") && answer.contains("gain [gain_db="), "{answer}");
+}
+
+#[test]
+fn a_bare_save_still_saves_in_place() {
+    let scratch = Scratch::new("save-in-place");
+    let path = scratch.0.join("source.wav");
+    write_wav(&path, &source_samples());
+    let mut app = a_window(&scratch);
+    assert_eq!(ask(&mut app, &format!("OPEN {}", path.display())), "OK");
+    settle(&mut app);
+    assert!(ask(&mut app, "SELECT 100 200").starts_with("OK"));
+    assert!(ask(&mut app, "ACTION edit.delete").starts_with("OK"));
+    assert!(ask(&mut app, "STATE").contains("unsaved=1"));
+    assert_eq!(ask(&mut app, "SAVE"), "OK");
+    settle(&mut app);
+    assert!(ask(&mut app, "STATE").contains("unsaved=0"));
+}

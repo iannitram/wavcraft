@@ -66,3 +66,26 @@ fn save_options_are_not_part_of_the_path() {
     let err = save("SAVE a.ogg quality=11").expect_err("quality=11 is refused");
     assert!(err.contains("quality=<-1..10>"), "{err}");
 }
+
+/// The cases the window's deleted `save_arguments_name_the_path_and_the_sample_type` test checked,
+/// kept here with the parser they now test.
+#[test]
+fn save_option_values_are_checked_as_the_window_checked_them() {
+    let ty = |rest: &str| SaveArgs::parse(rest).map(|(_, args)| args.ty);
+    assert_eq!(ty("x.aiff float=1"), Ok(Some(SampleType::Float32)));
+    assert_eq!(ty("x.aiff bits=32 float=1"), Ok(Some(SampleType::Float32)));
+    assert_eq!(ty("x.flac bits=16"), Ok(Some(SampleType::Int16)));
+    assert_eq!(ty("x.wav bits=24 float=0"), Ok(Some(SampleType::Int24)));
+    assert_eq!(ty(""), Ok(None));
+    assert_eq!(
+        SaveArgs::parse("/a b/c.aiff aiff=sowt").map(|(p, a)| (p, a.aiff)),
+        Ok((Some(PathBuf::from("/a b/c.aiff")), Some(AiffKind::AifcSowt)))
+    );
+    assert_eq!(SaveArgs::parse("a b.ogg quality=7.5 bits=16").map(|(p, a)| (p, a.quality)), Ok((Some(PathBuf::from("a b.ogg")), Some(7.5))));
+    assert!(SaveArgs::parse("x.aiff aiff=big").is_err());
+    assert!(SaveArgs::parse("x.wav bits=20").is_err());
+    assert!(SaveArgs::parse("x.wav bits=24 float=1").is_err());
+    assert!(SaveArgs::parse("x.wav float=2").is_err());
+    assert!(SaveArgs::parse("x.ogg quality=loud").is_err());
+    assert!(SaveArgs::parse("x.ogg meta=2").is_err());
+}
