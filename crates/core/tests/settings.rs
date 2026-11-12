@@ -212,7 +212,7 @@ const F83_CHANGED: [(&str, &str); 13] = [
     ("true_peak_ceiling_dbtp", "-2.5"),
     ("zoom_factor", "3"),
     ("extend_selection", "anchor"),
-    ("context_channel_editing", "false"),
+    ("context_channel_editing", "true"),
     ("theme", "light"),
     ("waveform_colour", "amber"),
     ("ui_brightness", "0.8"),
@@ -228,11 +228,16 @@ const F83_DEFAULTS: [(&str, &str); 13] = [
     ("true_peak_ceiling_dbtp", "-1"),
     ("zoom_factor", "2"),
     ("extend_selection", "nearest"),
-    ("context_channel_editing", "true"),
+    ("context_channel_editing", "false"),
     ("theme", "dark"),
     ("waveform_colour", "green"),
     ("ui_brightness", "1"),
 ];
+
+#[test]
+fn context_channel_editing_is_off_by_default() {
+    assert!(!Settings::default().context_channel_editing);
+}
 
 #[test]
 fn the_new_preferences_start_at_their_defaults_and_every_key_is_listed() {

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template for WavCraft.app. tools/macos/bundle.sh copies it to Contents/Info.plist and
+     replaces @VERSION@ with the workspace version from Cargo.toml. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>WavCraft</string>
+	<key>CFBundleDisplayName</key>
+	<string>WavCraft</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.wavcraft.WavCraft</string>
+	<key>CFBundleExecutable</key>
+	<string>WavCraft</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>WavCraft records takes from your microphone.</string>
+</dict>
+</plist>
