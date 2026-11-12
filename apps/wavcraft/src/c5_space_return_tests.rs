@@ -1,7 +1,8 @@
 //! Tests for C5.5: Space, then Space, with Return on Stop on and then off. Both presses are control
 //! lines (`KEY Space`) through `control_request`, so the key table is in the path, on the headless
 //! window with `WAVCRAFT_NO_AUDIO=1` (the silent sink moves the playhead in real time).
-use std::sync::Once;
+use std::ffi::OsStr;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -13,12 +14,30 @@ const START: usize = 1_000;
 /// Ten seconds at 48 kHz: a play is still running when the second Space comes.
 const FRAMES: usize = 480_000;
 
-/// A player on the silent sink (the env var is set once for the test process; no test needs a device).
-#[allow(unsafe_code)]
+/// Runs the test at `path` (its full path) again in a child process that has `WAVCRAFT_NO_AUDIO=1`
+/// before its threads start, and returns true when it did, so the caller returns. Nothing sets the
+/// variable in this process: `set_var` is unsafe while other test threads may read the environment.
+fn silent_child(path: &str) -> bool {
+    if std::env::var_os("WAVCRAFT_NO_AUDIO").as_deref() == Some(OsStr::new("1")) {
+        return false;
+    }
+    let out = Command::new(std::env::current_exe().expect("the test executable"))
+        .args(["--exact", path])
+        .env("WAVCRAFT_NO_AUDIO", "1")
+        .output()
+        .expect("run the test with silent output");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "{path} failed with silent output:\n{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    true
+}
+
+/// A player on the silent sink (no test needs a device). A test that calls this, directly or through
+/// `a_window`, starts with `silent_child`.
 fn silent_player() -> Player {
-    static SET: Once = Once::new();
-    // SAFETY: set once, before any player of this module reads it; nothing here ever changes it again.
-    SET.call_once(|| unsafe { std::env::set_var("WAVCRAFT_NO_AUDIO", "1") });
     let p = Player::new(OutputChoice::default(), ChannelMap::default(), Quality::default());
     assert!(p.has_output() && p.info().test_sink, "the silent sink is the output");
     p
@@ -103,6 +122,9 @@ fn wait_until_the_playhead_moves(app: &mut WaveApp) -> usize {
 
 #[test]
 fn space_then_space_with_return_on_stop_on_puts_the_playhead_back_at_the_start() {
+    if silent_child("app::c5_space_return_tests::space_then_space_with_return_on_stop_on_puts_the_playhead_back_at_the_start") {
+        return;
+    }
     let scratch = Scratch::new("return-on");
     let mut app = a_window(&scratch);
     a_long_file_with_the_cursor_at_start(&mut app);
@@ -127,6 +149,9 @@ fn space_then_space_with_return_on_stop_on_puts_the_playhead_back_at_the_start()
 
 #[test]
 fn space_then_space_with_return_on_stop_off_leaves_the_playhead_where_it_stopped() {
+    if silent_child("app::c5_space_return_tests::space_then_space_with_return_on_stop_off_leaves_the_playhead_where_it_stopped") {
+        return;
+    }
     let scratch = Scratch::new("return-off");
     let mut app = a_window(&scratch);
     a_long_file_with_the_cursor_at_start(&mut app);

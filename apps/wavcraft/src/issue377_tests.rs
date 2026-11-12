@@ -1,18 +1,37 @@
 //! Tests for #377: Play pressed right after an edit must play the edited audio, not the buffer the
 //! player held before the asynchronous rebuild finished.
-use std::sync::Once;
+use std::ffi::OsStr;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::*;
 use crate::player::{OutputChoice, Player};
 use wavcraft_core::{AudioBuffer, Document};
 
-/// A player on the silent sink (the env var is set once for the test process; no test needs a device).
-#[allow(unsafe_code)]
+/// Runs the test at `path` (its full path) again in a child process that has `WAVCRAFT_NO_AUDIO=1`
+/// before its threads start, and returns true when it did, so the caller returns. Nothing sets the
+/// variable in this process: `set_var` is unsafe while other test threads may read the environment.
+fn silent_child(path: &str) -> bool {
+    if std::env::var_os("WAVCRAFT_NO_AUDIO").as_deref() == Some(OsStr::new("1")) {
+        return false;
+    }
+    let out = Command::new(std::env::current_exe().expect("the test executable"))
+        .args(["--exact", path])
+        .env("WAVCRAFT_NO_AUDIO", "1")
+        .output()
+        .expect("run the test with silent output");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "{path} failed with silent output:\n{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    true
+}
+
+/// A player on the silent sink (no test needs a device). A test that calls this, directly or through
+/// `a_window`, starts with `silent_child`.
 fn silent_player() -> Player {
-    static SET: Once = Once::new();
-    // SAFETY: set once, before any player of this module reads it; nothing here ever changes it again.
-    SET.call_once(|| unsafe { std::env::set_var("WAVCRAFT_NO_AUDIO", "1") });
     let p = Player::new(OutputChoice::default(), ChannelMap::default(), Quality::default());
     assert!(p.has_output() && p.info().test_sink, "the silent sink is the output");
     p
@@ -58,6 +77,9 @@ fn ramp(n: usize) -> DocState {
 /// the 60 edited frames once `finish_rebuild` hands them over.
 #[test]
 fn a_play_on_the_edited_audio_plays_the_sixty_edited_frames() {
+    if silent_child("app::issue377_tests::a_play_on_the_edited_audio_plays_the_sixty_edited_frames") {
+        return;
+    }
     let scratch = Scratch::new("play-edited");
     let mut app = a_window(&scratch);
     let ctx = app.ctx.clone();
