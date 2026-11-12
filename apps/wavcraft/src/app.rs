@@ -13182,3 +13182,7 @@ mod issue369_tests;
 #[cfg(test)]
 #[path = "issue377_tests.rs"]
 mod issue377_tests;
+
+#[cfg(test)]
+#[path = "d2_new_from_clip_tests.rs"]
+mod d2_new_from_clip_tests;
