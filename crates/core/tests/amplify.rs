@@ -218,3 +218,24 @@ fn effect_amplify_action_resolves_to_the_registry_effect_once() {
     assert_eq!(effects::all()[i as usize].id(), "amplify");
     assert_eq!(wavcraft_core::actions::all_actions().filter(|a| a.name == "effect.amplify").count(), 1);
 }
+
+#[test]
+fn c2_amplify_on_the_left_only_leaves_the_right_bit_identical() {
+    let t = TempDir::new("c2-left-only");
+    let s = store(&t.0);
+    let left_orig: Vec<f32> = (0..1000).map(|i| i as f32 / 1000.0).collect();
+    let right_orig: Vec<f32> = (0..1000).map(|i| -(i as f32) / 1000.0).collect();
+    let doc = doc_from(&s, &[left_orig.clone(), right_orig.clone()]);
+    let cancel = AtomicBool::new(false);
+    let params = [-20.0, 20.0, 0.0];
+    let edit = effects::apply(&Amplify, &params, &doc, 100..200, ChannelMask::only(0), Crossfades::NONE, &cancel).unwrap();
+    let c = content(&edit.state);
+
+    assert_eq!(c[0].len(), 1000, "length unchanged");
+    assert_eq!(c[1].len(), 1000, "right length unchanged");
+    for (got, orig) in c[1].iter().zip(right_orig.iter()) {
+        assert_eq!(got.to_bits(), orig.to_bits(), "right channel is bit-identical");
+    }
+    assert!((c[0][150] - 0.1 * left_orig[150]).abs() <= 1e-6, "left[150] is 0.1 times the original");
+    assert_eq!(c[0][50].to_bits(), left_orig[50].to_bits(), "left[50] unchanged");
+}
