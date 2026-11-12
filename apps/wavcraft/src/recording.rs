@@ -252,6 +252,21 @@ fn clock(secs: u64) -> String {
     if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) }
 }
 
+/// The hint for a take that is silent on macOS, where the microphone is often blocked by the
+/// privacy setting. `frames` and `rate` say how much audio has arrived and `peak_so_far` is the
+/// loudest sample so far. Returns the hint once at least two seconds have arrived and every
+/// sample has been exact zero; otherwise `None`. A rate of 0 is never a hint.
+#[allow(dead_code)] // nothing calls it yet; a later step wires it in
+pub fn mic_blocked_hint(os: &str, frames: u64, rate: u32, peak_so_far: f32) -> Option<String> {
+    if os != "macos" || rate == 0 || frames < 2 * u64::from(rate) || peak_so_far != 0.0 {
+        return None;
+    }
+    Some(
+        "No sound is coming in. macOS may be blocking the microphone. Allow WavCraft in System Settings > Privacy & Security > Microphone, then record again."
+            .to_string(),
+    )
+}
+
 impl Recording {
     pub fn is_active(&self) -> bool {
         self.active.is_some()
@@ -783,6 +798,16 @@ mod tests {
         assert_eq!(ring.played_frames(), 1000);
         assert_eq!((ring.overflow_frames(), ring.underrun_frames()), (0, 0));
         drop(sink);
+    }
+
+    #[test]
+    fn a_silent_start_on_macos_explains_the_permission() {
+        let hint = super::mic_blocked_hint("macos", 96000, 48000, 0.0).expect("a hint");
+        assert!(hint.contains("Privacy & Security"), "{hint}");
+        assert!(super::mic_blocked_hint("macos", 96000, 48000, 0.001).is_none());
+        assert!(super::mic_blocked_hint("linux", 96000, 48000, 0.0).is_none());
+        assert!(super::mic_blocked_hint("macos", 4800, 48000, 0.0).is_none());
+        assert!(super::mic_blocked_hint("macos", 96000, 0, 0.0).is_none());
     }
 
     #[test]

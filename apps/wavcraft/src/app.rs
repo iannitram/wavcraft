@@ -5893,6 +5893,21 @@ impl WaveApp {
         let mac = cfg!(target_os = "macos");
         let mut chosen = None;
         for e in entries {
+            // The ruler's snap block uses the same tick items as Edit and View.
+            if let Entry::Item(Item { cmd: Cmd::Action(id), .. }) = e
+                && actions::snap_flag_value(&self.settings.snap, *id).is_some()
+            {
+                if *id == ActionId::SnapToggle
+                    && let Some(id) = snap_items(ui, &self.settings.snap)
+                {
+                    chosen = entries.iter().find_map(|entry| match entry {
+                        Entry::Item(item) if item.cmd == Cmd::Action(id) => Some(*item),
+                        _ => None,
+                    });
+                    ui.close();
+                }
+                continue;
+            }
             match e {
                 Entry::Sep => {
                     ui.separator();
@@ -9785,6 +9800,12 @@ impl WaveApp {
                 }
             }
         });
+        // Snapping (f09, f49): the same switches as View › Snapping and the ruler's menu.
+        let mut snap_chosen = None;
+        ui.menu_button("Snapping", |ui| snap_chosen = snap_items(ui, &self.settings.snap));
+        if let Some(id) = snap_chosen {
+            self.toggle_snap_menu(id);
+        }
         ui.separator();
         for a in TABLE.iter().filter(|a| a.name.starts_with("marker.")) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none();
@@ -12372,6 +12393,17 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec
                 || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
             (i.consume_key(mods, key) && fresh).then_some(*command)
         }));
+        // egui 0.36 has no key for numpad multiply, so a typed "*" adds a marker (H1.1, #1178). The
+        // text event is taken here, so nothing else reads it. With a text field focused it is typed.
+        if !typing {
+            i.events.retain(|e| {
+                let star = matches!(e, egui::Event::Text(t) if t == "*");
+                if star {
+                    pressed.push(Command::Action(ActionId::MarkerAdd));
+                }
+                !star
+            });
+        }
         pressed
     })
 }
@@ -12431,8 +12463,8 @@ fn brighten(c: Color32, b: f32) -> Color32 {
     theme::rgba(m(c.r()), m(c.g()), m(c.b()), c.a())
 }
 
-/// The check items for every snap target, shared by View › Snapping: the action whose item was
-/// clicked.
+/// The check items for every snap target, shared by Edit › Snapping and View › Snapping: the action
+/// whose item was clicked.
 fn snap_items(ui: &mut egui::Ui, snap: &SnapSettings) -> Option<ActionId> {
     let mut chosen = None;
     for a in TABLE.iter().filter(|a| a.name.starts_with("view.snap.")) {
@@ -12756,6 +12788,16 @@ fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffK
         (b, f) => return Err(format!("no sample type for bits={b:?} float={f:?}: 16, 24, 32 bit integer or float=1 (32 bit)")),
     };
     Ok((path, ty, aiff))
+}
+
+/// The History panel's notice for steps the byte cap removed since `seen` was last shown: the same
+/// `history.dropped` text as the panel line, or `None` unless the dropped count has risen.
+#[allow(dead_code)] // D5.3 wires it in
+fn drop_notice(seen: u64, now: u64, cap_bytes: u64) -> Option<String> {
+    (now > seen).then(|| {
+        let (n, gb) = ((now - seen).to_string(), format!("{:.1}", cap_bytes as f64 / 1e9));
+        tr_args("history.dropped", &[&n, &gb])
+    })
 }
 
 /// Whether a drag that starts on a marker flag may grab the marker: the primary button only, and not
@@ -13091,6 +13133,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "h1_star_marker_tests.rs"]
+mod h1_star_marker_tests;
+
+#[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
 mod i3_shortcut_help_tests;
 
@@ -13222,3 +13268,19 @@ mod a2_title_star_tests;
 #[cfg(test)]
 #[path = "a1_open_cancel_tests.rs"]
 mod a1_open_cancel_tests;
+
+#[cfg(test)]
+#[path = "a2_close_prompt_tests.rs"]
+mod a2_close_prompt_tests;
+
+#[cfg(test)]
+#[path = "d5_drop_notice_tests.rs"]
+mod d5_drop_notice_tests;
+
+#[cfg(test)]
+#[path = "issue1173_tests.rs"]
+mod issue1173_tests;
+
+#[cfg(test)]
+#[path = "d2_new_from_clip_tests.rs"]
+mod d2_new_from_clip_tests;
