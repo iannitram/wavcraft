@@ -67,6 +67,21 @@ pub fn open(want: RecFormat, monitor: bool, wanted: Option<&str>) -> Result<Open
     Ok(Opened { stream, ring, fmt, device: name, monitor, lost })
 }
 
+/// The format of a take with no format chosen yet: the default rate and bits, with the channel
+/// count of the microphone (kept within 1 to 8; no device means mono).
+#[allow(dead_code)] // J1.5 calls it from Recording::start_format
+pub fn first_format(device_channels: Option<u16>) -> RecFormat {
+    RecFormat { channels: device_channels.unwrap_or(1).clamp(1, 8), ..RecFormat::default() }
+}
+
+/// The channel count of the input device `wanted` names (else the system default), from its
+/// default config. `None` when there is no input device or it has no usable config.
+#[allow(dead_code)] // J1.5 calls it through first_format
+pub fn default_channels(wanted: Option<&str>) -> Option<u16> {
+    let device = crate::input_monitor::find_input(&cpal::default_host(), wanted)?;
+    device.default_input_config().ok().map(|c| c.channels())
+}
+
 /// The monitoring queue holds a quarter of a second: the most delay it can add.
 pub fn monitor_frames(rate: u32) -> usize {
     rate as usize / 4
@@ -120,6 +135,17 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::first_format;
+
+    #[test]
+    fn the_first_take_has_the_mics_channel_count() {
+        let f = first_format(Some(2));
+        assert_eq!((f.rate, f.channels, f.bits), (48_000, 2, 24));
+        assert_eq!(first_format(None).channels, 1, "no device: mono");
+        assert_eq!(first_format(Some(0)).channels, 1, "at least one channel");
+        assert_eq!(first_format(Some(12)).channels, 8, "at most eight channels");
+    }
+
     #[test]
     fn a_named_input_that_is_gone_falls_back_to_the_default() {
         let names: Vec<String> = ["Built-in", "USB Mic"].iter().map(|s| s.to_string()).collect();

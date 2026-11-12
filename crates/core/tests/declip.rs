@@ -100,8 +100,8 @@ fn scan_finds_every_clipped_run_in_both_channels_including_across_a_chunk_join()
     let doc = e.history.current();
     let got = declip::scan(doc, 0..0, ChannelMask::ALL, &Params::default(), &AtomicBool::new(false)).unwrap();
     assert!(!got.truncated);
-    for ch in 0..2 {
-        let want = runs(&f.clipped[ch], 3);
+    for (ch, clipped) in f.clipped.iter().enumerate().take(2) {
+        let want = runs(clipped, 3);
         let have: Vec<(u64, u64)> = got.regions.iter().filter(|r| r.channel == ch).map(|r| (r.start, r.len)).collect();
         assert_eq!(have, want, "channel {ch}");
         assert!(!want.is_empty());
