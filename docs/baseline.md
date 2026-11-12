@@ -219,3 +219,33 @@ the lag item, and this section does not claim it met.
 so a short tone is never lost by zooming out; the zoomed-out noise floor is a known 6.7 dB (log) /
 5.7 dB (linear) brighter than zoomed in; the mean and per-FFT row-maximum modes are not built. The
 one-frame picture-lag item stays open until the run-to-run gap on one host (about 6 times) is explained.
+
+## I7 on the 8 GB Mac
+
+*Measured by me on the 8 GB M1 Mac mini (macOS 27.0.1), release build of commit `6381c76` (branch `sat/1045-overview-cow`, the #1045 branch; since merged into main). Footprint is the `vmmap` physical footprint, the number Activity Monitor shows and macOS uses for memory pressure. Resident is the RSS from `ps`.*
+
+**Source:** comments on #50 and #1045. The main-branch figures quoted below are from the comment on #1037.
+
+**Recipe.** The test file is a 3-hour stereo 48 kHz 16-bit WAV, 2.07 GB, written by `tools/alpha/f05.py` (`write_wav(..., 180)`). The app is driven over its control port by `i7-mem.py` (the driver posted on #50; it needs `tools/alpha/f05.py`):
+
+```
+python3 -I i7-mem.py --exe <wavcraft> --wav <3-hour file> --tools <repo>/tools/alpha --edits 200
+```
+
+I used `--edits 20` and `--edits 200` for the two runs. The first edit is a whole-file Reverse, then rounds of Reverse 1 min, Silence 1 min, Delete 30 s, Cut 30 s and Paste 30 s, spread over the shrinking file, with undo history kept. Then I undid every step. Each row is sampled after the step it names.
+
+| Point | Physical footprint | Footprint peak | Resident (RSS) |
+|---|---|---|---|
+| Open | 772 MB | 838 MB | 195 MB |
+| 20 edits, history kept | 842 MB | 982 MB | 209 MB |
+| 20 undos | 922 MB | 982 MB | 397 MB |
+| 200 edits, history kept | **799 MB** | **996 MB** | 579 MB |
+| 200 undos | 915 MB | **1,126 MB** | 325 MB |
+
+**Against the 1,500 MB line:** every peak footprint in this run is under 1,500 MB (the highest is 1,126 MB, after 200 undos), at 20 and at 200 edits. Steady footprint is under 1,500 MB in every row too. Main has carried this commit since #1045 merged.
+
+**Before #1045 (main at `854cfc2`, #1037).** On main at `854cfc2` (#1037), with #64 and #1036 merged but not #1045, the same 200-edit recipe failed: 1,741 MB steady and 2,253 MB peak (a rerun gave 2,150 MB). That is about 0.9 GB of freed large allocations that macOS's malloc keeps, not live data. On the same commit, 20 edits reached 910 MB steady and 916 MB peak, and 20 undos 934 MB steady and 941 MB peak.
+
+**First run, before #64 and #1036 (commit `d4d95b3`, #50).** Footprint peaked at 1,638 MB during the open and 1,843 MB during the 20 undos, so this run was over the line. Resident (`ps`) stayed under 716 MB.
+
+To repeat: `i7-mem.py` as above, on the 8 GB M1 Mac mini, with the test file from `tools/alpha/f05.py`.
