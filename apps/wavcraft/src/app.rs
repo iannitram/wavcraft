@@ -13240,3 +13240,7 @@ mod a2_close_prompt_tests;
 #[cfg(test)]
 #[path = "d5_drop_notice_tests.rs"]
 mod d5_drop_notice_tests;
+
+#[cfg(test)]
+#[path = "d2_new_from_clip_tests.rs"]
+mod d2_new_from_clip_tests;
