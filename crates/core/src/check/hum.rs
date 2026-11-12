@@ -91,10 +91,8 @@ fn refine(fine: &mut Analyser, src: &dyn Samples, hz: f64, (start, end): (u64, u
     };
     let first = windows(start).find(|&p| shows(p)).map(|p| (p + half).max(0) as u64);
     let last = windows(end).filter(|&p| shows(p)).last().map(|p| (p + half).max(0) as u64);
-    match (first, last) {
-        (Some(a), Some(b)) if a < b => (a.min(len), b.min(len)),
-        _ => (start, end),
-    }
+    let (a, b) = (first.unwrap_or(start), last.unwrap_or(end));
+    if a < b { (a.min(len), b.min(len)) } else { (start, end) }
 }
 
 /// A mains-hum analysis at one FFT size: the magnitude spectrum of a window, and the spectrum's
