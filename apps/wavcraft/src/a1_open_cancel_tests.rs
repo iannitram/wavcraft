@@ -90,3 +90,27 @@ fn cancel_opening_drops_the_job_and_adds_no_document() {
     assert_eq!(left, 0, "the cancelled open left no session folder behind");
     assert!(app.file_rows().is_empty(), "still no document after the worker has stopped");
 }
+
+/// OPEN_CANCEL over the control channel (A1.6): a 60 s file is opening, OPEN_CANCEL answers OK and
+/// the open is gone (no document, STATE says busy=0); a second OPEN_CANCEL answers ERR.
+#[test]
+fn open_cancel_over_the_control_channel() {
+    let scratch = Scratch::new("control");
+    let wav = scratch.0.join("long.wav");
+    write_wav(&wav, 60);
+    let mut app = a_window(&scratch);
+    let ctx = app.ctx.clone();
+
+    app.open(wav, &ctx);
+    assert!(app.opening.is_some(), "the 60 s file is opening");
+
+    let answer = app.control_request("OPEN_CANCEL", &ctx);
+    assert_eq!(answer, "OK");
+    assert!(app.opening.is_none(), "opening is None");
+    assert!(app.file_rows().is_empty(), "file_rows() is empty");
+    let state = app.control_request("STATE", &ctx);
+    assert!(state.split_whitespace().any(|w| w == "busy=0"), "STATE has busy=0, got {state}");
+
+    let again = app.control_request("OPEN_CANCEL", &ctx);
+    assert!(again.starts_with("ERR"), "a second OPEN_CANCEL answers ERR, got {again}");
+}

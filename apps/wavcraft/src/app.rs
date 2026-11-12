@@ -9432,6 +9432,15 @@ impl WaveApp {
                 Some(_) => "ERR this save cannot be cancelled (only a WAV save of the whole file can)".to_string(),
                 None => "ERR no save is running".to_string(),
             },
+            // `OPEN_CANCEL`: the status bar's Cancel for a file that is opening (A1.6).
+            "OPEN_CANCEL" => {
+                if self.opening.is_some() {
+                    self.cancel_opening();
+                    "OK".to_string()
+                } else {
+                    "ERR no file is opening".to_string()
+                }
+            }
             // `EXPORT_RANGES <folder> [pattern=<p>]`: every range marker as its own WAV (f79).
             "EXPORT_RANGES" => {
                 let (folder, pattern) = match rest.split_once(" pattern=") {
@@ -11823,6 +11832,9 @@ impl eframe::App for WaveApp {
                 self.error = Some(format!("{why}, take saved: {}", take.path.display()));
             }
         }
+        if let Some(hint) = self.rec.take_hint(std::env::consts::OS) {
+            self.notice = Some(hint);
+        }
         if self.rec.max_reached() {
             log::info!(target: "wavcraft", "recording: the time limit is reached, stopping");
             self.finish_recording(true, ctx);
@@ -12390,12 +12402,15 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec
     // A text field being edited owns the keyboard: Space types a space, and Backspace, Delete and
     // Cmd+Z edit the text, not the audio (#368, #434). Cmd+S and Cmd+O keep working. `in_float` is
     // a text field focused in a floated panel's own viewport, which this window cannot see.
-    let typing = in_float || ctx.egui_wants_keyboard_input();
+    let typing = in_float || ctx.text_edit_focused();
+    // A focused button, checkbox or slider is not typing: Space still plays (and is consumed here,
+    // so the widget never reads it as a click), but its other keys stay held back as before (#1081).
+    let other_focus = !typing && ctx.egui_wants_keyboard_input();
     let mut rows: Vec<(Command, Shortcut)> = keymap.bindings().iter().map(|b| (b.command, b.chord)).collect();
     rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
         // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
-        let mut pressed: Vec<Command> = if typing {
+        let mut pressed: Vec<Command> = if typing || other_focus {
             Vec::new()
         } else {
             [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
@@ -12405,7 +12420,8 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec
                 .collect()
         };
         pressed.extend(rows.iter().filter_map(|(command, k)| {
-            if typing && !matches!(command, Command::Save | Command::SaveAs | Command::Open) {
+            let play_stop = *command == Command::PlayStop && !typing;
+            if (typing || other_focus) && !play_stop && !matches!(command, Command::Save | Command::SaveAs | Command::Open) {
                 return None;
             }
             let key = Key::from_name(k.key)?;
@@ -12426,7 +12442,7 @@ fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool) -> Vec
         }));
         // egui 0.36 has no key for numpad multiply, so a typed "*" adds a marker (H1.1, #1178). The
         // text event is taken here, so nothing else reads it. With a text field focused it is typed.
-        if !typing {
+        if !typing && !other_focus {
             i.events.retain(|e| {
                 let star = matches!(e, egui::Event::Text(t) if t == "*");
                 if star {
@@ -13164,6 +13180,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "c5_6_space_button_tests.rs"]
+mod c5_6_space_button_tests;
+
+#[cfg(test)]
 #[path = "h3_marker_jump_tests.rs"]
 mod h3_marker_jump_tests;
 
@@ -13178,6 +13198,10 @@ mod h1_3_marker_selection_tests;
 #[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
 mod i3_shortcut_help_tests;
+
+#[cfg(test)]
+#[path = "n1_parity_tests.rs"]
+mod n1_parity_tests;
 
 #[cfg(test)]
 mod reset_tests {
@@ -13311,6 +13335,10 @@ mod a1_open_cancel_tests;
 #[cfg(test)]
 #[path = "a2_close_prompt_tests.rs"]
 mod a2_close_prompt_tests;
+
+#[cfg(test)]
+#[path = "c5_space_return_tests.rs"]
+mod c5_space_return_tests;
 
 #[cfg(test)]
 #[path = "d5_drop_notice_tests.rs"]
