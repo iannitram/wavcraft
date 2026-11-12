@@ -313,7 +313,7 @@ Multitrack is a later phase of WavCraft. It will have its own session model with
 
 ## Transcription (L0, 2026-11-03)
 
-*Research for v1 section L (edit by transcript). Choice only: no transcription code is in the tree yet. The memory figure is still owed (see the end of this section).*
+*Research for v1 section L (edit by transcript). Choice only: no transcription code is in the tree yet. The measurements are owed by L1 (#1057), whose Done-when records them (see the end of this section). L0 (#1056) is complete with the choice and the licence.*
 
 **Runner: `candle` (Hugging Face, pure Rust).** `candle-core` and `candle-nn`, both **MIT OR Apache-2.0** (the `candle` repository's licence files, checked 2026-11-03). They run on the CPU with no C or C++ build step; an optional Metal backend uses the Mac's GPU and is a later choice, not part of L0. The Whisper network is written against `candle-nn`, as FilmCraft did, so WavCraft also writes the glue: audio to 16 kHz mono log-mel frames, the decode loop, and word timings.
 
@@ -327,7 +327,7 @@ Multitrack is a later phase of WavCraft. It will have its own session model with
 - Both are permissive. Nothing in this chain is GPL, LGPL or AGPL. The text is recorded in `THIRD-PARTY-NOTICES.txt` under "Speech-to-text model weights", and the generator in `tools/notices.py` writes that block.
 - The weights are downloaded on first use after the user confirms, checked against a pinned SHA-256, and never bundled in the repository or the app.
 
-**Owed before L1 is done:**
-- **Measured peak memory on the Z13 for one hour of audio** with whisper-base, in the Done-when of #1056. Not measured; no figure is recorded here.
+**Owed by L1 (#1057), recorded in its Done-when:**
+- **Measured peak memory on the Z13 for one hour of audio** with whisper-base. It needs a runner, which L1 builds. Not measured; no figure is recorded here.
 - The same measurement on the 8 GB Mac budget (I7).
 - Real-time factor on the Z13 (L1 requires under 15 minutes per hour of audio, measured).
