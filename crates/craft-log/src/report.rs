@@ -431,6 +431,37 @@ fn kill_tree(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+/// Most bytes kept from one line of a helper program's output. A longer line is cut here and the rest of it is read and dropped,
+/// so one line with no newline cannot grow the buffer without limit.
+const MAX_LINE_BYTES: usize = 64 * 1024;
+
+/// Read the next line of `r` into `buf`, keeping at most `cap` bytes of it. The bytes past `cap` are read and dropped up to and
+/// including the newline. Returns the bytes consumed from `r`, which is 0 only at end of input.
+fn read_line_capped(r: &mut impl std::io::BufRead, buf: &mut Vec<u8>, cap: usize) -> std::io::Result<usize> {
+    let mut consumed = 0;
+    loop {
+        let available = match r.fill_buf() {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            return Ok(consumed);
+        }
+        let (take, line_ends) = match available.iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (available.len(), false),
+        };
+        let room = cap.saturating_sub(buf.len());
+        buf.extend_from_slice(&available[..take.min(room)]);
+        r.consume(take);
+        consumed += take;
+        if line_ends {
+            return Ok(consumed);
+        }
+    }
+}
+
 /// Run `program args` and return the first line with text it printed, killing it after `timeout`.
 /// The timeout bounds reading the program's output too. On Windows it runs without a console
 /// window (`CREATE_NO_WINDOW`), so a window app that asks flashes none.
@@ -452,12 +483,11 @@ pub fn first_line_of(program: &Path, args: &[&str], timeout: Duration) -> Result
     let (tx, rx) = std::sync::mpsc::channel();
     if let Some(out) = child.stdout.take() {
         std::thread::spawn(move || {
-            use std::io::BufRead as _;
             let mut out = std::io::BufReader::new(out);
             let mut line = Vec::new();
             loop {
                 line.clear();
-                match out.read_until(b'\n', &mut line) {
+                match read_line_capped(&mut out, &mut line, MAX_LINE_BYTES) {
                     Ok(0) => break,
                     Ok(_) => {
                         let text = String::from_utf8_lossy(&line);
@@ -470,8 +500,11 @@ pub fn first_line_of(program: &Path, args: &[&str], timeout: Duration) -> Result
                     Err(_) => break,
                 }
             }
-            while out.read_until(b'\n', &mut line).is_ok_and(|n| n != 0) {
+            loop {
                 line.clear();
+                if !read_line_capped(&mut out, &mut line, MAX_LINE_BYTES).is_ok_and(|n| n != 0) {
+                    break;
+                }
             }
         });
     } else {
@@ -553,6 +586,52 @@ pub fn modified(path: &Path) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_line_with_no_newline_keeps_at_most_the_cap() {
+        let mut input = std::io::Cursor::new(vec![b'x'; 10 << 20]);
+        let mut buf = Vec::new();
+        let n = read_line_capped(&mut input, &mut buf, MAX_LINE_BYTES).unwrap();
+        assert_eq!(n, 10 << 20, "every byte of the line is consumed");
+        assert_eq!(buf.len(), MAX_LINE_BYTES, "only the cap is kept");
+        buf.clear();
+        assert_eq!(read_line_capped(&mut input, &mut buf, MAX_LINE_BYTES).unwrap(), 0, "then end of input");
+    }
+
+    #[test]
+    fn the_line_after_a_long_one_is_read_whole() {
+        let mut data = vec![b'x'; 200 << 10];
+        data.extend_from_slice(b"\nok\n");
+        let mut input = std::io::Cursor::new(data);
+        let mut buf = Vec::new();
+        assert_eq!(read_line_capped(&mut input, &mut buf, MAX_LINE_BYTES).unwrap(), (200 << 10) + 1);
+        assert_eq!(buf.len(), MAX_LINE_BYTES);
+        buf.clear();
+        assert_eq!(read_line_capped(&mut input, &mut buf, MAX_LINE_BYTES).unwrap(), 3);
+        assert_eq!(buf, b"ok\n");
+    }
+
+    #[test]
+    fn short_lines_are_read_unchanged() {
+        let mut input = std::io::Cursor::new(b"a\nbb\nno newline".to_vec());
+        let mut buf = Vec::new();
+        assert_eq!(read_line_capped(&mut input, &mut buf, MAX_LINE_BYTES).unwrap(), 2);
+        assert_eq!(buf, b"a\n");
+        buf.clear();
+        assert_eq!(read_line_capped(&mut input, &mut buf, MAX_LINE_BYTES).unwrap(), 3);
+        assert_eq!(buf, b"bb\n");
+        buf.clear();
+        assert_eq!(read_line_capped(&mut input, &mut buf, MAX_LINE_BYTES).unwrap(), 10);
+        assert_eq!(buf, b"no newline");
+    }
+
+    #[test]
+    fn empty_input_is_end_of_input() {
+        let mut input = std::io::Cursor::new(Vec::new());
+        let mut buf = Vec::new();
+        assert_eq!(read_line_capped(&mut input, &mut buf, MAX_LINE_BYTES).unwrap(), 0);
+        assert!(buf.is_empty());
+    }
 
     #[test]
     fn masking_replaces_the_home_folder_only_where_a_path_continues() {
