@@ -1240,8 +1240,7 @@ mod tests {
         let levels = doc.peaks[0].to_parts().1.len();
         assert!(FRAMES > PEAK_BLOCK * FANOUT.pow(levels.saturating_sub(2) as u32), "{levels} levels");
         // Offsets: 2,000,003 (middle, not block-aligned), 4,100,011 (last tenth, not aligned).
-        for ch in 0..2 {
-            let samples = &audio.channels[ch];
+        for (ch, samples) in audio.channels.iter().enumerate().take(2) {
             for &spp in &[1usize, 7, 64, 300, 2_048, 50_000] {
                 for &start in &[2_000_003usize, 4_100_011] {
                     let cols = ((FRAMES - start) / spp).min(1_000);
