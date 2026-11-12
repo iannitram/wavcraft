@@ -10062,12 +10062,18 @@ impl WaveApp {
         }
     }
 
+    /// The rows the Effects menu draws for a build. `effects_menu` is the only caller in the app,
+    /// and the v1 test calls this same fn, so the test guards the menu's row source.
+    pub(crate) fn effects_menu_rows(release: bool) -> Vec<&'static actions::Action> {
+        v1::effect_rows_in(release)
+    }
+
     /// The Effects menu: one entry per registered effect, run on the selection (the whole file
     /// when nothing is selected) and the enabled channels.
     fn effects_menu(&mut self, ui: &mut egui::Ui) {
         let sel = self.selection_range();
         let mut chosen = None;
-        for a in actions::all_actions().filter(|a| a.name.starts_with("effect.")) {
+        for a in Self::effects_menu_rows(v1::RELEASE) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none() && self.running.is_none();
             // An effect with settings opens its dialog (a "…" entry); one without runs at once.
             let has_dialog =
