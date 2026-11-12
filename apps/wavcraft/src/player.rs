@@ -894,6 +894,12 @@ impl Player {
         }
     }
 
+    /// The plan being played, or `None` when nothing is playing (a pause or a stop has none).
+    pub fn playing_plan(&self) -> Option<Plan> {
+        let now = self.shared.snapshot();
+        now.playing.then_some(now.plan)
+    }
+
     /// Stop where it is, keeping the place and the plan for [`Player::resume`].
     pub fn pause(&self) {
         let now = self.shared.snapshot();

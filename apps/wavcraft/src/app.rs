@@ -4660,6 +4660,20 @@ impl WaveApp {
         self.player.set_audio(state);
     }
 
+    /// Keep the play going from `frame` after a marker jump (#1186): the player seeks to where the
+    /// play would be at `frame` (`transport::seek_target`). False, with the play left as it is, when
+    /// nothing is playing or `frame` is outside what is played (before its start, or past its end),
+    /// so the caller stops the play as before.
+    fn carry_play_to(&mut self, frame: f64) -> bool {
+        let Some(plan) = self.player.playing_plan() else { return false };
+        if frame < plan.start {
+            return false;
+        }
+        let Some(at) = transport::seek_target(&plan, frame) else { return false };
+        self.player.seek(at);
+        true
+    }
+
     /// Stop at once with the cursor left where it is (the file or the cursor changed under it).
     fn halt_play(&mut self) {
         self.play_after_edit = false;
@@ -5177,7 +5191,11 @@ impl WaveApp {
                 }
                 self.selection = Selection { anchor: out.selection.start as usize, head: out.selection.end as usize };
                 if matches!(id, ActionId::CursorToStart | ActionId::CursorToEnd | ActionId::MarkerNext | ActionId::MarkerPrev) {
-                    self.halt_play();
+                    // A marker jump during play carries the play on from the marker (#1186); otherwise play stops.
+                    let carried = matches!(id, ActionId::MarkerNext | ActionId::MarkerPrev) && self.carry_play_to(out.selection.start as f64);
+                    if !carried {
+                        self.halt_play();
+                    }
                     let frames = self.doc.as_ref().map_or(0, Document::frames);
                     self.view.reveal(self.selection.start() as f64, self.editor_width, frames);
                 }
@@ -13089,6 +13107,10 @@ mod tests {
         assert!(settings.save_include_metadata);
     }
 }
+
+#[cfg(test)]
+#[path = "h3_marker_jump_tests.rs"]
+mod h3_marker_jump_tests;
 
 #[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
