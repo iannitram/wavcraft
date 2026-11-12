@@ -251,8 +251,8 @@ fn mains_hum_is_reported_with_its_frequency() {
         let hum = of_kind(&report, Kind::MainsHum);
         assert_eq!(hum.len(), 1, "{hz} Hz: {hum:?}");
         assert_eq!((hum[0].channel, hum[0].severity, hum[0].value), (Some(0), Severity::Warning, hz));
-        assert!(hum[0].start >= region.0 - 16_384 && hum[0].start <= region.0 + 16_384, "{hz} Hz: start {}", hum[0].start);
-        assert!(hum[0].end >= region.1 - 16_384 && hum[0].end <= region.1 + 16_384, "{hz} Hz: end {}", hum[0].end);
+        assert_near(&format!("{hz} Hz hum start"), hum[0].start, region.0);
+        assert_near(&format!("{hz} Hz hum end"), hum[0].end, region.1);
     }
 }
 
