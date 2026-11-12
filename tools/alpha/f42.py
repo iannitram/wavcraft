@@ -87,6 +87,9 @@ def main():
         st = c.state()
         check("file open, stereo", st["channels"] == "2" and int(st["frames"]) == RATE * SECS, st)
         check("starts with both channels", st["selch"] == "LR", st["selch"])
+        # Context-sensitive channel editing is off by default; the channel drags below need it on.
+        a = c.ask("PREF set context_channel_editing true")
+        check("context-sensitive channel editing on", a == "OK", a)
 
         a = c.ask("GESTURE channel_drag 0.05 1000 5000")
         check("drag in the top strip selects the left channel", a == "OK selection=1000-5000 selch=L", a)
