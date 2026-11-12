@@ -12,6 +12,7 @@ mod app;
 mod batch_panel;
 mod cd_ui;
 mod check_panel;
+mod cli;
 mod control;
 mod convert_ui;
 mod diagnostics_panel;
@@ -49,8 +50,8 @@ mod video;
 #[cfg(windows)]
 mod win_acl;
 
+use cli::Args;
 use std::ffi::OsString;
-use std::path::PathBuf;
 
 fn main() -> eframe::Result {
     // Scan worker (f128): report one VST3 bundle on standard output and exit; no window, no log.
@@ -89,33 +90,20 @@ fn configure_graphics(options: &mut eframe::NativeOptions) {
     }
 }
 
-/// The command line.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Args {
-    file: Option<PathBuf>,
-    session_dir: Option<PathBuf>,
-    /// `--reset-preferences`: move the settings file aside and start with the defaults.
-    reset_preferences: bool,
-}
-
-/// `[--session-dir DIR | --session-dir=DIR] [--reset-preferences] [FILE]`, in any order. The first other argument is
-/// the file; anything after it is ignored.
+/// The window's arguments, read by `cli::parse`. A command line that is not a window's, or has a bad
+/// flag, ends the process with status 2 and its message and usage on standard error.
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Args {
-    let mut out = Args::default();
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        let text = arg.to_string_lossy();
-        if text == "--session-dir" {
-            out.session_dir = args.next().map(PathBuf::from);
-        } else if text == "--reset-preferences" {
-            out.reset_preferences = true;
-        } else if let Some(dir) = text.strip_prefix("--session-dir=") {
-            out.session_dir = Some(PathBuf::from(dir));
-        } else if out.file.is_none() {
-            out.file = Some(PathBuf::from(arg));
+    match cli::parse(args) {
+        Ok(cli::Command::Window(args)) => args,
+        Ok(_) => {
+            eprintln!("wavcraft: this command is not built yet");
+            std::process::exit(2)
+        }
+        Err(message) => {
+            eprintln!("wavcraft: {message}");
+            std::process::exit(2)
         }
     }
-    out
 }
 
 #[cfg(test)]
