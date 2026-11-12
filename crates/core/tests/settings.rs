@@ -212,7 +212,7 @@ const F83_CHANGED: [(&str, &str); 13] = [
     ("true_peak_ceiling_dbtp", "-2.5"),
     ("zoom_factor", "3"),
     ("extend_selection", "anchor"),
-    ("context_channel_editing", "false"),
+    ("context_channel_editing", "true"),
     ("theme", "light"),
     ("waveform_colour", "amber"),
     ("ui_brightness", "0.8"),
@@ -228,11 +228,16 @@ const F83_DEFAULTS: [(&str, &str); 13] = [
     ("true_peak_ceiling_dbtp", "-1"),
     ("zoom_factor", "2"),
     ("extend_selection", "nearest"),
-    ("context_channel_editing", "true"),
+    ("context_channel_editing", "false"),
     ("theme", "dark"),
     ("waveform_colour", "green"),
     ("ui_brightness", "1"),
 ];
+
+#[test]
+fn context_channel_editing_is_off_by_default() {
+    assert!(!Settings::default().context_channel_editing);
+}
 
 #[test]
 fn the_new_preferences_start_at_their_defaults_and_every_key_is_listed() {
@@ -716,4 +721,21 @@ fn the_session_folder_set_by_key_keeps_its_spaces() {
     assert_eq!(s.session_folder, Some(PathBuf::from("/tmp/a ")));
     s.set("session_folder", "").unwrap();
     assert_eq!(s.session_folder, None);
+}
+
+#[test]
+fn large_controls_is_saved_and_defaults_to_off() {
+    let mut s = Settings::default();
+    assert_eq!(s.get("large_controls").unwrap(), "false", "off by default");
+    assert!(wavcraft_core::settings::KEYS.contains(&"large_controls"), "large_controls is in KEYS");
+    let dir = TempDir::new("large-controls");
+    let file = dir.0.join("settings.txt");
+    s.set("large_controls", "true").unwrap();
+    s.save(&file).unwrap();
+    let back = Settings::load(&file);
+    assert_eq!(back.get("large_controls").unwrap(), "true", "survives save and load");
+    assert!(back.large_controls);
+    let mut fresh = Settings::default();
+    assert!(fresh.set("large_controls", "banana").is_err(), "banana is refused");
+    assert_eq!(fresh.get("large_controls").unwrap(), "false", "the value stays false");
 }

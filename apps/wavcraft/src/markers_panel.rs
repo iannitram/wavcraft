@@ -1,5 +1,6 @@
-//! The Markers panel (A172-A175, A181): a table of the markers and ranges, picked by clicking,
-//! renamed by double-click, plus the state for dragging a marker's handle in the ruler.
+//! The Markers panel (A172-A175, A181): a table of the markers and ranges. A click picks a row,
+//! a double-click goes to it (makes it the time selection), a click on the only picked row
+//! renames it; plus the state for dragging a marker's handle in the ruler.
 //!
 //! Kept out of `app.rs` so that file only gains the few lines that call it.
 
@@ -9,10 +10,32 @@ use std::ops::Range;
 use egui::{Key, Pos2, Rect};
 use wavcraft_core::actions::Editor;
 use wavcraft_core::settings::{MarkerColumns, Settings};
-use wavcraft_core::{MarkerPick, Markers, Viewport, format_time};
+use wavcraft_core::{Marker, MarkerPick, Markers, Viewport, format_time};
 
-/// How close (in pixels) to a marker's flag a press grabs it.
-const GRAB_PX: f32 = 6.0;
+/// Which of the panel's buttons are enabled for the picked rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PickButtons {
+    pub delete: bool,
+    pub merge: bool,
+    pub to_range: bool,
+    pub to_point: bool,
+}
+
+/// The buttons enabled for the picked markers: Delete for one or more, Merge for two or more,
+/// To Range for one point, To Point for one range. Nothing picked enables none.
+pub fn buttons_for(markers: &Markers, pick: &MarkerPick) -> PickButtons {
+    let picked: Vec<&Marker> = markers.iter().filter(|m| pick.ids.contains(&m.id)).collect();
+    let one = match picked[..] {
+        [m] => Some(m),
+        _ => None,
+    };
+    PickButtons {
+        delete: !picked.is_empty(),
+        merge: picked.len() >= 2,
+        to_range: one.is_some_and(Marker::is_point),
+        to_point: one.is_some_and(|m| !m.is_point()),
+    }
+}
 
 /// A marker being dragged in the ruler: the move is applied (one history step) on release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +50,7 @@ pub struct Drag {
 /// What the panel changed that the window must act on.
 #[derive(Default)]
 pub struct PanelOut {
-    /// A click picked markers: make this the time selection (a point is the cursor).
+    /// A double-click went to markers: make this the time selection (a point is the cursor).
     pub select: Option<Range<u64>>,
     /// The columns changed: save the settings.
     pub columns_changed: bool,
@@ -39,6 +62,9 @@ pub struct MarkersUi {
     /// The marker whose name is being typed, and the text so far.
     renaming: Option<(u64, String)>,
     focus_rename: bool,
+    /// When a click opened the rename (input time), so the second half of a double-click that
+    /// lands in the new editor still goes to the row.
+    rename_opened: Option<f64>,
     /// The description being typed for the one picked marker: (id, text so far).
     desc_edit: Option<(u64, String)>,
     pub drag: Option<Drag>,
@@ -49,19 +75,45 @@ impl MarkersUi {
         MarkersUi::default()
     }
 
-    /// A click on row `index` (the panel, or the control channel): picks, and returns the
-    /// selection it makes.
+    /// Go to row `index` (the MARKER select control verb, and a double-click in the panel): picks,
+    /// and returns the selection it makes.
     pub fn click(&mut self, markers: &Markers, index: usize, shift: bool, ctrl: bool) -> Option<Range<u64>> {
         self.pick.click(markers, index, shift, ctrl);
         self.pick.span(markers)
     }
 
-    /// The marker whose flag is under `pos` in the ruler, if any.
+    /// A click on a cell of row `index` in the panel. A double-click goes to the row: picks it and
+    /// returns the selection it makes, and starts no rename. A single click only picks, and
+    /// returns `None`; a plain single click on the row that is already the only picked one starts
+    /// renaming it instead (the Name is the one cell edited in the table).
+    pub fn row_click(&mut self, markers: &Markers, index: usize, shift: bool, ctrl: bool, double: bool) -> Option<Range<u64>> {
+        let id = markers.id_at(index)?;
+        if double {
+            // The first click of a double-click on the picked row may have started a rename.
+            if self.renaming.as_ref().is_some_and(|(r, _)| *r == id) {
+                self.renaming = None;
+            }
+            return self.click(markers, index, shift, ctrl);
+        }
+        if !shift && !ctrl && self.pick.ids == [id] {
+            let name = markers.iter().find(|m| m.id == id).map(|m| m.name.clone()).unwrap_or_default();
+            self.renaming = Some((id, name));
+            self.focus_rename = true;
+            return None;
+        }
+        self.renaming = None;
+        self.pick.click(markers, index, shift, ctrl);
+        None
+    }
+
+    /// The marker whose flag is under `pos` in the ruler, if any: within the theme's handle grab
+    /// of it (6 px, or 22 px with Large controls on).
     pub fn handle_at(&self, markers: &Markers, view: &Viewport, ruler: Rect, pos: Pos2) -> Option<u64> {
         if !ruler.contains(pos) {
             return None;
         }
-        markers.iter().rev().find(|m| (ruler.left() + view.x_of(m.start as f64) - pos.x).abs() <= GRAB_PX).map(|m| m.id)
+        let grab = theme::metrics().handle_grab;
+        markers.iter().rev().find(|m| (ruler.left() + view.x_of(m.start as f64) - pos.x).abs() <= grab).map(|m| m.id)
     }
 
     /// Start dragging marker `id`, grabbed at `frame`.
@@ -107,8 +159,8 @@ impl MarkersUi {
         let cols = settings.marker_columns;
         let (shift, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
         let time = |frame: u64| format_time(frame as usize, rate);
+        let (now, delay) = (ui.input(|i| i.time), ui.ctx().options(|o| o.input_options.max_double_click_delay));
         let mut clicked = None;
-        let mut start_rename = None;
         let mut commit: Option<(u64, String)> = None;
         egui::ScrollArea::both().show(ui, |ui| {
             egui::Grid::new("markers-table").striped(true).num_columns(6).show(ui, |ui| {
@@ -121,13 +173,29 @@ impl MarkersUi {
                 ui.end_row();
                 for (index, m) in markers.iter().enumerate() {
                     let picked = self.pick.ids.contains(&m.id);
-                    let cell = |ui: &mut egui::Ui, text: String| ui.selectable_label(picked, text).clicked();
+                    // A cell's click: None, or Some(double). A triple-click's third click is nothing.
+                    let hit = |r: egui::Response| {
+                        if r.triple_clicked() {
+                            None
+                        } else if r.double_clicked() {
+                            Some(true)
+                        } else if r.clicked() {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    };
+                    let cell = |ui: &mut egui::Ui, text: String| hit(ui.selectable_label(picked, text));
                     match &mut self.renaming {
                         Some((id, text)) if *id == m.id => {
                             let edit = ui.add(egui::TextEdit::singleline(text).desired_width(120.0));
                             if self.focus_rename {
                                 edit.request_focus();
                                 self.focus_rename = false;
+                            }
+                            // The click that opened this editor, then a second one in it: a double-click.
+                            if edit.double_clicked() && self.rename_opened.is_some_and(|t| now - t <= delay) {
+                                clicked = Some((index, true));
                             }
                             let (esc, enter) = ui.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::Enter)));
                             if esc {
@@ -138,28 +206,30 @@ impl MarkersUi {
                             }
                         }
                         _ => {
-                            let r = ui.selectable_label(picked, &m.name);
-                            if r.double_clicked() {
-                                start_rename = Some((m.id, m.name.clone()));
-                            } else if r.clicked() {
-                                clicked = Some(index);
+                            if let Some(double) = cell(ui, m.name.clone()) {
+                                clicked = Some((index, double));
                             }
                         }
                     }
-                    if cols.start && cell(ui, time(m.start)) {
-                        clicked = Some(index);
+                    let mut take = |c: Option<bool>| {
+                        if let Some(double) = c {
+                            clicked = Some((index, double));
+                        }
+                    };
+                    if cols.start {
+                        take(cell(ui, time(m.start)));
                     }
-                    if cols.end && cell(ui, time(m.end.max(m.start))) {
-                        clicked = Some(index);
+                    if cols.end {
+                        take(cell(ui, time(m.end.max(m.start))));
                     }
-                    if cols.duration && cell(ui, if m.is_point() { String::new() } else { time(m.end - m.start) }) {
-                        clicked = Some(index);
+                    if cols.duration {
+                        take(cell(ui, if m.is_point() { String::new() } else { time(m.end - m.start) }));
                     }
-                    if cols.kind && cell(ui, if m.is_point() { "Point" } else { "Range" }.to_string()) {
-                        clicked = Some(index);
+                    if cols.kind {
+                        take(cell(ui, if m.is_point() { "Point" } else { "Range" }.to_string()));
                     }
-                    if cols.description && cell(ui, m.description.clone()) {
-                        clicked = Some(index);
+                    if cols.description {
+                        take(cell(ui, m.description.clone()));
                     }
                     ui.end_row();
                 }
@@ -171,8 +241,9 @@ impl MarkersUi {
         let mut merge = false;
         let mut set_color = None;
         let mut set_desc: Option<(u64, String)> = None;
+        let enabled = buttons_for(&markers, &self.pick);
         ui.horizontal(|ui| {
-            merge = ui.add_enabled(picked_ids.len() >= 2, egui::Button::new("Merge")).on_hover_text("Make the picked markers one range").clicked();
+            merge = ui.add_enabled(enabled.merge, egui::Button::new("Merge")).on_hover_text("Make the picked markers one range").clicked();
             if let [id] = picked_ids[..] {
                 let current = markers.iter().find(|m| m.id == id).map_or(0, |m| m.color);
                 if ui.selectable_label(current == 0, "No colour").clicked() {
@@ -215,17 +286,76 @@ impl MarkersUi {
             editor.set_marker_description(id, &text);
             self.desc_edit = None;
         }
-        if let Some(index) = clicked {
-            out.select = self.click(&markers, index, shift, ctrl);
-        }
-        if let Some(r) = start_rename {
-            self.renaming = Some(r);
-            self.focus_rename = true;
+        if let Some((index, double)) = clicked {
+            out.select = self.row_click(&markers, index, shift, ctrl, double);
+            self.rename_opened = (self.renaming.is_some() && self.focus_rename).then_some(now);
         }
         if let Some((id, name)) = commit {
             editor.rename_marker(id, &name);
         }
         out
+    }
+}
+
+/// Which end of a marker's extent typed text sets. Not called by the panel yet (the typed-edit step
+/// wires it in), so the binary sees it as unused.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Start,
+    End,
+}
+
+/// A run of ASCII digits as a number; None for an empty, signed or non-digit text.
+#[allow(dead_code)]
+fn digits(s: &str) -> Option<u64> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) { None } else { s.parse().ok() }
+}
+
+/// Parses a time in the form the panel shows (`format_time`): `m:ss.mmm`, or `h:mm:ss.mmm` from an
+/// hour on. Minutes and seconds are 0..=59; the fraction is one to three digits. Returns the frame
+/// at `rate`; None for any other text, a zero rate, or a time too large to count.
+#[allow(dead_code)]
+pub fn parse_time(text: &str, rate: u32) -> Option<u64> {
+    if rate == 0 {
+        return None;
+    }
+    let parts: Vec<&str> = text.trim().split(':').collect();
+    let (hours, minutes, secs) = match parts.as_slice() {
+        [m, s] => (0, digits(m)?, *s),
+        [h, m, s] => (digits(h)?, digits(m)?, *s),
+        _ => return None,
+    };
+    let (whole, fraction) = match secs.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (secs, None),
+    };
+    let sec = digits(whole)?;
+    if minutes >= 60 || sec >= 60 {
+        return None;
+    }
+    let ms = match fraction {
+        None => 0,
+        Some(f) if (1..=3).contains(&f.len()) => digits(f)?.checked_mul(10u64.pow(3 - f.len() as u32))?,
+        Some(_) => return None,
+    };
+    let total_ms = ((hours.checked_mul(60)?.checked_add(minutes)?).checked_mul(60)?.checked_add(sec)?).checked_mul(1000)?.checked_add(ms)?;
+    Some(total_ms.checked_mul(u64::from(rate))? / 1000)
+}
+
+/// The extent that typed `text` gives the marker covering `range`, in a file of `len` frames at
+/// `rate`. The Start or the End moves to the typed time. None when the text is not a time, the time
+/// is past the file, or it would put the end before the start. A start equal to the end is a point.
+#[allow(dead_code)]
+pub fn typed_extent(range: Range<u64>, edge: Edge, text: &str, rate: u32, len: u64) -> Option<Range<u64>> {
+    let frame = parse_time(text, rate)?;
+    if frame > len {
+        return None;
+    }
+    match edge {
+        Edge::Start if frame <= range.end => Some(frame..range.end),
+        Edge::End if frame >= range.start => Some(range.start..frame),
+        _ => None,
     }
 }
 
@@ -235,7 +365,37 @@ mod tests {
     use egui::pos2;
 
     #[test]
+    fn typed_start_and_end_give_the_new_extent() {
+        // 48 kHz; the marker covers 1.000..2.000 s in a 4 s file.
+        let (rate, len, range) = (48_000, 192_000, 48_000..96_000);
+        assert_eq!(typed_extent(range.clone(), Edge::Start, "0:00.500", rate, len), Some(24_000..96_000));
+        assert_eq!(typed_extent(range.clone(), Edge::End, "0:03.000", rate, len), Some(48_000..144_000));
+        assert_eq!(typed_extent(range.clone(), Edge::End, "0:00.500", rate, len), None, "an end before the start");
+        assert_eq!(typed_extent(range.clone(), Edge::Start, "0:02.500", rate, len), None, "a start after the end");
+        assert_eq!(typed_extent(range.clone(), Edge::Start, "abc", rate, len), None);
+        assert_eq!(typed_extent(range.clone(), Edge::End, "0:05.000", rate, len), None, "past the 4 s file");
+        assert_eq!(typed_extent(range.clone(), Edge::End, "0:04.000", rate, len), Some(48_000..192_000), "the file's last frame is in it");
+        assert_eq!(typed_extent(range, Edge::Start, "0:02.000", rate, len), Some(96_000..96_000), "a start at the end is a point");
+    }
+
+    #[test]
+    fn parse_time_reads_the_panel_form_and_refuses_the_rest() {
+        assert_eq!(parse_time("1:02.250", 44_100), Some(62 * 44_100 + 11_025));
+        assert_eq!(parse_time("1:00:00.000", 48_000), Some(3600 * 48_000));
+        assert_eq!(parse_time("0:00.5", 48_000), Some(24_000), "a short fraction is tenths");
+        assert_eq!(parse_time("0:60.000", 48_000), None, "seconds stop at 59");
+        assert_eq!(parse_time("60:00.000", 48_000), None, "minutes stop at 59");
+        assert_eq!(parse_time("-1:00.000", 48_000), None);
+        assert_eq!(parse_time("0:00.1234", 48_000), None, "at most three fraction digits");
+        assert_eq!(parse_time("", 48_000), None);
+        assert_eq!(parse_time("0:00.500", 0), None, "a zero rate");
+    }
+
+    #[test]
     fn a_press_near_a_flag_grabs_it_and_dragging_keeps_the_grab_offset() {
+        // The grab width comes from the theme's Large controls switch: hold it off.
+        let _guard = theme::SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        theme::set_large(false);
         let m = Markers::from_items(vec![("a".into(), 1000, 1000), ("b".into(), 5000, 5400)]);
         let view = Viewport { start: 0.0, frames_per_px: 10.0 };
         let ruler = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 20.0));
@@ -250,5 +410,70 @@ mod tests {
         assert_eq!(ui.shown(&m, 10_000).as_slice()[1].range(), 6000..6400);
         ui.drag_to(0);
         assert_eq!(ui.drag.unwrap().start, 0, "held at the start of the file");
+    }
+
+    #[test]
+    fn buttons_follow_the_picked_rows() {
+        let m = Markers::from_items(vec![("p".into(), 1000, 1000), ("r".into(), 5000, 6000)]);
+        let none = PickButtons::default();
+        assert_eq!(buttons_for(&m, &MarkerPick::default()), none, "nothing picked: all false");
+
+        let mut pick = MarkerPick::default();
+        pick.click(&m, 0, false, false);
+        assert_eq!(
+            buttons_for(&m, &pick),
+            PickButtons { delete: true, merge: false, to_range: true, to_point: false },
+            "one point: delete and to_range"
+        );
+
+        pick.click(&m, 1, false, false);
+        assert_eq!(
+            buttons_for(&m, &pick),
+            PickButtons { delete: true, merge: false, to_range: false, to_point: true },
+            "one range: delete and to_point"
+        );
+
+        pick.click(&m, 0, false, true);
+        assert_eq!(
+            buttons_for(&m, &pick),
+            PickButtons { delete: true, merge: true, to_range: false, to_point: false },
+            "a point and a range: delete and merge only"
+        );
+    }
+
+    #[test]
+    fn large_grab_widens_the_marker_flags() {
+        let m = Markers::from_items(vec![("a".into(), 5000, 5000)]);
+        let view = Viewport { start: 0.0, frames_per_px: 10.0 };
+        let ruler = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 20.0));
+        let ui = MarkersUi::new();
+        let a = m.id_at(0).unwrap();
+        let _guard = theme::SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        theme::set_large(true);
+        let large = ui.handle_at(&m, &view, ruler, pos2(520.0, 5.0));
+        theme::set_large(false);
+        let normal = ui.handle_at(&m, &view, ruler, pos2(520.0, 5.0));
+        assert_eq!(large, Some(a), "20 px from the flag is picked with Large controls on");
+        assert_eq!(normal, None, "and not with it off");
+    }
+
+    #[test]
+    fn a_single_click_picks_and_a_double_click_goes() {
+        let m = Markers::from_items(vec![("a".into(), 1000, 1000), ("b".into(), 5000, 5400)]);
+        let mut ui = MarkersUi::new();
+        let (a, b) = (m.id_at(0).unwrap(), m.id_at(1).unwrap());
+        assert_eq!(ui.row_click(&m, 1, false, false, false), None, "a single click only picks");
+        assert_eq!(ui.pick.ids, vec![b]);
+        assert_eq!(ui.renaming, None);
+        assert_eq!(ui.row_click(&m, 1, false, false, true), Some(5000..5400), "a double click goes");
+        assert_eq!(ui.pick.ids, vec![b]);
+        assert_eq!(ui.row_click(&m, 0, false, false, true), Some(1000..1000));
+        assert_eq!(ui.pick.ids, vec![a]);
+        assert_eq!(ui.renaming, None, "a double click starts no rename");
+        assert_eq!(ui.row_click(&m, 0, false, false, false), None, "a click on the only picked row edits it");
+        assert_eq!(ui.renaming, Some((a, "a".to_string())));
+        assert_eq!(ui.row_click(&m, 1, false, false, false), None);
+        assert_eq!(ui.pick.ids, vec![b]);
+        assert_eq!(ui.renaming, None, "picking another row ends the edit");
     }
 }

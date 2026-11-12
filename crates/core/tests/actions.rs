@@ -572,6 +572,32 @@ fn m10_convert_point_to_range_uses_the_selection_and_range_to_point_keeps_its_st
     assert_eq!(markers(&e)[0], (100, 100));
 }
 
+#[test]
+fn h2_delete_markers_by_id_is_one_undo_step() {
+    let t = TempDir::new("marker-delete-ids");
+    let mut e = marked(&t.0);
+    let id_of = |e: &Editor, frame: u64| e.history.current().markers().iter().find(|m| m.start == frame).unwrap().id;
+    let ids = [id_of(&e, 100), id_of(&e, 450)];
+    let (steps, cursor) = (e.history.steps().len(), e.history.cursor());
+    assert!(e.delete_markers(&ids));
+    assert_eq!(markers(&e), [(300, 400), (700, 900), (950, 950)]);
+    assert_eq!(e.history.undo_label(), Some("Delete Marker"));
+    // Both markers went in one step.
+    assert_eq!((e.history.steps().len(), e.history.cursor()), (steps + 1, cursor + 1));
+    // An empty id list returns false and adds no step, even right after a "Delete Marker".
+    assert!(!e.delete_markers(&[]));
+    assert_eq!((e.history.steps().len(), e.history.cursor()), (steps + 1, cursor + 1));
+    assert_eq!(markers(&e).len(), 3);
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e).len(), 5);
+    assert_eq!(e.history.cursor(), cursor);
+    // Nor after the Undo: the Redo step is kept.
+    assert!(!e.delete_markers(&[]));
+    assert_eq!((e.history.steps().len(), e.history.cursor()), (steps + 1, cursor));
+    assert_eq!(e.history.redo_label(), Some("Delete Marker"));
+    assert_eq!(markers(&e).len(), 5);
+}
+
 // ---- Insert > Audio from File (A169) ----
 
 /// Write `data` at `rate` as a 32-bit float WAV in `dir` (a file to insert), made in its own store.
@@ -690,6 +716,48 @@ fn m6_rename_and_move_a_marker_are_one_undo_step_each() {
 }
 
 #[test]
+fn h2_set_marker_extent_is_one_move_marker_step() {
+    let fresh = |name: &str| {
+        let t = TempDir::new(name);
+        let mut e = editor(&t.0, &stereo(48_000));
+        e.run(ActionId::MarkerAdd, 10_000..10_000).unwrap();
+        let id = e.history.current().markers().id_at(0).unwrap();
+        (t, e, id)
+    };
+    // (1) A point becomes a range, as one "Move Marker" step that undo takes back.
+    let (_t, mut e, id) = fresh("h2-extent-range");
+    let steps = e.history.steps().len();
+    assert!(e.set_marker_extent(id, 10_000..20_000));
+    assert_eq!(markers(&e), [(10_000, 20_000)]);
+    assert_eq!(e.history.steps().len(), steps + 1);
+    assert_eq!(e.history.undo_label(), Some("Move Marker"));
+    e.run(ActionId::Undo, 0..0).unwrap();
+    assert_eq!(markers(&e), [(10_000, 10_000)]);
+    // (2) An empty range moves the point.
+    let (_t, mut e, id) = fresh("h2-extent-point");
+    let steps = e.history.steps().len();
+    assert!(e.set_marker_extent(id, 5_000..5_000));
+    assert_eq!(markers(&e), [(5_000, 5_000)]);
+    assert_eq!(e.history.steps().len(), steps + 1);
+    // (3) A range past the end of the file is refused and nothing changes.
+    let (_t, mut e, id) = fresh("h2-extent-past-end");
+    let steps = e.history.steps().len();
+    assert!(!e.set_marker_extent(id, 40_000..50_000), "50_000 is past the end");
+    assert_eq!(markers(&e), [(10_000, 10_000)]);
+    assert_eq!(e.history.steps().len(), steps);
+    // (4) An unknown id is refused.
+    let (_t, mut e, id) = fresh("h2-extent-unknown");
+    let steps = e.history.steps().len();
+    assert!(!e.set_marker_extent(id + 1_000, 10_000..20_000));
+    assert_eq!(markers(&e), [(10_000, 10_000)]);
+    assert_eq!(e.history.steps().len(), steps);
+    // A range ending exactly at the end of the file is allowed.
+    let (_t, mut e, id) = fresh("h2-extent-to-end");
+    assert!(e.set_marker_extent(id, 40_000..48_000));
+    assert_eq!(markers(&e), [(40_000, 48_000)]);
+}
+
+#[test]
 fn f42_select_actions_and_their_control_names() {
     let t = TempDir::new("f42select");
     let mut e = editor(&t.0, &stereo(1000));
@@ -757,6 +825,20 @@ fn f68_toggling_a_channel_enables_and_disables_it_for_edits() {
     assert_eq!((c[0][150], c[1][150], c[2][150]), (0.0, 2.0, 0.0));
     e.run(ActionId::ToggleChannel(1), 0..0).unwrap();
     assert_eq!(e.channels.active(3), [0, 1, 2]);
+    assert_eq!(e.channels, wavcraft_core::ChannelMask::ALL, "all on is the plain 'every channel' mask again");
+}
+
+#[test]
+fn f68_switching_one_channel_off_keeps_the_others_past_sixty_four_selected() {
+    let dir = TempDir::new("f68-65");
+    let data: Vec<Vec<f32>> = (0..65).map(|_| vec![1.0; 1000]).collect();
+    let mut e = editor(&dir.0, &data);
+    assert_eq!(e.channels, wavcraft_core::ChannelMask::ALL, "all on to start with");
+    e.run(ActionId::ToggleChannel(0), 0..0).unwrap();
+    assert_eq!(e.channels.active(65), (1..65).collect::<Vec<_>>(), "channel 1 off, the other 64 still on");
+    assert!(e.channels.contains(64), "channel 65 (index 64) stays selected");
+    assert!(!e.channels.contains(0));
+    e.run(ActionId::ToggleChannel(0), 0..0).unwrap();
     assert_eq!(e.channels, wavcraft_core::ChannelMask::ALL, "all on is the plain 'every channel' mask again");
 }
 
