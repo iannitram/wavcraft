@@ -8,6 +8,23 @@ use wavcraft_core::presets::{Presets, RACK};
 use wavcraft_core::rack::{GAIN_DB, RackConfig};
 
 use crate::effect_dialog::EffectDialog;
+use crate::v1::{self, Feature};
+
+/// The built-in effects the slot picker lists: a release build leaves out the effects v1 rules
+/// out (`effects::OUT_OF_V1`).
+pub fn slot_effects(release: bool) -> Vec<&'static dyn effects::Effect> {
+    effects::listed(release).map(|(_, e)| e).collect()
+}
+
+/// The VST3 plugins the slot picker lists, as slot effect texts (`vst3:<name>`) of the plugins
+/// the last scan found: none in a release build, since third-party plugins are out of v1
+/// ([`Feature::Plugins`]).
+pub fn slot_plugins(release: bool) -> Vec<String> {
+    if !v1::offered_in(release, Feature::Plugins) {
+        return Vec::new();
+    }
+    wavcraft_core::vst3::found().iter().map(|p| format!("{}{}", wavcraft_core::vst3::PREFIX, p.name)).collect()
+}
 
 /// What the panel asks the app to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,20 +178,22 @@ impl RackPanel {
                 }
             });
             ui.separator();
-            ui.horizontal(|ui| {
-                let scanning = self.scan.is_some();
-                if ui
-                    .add_enabled(!scanning, egui::Button::new("Scan VST3"))
-                    .on_hover_text("Look for VST3 effects in the standard folders (in separate processes)")
-                    .clicked()
-                {
-                    self.note = match self.start_scan() {
-                        Ok(()) => "Scanning for VST3 plugins…".to_string(),
-                        Err(e) => e,
-                    };
-                }
-                ui.label(if scanning { "scanning…".to_string() } else { format!("{} VST3 found", wavcraft_core::vst3::found().len()) });
-            });
+            if v1::offered(Feature::Plugins) {
+                ui.horizontal(|ui| {
+                    let scanning = self.scan.is_some();
+                    if ui
+                        .add_enabled(!scanning, egui::Button::new("Scan VST3"))
+                        .on_hover_text("Look for VST3 effects in the standard folders (in separate processes)")
+                        .clicked()
+                    {
+                        self.note = match self.start_scan() {
+                            Ok(()) => "Scanning for VST3 plugins…".to_string(),
+                            Err(e) => e,
+                        };
+                    }
+                    ui.label(if scanning { "scanning…".to_string() } else { format!("{} VST3 found", wavcraft_core::vst3::found().len()) });
+                });
+            }
             ui.horizontal(|ui| {
                 ui.label("Preset");
                 ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(120.0).hint_text("name"));
@@ -215,13 +234,13 @@ impl RackPanel {
         let current = self.config.slots[i].effect.clone();
         let shown =
             current.as_deref().map_or("(none)", |c| effects::find(c).map_or(c.strip_prefix(wavcraft_core::vst3::PREFIX).unwrap_or(c), |e| e.name()));
-        let plugins = wavcraft_core::vst3::found();
+        let plugins = slot_plugins(v1::RELEASE);
         let mut pick = None;
         egui::ComboBox::from_id_salt(("rack_slot", i)).selected_text(shown).width(130.0).show_ui(ui, |ui| {
             if ui.selectable_label(current.is_none(), "(none)").clicked() {
                 pick = Some(None);
             }
-            for e in effects::all() {
+            for e in slot_effects(v1::RELEASE) {
                 if ui.selectable_label(current.as_deref() == Some(e.id()), e.name()).clicked() {
                     pick = Some(Some(e.id().to_string()));
                 }
@@ -230,9 +249,9 @@ impl RackPanel {
                 ui.separator();
                 ui.label("VST3 plugins");
             }
-            for p in &plugins {
-                let spec = format!("{}{}", wavcraft_core::vst3::PREFIX, p.name);
-                if ui.selectable_label(current.as_deref() == Some(spec.as_str()), &p.name).clicked() {
+            for spec in plugins {
+                let name = spec.strip_prefix(wavcraft_core::vst3::PREFIX).unwrap_or(&spec).to_string();
+                if ui.selectable_label(current.as_deref() == Some(spec.as_str()), name).clicked() {
                     pick = Some(Some(spec));
                 }
             }
@@ -426,5 +445,27 @@ fn slot_number(text: &str) -> Result<usize, String> {
     match text.parse::<usize>() {
         Ok(n) if n >= 1 => Ok(n - 1),
         _ => Err(format!("{text:?} is not a slot number (1 and up)")),
+    }
+}
+
+#[cfg(test)]
+mod m5_tests {
+    use super::*;
+    use wavcraft_core::vst3::{self, Found};
+
+    #[test]
+    fn a_release_rack_lists_no_plugin() {
+        vst3::set_found(vec![Found { id: "vst3:00FF".into(), name: "Demo".into(), vendor: String::new(), path: "/p".into() }]);
+        let (release, debug) = (slot_plugins(true), slot_plugins(false));
+        vst3::set_found(Vec::new());
+        assert!(release.is_empty(), "{release:?}");
+        assert_eq!(debug, ["vst3:Demo"]);
+    }
+
+    #[test]
+    fn a_release_rack_lists_no_dehummer_or_dereverb() {
+        let release: Vec<&str> = slot_effects(true).iter().map(|e| e.name()).collect();
+        assert!(release.contains(&"Noise Reduction") && !release.contains(&"DeHummer") && !release.contains(&"DeReverb"), "{release:?}");
+        assert_eq!(slot_effects(false).len(), effects::all().len());
     }
 }

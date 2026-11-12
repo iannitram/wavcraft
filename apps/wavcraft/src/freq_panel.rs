@@ -58,7 +58,7 @@ struct LiveKey {
     frame: u64,
     fft: usize,
     window: FftWindow,
-    channels: u64,
+    channels: ChannelMask,
 }
 
 pub struct FreqPanel {
@@ -243,7 +243,7 @@ impl FreqPanel {
             frame: cursor,
             fft: self.fft_size,
             window: self.window,
-            channels: channels.within(doc.channel_count()).bits(),
+            channels: channels.within(doc.channel_count()),
         };
         if self.live.as_ref().is_none_or(|(k, _)| *k != key) {
             self.live = match freq::spectrum_at(doc, cursor, channels, self.fft_size, self.window) {

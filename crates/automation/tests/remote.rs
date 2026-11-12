@@ -49,7 +49,7 @@ fn requests_go_out_as_the_channel_spells_them_and_replies_are_read() {
     let mut remote = Remote::connect(port, TOKEN).expect("the token is accepted");
     assert_eq!(remote.execute(&Request::Select { start: 1, end: 2 }), Ok("selection=1-2".to_string()));
     assert_eq!(remote.execute(&Request::Action("edit.delete".to_string())), Ok("selection=1-2 changed=1".to_string()));
-    assert_eq!(remote.execute(&Request::Save(PathBuf::from("out.wav"))), Err("no file is open".to_string()));
+    assert_eq!(remote.execute(&Request::parse("SAVE out.wav").expect("a save request")), Err("no file is open".to_string()));
     drop(remote);
     assert_eq!(
         seen.recv().expect("the stand-in ends"),
@@ -59,14 +59,18 @@ fn requests_go_out_as_the_channel_spells_them_and_replies_are_read() {
 
 #[test]
 fn open_waits_for_busy_to_clear() {
-    let (port, seen) =
-        stand_in(vec!["OK", "OK frames=10 channels=2 rate=48000 selection=0-0 busy=1", "OK frames=10 channels=2 rate=48000 selection=0-0 busy=0"]);
+    let (port, seen) = stand_in(vec![
+        "OK",
+        "OK frames=10 channels=2 rate=48000 selection=0-0 busy=1",
+        "OK frames=10 channels=2 rate=48000 selection=0-0 busy=0",
+        "OK -",
+    ]);
     let mut remote = Remote::connect(port, TOKEN).expect("the token is accepted");
     assert_eq!(remote.execute(&Request::Open(PathBuf::from("a b.wav"))), Ok(String::new()));
     drop(remote);
     assert_eq!(
         seen.recv().expect("the stand-in ends"),
-        vec![format!("TOKEN {TOKEN}"), "OPEN a b.wav".to_string(), "STATE".to_string(), "STATE".to_string(),]
+        vec![format!("TOKEN {TOKEN}"), "OPEN a b.wav".to_string(), "STATE".to_string(), "STATE".to_string(), "LASTERROR".to_string(),]
     );
 }
 
@@ -75,4 +79,53 @@ fn a_refused_token_is_an_error() {
     let (port, _seen) = stand_in(vec![]);
     let err = Remote::connect(port, "not-the-token").err().expect("refused");
     assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+}
+
+#[test]
+fn save_waits_for_busy_to_clear() {
+    let (port, seen) = stand_in(vec![
+        "OK",
+        "OK frames=10 channels=2 rate=48000 selection=0-0 busy=1",
+        "OK frames=10 channels=2 rate=48000 selection=0-0 busy=1",
+        "OK frames=10 channels=2 rate=48000 selection=0-0 busy=0",
+        "OK -",
+    ]);
+    let mut remote = Remote::connect(port, TOKEN).expect("the token is accepted");
+    let save = Request::parse("SAVE out.wav").expect("a save request");
+    assert_eq!(remote.execute(&save), Ok(String::new()));
+    drop(remote);
+    assert_eq!(
+        seen.recv().expect("the stand-in ends"),
+        vec![
+            format!("TOKEN {TOKEN}"),
+            "SAVE out.wav".to_string(),
+            "STATE".to_string(),
+            "STATE".to_string(),
+            "STATE".to_string(),
+            "LASTERROR".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn a_failed_save_is_an_error() {
+    let (port, _seen) = stand_in(vec![
+        "OK",
+        "OK frames=10 channels=2 rate=48000 selection=0-0 busy=1",
+        "OK frames=10 channels=2 rate=48000 selection=0-0 busy=1",
+        "OK frames=10 channels=2 rate=48000 selection=0-0 busy=0",
+        "OK Not saved: disk full. out.wav is unchanged.",
+    ]);
+    let mut remote = Remote::connect(port, TOKEN).expect("the token is accepted");
+    let save = Request::parse("SAVE out.wav").expect("a save request");
+    let err = remote.execute(&save).expect_err("the save failed in the app");
+    assert!(err.contains("Not saved"), "{err}");
+}
+
+#[test]
+fn a_failed_open_is_an_error() {
+    let (port, _seen) = stand_in(vec!["OK", "OK frames=0 channels=0 rate=0 selection=0-0 busy=0", "OK could not open missing.wav"]);
+    let mut remote = Remote::connect(port, TOKEN).expect("the token is accepted");
+    let err = remote.execute(&Request::Open(PathBuf::from("missing.wav"))).expect_err("the open failed in the app");
+    assert!(err.contains("could not open"), "{err}");
 }

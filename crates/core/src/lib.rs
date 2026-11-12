@@ -8,6 +8,7 @@
 //! - [`autosave`]: the journal of the piece table and history, and crash recovery from it.
 //! - [`batch`]: the Batch Process runner (a list of files through a chain of operations to WAV).
 //! - [`check`]: Episode Check detectors (K2): clipped runs, true peak, DC offset and dead air.
+//! - [`episode_map`]: the Episode Map strip (M2): silence, speech and loud columns, and pin positions.
 //! - [`cd`]: the CD layout (track order, pauses, ISRC), and its single-WAV-plus-CUE export.
 //! - [`i18n`]: the interface text catalogue (English source, pseudo-locale, fallback).
 //! - [`io`]: streamed open into the store.
@@ -57,6 +58,7 @@ pub mod doc;
 pub mod document;
 pub mod dsp;
 pub mod effects;
+pub mod episode_map;
 pub mod export;
 pub mod export_chunks;
 pub mod export_presets;
@@ -124,6 +126,7 @@ pub mod take_recovery;
 pub mod take_repair;
 pub mod tempo;
 pub mod timepitch;
+pub mod transcript;
 pub mod transcript_cut;
 pub mod transport;
 pub mod video_snap;

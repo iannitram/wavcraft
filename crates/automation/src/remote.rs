@@ -1,6 +1,8 @@
 //! The remote backend: a running app, reached over its control channel
 //! (`apps/wavcraft/src/control.rs`). The channel is loopback only and wants the token as its
-//! first line; then one request per line, one answer per line.
+//! first line; then one request per line, one answer per line. `OPEN` and `SAVE` run in the
+//! background in the window, so the remote waits for each (`STATE` until `busy=0`) and then
+//! reads `LASTERROR` to learn how it ended.
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
@@ -9,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::{Backend, Request};
 
-/// How long an `OPEN` may take before the remote gives up waiting for `busy=0`.
-const OPEN_TIMEOUT: Duration = Duration::from_secs(600);
+/// How long an `OPEN` or a `SAVE` may take before the remote gives up waiting for `busy=0`.
+const JOB_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// A connection to a running app's control channel.
 pub struct Remote {
@@ -52,23 +54,40 @@ impl Remote {
         Ok(answer.trim_end().to_string())
     }
 
-    /// `OPEN` runs in the background: poll `STATE` until it reports `busy=0`.
+    /// `OPEN` runs in the background: poll `STATE` until it reports `busy=0`, then ask
+    /// `LASTERROR`, which names a failed open.
     fn open(&mut self, path: &Path) -> Result<(), String> {
-        let answer = self.round_trip(&Request::Open(path.to_path_buf()).line()).map_err(|e| e.to_string())?;
+        self.start_then_wait(&Request::Open(path.to_path_buf()).line(), "the open")
+    }
+
+    /// Send a request that starts a background job (`OPEN`, `SAVE`), then wait for it: poll
+    /// `STATE` until `busy=0`, then ask `LASTERROR` and return its text as the error unless it is
+    /// `-` (the window clears it when a job ends well and sets it when one fails).
+    fn start_then_wait(&mut self, line: &str, what: &str) -> Result<(), String> {
+        let answer = self.round_trip(line).map_err(|e| e.to_string())?;
         if let Some(why) = answer.strip_prefix("ERR ") {
             return Err(why.to_string());
+        }
+        if !answer.starts_with("OK") {
+            return Err(answer);
         }
         let started = Instant::now();
         loop {
             let state = self.round_trip("STATE").map_err(|e| e.to_string())?;
             let body = state.strip_prefix("OK ").ok_or_else(|| state.clone())?;
             if body.split_whitespace().any(|f| f == "busy=0") {
-                return Ok(());
+                break;
             }
-            if started.elapsed() > OPEN_TIMEOUT {
-                return Err("the open did not finish in time".to_string());
+            if started.elapsed() > JOB_TIMEOUT {
+                return Err(format!("{what} did not finish in time"));
             }
             std::thread::sleep(Duration::from_millis(20));
+        }
+        let last = self.round_trip("LASTERROR").map_err(|e| e.to_string())?;
+        match last.strip_prefix("OK") {
+            Some(text) if text.trim() == "-" => Ok(()),
+            Some(text) => Err(text.trim().to_string()),
+            None => Err(last.strip_prefix("ERR ").unwrap_or(&last).to_string()),
         }
     }
 }
@@ -81,8 +100,10 @@ fn read_token(path: &Path) -> io::Result<String> {
 
 impl Backend for Remote {
     fn execute(&mut self, req: &Request) -> Result<String, String> {
-        if let Request::Open(path) = req {
-            return self.open(path).map(|()| String::new());
+        match req {
+            Request::Open(path) => return self.open(path).map(|()| String::new()),
+            Request::Save { .. } => return self.start_then_wait(&req.line(), "the save").map(|()| String::new()),
+            _ => {}
         }
         let answer = self.round_trip(&req.line()).map_err(|e| e.to_string())?;
         if let Some(text) = answer.strip_prefix("OK") {

@@ -3760,6 +3760,7 @@ dependencies = [
  "soundcraft-model",
  "soundcraft-playback",
  "soundcraft-video",
+ "wavcraft-automation",
  "wavcraft-core",
  "windows-sys 0.61.2",
 ]

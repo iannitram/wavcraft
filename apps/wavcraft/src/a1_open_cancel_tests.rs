@@ -71,6 +71,7 @@ fn cancel_opening_drops_the_job_and_adds_no_document() {
     // A file queued behind it: it must not open once the cancel is done.
     app.open_queue.push_back(scratch.0.join("queued-but-missing.wav"));
 
+    let flag = app.opening.as_ref().map(|o| o.cancel.clone()).expect("an open is running");
     app.cancel_opening();
 
     assert!(app.opening.is_none(), "the job is dropped");
@@ -78,11 +79,38 @@ fn cancel_opening_drops_the_job_and_adds_no_document() {
     assert_eq!(app.notice.as_deref(), Some("Open cancelled"));
     assert!(app.file_rows().is_empty(), "no document is added");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let left = |app: &WaveApp| std::fs::read_dir(&app.sessions.path).map(|d| d.count()).unwrap_or(0);
-    while left(&app) > 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
+    // The worker is detached, but it holds the other clone of the cancel flag until its closure
+    // ends (after the session store is dropped), so a count of 1 means it has finished.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Arc::strong_count(&flag) > 1 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(left(&app), 0, "the session folder is empty within 5 s");
+    assert_eq!(Arc::strong_count(&flag), 1, "the open worker finished");
+    let left = std::fs::read_dir(&app.sessions.path).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(left, 0, "the cancelled open left no session folder behind");
     assert!(app.file_rows().is_empty(), "still no document after the worker has stopped");
+}
+
+/// OPEN_CANCEL over the control channel (A1.6): a 60 s file is opening, OPEN_CANCEL answers OK and
+/// the open is gone (no document, STATE says busy=0); a second OPEN_CANCEL answers ERR.
+#[test]
+fn open_cancel_over_the_control_channel() {
+    let scratch = Scratch::new("control");
+    let wav = scratch.0.join("long.wav");
+    write_wav(&wav, 60);
+    let mut app = a_window(&scratch);
+    let ctx = app.ctx.clone();
+
+    app.open(wav, &ctx);
+    assert!(app.opening.is_some(), "the 60 s file is opening");
+
+    let answer = app.control_request("OPEN_CANCEL", &ctx);
+    assert_eq!(answer, "OK");
+    assert!(app.opening.is_none(), "opening is None");
+    assert!(app.file_rows().is_empty(), "file_rows() is empty");
+    let state = app.control_request("STATE", &ctx);
+    assert!(state.split_whitespace().any(|w| w == "busy=0"), "STATE has busy=0, got {state}");
+
+    let again = app.control_request("OPEN_CANCEL", &ctx);
+    assert!(again.starts_with("ERR"), "a second OPEN_CANCEL answers ERR, got {again}");
 }
