@@ -473,6 +473,16 @@ fn path_name(path: &std::path::Path) -> String {
     path.file_name().map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned())
 }
 
+/// The window title: the open file's name (with `*` while it has unsaved changes), or "WavCraft"
+/// when no file is open.
+fn window_title(name: &str, unsaved: bool, open: bool) -> String {
+    if !open {
+        return "WavCraft".to_string();
+    }
+    let star = if unsaved { "*" } else { "" };
+    format!("{star}{name} — WavCraft")
+}
+
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
 struct SpectrumCache {
     job: Job,
@@ -2326,6 +2336,17 @@ impl WaveApp {
                 Some(if failed.len() == 1 { failed.join("") } else { format!("{} files could not be opened: {}", failed.len(), failed.join("; ")) });
             self.notice = None;
         }
+    }
+
+    /// Cancel the file that is opening (A1.1, the status bar's Cancel): stop its worker, which
+    /// removes its session folder and whose answer is never read, drop the files queued behind it,
+    /// and say so. No document is added.
+    fn cancel_opening(&mut self) {
+        if let Some(old) = self.opening.take() {
+            old.cancel.store(true, Ordering::Relaxed);
+        }
+        self.open_queue.clear();
+        self.notice = Some("Open cancelled".to_string());
     }
 
     /// File › Open Append: add `paths` to the end of the current document (`to_new` false) as one
@@ -7114,6 +7135,15 @@ impl WaveApp {
         is_unsaved(&self.editor, &self.saved)
     }
 
+    /// Send the window title when it has changed since the last one sent (a send asks for a repaint).
+    fn send_title(&mut self, ctx: &egui::Context) {
+        let title = window_title(&path_name(&self.doc_path), self.unsaved(), self.editor.is_some());
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+    }
+
     /// Whether any open document has unsaved changes.
     fn any_unsaved(&self) -> bool {
         self.unsaved() || self.docs.parked().iter().any(|s| is_unsaved(&s.editor, &s.saved))
@@ -10498,6 +10528,7 @@ impl WaveApp {
 
     fn status(&mut self, ui: &mut egui::Ui) {
         let mut cancel_job = false;
+        let mut cancel_open = false;
         // The whole bar answers a right-click with the menu of fields; registered first, so the
         // labels drawn after it keep their own hover text.
         let top = ui.available_rect_before_wrap();
@@ -10527,6 +10558,9 @@ impl WaveApp {
                 ui.spinner();
                 let permille = o.progress.load(Ordering::Relaxed);
                 ui.label(tr_args("status.opening", &[&o.path.display().to_string(), &(permille / 10).to_string()]));
+                if ui.button("Cancel").on_hover_text("Stop opening: no document is added").clicked() {
+                    cancel_open = true;
+                }
             } else if let Some(r) = &self.running {
                 ui.spinner();
                 ui.label(format!("{}… {}%", r.job.label(), r.job.permille() / 10));
@@ -10669,6 +10703,9 @@ impl WaveApp {
         }
         if cancel_job && let Some(r) = &self.running {
             r.job.cancel();
+        }
+        if cancel_open {
+            self.cancel_opening();
         }
     }
 
@@ -11973,12 +12010,7 @@ impl eframe::App for WaveApp {
                 },
             );
         }
-        let star = if self.unsaved() { "*" } else { "" };
-        let title = if self.editor.is_some() { format!("{star}{} — WavCraft", path_name(&self.doc_path)) } else { "WavCraft".to_string() };
-        if title != self.title {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
-            self.title = title;
-        }
+        self.send_title(&ctx);
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         if self.docs.len(self.editor.is_some()) > 1 {
@@ -13182,6 +13214,14 @@ mod issue369_tests;
 #[cfg(test)]
 #[path = "issue377_tests.rs"]
 mod issue377_tests;
+
+#[cfg(test)]
+#[path = "a2_title_star_tests.rs"]
+mod a2_title_star_tests;
+
+#[cfg(test)]
+#[path = "a1_open_cancel_tests.rs"]
+mod a1_open_cancel_tests;
 
 #[cfg(test)]
 #[path = "a2_close_prompt_tests.rs"]
