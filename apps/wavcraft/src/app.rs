@@ -4685,6 +4685,16 @@ impl WaveApp {
         true
     }
 
+    /// Go to a marker's span (a double-click in the Markers panel, or `MARKER select`): the span is
+    /// the selection (a point is the cursor, so the playhead sits at the marker), play stops and
+    /// the view shows the start.
+    fn go_to_marker_span(&mut self, span: Range<u64>) {
+        self.selection = Selection { anchor: span.start as usize, head: span.end as usize };
+        self.halt_play();
+        let frames = self.doc.as_ref().map_or(0, Document::frames);
+        self.view.reveal(span.start as f64, self.editor_width, frames);
+    }
+
     /// Stop at once with the cursor left where it is (the file or the cursor changed under it).
     fn halt_play(&mut self) {
         self.play_after_edit = false;
@@ -6749,10 +6759,7 @@ impl WaveApp {
         };
         let out = self.markers_ui.panel(ui, editor, &mut self.settings);
         if let Some(span) = out.select {
-            self.selection = Selection { anchor: span.start as usize, head: span.end as usize };
-            self.halt_play();
-            let frames = self.doc.as_ref().map_or(0, Document::frames);
-            self.view.reveal(span.start as f64, self.editor_width, frames);
+            self.go_to_marker_span(span);
         }
         if out.columns_changed
             && let Some(path) = &self.settings_path
@@ -9785,7 +9792,7 @@ impl WaveApp {
             }
             "select" if arg.is_empty() || arg == "add" => {
                 if let Some(span) = self.markers_ui.click(&markers, index, false, arg == "add") {
-                    self.selection = Selection { anchor: span.start as usize, head: span.end as usize };
+                    self.go_to_marker_span(span);
                 }
                 format!("OK selection={}-{}", self.selection.start(), self.selection.end())
             }
@@ -10055,12 +10062,18 @@ impl WaveApp {
         }
     }
 
+    /// The rows the Effects menu draws for a build. `effects_menu` is the only caller in the app,
+    /// and the v1 test calls this same fn, so the test guards the menu's row source.
+    pub(crate) fn effects_menu_rows(release: bool) -> Vec<&'static actions::Action> {
+        v1::effect_rows_in(release)
+    }
+
     /// The Effects menu: one entry per registered effect, run on the selection (the whole file
     /// when nothing is selected) and the enabled channels.
     fn effects_menu(&mut self, ui: &mut egui::Ui) {
         let sel = self.selection_range();
         let mut chosen = None;
-        for a in actions::all_actions().filter(|a| a.name.starts_with("effect.")) {
+        for a in Self::effects_menu_rows(v1::RELEASE) {
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none() && self.running.is_none();
             // An effect with settings opens its dialog (a "…" entry); one without runs at once.
             let has_dialog =
@@ -13204,6 +13217,10 @@ mod tests {
 #[cfg(test)]
 #[path = "c5_6_space_button_tests.rs"]
 mod c5_6_space_button_tests;
+
+#[cfg(test)]
+#[path = "h2_7_double_click_tests.rs"]
+mod h2_7_double_click_tests;
 
 #[cfg(test)]
 #[path = "h3_marker_jump_tests.rs"]

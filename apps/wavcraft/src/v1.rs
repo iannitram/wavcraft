@@ -5,6 +5,8 @@
 //! gated in `wavcraft_core::panels::PanelSet` and the effects in `wavcraft_core::effects::listed`;
 //! this module gates the menus, the Tools list, the Keyboard Shortcuts list and the Effects Rack's plugins.
 
+use wavcraft_core::actions::{self, Action};
+
 /// Whether this is a release build.
 pub const RELEASE: bool = !cfg!(debug_assertions);
 
@@ -63,6 +65,12 @@ pub fn tool_offered_in(release: bool, name: &str) -> bool {
 
 /// The Diagnostics commands (Feature::Diagnostics) by their action names.
 const DIAGNOSTICS_COMMANDS: &[&str] = &["diagnostics.declip", "diagnostics.declick", "diagnostics.autoClickRemover"];
+
+/// The action rows the Effects menu draws, in table order: every `effect.` action the build
+/// lists. A release build leaves out the `effects::OUT_OF_V1` effects.
+pub fn effect_rows_in(release: bool) -> Vec<&'static Action> {
+    actions::all_actions().filter(|a| a.name.starts_with("effect.") && command_offered_in(release, a.name)).collect()
+}
 
 /// Whether a build lists the command `name` (an action or shortcut name) in the Keyboard
 /// Shortcuts list: a release build leaves out the Diagnostics commands and the out-of-v1 effects.
@@ -156,6 +164,22 @@ mod tests {
         v.extend(crate::rack_panel::slot_plugins(release));
         v.extend(crate::shortcut_editor::listed(release).map(|c| c.label().to_string()));
         v
+    }
+
+    #[test]
+    fn a_release_effects_menu_and_rack_list_no_dehummer_or_dereverb() {
+        // Through the fn the Effects menu calls (app.rs `effects_menu`), not `effect_rows_in`.
+        let menu = |release| crate::app::WaveApp::effects_menu_rows(release).iter().map(|a| a.menu).collect::<Vec<&str>>();
+        let (release, debug) = (menu(true), menu(false));
+        assert!(release.contains(&"Noise Reduction") && release.contains(&"Reverse"), "{release:?}");
+        assert!(!release.contains(&"DeHummer") && !release.contains(&"DeReverb"), "{release:?}");
+        assert!(debug.contains(&"DeHummer") && debug.contains(&"DeReverb"), "{debug:?}");
+
+        let rack = |release| crate::rack_panel::slot_effects(release).iter().map(|e| e.name()).collect::<Vec<&str>>();
+        let listed = rack(true);
+        assert!(!listed.contains(&"DeHummer") && !listed.contains(&"DeReverb"), "{listed:?}");
+        assert!(listed.contains(&"Noise Reduction"), "{listed:?}");
+        assert_eq!(rack(false).len(), wavcraft_core::effects::all().len());
     }
 
     #[test]
