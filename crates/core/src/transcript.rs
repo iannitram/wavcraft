@@ -22,6 +22,7 @@ pub mod export;
 pub mod filler;
 pub mod mel;
 mod run;
+pub mod search;
 
 pub use run::{FakeEngine, SpeechEngine, transcribe};
 
