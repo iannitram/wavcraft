@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use crate::markers::Shift;
+
 pub mod export;
 pub mod filler;
 pub mod mel;
@@ -44,6 +46,33 @@ pub struct Transcript {
     pub words: Vec<Word>,
 }
 
+/// The frames of `w` once `range` is replaced by `len` frames; None when the word lies wholly
+/// inside a non-empty `range`. An empty `range` is an insert at its start: a word starting there
+/// moves, and a word spanning it grows.
+fn after_edit(w: &Word, range: &Range<u64>, len: u64) -> Option<(u64, u64)> {
+    let n = range.end - range.start;
+    if n == 0 {
+        let start = if w.start < range.start { w.start } else { w.start + len };
+        let end = if w.end <= range.start { w.end } else { w.end + len };
+        return Some((start, end));
+    }
+    if w.start >= range.start && w.end <= range.end {
+        return None;
+    }
+    let map = |p: u64, is_start: bool| {
+        if p <= range.start {
+            p
+        } else if p >= range.end {
+            p - n + len
+        } else if is_start {
+            range.start + len
+        } else {
+            range.start
+        }
+    };
+    Some((map(w.start, true), map(w.end, false)))
+}
+
 fn bad(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("transcript: {}", what.into()))
 }
@@ -64,6 +93,34 @@ impl Transcript {
         let after = self.words.partition_point(|w| w.start <= frame);
         let i = after.checked_sub(1)?;
         (frame < self.words[i].end).then_some(i)
+    }
+
+    /// A copy with the words an edit leaves at the frames it moves them to, in the same rules as
+    /// [`crate::markers::Markers::moved_by`]: a word wholly inside a removed range goes, one that
+    /// straddles an edge is cut to what is left, a later word moves with the audio. An insert at a
+    /// word's start moves that word, and a word spanning the insert grows. A crop keeps only the
+    /// words inside its range, cut to it.
+    pub fn moved_by(&self, shift: &Shift) -> Transcript {
+        let words = self
+            .words
+            .iter()
+            .filter_map(|w| {
+                let (start, end) = match shift {
+                    Shift::None => (w.start, w.end),
+                    Shift::Delete(r) => after_edit(w, r, 0)?,
+                    Shift::Insert { at, len } => after_edit(w, &(*at..*at), *len)?,
+                    Shift::Replace { range, len } => after_edit(w, range, *len)?,
+                    Shift::Crop(r) => {
+                        if w.end <= r.start || w.start >= r.end {
+                            return None;
+                        }
+                        (w.start.max(r.start) - r.start, w.end.min(r.end) - r.start)
+                    }
+                };
+                Some(Word { text: w.text.clone(), start, end })
+            })
+            .collect();
+        Transcript { version: self.version, sample_rate: self.sample_rate, words }
     }
 
     /// The frames from the start of the word at `first` to the end of the word at `last`, for a
