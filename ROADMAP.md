@@ -38,19 +38,19 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 
 ## Where v1 stands
 
-**75 items** (v1.md's 74 plus L0, the speech-to-text choice)**:** complete 11 · built, check not recorded 17 · partial 31 · not started 16.
+**75 items** (v1.md's 74 plus L0, the speech-to-text choice)**:** complete 14 · built, check not recorded 14 · partial 32 · not started 15.
 
-**358 steps remain:** 266 easy, 87 medium, 5 hard. 286 are proved by a script, 72 by hand (44 of those only by me).
+**334 steps remain:** 243 easy, 86 medium, 5 hard. 263 are proved by a script, 71 by hand (44 of those only by me).
 
 | Stage | Items | Complete | Steps left | Done when |
 |---|---|---|---|---|
 | Stage 0: merge plan | - | done 2026-10-27 | 0 | the old branches are merged into `main` and CI exists |
-| Stage 1: Editor | 19 | 6 | 51 | a full rough-cut edit of an episode is saved, reopened and identical. |
+| Stage 1: Editor | 19 | 9 | 32 | a full rough-cut edit of an episode is saved, reopened and identical. |
 | Stage 1b: Automation | 4 | 0 | 28 | an AI agent completes 10 real editing tasks through the MCP server with no window. |
-| Stage 2: Recording | 7 | 0 | 30 | I record a real 10-minute take on each machine, kill the app once mid-take, and get everything back. |
+| Stage 2: Recording | 7 | 0 | 27 | I record a real 10-minute take on each machine, kill the app once mid-take, and get everything back. |
 | Stage 3: Repair | 14 | 3 | 49 | I clean a real episode end to end and prefer the result to my current tool's, by ear. |
 | Stage 4: Feel | 12 | 0 | 55 | I work without hunting for things. |
-| Stage 4b: Episode Check, transcript and faces | 16 | 1 | 127 | the Podcast face's user cleans a real episode in it without help. |
+| Stage 4b: Episode Check, transcript and faces | 16 | 1 | 125 | the Podcast face's user cleans a real episode in it without help. |
 | Alongside: the MP3 encoder | 1 | 0 | 12 | a 1-hour episode exports to MP3 and passes A3's Done check. |
 | Stage 5: Platform checks | 2 | 1 | 6 | the app is built, launched and checked by hand on Windows, Linux and the 8 GB Mac, and every hand step in the earlier stages that names a machine is recorded. |
 | Stage 6: Design pass | - | not started | filed when it runs | every `design-pass` issue is closed or moved after 1.0 |
@@ -59,28 +59,28 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 
 | # | Item | Feature | Stage | Status | Steps left | Open issues |
 |---|---|---|---|---|---|---|
-| A1 | Open WAV, AIFF, MP3, FLAC into the store | files | 1 | partial | 6 | #395 |
-| A2 | Save and Save As (WAV, AIFF, FLAC) | files | 1 | built, check not recorded | 2 | #10 |
+| A1 | Open WAV, AIFF, MP3, FLAC into the store | files | 1 | partial | 3 | #395 |
+| A2 | Save and Save As (WAV, AIFF, FLAC) | files | 1 | complete | 0 | #10 |
 | A3 | Save As MP3 with the craft-mp3 encoder | files | mp3 | not started | 12 | #11 |
 | A4 | Convert Sample Type and dither | files | 3 | partial | 5 | #12 |
 | A5 | Files panel with several files open | files | 4 | built, check not recorded | 2 | #13 |
-| A6 | Markers survive a save | files | 1 | built, check not recorded | 2 | #14, #62 |
+| A6 | Markers survive a save | files | 1 | built, check not recorded | 1 | #14, #62 |
 | B1 | Waveform, amplitude ruler, vertical zoom | display | 4 | built, check not recorded | 5 | #15, #69 |
 | B2 | Spectral Frequency Display toggle, keys, refresh | display | 4 | partial | 8 | #16, #68 |
 | B3 | Zoom keys and the navigator bar | display | 4 | built, check not recorded | 3 | #17 |
 | B4 | Levels meter: peak, RMS, hold, clip light | analysis | 4 | partial | 8 | #18 |
 | B5 | Selection/View panel and time formats | display | 4 | built, check not recorded | 1 | #19 |
-| C1 | Time Selection tool gestures | selection | 1 | built, check not recorded | 1 | #20, #69 |
-| C2 | One channel of a stereo file | selection | 1 | partial | 3 | #21 |
-| C3 | Snapping: markers, ruler, zero crossings, key S | selection | 1 | partial | 4 | #22 |
+| C1 | Time Selection tool gestures | selection | 1 | complete | 0 | #20, #69 |
+| C2 | One channel of a stereo file | selection | 1 | partial | 1 | #21 |
+| C3 | Snapping: markers, ruler, zero crossings, key S | selection | 1 | partial | 2 | #22 |
 | C4 | Spectral selection: Marquee and Lasso | selection | 4 | partial | 8 | #23 |
-| C5 | Transport | transport | 1 | partial | 11 | #24, #67, #1081, #69 |
+| C5 | Transport | transport | 1 | partial | 10 | #24, #67, #1081, #69 |
 | C6 | Scrub by dragging the playhead | transport | 4 | built, check not recorded | 2 | #25 |
 | D1 | Cut, Copy, Paste, Delete | editing | 1 | complete | 0 | none |
-| D2 | Copy to New and Paste to New | editing | 1 | built, check not recorded | 1 | #26 |
+| D2 | Copy to New and Paste to New | editing | 1 | complete | 0 | #26 |
 | D3 | Silence and Insert Silence | editing | 1 | complete | 0 | none |
 | D4 | Crop to selection (Ctrl+T) | editing | 1 | complete | 0 | none |
-| D5 | Undo, Redo and the History panel | editing | 1 | built, check not recorded | 3 | #63 |
+| D5 | Undo, Redo and the History panel | editing | 1 | built, check not recorded | 2 | #63 |
 | D6 | Zero-crossing adjust of selection edges | editing | 1 | complete | 0 | #61 |
 | D7 | Edit crossfades (2 ms and 5 ms) | editing | 1 | complete | 0 | none |
 | E1 | Fade In and Fade Out handles | effects | 3 | partial | 4 | #27 |
@@ -96,8 +96,8 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | G2 | Noise Reduction (process) | repair | 3 | partial | 11 | #37 |
 | G3 | Match Loudness panel | repair | 3 | partial | 5 | #38 |
 | G4 | Loudness analysis | analysis | 3 | built, check not recorded | 1 | #39, #927 |
-| H1 | Add Marker with M or * | markers | 1 | partial | 3 | #40 |
-| H2 | Markers panel | markers | 1 | partial | 9 | #41 |
+| H1 | Add Marker with M or * | markers | 1 | partial | 2 | #40 |
+| H2 | Markers panel | markers | 1 | partial | 6 | #41 |
 | H3 | Next and previous marker | markers | 1 | partial | 4 | #42 |
 | H4 | Markers move with edits | markers | 1 | complete | 0 | #43 |
 | I1 | Audition's default layout | shell | 4 | partial | 4 | #44 |
@@ -106,13 +106,13 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | I4 | Never lose work: autosave and recovery | platform | 4 | built, check not recorded | 4 | #47 |
 | I5 | Runs on Windows, Linux and macOS | platform | 5 | built, check not recorded | 6 | #48 |
 | I6 | Third-party notices under Help, About | platform | 5 | complete | 0 | #49 |
-| I7 | Memory fits an 8 GB Mac | platform | 1 | built, check not recorded | 2 | #50 |
+| I7 | Memory fits an 8 GB Mac | platform | 1 | built, check not recorded | 1 | #50 |
 | J1 | Record a take into a new WAV | recording | 2 | partial | 7 | #51 |
 | J2 | No playback while recording | recording | 2 | partial | 3 | #52 |
-| J3 | A crash keeps the take | recording | 2 | built, check not recorded | 4 | #53 |
+| J3 | A crash keeps the take | recording | 2 | built, check not recorded | 3 | #53 |
 | J4 | Readouts and level meter while recording | recording | 2 | partial | 5 | #54 |
 | J5 | Input device preference and clean unplug | recording | 2 | built, check not recorded | 1 | #55 |
-| J6 | Recording works on every machine | recording | 2 | partial | 9 | #56 |
+| J6 | Recording works on every machine | recording | 2 | partial | 7 | #56 |
 | J7 | After Stop the take opens in the editor | recording | 2 | built, check not recorded | 1 | none |
 | K1 | Run Episode Check with progress and Cancel | episode-check | 4b | not started | 9 | #1049 |
 | K2 | Episode Check detectors (seven kinds) | episode-check | 4b | partial | 5 | none |
@@ -128,7 +128,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | M1 | Studio and Podcast face switch | faces | 4b | not started | 12 | #1063 |
 | M2 | Episode Map replaces the zoom navigator | faces | 4b | not started | 8 | #1052 |
 | M3 | One theme from named design values | faces | 4b | partial | 10 | none |
-| M4 | Large controls preference, 44 px minimum | faces | 4b | not started | 7 | #1062 |
+| M4 | Large controls preference, 44 px minimum | faces | 4b | partial | 5 | #1062 |
 | M5 | Out-of-v1 panels hidden in release | faces | 4b | partial | 8 | #1051 |
 | N1 | Automation core: one Backend, two ways | automation | 1b | partial | 8 | #1107 |
 | N2 | Command line: run, convert, inspect | automation | 1b | not started | 5 | #845 |
@@ -154,7 +154,10 @@ The store, the edit model, selection, transport and markers. I7's Mac measuremen
 
 **Complete:**
 
+- **A2 Save and Save As (WAV, AIFF, FLAC).** crates/core/src/save.rs and atomic.rs write WAV, AIFF and FLAC to a temporary file and swap it in. The window has Save, Save As, the title star and the close prompt in apps/wavcraft/src/app.rs. Tests: crates/core/tests/save.rs, atomic.rs, apps/wavcraft/src/issue369_tests.rs. Merged 2026-11-12: A2.1 (#1165), A2.2 (#1182). Done check: Unedited save is bit-identical for 16/24-bit and float WAV and AIFF (tested). A failed save leaves the original whole. Title shows * when unsaved. Closing unsaved asks first. Recorded: crates/core/tests/save.rs: t1_round_trip_is_bit_identical_for_each_sample_type, f35_aiff_round_trips_each_sample_type, t5_a_save_that_fails_halfway_leaves_the_target_whole. Title star: apps/wavcraft/src/a2_title_star_tests.rs window_title_marks_unsaved and the_title_sent_to_the_window_follows_edit_and_save (A2.1, #1165). Close prompt: apps/wavcraft/src/a2_close_prompt_tests.rs closing_with_unsaved_changes_asks_first and a_clean_document_closes_without_a_prompt (A2.2, #1182).
+- **C1 Time Selection tool gestures.** All gestures and Edit > Select (Select All, Deselect All) are on main: crates/core/src/view.rs (Selection), apps/wavcraft/src/app.rs (pointer wiring, GESTURE control verb), crates/core/src/actions.rs. Tests: view.rs unit tests per gesture, crates/core/tests/actions.rs select_all_and_clear_time_selection. Merged 2026-11-12: C1.1 (#1194). Done check: A test on each gesture, and positions in a 3-hour file exact to the sample. Recorded: Gesture half: unit tests in crates/core/src/view.rs. 3-hour half: crates/core/tests/c1_selection_three_hours.rs gestures_are_exact_at_three_hours (C1.1, #1194).
 - **D1 Cut, Copy, Paste, Delete.** crates/core/src/doc/edit.rs has delete, copy and paste (insert at the cursor or replace the selection). Actions and keys are in crates/core/src/actions.rs and shortcuts.rs. Tests: crates/core/tests/edits.rs, clipboards.rs, crates/testkit/tests/edits.rs. Bench: crates/testkit/src/bin/wavcraft-edit-bench. Done check: Cutting an hour from the middle of a 3-hour file takes under 50 ms and uses no extra sample memory (measured). Paste goes at the cursor or over the selection. Recorded: docs/baseline.md, Task 04: cut of 1 hour 0.34 to 0.36 ms with nothing written (0.94 to 0.99 ms and 768 bytes with the 2 ms join); paste back 0.55 to 0.67 ms.
+- **D2 Copy to New and Paste to New.** Actions edit.copy_to_new and edit.paste_to_new are in crates/core/src/actions.rs. crates/core/src/doc/newdoc.rs builds the document. apps/wavcraft/src/app.rs copy_to_new, paste_to_new, finish_making and add_document add it as an untitled row. Tests: crates/core/tests/newdoc.rs (core only). Merged 2026-11-12: D2.1 (#1188). Done check: Each command makes a new untitled file in the Files panel. Recorded: apps/wavcraft/src/d2_new_from_clip_tests.rs copy_and_paste_to_new_add_untitled_rows (D2.1, #1188).
 - **D3 Silence and Insert Silence.** crates/core/src/doc/edit.rs has silence and insert_silence. crates/core/src/actions.rs has the Silence action and the Insert Silence dialog action. Tests: crates/core/tests/edits.rs (silence_writes_nothing_and_is_exact_zeros and the model tests), crates/core/tests/actions.rs. Done check: Bit-exact zeros. Length unchanged for Silence, exactly longer for Insert Silence. Recorded: crates/core/tests/edits.rs silence_writes_nothing_and_is_exact_zeros (every sample has bits 0, length 150,000 after inserting 100,000 into 50,000).
 - **D4 Crop to selection (Ctrl+T).** crates/core/src/doc/edit.rs has crop. The Crop action is in crates/core/src/actions.rs with Ctrl+T in shortcuts.rs. Tests: crates/core/tests/edits.rs (each_edit_at_every_kind_of_place_matches_the_model, crop_of_an_empty_range_changes_nothing), crates/core/tests/edit_span.rs. Done check: Only the selection remains. Recorded: crates/core/tests/edits.rs each_edit_at_every_kind_of_place_matches_the_model (Crop compared bit for bit with the plain-vector model).
 - **D6 Zero-crossing adjust of selection edges.** crates/core/src/actions.rs has zero_crossing, a 10 ms reach and six actions (inward, outward and four single-edge moves). Keys Shift+I, O, H, J, K, L are in shortcuts.rs. Tests: crates/core/tests/actions.rs, crates/core/tests/snap.rs. Done check: Edges land on the nearest sign change within 10 ms. Recorded: crates/core/tests/actions.rs t6_zero_crossing_adjusts_land_on_sign_changes_of_the_1khz_tone and zero_crossing_finds_none_beyond_10_ms_and_never_turns_the_selection_inside_out (480 frames at 48 kHz). Open issue to close: #61.
@@ -165,58 +168,31 @@ The store, the edit model, selection, transport and markers. I7's Mac measuremen
 
 #### A1: Open WAV, AIFF, MP3, FLAC into the store (partial)
 
-- **On main:** Streamed open for WAV (all depths, BWF, RF64), AIFF, FLAC and MP3 is in crates/core/src/io.rs and store.rs. The core open already stops on a cancel flag and removes its session folder (test a_cancelled_open_leaves_nothing_behind in crates/testkit/tests/open.rs). Other tests: crates/testkit/tests/open.rs, crates/core/tests/store_and_doc.rs, multichannel.rs. MP3 is tested only with hand-built silent frames. The window opens on a worker thread in apps/wavcraft/src/app.rs. The status bar shows a spinner while opening but no Cancel button, and the control channel has no cancel line for an open.
+- **On main:** Streamed open for WAV (all depths, BWF, RF64), AIFF, FLAC and MP3 is in crates/core/src/io.rs and store.rs. The core open already stops on a cancel flag and removes its session folder (test a_cancelled_open_leaves_nothing_behind in crates/testkit/tests/open.rs). Other tests: crates/testkit/tests/open.rs, crates/core/tests/store_and_doc.rs, multichannel.rs. MP3 is tested with hand-built silent frames and a real 1 kHz tone fixture (crates/testkit/tests/data/tone-1k-44k1-stereo.mp3, test a_real_mp3_opens_with_its_rate_channels_and_length). The window opens on a worker thread in apps/wavcraft/src/app.rs. The status bar shows a spinner and a Cancel control while opening; the control channel has no cancel line for an open yet (A1.6). Merged 2026-11-12: A1.1 WaveApp::cancel_opening with its window test (#1164); A1.3 the refusal of more than 32 channels in io.rs (#1162); A1.4 a real MP3 fixture and its open test (#1191).
 - **Done check:** Each format matches a reference tool. A 3-hour 48 kHz stereo WAV opens under 10 s on the Windows build machine, adding at most 300 MB. No length limit. Open can be cancelled.
 - **Recorded so far:** docs/baseline.md, Task 03 (1.75 to 1.92 s, 5.3 MB above rest, 4 h 10 min RF64 opens). Cancel in the window and an outside reference tool are not recorded.
 - **Item issue:** #395
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| A1.1 | Add WaveApp::cancel_opening in app.rs: set the running open's cancel flag, drop it, clear the open queue and set the notice "Open cancelled". | New apps/wavcraft/src/a1_open_cancel_tests.rs, test cancel_opening_drops_the_job_and_adds_no_document: headless window, open a 60 s WAV, cancel at once. Asserts opening is None, file_rows() is empty, notice is "Open cancelled", and the scratch sessions folder is empty within 5 s. | easy | state | script | none | #1150 |
 | A1.2 | Draw a Cancel button beside the opening spinner in the status bar. A click calls cancel_opening. | Same test file, test the_status_bar_offers_cancel_while_opening: the opening branch of the status bar source holds a Cancel button and the frame calls self.cancel_opening(). Then, once by hand and not part of the script: make the kit with wavcraft-testkit <kit> --long, open long-3h-48k-stereo-16.wav, click Cancel in the status bar within 1 second. Expected: the spinner goes, the status bar reads "Open cancelled", the Files panel has no new row, and the sessions folder has no new folder. | easy | ui | script | A1.1 | #1151 |
-| A1.3 | Add one function in io.rs that refuses a channel count above channels::MAX_CHANNELS (32) with the text "<format> with <n> channels (at most 32 are supported)". Call it in the AIFF parser before stream_pcm and in decode_symphonia where it reads the channel count, before any buffer is reserved. The WAV parser uses it too. | crates/core/tests/multichannel.rs, new test an_aiff_with_too_many_channels_is_refused_by_name: hand-built AIFF headers with 33 and 5000 channels give OpenError::Decode whose text contains "33 channels" (then "5000 channels") and "32", and the sessions folder is empty after each. An in-file unit test in io.rs calls the new function with 32 (Ok) and 33 (Decode error containing "33 channels"), which covers the symphonia call. The existing test more_than_thirty_two_channels_are_refused_by_name still passes. | easy | data-shape | script | none | #1152 |
-| A1.4 | Add a real MP3 fixture (1 s, 1 kHz tone at half scale, 44.1 kHz stereo, 128 kbps, made with an outside encoder) and an open test on it. | crates/testkit/tests/open.rs, new test a_real_mp3_opens_with_its_rate_channels_and_length on tests/data/tone-1k-44k1-stereo.mp3: format Mp3, rate 44_100, 2 channels, frames between 44_100 and 47_000, peak between 0.4 and 0.6, no warnings. | easy | data-shape | script | an MP3 encoder such as ffmpeg to make the fixture once | #1168 |
 | A1.5 | Record the reference-tool comparison: run ffprobe on the kit WAV, AIFF, FLAC, an RF64, a BWF and the MP3 fixture, and write the table into docs/checklists/A1.md. | docs/checklists/A1.md has one row per file with ffprobe's sample rate, channel count and duration in samples beside WavCraft's values. Files: from wavcraft-testkit <kit> --long --huge, the tone WAV, AIFF and FLAC (48000, 2, 480000 each), pink-48k-mono-24.wav (48000, 1, 2880000), lr-different-48k-stereo-float.wav (48000, 2, 1440000) and the RF64 file (48000, 2, 720000000); plus a 32-bit integer WAV and a BWF WAV written by ffmpeg, and the MP3 fixture. WavCraft's values for the kit files are the ones crates/testkit/src/lib.rs expects; for the others I read them from the Files panel. Every pair is equal; the MP3 row may differ by encoder padding, and the row says by how many samples. | easy | docs | script | A1.4, ffprobe installed | #1169 |
 | A1.6 | Add a control line OPEN_CANCEL that calls cancel_opening: it answers OK when a file was opening and ERR nothing is opening otherwise. Document it in the control.rs header beside SAVE_CANCEL. | apps/wavcraft/src/a1_open_cancel_tests.rs, test open_cancel_over_the_control_channel: headless window, start opening a WAV, send OPEN_CANCEL. Asserts the answer is "OK", opening is None, file_rows() is empty and STATE has busy=0. A second OPEN_CANCEL answers a line starting with "ERR". | easy | wiring | script | A1.1 | #1153 |
 
-#### A2: Save and Save As (WAV, AIFF, FLAC) (built, check not recorded)
-
-- **On main:** crates/core/src/save.rs and atomic.rs write WAV, AIFF and FLAC to a temporary file and swap it in. The window has Save, Save As, the title star and the close prompt in apps/wavcraft/src/app.rs. Tests: crates/core/tests/save.rs, atomic.rs, apps/wavcraft/src/issue369_tests.rs.
-- **Done check:** Unedited save is bit-identical for 16/24-bit and float WAV and AIFF (tested). A failed save leaves the original whole. Title shows * when unsaved. Closing unsaved asks first.
-- **Recorded so far:** crates/core/tests/save.rs: t1_round_trip_is_bit_identical_for_each_sample_type, f35_aiff_round_trips_each_sample_type, t5_a_save_that_fails_halfway_leaves_the_target_whole. The title star and the close prompt are not tested or recorded.
-- **Item issue:** #10
-
-| Step | What | Verify | Size | Kind | By | Blocked by | Issue |
-|---|---|---|---|---|---|---|---|
-| A2.1 | Move the title code at the end of the frame into a function window_title(name, unsaved, open) and a small method that sends the Title command when the text changes, both in app.rs, and test them. | New apps/wavcraft/src/a2_title_star_tests.rs. window_title_marks_unsaved: ("take.wav", true, true) gives "*take.wav — WavCraft", unsaved false gives "take.wav — WavCraft", no file gives "WavCraft". the_title_sent_to_the_window_follows_edit_and_save: headless window, a new empty document, Insert Silence of 100 frames, run the title code in one frame: the last ViewportCommand::Title sent is "*Untitled — WavCraft". Save to saved.wav, run frames until saving is None: the last Title sent is "saved.wav — WavCraft". | easy | pure-fn | script | none | #1154 |
-| A2.2 | Add a headless-window test that closing the window with unsaved changes is held back and asks first, and that a clean document closes without a prompt. No app code changes unless the test finds a fault. | New apps/wavcraft/src/a2_close_prompt_tests.rs, test closing_with_unsaved_changes_asks_first: a new document with Insert Silence of 100 frames; run one frame of close_prompt with a viewport Close event in the input. Asserts confirm_close is true, a ViewportCommand::CancelClose was sent and the document is still open with 100 frames. Test a_clean_document_closes_without_a_prompt: same with a saved, unedited document; confirm_close stays false and no CancelClose is sent. | easy | state | script | none | #1156 |
-
 #### A6: Markers survive a save (built, check not recorded)
 
-- **On main:** crates/core/src/markers.rs writes and reads WAV cue and LIST/adtl chunks and AIFF MARK. io.rs reads them on open and save.rs writes them. Tests: crates/core/tests/save.rs (m1, m2, m3, f100), crates/core/tests/990_autosave_markers.rs.
+- **On main:** crates/core/src/markers.rs writes and reads WAV cue and LIST/adtl chunks and AIFF MARK. io.rs reads them on open and save.rs writes them. Tests: crates/core/tests/save.rs (m1, m2, m3, f100), crates/core/tests/990_autosave_markers.rs. Merged 2026-11-12: A6.1 (#1166).
 - **Done check:** Save with 5 markers, reopen, all 5 are back at the same sample with the same names. Audition reads them back too, checked on one file.
 - **Recorded so far:** crates/core/tests/save.rs m1_markers_round_trip_through_save_and_reopen_for_every_sample_type uses 3 markers, not 5. The Audition check is not recorded (docs/v1/audition-behaviour.md line 218 says still open).
 - **Item issue:** #14, #62
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| A6.1 | Add a five-marker round-trip test for WAV and AIFF: four point markers, one range marker, one name with non-ASCII letters. | crates/core/tests/save.rs, new test a6_five_markers_round_trip_in_wav_and_aiff: 3001 frames, markers at 0, 1000, 2000..2500, 2600 and 3000. After save and reopen in each format, marker_view has the same 5 names, starts and ends. | easy | data-shape | script | none | #1157 |
 | A6.2 | Hand check on the Windows build machine with Audition: save a five-marker WAV from WavCraft and open it in Audition. Also open an Audition-saved file with markers in WavCraft. | In WavCraft: a 10 s 48 kHz file, markers named One to Five at 1 s, 2 s, 3 s to 3.5 s (a range), 4 s and 5 s, saved as WAV. In Audition: open it; the Markers panel must list the 5 names at 0:01.000, 0:02.000, 0:03.000 (duration 0:00.500), 0:04.000 and 0:05.000. Then in Audition add 2 markers to a file, save it with Include Markers and Other Metadata ticked, and open it in WavCraft: the Markers panel lists both names at the same times. I write what I saw, the Audition version and the date into docs/checklists/A6.md, and replace item 7 under "Things to check in Audition itself" in docs/v1/audition-behaviour.md. | easy | docs | hand, me, windows | A6.1, a machine with Audition installed |  |
-
-#### D2: Copy to New and Paste to New (built, check not recorded)
-
-- **On main:** Actions edit.copy_to_new and edit.paste_to_new are in crates/core/src/actions.rs. crates/core/src/doc/newdoc.rs builds the document. apps/wavcraft/src/app.rs copy_to_new, paste_to_new, finish_making and add_document add it as an untitled row. Tests: crates/core/tests/newdoc.rs (core only).
-- **Done check:** Each command makes a new untitled file in the Files panel.
-- **Recorded so far:** not recorded
-- **Item issue:** #26
-
-| Step | What | Verify | Size | Kind | By | Blocked by | Issue |
-|---|---|---|---|---|---|---|---|
-| D2.1 | Add a headless-window test that Copy to New and Paste to New each add one untitled, unsaved row to the Files panel rows and make it current. | New apps/wavcraft/src/d2_new_from_clip_tests.rs, test copy_and_paste_to_new_add_untitled_rows: 1000-frame document, select 100..300, copy_to_new, run frames calling finish_making until making is None. file_rows() has 2 rows; row 2 has name "Untitled", empty path, unsaved true, 200 frames, and is the current document. Then run the Copy action on 0..50 and paste_to_new: file_rows() has 3 rows and row 3 is "Untitled", empty path, unsaved true, 50 frames and current. | easy | state | script | none | #1158 |
 
 #### D5: Undo, Redo and the History panel (built, check not recorded)
 
-- **On main:** crates/core/src/doc/history.rs holds steps on disk with a disk cap. Undo and Redo labels name the step (actions.rs). The History panel in apps/wavcraft/src/app.rs has click to go, Up and Down, Clear History and a line that says how many old steps were removed. That line shows only while the History panel is open; nothing is said in the status bar when a step drops. Tests: crates/core/tests/edits.rs (disk_cap_drops_the_oldest_steps_and_their_packs), actions.rs (t8_undo_and_redo_labels_name_the_step), history_restore.rs.
+- **On main:** crates/core/src/doc/history.rs holds steps on disk with a disk cap. Undo and Redo labels name the step (actions.rs). The History panel in apps/wavcraft/src/app.rs has click to go, Up and Down, Clear History and a line that says how many old steps were removed. That line shows only while the History panel is open; nothing is said in the status bar when a step drops. Tests: crates/core/tests/edits.rs (disk_cap_drops_the_oldest_steps_and_their_packs), actions.rs (t8_undo_and_redo_labels_name_the_step), history_restore.rs. Merged 2026-11-12: D5.2 (#1187).
 - **Done check:** 200 steps on a 3-hour file, undo all, bit-identical (a test). Undo of a cut under 50 ms. History capped by disk; oldest steps drop with a notice.
 - **Recorded so far:** docs/baseline.md, Task 04 (undo all 200 bit-identical, undo of the cut 0.58 to 0.60 ms), run on 2026-10-15. The test long_file_200_random_edits_then_undo_all is ignored and has no recorded run on current main.
 - **Item issue:** #63
@@ -224,48 +200,33 @@ The store, the edit model, selection, transport and markers. I7's Mac measuremen
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
 | D5.1 | Run the ignored 200-edit test on current main on the Windows build machine with the 3-hour kit file and append the dated result to docs/baseline.md, Task 04. | Make the kit with wavcraft-testkit <kit> --long (about 2 GB). With WAVCRAFT_KIT set to that folder: cargo test --release -p wavcraft-testkit --test edits -- --ignored --nocapture. long_file_200_random_edits_then_undo_all passes and prints "dropped by the cap: 0". I append the date, the commit, the undo-all time and the slowest undo to Task 04 in docs/baseline.md. | easy | docs | script | none |  |
-| D5.2 | Add a pure function drop_notice(seen, now, cap_bytes) in app.rs that returns the history.dropped text when the dropped count has risen. | New apps/wavcraft/src/d5_drop_notice_tests.rs, test drop_notice_speaks_only_when_the_count_rises: (0, 3, 4_000_000_000) gives Some("Oldest 3 steps removed to stay under 4.0 GB"); (3, 3, ..) and (0, 0, ..) give None. | easy | pure-fn | script | none | #1159 |
 | D5.3 | Each frame, compare the current document's dropped_total with the last seen value and put drop_notice's text in the status-bar notice. Reset the seen value when the document changes. | Same file, test a_drop_by_the_cap_reaches_the_status_bar: headless window, a new mono document of 262,144 frames, editor.history.set_cap_disk_bytes(1 << 20), then push three edit::replace_range edits over the whole file (each writes 1 MiB) so dropped_total() is at least 1. Run the new per-frame check once: the notice starts with "Oldest " and contains "removed to stay under". Run it again with no new drop: the notice is not set again. Switch to another document: the seen count resets and no notice appears. | easy | wiring | script | D5.2 | #1160 |
 
 #### I7: Memory fits an 8 GB Mac (built, check not recorded)
 
-- **On main:** All audio lives in the on-disk store with a bounded block cache (crates/core/src/store.rs). Undo steps cost disk and are capped (crates/core/src/doc/history.rs). Views read from the store. Tests: crates/core/tests/edits.rs, store_and_doc.rs, incremental_overviews.rs, crates/testkit/tests/space.rs. Script: tools/alpha/f05-mem.py.
+- **On main:** All audio lives in the on-disk store with a bounded block cache (crates/core/src/store.rs). Undo steps cost disk and are capped (crates/core/src/doc/history.rs). Views read from the store. Tests: crates/core/tests/edits.rs, store_and_doc.rs, incremental_overviews.rs, crates/testkit/tests/space.rs. Script: tools/alpha/f05-mem.py. Merged 2026-11-12: I7.1 (#1163).
 - **Done check:** 3-hour stereo file, 20 edits, history kept: memory under 1.5 GB, measured on the Windows build machine then the 8 GB Mac. History capped by disk; old steps drop with a notice.
 - **Recorded so far:** docs/baseline.md, Task 04, has the Windows core figure (0.633 GB working set after 200 edits, block cache 512 MB). The M1 Mac mini figures are only in comments on #50, #1037 and #1045, not in the repo. The "old steps drop with a notice" part is the same gap as D5 and is closed by D5.2 and D5.3.
 - **Item issue:** #50
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| I7.1 | Copy the M1 Mac mini measurement from the #50 and #1045 comments into docs/baseline.md as a new section. | docs/baseline.md has a section "I7 on the 8 GB Mac" with the commit, the recipe and rows for open, 20 edits, 20 undos, 200 edits and 200 undos, each with footprint and resident size. Every peak footprint is under 1,500 MB. | easy | docs | script | none | #1149 |
 | I7.2 | Change the Done text of the I7 row in docs/v1/v1.md to say which number is judged on the Mac (physical footprint from vmmap, as tools/alpha/f05-mem.py reports) and which on Windows (working set), and link the baseline section. | The I7 row in docs/v1/v1.md names physical footprint for the Mac and working set for Windows, keeps the 1.5 GB limit, and links to the "I7 on the 8 GB Mac" section of docs/baseline.md. git diff shows only that row changed. | easy | docs | script | I7.1, my yes to changing the wording of the Done row |  |
-
-#### C1: Time Selection tool gestures (built, check not recorded)
-
-- **On main:** All gestures and Edit > Select (Select All, Deselect All) are on main: crates/core/src/view.rs (Selection), apps/wavcraft/src/app.rs (pointer wiring, GESTURE control verb), crates/core/src/actions.rs. Tests: view.rs unit tests per gesture, crates/core/tests/actions.rs select_all_and_clear_time_selection.
-- **Done check:** A test on each gesture, and positions in a 3-hour file exact to the sample.
-- **Recorded so far:** Gesture half: unit tests in crates/core/src/view.rs. The 3-hour half is not recorded: no test places a selection near frame 518,400,000.
-- **Item issue:** #20, #69
-
-| Step | What | Verify | Size | Kind | By | Blocked by | Issue |
-|---|---|---|---|---|---|---|---|
-| C1.1 | Add a test that each selection gesture is exact to the sample at the far end of a 3-hour 48 kHz file (518,400,000 frames). No production code changes expected. | New crates/core/tests/c1_selection_three_hours.rs, fn gestures_are_exact_at_three_hours, with Viewport{start:518_399_000.0, frames_per_px:0.5} and length 518_400_000. Each case starts from a fresh value. (1) frame_at(1998.0)==518_399_999.0. (2) Plain drag: a selection built from frame_at(200.0) and frame_at(1998.0) is 518_399_100..518_399_999. (3) Selection::visible(v,4000.0,518_400_000)==(518_399_000,518_400_000) and all==(0,518_400_000). (4) On the selection 518_399_100..518_399_500, edge_near(v,1003.0,GRAB_PX)==Some(End); this is checked before any extend. (5) Edge drag: grab(End) on that selection, then moving the head to 518_399_999, gives 518_399_100..518_399_999. (6) Shift-click: extend_to(518_399_999) on 518_399_100..518_399_500 ends at 518_399_999. | easy | pure-fn | script | none | #1170 |
 
 #### C2: One channel of a stereo file (partial)
 
-- **On main:** Up/Down keys, Edit > Enable Channels, amplitude-ruler channel buttons, drag-position channel pick and one-channel Delete (silences, keeps length) are on main: crates/core/src/actions.rs, shortcuts.rs, view.rs, apps/wavcraft/src/app.rs. Tests: crates/core/tests/actions.rs t4, t9b, f42, f68; crates/testkit/tests/edits.rs.
+- **On main:** Up/Down keys, Edit > Enable Channels, amplitude-ruler channel buttons, drag-position channel pick and one-channel Delete (silences, keeps length) are on main: crates/core/src/actions.rs, shortcuts.rs, view.rs, apps/wavcraft/src/app.rs. Tests: crates/core/tests/actions.rs t4, t9b, f42, f68; crates/testkit/tests/edits.rs. Merged 2026-11-12: C2.1 (#1192) and C2.2, the left-only Amplify test (#1198).
 - **Done check:** Delete or Amplify on a left-only selection leaves the right channel bit-identical, and Delete leaves the length unchanged.
 - **Recorded so far:** Delete half: crates/core/tests/actions.rs t9b_up_then_delete_silences_the_left_range_and_keeps_the_length. Amplify half is not recorded: the only mask test is right-only and compares within 1e-6.
 - **Item issue:** #21
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| C2.1 | Make the context-sensitive channel editing preference off by default, as the row says. Swap the two table values in the settings test and fix the doc comment in view.rs. | New test in crates/core/tests/settings.rs, fn context_channel_editing_is_off_by_default: Settings::default().context_channel_editing == false. F83_DEFAULTS row reads ("context_channel_editing","false") and F83_CHANGED reads "true". cargo test -p wavcraft-core --test settings passes. | easy | state | script | none | #1171 |
-| C2.2 | Add the Done test for Amplify: a left-only Amplify leaves the right channel bit-identical and the length unchanged. | crates/core/tests/amplify.rs, new fn c2_amplify_on_the_left_only_leaves_the_right_bit_identical: stereo ramps of 1000 frames, params [-20.0, 20.0, 0.0], range 100..200, ChannelMask::only(0). Every right sample has equal to_bits(); left[150] is 0.1 times the original within 1e-6; left[50] unchanged; length 1000. | easy | pure-fn | script | none | #1172 |
 | C2.3 | Keep the alpha script for the channel drag working after the default changes. Send PREF set context_channel_editing true before the channel drags in tools/alpha/f42.py. | python3 tools/alpha/f42.py against a debug build: the check that a drag in the top strip replies selch=L passes, and the whole script exits 0. With the PREF line removed and the new default, the same check fails. | easy | wiring | script | C2.1 |  |
 
 #### C3: Snapping: markers, ruler, zero crossings, key S (partial)
 
-- **On main:** crates/core/src/snap.rs (snap_frame, six switches), key S in shortcuts.rs, View > Snapping submenu and ruler context menu (apps/wavcraft/src/app.rs, menus.rs); clicks and selection drags snap. Tests: crates/core/tests/snap.rs. Missing: toolbar toggle button, Edit > Snapping, snapping of the playhead drag.
+- **On main:** crates/core/src/snap.rs (snap_frame, six switches), key S in shortcuts.rs, View > Snapping submenu and ruler context menu (apps/wavcraft/src/app.rs, menus.rs); clicks and selection drags snap. Tests: crates/core/tests/snap.rs. The playhead drag along the ruler snaps too (apps/wavcraft/src/c3_playhead_snap_tests.rs). Missing: toolbar toggle button. Merged 2026-11-12: C3.3, the Edit > Snapping submenu sharing snap_items with the ruler menu (#1200); C3.4, the playhead drag snap (#1201).
 - **Done check:** Edges snap to within 0 samples of a marker when snapping is on.
 - **Recorded so far:** crates/core/tests/snap.rs frames_snap_to_point_markers_and_range_edges_when_asked (7_000 snaps to 7_300, 11_500 to 12_000, 16_600 to 16_000).
 - **Item issue:** #22
@@ -274,19 +235,16 @@ The store, the edit model, selection, transport and markers. I7's Mac measuremen
 |---|---|---|---|---|---|---|---|
 | C3.1 | Add the Snapping toggle to the toolbar table, with the short text "Snap". | apps/wavcraft/src/menus.rs tests, new fn the_toolbar_has_the_snapping_toggle: toolbar_item("view.snap.toggle").map(\|i\| i.cmd) == Some(Cmd::Action(ActionId::SnapToggle)) and glyph(&item) == "Snap". The existing toolbar_has_the_common_commands_and_unique_names still passes. | easy | ui | script | none |  |
 | C3.2 | Show the toolbar Snap button as pressed while snapping is on. Pull the pressed rule into a small function used by the toolbar drawing. | apps/wavcraft/src/app.rs tests, new fn the_snap_button_is_pressed_while_snapping_is_on: toolbar_item_on(snap_item, playing=false, snap_on=true) == true; (snap_item, false, false) == false; (play_item, true, false) == true. Control line TOOLBAR run view.snap.toggle replies OK. | easy | ui | script | C3.1 |  |
-| C3.3 | Add the Snapping submenu to the Edit menu, reusing snap_items and toggle_snap_menu. Keep the View copy. | Run the app on any platform: Edit > Snapping lists six tick items, from "Snapping" to "Snap to Markers". Ticking "Snap to Zero Crossings" there shows it ticked in View > Snapping and in the ruler's right-click menu. | easy | ui | script | none | #1173 |
-| C3.4 | Snap the playhead when it is dragged along the ruler. Today that drag uses the raw frame (app.rs line 11211). Add one function that snaps a dragged frame with the current snap settings and call it from the pointer drag only. Leave the SCRUB control verb exact. | New apps/wavcraft/src/c3_playhead_snap_tests.rs, built on the headless window used in issue377_tests.rs. With a point marker at 48_000 and snapping on, the new drag function turns a frame a few pixels from the marker into 48_000. With snapping off it returns the frame unchanged. The control line SCRUB 47_900 still reports 47_900 with snapping on. tools/alpha/f36.py still passes. | easy | wiring | script | none | #1174 |
 
 #### C5: Transport (partial)
 
-- **On main:** Space play/stop, play from cursor or selection, Loop Playback, Home/End, marker jumps, Return on Stop (Shift+X) and J/K/L shuttle are on main: crates/core/src/transport.rs, apps/wavcraft/src/app.rs, player.rs. Tests: transport.rs and player.rs unit tests. Missing: the move to a selection edge.
+- **On main:** Space play/stop, play from cursor or selection, Loop Playback, Home/End, marker jumps, Return on Stop (Shift+X) and J/K/L shuttle are on main: crates/core/src/transport.rs, apps/wavcraft/src/app.rs, player.rs. Tests: transport.rs and player.rs unit tests. Missing: the move to a selection edge. Merged 2026-11-12: C5.1, the pure playhead_stop rule in transport.rs (#1199); the window actions are C5.2.
 - **Done check:** With Shift+X on, Space twice returns to where I started. Loop plays the selection with no gap at the seam, by ear.
 - **Recorded so far:** not recorded. Only the pure rule is tested (transport.rs stop_returns_the_cursor_to_the_start_unless_turned_off). No by-ear loop result is written anywhere.
 - **Item issue:** #24, #67, #1081, #69
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| C5.1 | Add a pure function that finds the next or previous stop for the playhead among the markers and the two selection edges. | crates/core/src/transport.rs tests, new fn playhead_stops_at_markers_and_selection_edges: markers 1_000 and 9_000, selection 4_000..6_000. Forward from 0 gives 1_000, 4_000, 6_000, 9_000, then None. Backward from 9_500 gives 9_000, 6_000, 4_000, 1_000, then None. | easy | pure-fn | script | none | #1175 |
 | C5.2 | Add window actions "Move Playhead to Previous" and "Move Playhead to Next" to the action table, bound to Alt+Left and Alt+Right. | crates/core/tests/shortcuts.rs: a new test finds Alt+ArrowLeft and Alt+ArrowRight on the two new actions; every_row_of_the_table_has_a_test_above and the_default_table_has_no_chord_on_two_commands pass. every_action_in_the_table_has_its_menu_text_in_english (crates/core/src/i18n.rs) passes. i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows passes with the two new rows in its list. cargo test --workspace passes. | medium | data-shape | script | my leave to edit the locked I3 test file |  |
 | C5.3 | Run the two actions in the window: seek while playing or paused; when stopped, move the drawn playhead and keep the selection. Unknown: a stopped playhead exists only as head_scrub.pos. | New apps/wavcraft/src/c5_playhead_move_tests.rs, fn alt_right_moves_the_playhead_to_the_selection_end_and_keeps_the_selection: 10_000 frames, marker 1_000, selection 4_000..6_000, stopped. PlayheadNext: playhead 6_000, selection still 4_000..6_000. PlayheadPrev twice from there: 4_000, then 1_000. | medium | wiring | script | C5.1, C5.2 |  |
 | C5.4 | Correct the key in the v1.md C5 row from Ctrl+Left/Right to Alt+Left/Right, citing the Audition check already recorded in audition-behaviour.md. Needs my approval, since v1.md is the approved scope. | grep -n "Alt+Left" docs/v1/v1.md prints the C5 row, and the row no longer contains "Ctrl+Left/Right". It matches docs/v1/audition-behaviour.md line 20. | easy | docs | script | C5.2, my approval of the key change |  |
@@ -300,32 +258,28 @@ The store, the edit model, selection, transport and markers. I7's Mac measuremen
 
 #### H1: Add Marker with M or * (partial)
 
-- **On main:** M adds a point at the cursor, a range for a selection, and a point at the playhead while playing; flags draw on the ruler: crates/core/src/markers.rs, actions.rs, shortcuts.rs, apps/wavcraft/src/app.rs (draw_markers). Tests: crates/core/tests/actions.rs m1, crates/core/tests/shortcuts.rs marker_add_m. The * key is missing.
+- **On main:** M adds a point at the cursor, a range for a selection, and a point at the playhead while playing; flags draw on the ruler: crates/core/src/markers.rs, actions.rs, shortcuts.rs, apps/wavcraft/src/app.rs (draw_markers). Tests: crates/core/tests/actions.rs m1, crates/core/tests/shortcuts.rs marker_add_m. Merged 2026-11-12: H1.1, a typed * adds a marker when no text field has the keyboard (#1203).
 - **Done check:** One key press; the marker appears on the ruler.
 - **Recorded so far:** not recorded
 - **Item issue:** #40
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| H1.1 | Make * add a marker. egui 0.36 has no key for numpad multiply, so treat a typed "*" text event as Add Marker when no text field has the keyboard. | New apps/wavcraft/src/h1_star_marker_tests.rs, fn a_typed_star_adds_a_marker: events [Text("*")] give pressed_commands == [Command::Action(ActionId::MarkerAdd)]; Text("8") gives []; with a focused text field Text("*") gives []. | easy | wiring | script | none | #1178 |
 | H1.3 | Keep my selection when I add a marker during playback. Today run_action replaces the selection with a cursor at the playhead after Add Marker. | apps/wavcraft/src/h1_star_marker_tests.rs on the headless window with WAVCRAFT_NO_AUDIO=1: 3 s of 48 kHz audio, loop on, selection 24_000..72_000. Start playback, run Add Marker. One point marker exists and its frame is inside 24_000..72_000. The selection is still 24_000..72_000. Playback is still running. The same test fails on main, where the selection becomes a cursor at the playhead. | easy | state | script | none | #1179 |
 | H1.4 | Hand check on the Windows build machine with a full keyboard: M and numpad * while stopped, with a selection, and while playing. | Hand check, Windows: M at a cursor shows a point flag on the ruler; M with a selection shows a range flag; numpad * and Shift+8 during playback each add a flag at the moving playhead and playback continues. Written into docs/checklists/H1.md. | easy | docs | hand, windows | H1.1, H1.3 |  |
 
 #### H2: Markers panel (partial)
 
-- **On main:** apps/wavcraft/src/markers_panel.rs: table with name, start, end, duration; rename by double-click; Merge button; a single click selects the marker's span. Core: Editor::rename_marker, merge_markers, move_marker in crates/core/src/actions.rs. Tests: markers.rs unit tests, crates/core/tests/actions.rs m6, m9, m10. No Delete, Convert or typed Start/End in the panel.
+- **On main:** apps/wavcraft/src/markers_panel.rs: table with name, start, end, duration; rename by double-click; Merge button; a single click picks the row and a double-click goes to the marker's span (H2.6). Core: Editor::rename_marker, merge_markers, move_marker in crates/core/src/actions.rs. Tests: markers.rs unit tests, crates/core/tests/actions.rs m6, m9, m10. The panel has no Delete, Convert or typed Start/End yet. Merged 2026-11-12: H2.1 Editor::delete_markers (#1193); H2.2 Editor::set_marker_extent (#1196); H2.6 the panel click rule (#1202).
 - **Done check:** Edits made in the panel move the marker on the ruler.
 - **Recorded so far:** not recorded
 - **Item issue:** #41
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| H2.1 | Core: add Editor::delete_markers(ids), one "Delete Marker" history step, false when nothing matches. | crates/core/tests/actions.rs, new fn h2_delete_markers_by_id_is_one_undo_step: on the five-marker fixture, deleting the ids of 100 and 450 leaves [(300,400),(700,900),(950,950)]; undo_label is "Delete Marker"; Undo restores 5; an empty id list returns false and adds no step. | easy | state | script | none | #1180 |
-| H2.2 | Core: add Editor::set_marker_extent(id, range), one "Move Marker" step wrapping Markers::with_extent, refusing a range past the end of the file. | crates/core/tests/actions.rs, each case from a fresh 48_000-frame fixture with one point marker at 10_000. (1) set_marker_extent(id, 10_000..20_000) returns true, the marker is the range 10_000..20_000, the history step is named Move Marker, and undo brings back the point. (2) set_marker_extent(id, 5_000..5_000) moves the point to 5_000. (3) set_marker_extent(id, 40_000..50_000) returns false and changes nothing, because 50_000 is past the end. (4) An unknown id returns false. | easy | state | script | none | #1181 |
 | H2.3 | Pure function in the panel module that says which buttons are enabled for the picked rows: Delete, Merge, To Range, To Point. | apps/wavcraft/src/markers_panel.rs tests, new fn buttons_follow_the_picked_rows: nothing picked gives all false; one point gives delete and to_range; one range gives delete and to_point; a point and a range picked give delete and merge only. | easy | pure-fn | script | none | #1183 |
 | H2.4 | Add Delete, To Range and To Point buttons beside Merge. To Range makes a 1 second range from the point (clamped to the file); To Point keeps the start. | Run the app, any platform, file with two markers: pick a point row, To Range: Type reads Range, Duration 0:01.000. To Point: Type reads Point. Delete: the count reads "1 markers" and the flag leaves the ruler. Ctrl+Z brings it back. | easy | ui | script | H2.1, H2.2, H2.3, my ruling on the To Range length |  |
 | H2.5 | Pure function that turns typed Start or End text into the marker's new extent. Parse the same m:ss.mmm form the panel shows today. Refuse bad text, an end before the start, or a time past the file. | apps/wavcraft/src/markers_panel.rs tests, new fn typed_start_and_end_give_the_new_extent: 48 kHz, range 48_000..96_000. Start "0:00.500" gives 24_000..96_000; End "0:03.000" gives 48_000..144_000; End "0:00.500" gives None; "abc" gives None; a time past the length gives None. | easy | pure-fn | script | none | #1184 |
-| H2.6 | Change the click rule in MarkersUi for the panel: a single click only picks the row; a double-click returns the span to go to; a click on a cell of the only picked row starts editing it. Keep a separate go-to path for the MARKER select control verb, so it still returns the span. | apps/wavcraft/src/markers_panel.rs tests, new fn a_single_click_picks_and_a_double_click_goes: markers 1000 and 5000..5400. Single click on row 1 returns None and picks it; double click returns Some(5000..5400); double click on row 0 returns Some(1000..1000) and starts no rename. | easy | state | script | none | #1185 |
 | H2.7 | Wire the double-click in the panel: move the playhead to the marker and select a range marker's span. Rename moves to a click on the name of the picked row. | Headless window test: with a range marker 30_000..40_000, the control line MARKER select 1 replies OK selection=30000-40000 and the playhead is at 30_000. For a point marker at 10_000 the reply shows a cursor at 10_000. A single pick through the new rule leaves the selection unchanged. tools/alpha/f39.py still passes. | easy | ui | script | H2.6 |  |
 | H2.8 | Make the Start and End cells editable for the picked row; Enter commits through set_marker_extent, Escape cancels. | Run the app, any platform, 48 kHz file with a point marker at 0:01.000: click its row, click Start, type 0:02.000, Enter. The flag on the ruler moves to 2 s, History lists "Move Marker", and Ctrl+Z moves it back. | medium | ui | hand | H2.2, H2.5, H2.6 |  |
 | H2.9 | Hand check of the Done line on a Linux handheld: rename, typed Start, Delete, Merge, To Range and To Point, each watched on the ruler. | Hand check, Linux: after each of the six edits the flag on the ruler changes to match the panel row (name, position, gone, one range, range, point). Each result is written into docs/checklists/H2.md with the date and commit. | easy | docs | hand, linux | H2.4, H2.7, H2.8 |  |
@@ -458,14 +412,13 @@ My ruling, 2026-11-03: "In v1, after Editor (Recommended)". Order: N1, then N2.1
 
 #### J3: A crash keeps the take (built, check not recorded)
 
-- **On main:** crates/core/src/record.rs syncs the header every second and keeps a .recording marker. crates/core/src/take_recovery.rs finds and repairs; apps/wavcraft/src/recovery.rs and App::recover_take offer and open. Tests: crates/core/tests/take_recovery.rs (9 tests, three CI systems). Scripted run tools/alpha/f55.py kills the app mid-take, restarts, sends RECOVERTAKE and checks the length, the tone and that the marker is gone.
+- **On main:** crates/core/src/record.rs syncs the header every second and keeps a .recording marker. crates/core/src/take_recovery.rs finds and repairs; apps/wavcraft/src/recovery.rs and App::recover_take offer and open. Tests: crates/core/tests/take_recovery.rs (9 tests, three CI systems). Scripted run tools/alpha/f55.py kills the app mid-take, restarts, sends RECOVERTAKE and checks the length, the tone and that the marker is gone. Merged 2026-11-12: J3.1, the fake-input test waits for the tap instead of sleeping (#1155).
 - **Done check:** Kill the app mid-take. After restart the take holds everything but at most the last second and plays. Tested automatically on every machine, and once by hand.
 - **Recorded so far:** not recorded
 - **Item issue:** #53
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| J3.1 | Replace the fixed 250 ms sleep in the fake input test with a wait of up to 5 seconds until the tap holds more than 4000 samples. | Test a_fake_input_feeds_the_tap_until_stopped in apps/wavcraft/src/input_monitor.rs still asserts samples > 4000 and peak within 0.2 dB of -12.0. 'grep -n "from_millis(250)" apps/wavcraft/src/input_monitor.rs' prints nothing. The macOS test job passes on the pull request. | easy | state | script | none | #1145 |
 | J3.2 | Delete the unused stubs take_repair.rs and take_recover.rs, their two ignored test files and their two lines in lib.rs. In docs/code-map.md remove their four rows and fix the recovery.rs row that names take_recover.rs. | 'ls crates/core/src/take_repair.rs crates/core/src/take_recover.rs crates/core/tests/j3_take_repair.rs crates/core/tests/j3_take_recover.rs' reports all four missing. 'grep -n "take_repair\\|take_recover;" crates/core/src/lib.rs' prints nothing. 'grep -c "take_repair\\|take_recover\.rs" docs/code-map.md' prints 0. 'cargo test -p wavcraft-core --test take_recovery' reports 9 passed, 0 ignored. | easy | rename | script | my approval to delete two ignored test files |  |
 | J3.3 | Add a test that kills a real process mid-take: the test starts a copy of itself that records the fake sine, waits for the header to claim 96000 frames, kills it, then repairs. | New crates/core/tests/j3_process_kill.rs, test a_killed_process_leaves_a_take_that_repairs: unfinished_takes lists 1 take; repair_take returns at least 96000 frames and equals (file length - 44) / 3; the marker is gone; the file opens as 48000 Hz mono. Green on the three CI systems. | medium | state | script | J3.1 |  |
 | J3.5 | Hand kill once on the 64 GB Linux tablet: record with the USB mic, note the elapsed time at about 1:00, run kill -9 on the app, start it again, click Recover, play. | Must see: the recovery window lists the take; after Recover its length is within 1 second of the noted time; it plays to the end; no .recording file is left. Write date, commit and both times into docs/checklists/J3.md. | easy | docs | hand, me, linux | none |  |
@@ -498,16 +451,14 @@ My ruling, 2026-11-03: "In v1, after Editor (Recommended)". Order: N1, then N2.1
 
 #### J6: Recording works on every machine (partial)
 
-- **On main:** Fake input in crates/core/src/record.rs (WAVCRAFT_FAKE_INPUT) and the scripted run tools/alpha/f25.py for the Windows build machine. Core recording tests run on three CI systems. No macOS bundle, no microphone usage text, no refusal message anywhere.
+- **On main:** Fake input in crates/core/src/record.rs (WAVCRAFT_FAKE_INPUT) and the scripted run tools/alpha/f25.py for the Windows build machine. Core recording tests run on three CI systems. No refusal message is shown yet (J6.2 wires it). Merged 2026-11-12: J6.1 the pure mic_blocked_hint in recording.rs (#1161); J6.3 tools/macos/bundle.sh and Info.plist with the microphone usage text (#1167).
 - **Done check:** A 10-minute take with a USB mic on each machine, opened and played back afterwards.
 - **Recorded so far:** not recorded
 - **Item issue:** #56
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| J6.1 | Add pure mic_blocked_hint(os, frames, rate, peak_so_far) to recording.rs: on macOS, two seconds of exact zeros gives a message naming System Settings, Privacy & Security, Microphone. | New test in apps/wavcraft/src/recording.rs, a_silent_start_on_macos_explains_the_permission: ("macos", 96000, 48000, 0.0) is Some text containing 'Privacy & Security'; ("macos", 96000, 48000, 0.001) is None; ("linux", 96000, 48000, 0.0) is None; ("macos", 4800, 48000, 0.0) is None. | easy | pure-fn | script | none | #1146 |
 | J6.2 | Track the take's highest peak in refresh() and show the hint once as the app's notice. On macOS also add the same text to an input-open error. | New tests in apps/wavcraft/src/recording.rs. a_silent_take_raises_the_hint_once: a take fed 96000 zero frames, after waiting up to 5 seconds for the writer to hold 96000 frames, returns the hint from take_hint("macos") once and None on the next call; the same take with "linux" returns None. an_input_open_error_on_macos_names_the_permission: open_error_text("macos", "no audio input device") contains 'Privacy & Security' and the same call with "linux" returns the error unchanged. | easy | wiring | script | J6.1 | #1147 |
-| J6.3 | Add a macOS bundle script and Info.plist that wrap the release binary as WavCraft.app with NSMicrophoneUsageDescription set to 'WavCraft records takes from your microphone.' | On a Mac: tools/macos/bundle.sh ends with 'target/release/WavCraft.app'; 'plutil -extract NSMicrophoneUsageDescription raw target/release/WavCraft.app/Contents/Info.plist' prints 'WavCraft records takes from your microphone.'; 'open target/release/WavCraft.app' shows the window. | medium | wiring | hand, mac | none | #1148 |
 | J6.4 | On the Windows build machine, which has no mic, run the two scripted fake-input runs (record and kill, then kill and recover) and write the result down. | Commands in Git Bash: tools/alpha/f25.sh, then tools/alpha/f55.sh. Expected: every check ok and status pass in both, including 'the Levels meter shows the take' in f25 and 'RECOVERTAKE answers OK' and 'the marker is gone' in f55. Paste date, commit and both pass lines into docs/checklists/J6.md under 'Windows, fake input'. | easy | docs | script, windows | J4.4, J6.9 |  |
 | J6.5 | Hand check on the 64 GB Linux tablet: a 10-minute take with the USB mic, Stop, then play it back. | Must see: length 10:00 within 2 s, no DROPPED in the status bar, the take opens in the editor after Stop and plays start to end. Write date, commit, mic model and length into docs/checklists/J6.md under 'Linux handheld 1'. | easy | docs | hand, me, linux | J1.5 |  |
 | J6.6 | The same 10-minute hand check on the second Linux handheld, when a mic is with it. | Must see: length 10:00 within 2 s, no DROPPED, opens after Stop, plays start to end. Write date, commit, mic model and length into docs/checklists/J6.md under 'Linux handheld 2'. | easy | docs | hand, me, linux | J6.5, a USB mic at that machine |  |
@@ -1152,20 +1103,18 @@ My ruling, 2026-11-01: "Into v1". Order: M3 and M5 first; K1, K2 and L1 can star
 | M1.11 | Publish step tools: the Match Loudness panel and a Save As MP3 button. | Test the_publish_step_matches_and_saves_mp3 in apps/wavcraft/src/m1_face_tests.rs: FACE podcast, STEP publish, STEPTOOL match.run with the podcast preset, wait for busy=0, SAVE <scratch>/out.mp3, wait for busy=0; out.mp3 exists; after OPEN of out.mp3 the LOUDNESS reply is -16 LUFS within 0.5 LU. | medium | wiring | script | M1.6, #11, #38 |  |
 | M1.12 | Hand check on the 8 GB Mac with the second user: record, clean, check and export one real episode in Podcast only. | On the 8 GB Mac I watch the second user do all four steps without opening a Studio panel. I write the date, commit, each step's pass or fail and any place the second user got stuck into docs/checklists/M1.md. No episode name goes in the file. | easy | docs | hand, me, mac | M1.4, M1.7, M1.9, M1.10, M1.11, M2.8, I5.6 |  |
 
-#### M4: Large controls preference, 44 px minimum (not started)
+#### M4: Large controls preference, 44 px minimum (partial)
 
-- **On main:** Nothing on main. No large_controls key in crates/core/src/settings.rs, no 44 px minimum anywhere, no Preferences entry. apply_look in apps/wavcraft/src/app.rs sets colours only. theme.rs has no size values to scale.
+- **On main:** the large_controls setting in crates/core/src/settings.rs (default off, tested in crates/core/tests/settings.rs); theme::metrics_for in apps/wavcraft/src/theme.rs (44 px control height and 22 px handle grab when large); marker flags (apps/wavcraft/src/markers_panel.rs handle_at) take their grab width from theme::metrics().handle_grab; nav_hit in crates/core/src/view.rs widens its reach for an edge width above 6 px. Missing: the window still calls nav_hit with a fixed 6.0 (apps/wavcraft/src/app.rs), not handle_grab, so the navigator edges do not grow yet; apply_look does not yet switch the metrics from the setting (M4.3), no Preferences checkbox (M4.4), Podcast buttons have no 44 px minimum (M4.6). Merged 2026-11-12: M4.1, M4.2 and the nav_hit and marker-flag half of M4.5 with its two tests (#1207); M4.5 stays open for the window wiring.
 - **Done check:** Every control in Podcast is usable by touch on the Linux handheld with the touch screen, by hand.
 - **Recorded so far:** not recorded
 - **Item issue:** #1062
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| M4.1 | Add the large_controls boolean to core settings under the key large_controls, default off, saved and read. | New test large_controls_is_saved_and_defaults_to_off in crates/core/tests/settings.rs: default get("large_controls") is "false"; set to "true" survives save and load; "banana" is refused and the value stays "false". | easy | data-shape | script | none |  |
-| M4.2 | Add theme::metrics_for(large: bool): with large on, control_height is 44 and handle_grab is 22 (44 px across); with it off, the M3 defaults. metrics() reads a set_large switch. | Unit test large_controls_are_at_least_44_px in apps/wavcraft/src/theme.rs: metrics_for(true).control_height is 44.0 and handle_grab is 22.0; metrics_for(false) equals the defaults (18.0 and 6.0). | easy | pure-fn | script | M3.1 |  |
 | M4.3 | Make apply_look call theme::set_large from the setting and set egui's spacing.interact_size to at least control_height in both directions; include the setting in the applied_look key. | Test large_controls_set_the_interact_size in apps/wavcraft/src/m4_large_tests.rs (hooked from app.rs), on a window built as in issue366_tests.rs: after PREF set large_controls true and one apply_look, ctx.style().spacing.interact_size.y is 44.0 and .x is at least 44.0; after PREF set large_controls false the y is 18.0. | easy | state | script | M4.1, M4.2 |  |
 | M4.4 | Add a Large controls checkbox to Preferences, Appearance using pref_check with the key large_controls. | Test the_large_controls_pref_answers_on_the_control_channel in apps/wavcraft/src/m4_large_tests.rs: PREF set large_controls true answers OK; PREF get large_controls answers OK true; PREF set large_controls banana answers ERR. By hand in a debug build: Preferences, Appearance shows a Large controls checkbox, and ticking it makes the toolbar buttons taller at once. | easy | ui | script | M4.3 |  |
-| M4.5 | Make the navigator handle edges and the marker flags take their grab width from theme::metrics().handle_grab. In nav_hit let the reach outside the handle grow with edge_px above 6 (it is capped at 3 px today), so both are 44 px targets with Large controls on. | Test large_grab_widens_the_navigator_edges in crates/core/src/view.rs: nav_hit((100.0, 200.0), 115.0, 22.0) is Some(Left) and with 6.0 is Some(Body); nav_hit((100.0, 200.0), 80.0, 22.0) is Some(Left) and with 6.0 is None; navigator_hit_testing_finds_edges_body_and_outside still passes. Test large_grab_widens_the_marker_flags in apps/wavcraft/src/markers_panel.rs: a marker 20 px from the pointer is picked with Large controls on and not with it off. | easy | wiring | script | M4.2, M3.2 |  |
+| M4.5 | Finish the navigator half: pass theme::metrics().handle_grab instead of the fixed 6.0 to the three nav_hit calls in apps/wavcraft/src/app.rs (the navigator press, the hover check and the drag). nav_hit's wider reach and the marker flags are already on main (#1207). | grep -n "nav_hit(" apps/wavcraft/src/app.rs shows every call passing theme::metrics().handle_grab and none passing 6.0. large_grab_widens_the_navigator_edges in crates/core/src/view.rs and large_grab_widens_the_marker_flags in apps/wavcraft/src/markers_panel.rs still pass. | easy | wiring | script | M3.2 |  |
 | M4.6 | Add faces::button_min_size() returning control_height in both directions, and give it to every Podcast step bar button and step tool button as its minimum size. | Test podcast_buttons_are_44_px_with_large_controls in apps/wavcraft/src/faces.rs: with Large controls on, button_min_size() is (44.0, 44.0); with it off it is (18.0, 18.0). | easy | ui | script | M4.3, M1.8 |  |
 | M4.7 | Hand check on the Linux handheld with the touch screen: Large controls on, Podcast face, tap every button and drag every handle with a finger. | In SteamOS Desktop Mode, in each of the four steps, tap each button and drag the map handle and a marker by finger. Each must respond on the first try. Write each control with pass or fail, date and commit into docs/checklists/M4.md. | easy | docs | hand, me, linux | M4.4, M4.5, M4.6, M1.7, M1.10, M1.11, M2.8 |  |
 
