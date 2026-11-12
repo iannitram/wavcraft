@@ -108,6 +108,39 @@ fn true_peak_sees_what_the_samples_miss() {
     assert!(m.true_peak_dbtp > m.sample_peak_dbfs + 2.5);
 }
 
+/// #1277: soundcraft-dsp's true-peak interpolator used to drop a sample at every chunk seam, so a
+/// reading depended on where the input was cut. A short tone burst at a quarter of the sample rate
+/// (its intersample peaks are the loudest part) is read in one call, then cut at every position and
+/// read in two; the 0.1 dB budget is the issue's. The burst is under 256 frames, so the one-call
+/// reading has no seam of its own on any pin.
+#[test]
+fn true_peak_does_not_change_across_a_chunk_seam() {
+    use soundcraft_dsp::meter::LoudnessMeter;
+    let len = 200usize;
+    let burst: Vec<f32> = (0..len)
+        .map(|n| {
+            let env = (PI * (n as f64 + 0.5) / len as f64).sin().powi(2);
+            (0.9 * env * (PI * n as f64 / 2.0 + PI / 4.0).sin()) as f32
+        })
+        .collect();
+    let read = |parts: &[&[f32]]| {
+        let mut m = LoudnessMeter::new(RATE as f32, 1);
+        for p in parts {
+            m.process(&[p.to_vec()], p.len());
+        }
+        f64::from(m.true_peak_db())
+    };
+    let whole = read(&[&burst]);
+    let (mut worst, mut worst_at) = (0.0f64, 0);
+    for at in 1..len {
+        let d = (read(&[&burst[..at], &burst[at..]]) - whole).abs();
+        if d > worst {
+            (worst, worst_at) = (d, at);
+        }
+    }
+    assert!(worst < 0.1, "true peak moves {worst:.3} dB when cut at frame {worst_at}; one call reads {whole:.3} dBTP");
+}
+
 #[test]
 fn a_range_measures_only_the_range_and_silence_reads_minus_infinity() {
     let t = TempDir::new("range");
