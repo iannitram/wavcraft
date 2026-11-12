@@ -350,6 +350,16 @@ pub fn all() -> &'static [&'static dyn Effect] {
     REGISTRY
 }
 
+/// Effects v1 rules out (docs/v1/v1.md, "Deliberately not in v1"). A release build does not
+/// list them; their code and their registry places stay.
+pub const OUT_OF_V1: &[&str] = &["dehummer", "dereverb"];
+
+/// The effects a release build (`release`) or a debug build lists, with their [`all`] indexes
+/// unchanged: a release build leaves out the ids in [`OUT_OF_V1`].
+pub fn listed(release: bool) -> impl Iterator<Item = (usize, &'static dyn Effect)> {
+    REGISTRY.iter().copied().enumerate().filter(move |(_, e)| !(release && OUT_OF_V1.contains(&e.id())))
+}
+
 /// The effect with this [`Effect::id`].
 pub fn find(id: &str) -> Option<&'static dyn Effect> {
     REGISTRY.iter().copied().find(|e| e.id() == id)
