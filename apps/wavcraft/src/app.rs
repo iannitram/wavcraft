@@ -473,6 +473,16 @@ fn path_name(path: &std::path::Path) -> String {
     path.file_name().map_or_else(|| "Untitled".to_string(), |n| n.to_string_lossy().into_owned())
 }
 
+/// The window title: the open file's name (with `*` while it has unsaved changes), or "WavCraft"
+/// when no file is open.
+fn window_title(name: &str, unsaved: bool, open: bool) -> String {
+    if !open {
+        return "WavCraft".to_string();
+    }
+    let star = if unsaved { "*" } else { "" };
+    format!("{star}{name} — WavCraft")
+}
+
 /// The newest spectrogram picture, one texture per channel, kept until the next one arrives.
 struct SpectrumCache {
     job: Job,
@@ -7125,6 +7135,15 @@ impl WaveApp {
         is_unsaved(&self.editor, &self.saved)
     }
 
+    /// Send the window title when it has changed since the last one sent (a send asks for a repaint).
+    fn send_title(&mut self, ctx: &egui::Context) {
+        let title = window_title(&path_name(&self.doc_path), self.unsaved(), self.editor.is_some());
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+    }
+
     /// Whether any open document has unsaved changes.
     fn any_unsaved(&self) -> bool {
         self.unsaved() || self.docs.parked().iter().any(|s| is_unsaved(&s.editor, &s.saved))
@@ -11997,12 +12016,7 @@ impl eframe::App for WaveApp {
                 },
             );
         }
-        let star = if self.unsaved() { "*" } else { "" };
-        let title = if self.editor.is_some() { format!("{star}{} — WavCraft", path_name(&self.doc_path)) } else { "WavCraft".to_string() };
-        if title != self.title {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
-            self.title = title;
-        }
+        self.send_title(&ctx);
 
         egui::Panel::top("menu").show(ui, |ui| self.menu(ui));
         if self.docs.len(self.editor.is_some()) > 1 {
@@ -12750,6 +12764,16 @@ fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffK
     Ok((path, ty, aiff))
 }
 
+/// The History panel's notice for steps the byte cap removed since `seen` was last shown: the same
+/// `history.dropped` text as the panel line, or `None` unless the dropped count has risen.
+#[allow(dead_code)] // D5.3 wires it in
+fn drop_notice(seen: u64, now: u64, cap_bytes: u64) -> Option<String> {
+    (now > seen).then(|| {
+        let (n, gb) = ((now - seen).to_string(), format!("{:.1}", cap_bytes as f64 / 1e9));
+        tr_args("history.dropped", &[&n, &gb])
+    })
+}
+
 /// Whether a drag that starts on a marker flag may grab the marker: the primary button only, and not
 /// with the Hand or Zoom tool (their drags scroll and zoom; right and middle drags do those too).
 fn marker_drag_may_start(button: egui::PointerButton, tool: Tool) -> bool {
@@ -13208,8 +13232,20 @@ mod issue369_tests;
 mod issue377_tests;
 
 #[cfg(test)]
+#[path = "a2_title_star_tests.rs"]
+mod a2_title_star_tests;
+
+#[cfg(test)]
 #[path = "a1_open_cancel_tests.rs"]
 mod a1_open_cancel_tests;
+
+#[cfg(test)]
+#[path = "a2_close_prompt_tests.rs"]
+mod a2_close_prompt_tests;
+
+#[cfg(test)]
+#[path = "d5_drop_notice_tests.rs"]
+mod d5_drop_notice_tests;
 
 #[cfg(test)]
 #[path = "issue1173_tests.rs"]
