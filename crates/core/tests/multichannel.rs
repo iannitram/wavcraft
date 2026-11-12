@@ -193,3 +193,47 @@ fn all_channels_edits_reach_past_channel_sixty_four() {
     let want: Vec<Vec<f32>> = d.iter().map(|c| c[50..120].to_vec()).collect();
     assert_eq!(clip_content(&clip), want, "every channel copied");
 }
+
+/// A hand-built AIFF (big-endian, 16-bit, 48 kHz) of `channels` channels and one frame.
+fn aiff_with_channels(channels: i16) -> Vec<u8> {
+    let data_len = usize::from(channels.unsigned_abs()) * 2;
+    let mut comm = Vec::new();
+    comm.extend_from_slice(&channels.to_be_bytes());
+    comm.extend_from_slice(&1u32.to_be_bytes());
+    comm.extend_from_slice(&16u16.to_be_bytes());
+    // 48 000 Hz as an 80-bit extended float: exponent 15 (biased 16398), explicit-integer mantissa.
+    comm.extend_from_slice(&0x400Eu16.to_be_bytes());
+    comm.extend_from_slice(&(48_000u64 << 48).to_be_bytes());
+    let mut ssnd = Vec::new();
+    ssnd.extend_from_slice(&0u32.to_be_bytes());
+    ssnd.extend_from_slice(&0u32.to_be_bytes());
+    ssnd.resize(8 + data_len, 0);
+    let mut body = b"AIFF".to_vec();
+    body.extend_from_slice(b"COMM");
+    body.extend_from_slice(&18u32.to_be_bytes());
+    body.extend_from_slice(&comm);
+    body.extend_from_slice(b"SSND");
+    body.extend_from_slice(&(ssnd.len() as u32).to_be_bytes());
+    body.extend_from_slice(&ssnd);
+    let mut file = b"FORM".to_vec();
+    file.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    file.extend_from_slice(&body);
+    file
+}
+
+#[test]
+fn an_aiff_with_too_many_channels_is_refused_by_name() {
+    for n in [33i16, 5000] {
+        let t = TempDir::new(&format!("aiff-{n}"));
+        let path = t.0.join("many.aiff");
+        std::fs::write(&path, aiff_with_channels(n)).unwrap();
+        let sessions = t.0.join("sessions");
+        let opts = OpenOptions { sessions_root: Some(sessions.clone()), ..OpenOptions::default() };
+        match open(&path, &opts, &mut |_| {}, &AtomicBool::new(false)) {
+            Err(OpenError::Decode(m)) => assert!(m.contains(&format!("{n} channels")) && m.contains("32"), "{m}"),
+            other => unreachable!("expected a refusal, got {:?}", other.map(|d| d.channel_count())),
+        }
+        let left = std::fs::read_dir(&sessions).map_or(0, |d| d.count());
+        assert_eq!(left, 0, "no session folder is left after a refusal of {n} channels");
+    }
+}

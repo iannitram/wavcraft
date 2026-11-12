@@ -182,7 +182,11 @@ mod tests {
         assert!(m.is_fake() && !m.is_open());
         m.start(None);
         assert!(m.is_open() && m.error.is_none());
-        std::thread::sleep(Duration::from_millis(250));
+        // Wait for the fake input to fill the tap (up to 5 s), not a fixed sleep: a slow runner must not flake.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while m.tap.stats().samples <= 4_000 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let s = m.tap.stats();
         assert!(s.samples > 4_000, "about 250 ms of stereo at 48 kHz: {s:?}");
         assert!((s.peak_db() - -12.0).abs() < 0.2, "{s:?}");
