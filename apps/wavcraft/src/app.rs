@@ -13091,6 +13091,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "c5_6_space_button_tests.rs"]
+mod c5_6_space_button_tests;
+
+#[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
 mod i3_shortcut_help_tests;
 
