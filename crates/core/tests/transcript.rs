@@ -110,3 +110,27 @@ fn a_missing_sidecar_is_none() {
     std::fs::write(dir.0.join("bad.wav.transcript.json"), "{not json").unwrap();
     assert!(transcript::load_beside(&dir.0.join("bad.wav")).is_err());
 }
+
+#[test]
+fn word_at_start_end_and_gap() {
+    let t = Transcript::new(48_000, vec![word("first", 48_000, 72_000), word("second", 1_488_000, 1_512_000)]);
+    assert_eq!(t.word_at(48_000), Some(0));
+    assert_eq!(t.word_at(71_999), Some(0));
+    assert_eq!(t.word_at(72_000), None);
+    assert_eq!(t.word_at(0), None);
+    assert_eq!(t.word_at(1_488_000), Some(1));
+    assert_eq!(t.word_at(1_511_999), Some(1));
+    assert_eq!(t.word_at(1_512_000), None);
+    // A gap between words, and the frame just before the first word.
+    assert_eq!(t.word_at(900_000), None);
+    assert_eq!(t.word_at(47_999), None);
+    // Touching words: the shared frame belongs to the later word.
+    let touching = Transcript::new(48_000, vec![word("a", 0, 10), word("b", 10, 20)]);
+    assert_eq!(touching.word_at(9), Some(0));
+    assert_eq!(touching.word_at(10), Some(1));
+    assert_eq!(touching.word_at(20), None);
+    // An empty transcript has no word anywhere.
+    let empty = Transcript::new(48_000, Vec::new());
+    assert_eq!(empty.word_at(0), None);
+    assert_eq!(empty.word_at(u64::MAX), None);
+}

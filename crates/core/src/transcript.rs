@@ -50,6 +50,18 @@ impl Transcript {
         Transcript { version: VERSION, sample_rate, words }
     }
 
+    /// The index of the word that covers `frame`: its start is at or before `frame` and its end
+    /// after it (start inclusive, end exclusive). `None` for a frame in a gap between words, before
+    /// the first word, after the last, or in an empty transcript. Found by binary search, so the
+    /// words must be in order and not overlap, as [`Transcript::check`] requires.
+    pub fn word_at(&self, frame: u64) -> Option<usize> {
+        // The words starting at or before `frame` form a prefix; the last of them is the only
+        // candidate, since no earlier word can reach past a later word's start.
+        let after = self.words.partition_point(|w| w.start <= frame);
+        let i = after.checked_sub(1)?;
+        (frame < self.words[i].end).then_some(i)
+    }
+
     /// Whether this transcript is one [`Transcript::from_json`] would accept: the current
     /// version, a sample rate above 0, every word `start < end`, none starting before the
     /// previous one's end.
