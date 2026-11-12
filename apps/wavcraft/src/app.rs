@@ -12425,8 +12425,6 @@ fn tool_labels(keymap: &Keymap, mac: bool) -> Vec<(Tool, String)> {
         .collect()
 }
 
-/// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
-/// so Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
 /// The keyboard focus inside a floated panel's own viewport, as `(text field focused, other widget
 /// focused)`. Call it inside that viewport's frame: focus is kept per viewport (#1219).
 fn float_focus(ctx: &egui::Context) -> (bool, bool) {
@@ -12434,6 +12432,8 @@ fn float_focus(ctx: &egui::Context) -> (bool, bool) {
     (typing, !typing && ctx.egui_wants_keyboard_input())
 }
 
+/// The commands whose chords were pressed this frame. Chords with more modifiers are taken first,
+/// so Cmd+Shift+Z (Redo) is not read as Cmd+Z (Undo).
 fn pressed_commands(ctx: &egui::Context, keymap: &Keymap, in_float: bool, in_float_other: bool) -> Vec<Command> {
     // A text field being edited owns the keyboard: Space types a space, and Backspace, Delete and
     // Cmd+Z edit the text, not the audio (#368, #434). Cmd+S and Cmd+O keep working. `in_float` is
