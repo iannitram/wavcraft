@@ -213,6 +213,13 @@ impl History {
         self.push_with_change(label.into(), state, Change::None, false)
     }
 
+    /// Record a new transcript (or none) as a step, like [`push_markers`](Self::push_markers):
+    /// nothing when it equals the current one. The audio is shared, so the step makes no bytes.
+    pub fn push_transcript(&mut self, label: impl Into<String>, transcript: impl Into<Option<Arc<crate::transcript::Transcript>>>) -> usize {
+        let state = self.current().with_transcript(transcript.into());
+        self.push_with_change(label.into(), state, Change::None, false)
+    }
+
     /// Make `state` the current step, after the cursor; any redo steps go. A state that is the
     /// current one (it shares every channel) records nothing. Returns how many old steps the cap
     /// dropped.
@@ -222,7 +229,7 @@ impl History {
 
     fn push_with_change(&mut self, label: String, state: DocState, change: Change, same_audio_ok: bool) -> usize {
         let cur = self.current();
-        // The same channels, rate, source and markers: nothing changed. (A rate or bit-depth
+        // The same channels, rate, source, markers and transcript: nothing changed. (A rate or bit-depth
         // relabel keeps every channel but is a step: it differs in rate or source. A metadata step
         // (`same_audio_ok`) is recorded although the audio is shared.)
         if !same_audio_ok
@@ -231,6 +238,7 @@ impl History {
             && Arc::ptr_eq(cur.source(), state.source())
             && cur.channels().iter().zip(state.channels()).all(|(a, b)| Arc::ptr_eq(a, b))
             && cur.markers() == state.markers()
+            && cur.transcript() == state.transcript()
         {
             return 0;
         }
