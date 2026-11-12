@@ -6,9 +6,12 @@
 //! K1: `scan_with` stops when cancelled and reports progress from 0 to 1.
 
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use wavcraft_core::check::{self, Config, Finding, Kind, Report, Severity};
+use wavcraft_core::document::StoreChannel;
+use wavcraft_core::io::{self, OpenOptions};
 use wavcraft_core::spectrogram::Samples;
 
 const RATE: u32 = 48_000;
@@ -339,4 +342,28 @@ fn cancel_after_the_main_loop_stops_the_passes() {
     assert!(report.is_none(), "a scan cancelled in the passes gives no report");
     let after = after.unwrap_or_else(|| panic!("no progress above 0.5 was reported"));
     assert!(after <= 1, "{after} progress calls after cancel");
+}
+
+/// K2.5: a real clean speech file reports nothing. The file is not in the repo: its path is in
+/// `WAVCRAFT_CLEAN_SPEECH`. Run it with the variable set, for example:
+///
+/// `WAVCRAFT_CLEAN_SPEECH=/path/clean.wav cargo test -p wavcraft-core --test episode_check -- --ignored a_real_clean_speech_file_reports_nothing`
+#[test]
+#[ignore = "needs a clean speech WAV: set WAVCRAFT_CLEAN_SPEECH to its path"]
+fn a_real_clean_speech_file_reports_nothing() {
+    let path = PathBuf::from(std::env::var_os("WAVCRAFT_CLEAN_SPEECH").expect("WAVCRAFT_CLEAN_SPEECH is not set"));
+    let state = io::open(&path, &OpenOptions::default(), &mut |_| {}, &AtomicBool::new(false)).expect("the clean speech file opens");
+    let cfg = Config::new(state.sample_rate());
+    let channels: Vec<StoreChannel> = (0..state.channel_count()).map(|ch| StoreChannel::new(&state, ch)).collect();
+    let refs: Vec<&dyn Samples> = channels.iter().map(|c| c as &dyn Samples).collect();
+    let report = check::scan(&refs, &cfg);
+    drop(refs);
+    // A failed store read gives silence, which would pass as clean: fail on the read error instead.
+    for c in channels {
+        if let Some(e) = c.into_error() {
+            panic!("reading the clean speech file from the store failed: {e}");
+        }
+    }
+    assert!(!report.truncated);
+    assert!(report.findings.is_empty(), "clean speech reported {:?}", report.findings);
 }
