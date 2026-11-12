@@ -63,7 +63,14 @@ pub(super) fn drift_pass(channels: &[&dyn Samples], len: u64, cfg: &Config, sink
                     let start = if Some(a) == readings.first().map(|r| r.0) { 0 } else { ctx.edge(a, dir, len) };
                     let stop = if i == readings.len() { len } else { ctx.edge(b, -dir, len) };
                     if stop > start {
-                        sink.push(Finding { kind: Kind::LoudnessDrift, severity: Severity::Warning, channel: None, start, end: stop, value: top });
+                        sink.push(Finding {
+                            kind: Kind::LoudnessDrift,
+                            severity: Severity::Warning,
+                            channel: None,
+                            start,
+                            end: stop,
+                            value: dir * top,
+                        });
                     }
                 }
                 run = d.map(|d| (end, end, d.signum(), d.abs()));
