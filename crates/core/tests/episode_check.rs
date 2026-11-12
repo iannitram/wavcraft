@@ -227,6 +227,24 @@ fn loudness_drift_is_reported_at_the_planted_start() {
 }
 
 #[test]
+fn a_quiet_stretch_reports_negative_drift() {
+    // 16 s at -9 LU (x0.3548) in a 240 s file, on both channels. Only the 3 s readings at least 6 LU
+    // under the file count, which is about 2 s less than the section; 16 s leaves the 10 s minimum
+    // clear. A 12 s section falls just short of it.
+    let (mut ch0, mut ch1) = long_clean();
+    let section = (frame(101.0), frame(117.0));
+    for ch in [&mut ch0, &mut ch1] {
+        for x in &mut ch[section.0 as usize..section.1 as usize] {
+            *x *= 0.354_813;
+        }
+    }
+    let report = scan(&ch0, &ch1);
+    let drift = of_kind(&report, Kind::LoudnessDrift);
+    assert_eq!(drift.len(), 1, "{drift:?}");
+    assert!(drift[0].value > -10.0 && drift[0].value < -6.0, "deviation {} LU", drift[0].value);
+}
+
+#[test]
 fn mains_hum_is_reported_with_its_frequency() {
     for hz in [60.0, 50.0] {
         let (mut ch0, ch1) = clean();
@@ -236,8 +254,8 @@ fn mains_hum_is_reported_with_its_frequency() {
         let hum = of_kind(&report, Kind::MainsHum);
         assert_eq!(hum.len(), 1, "{hz} Hz: {hum:?}");
         assert_eq!((hum[0].channel, hum[0].severity, hum[0].value), (Some(0), Severity::Warning, hz));
-        assert!(hum[0].start >= region.0 - 16_384 && hum[0].start <= region.0 + 16_384, "{hz} Hz: start {}", hum[0].start);
-        assert!(hum[0].end >= region.1 - 16_384 && hum[0].end <= region.1 + 16_384, "{hz} Hz: end {}", hum[0].end);
+        assert_near(&format!("{hz} Hz hum start"), hum[0].start, region.0);
+        assert_near(&format!("{hz} Hz hum end"), hum[0].end, region.1);
     }
 }
 

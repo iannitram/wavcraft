@@ -28,6 +28,7 @@
 mod drift;
 mod hum;
 mod plosive;
+pub mod summary;
 
 use std::f64::consts::PI;
 use std::io;
@@ -93,8 +94,8 @@ pub struct Finding {
     /// Clipping: the largest magnitude in the run (linear). True peak: the highest interpolated
     /// peak (dBTP). DC offset: the mean over the region (linear). Dead air: the loudest sample in
     /// it (dBFS). Loudness drift: the largest distance of a short-term reading from the integrated
-    /// loudness (LU). Mains hum: the fundamental (Hz). Plosive: the loudest low-band frame RMS
-    /// (dBFS).
+    /// loudness (LU), signed: positive when louder than the file, negative when quieter. Mains
+    /// hum: the fundamental (Hz). Plosive: the loudest low-band frame RMS (dBFS).
     pub value: f64,
 }
 
