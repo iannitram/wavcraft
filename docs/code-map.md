@@ -4,7 +4,7 @@ Describes `main` at `11e49a5`. Rewritten 2026-11-11 from the tree, file by file.
 
 **Status words:** *present, wired* (on `main` and reached from the app or a binary); *present, core only* (on `main` with tests, but nothing in the app calls it yet); *present, out of v1* (on `main`, belongs to an after-1.0 feature); *stub* (the body is `todo!()` or `unimplemented!()`); *dead code* (no caller and no test).
 
-**Counts:** 448 files and folders described: 283 present, wired, 117 present, core only, 43 present, out of v1, 4 stub, 1 dead code.
+**Counts:** 450 files and folders described: 283 present, wired, 119 present, core only, 43 present, out of v1, 4 stub, 1 dead code.
 
 ## Contents
 
@@ -26,7 +26,7 @@ The root `Cargo.toml` is one workspace (resolver 3, edition 2024, `rust-version`
 | Member | Package | Kind | What it holds |
 |---|---|---|---|
 | `crates/core` | `wavcraft-core` | library | Document, store, file reading and saving, effects, analysis, multitrack model. No UI. |
-| `crates/automation` | `wavcraft-automation` | library | `Request`, `Backend`, `Headless`, `Remote`. Its only dependency is `wavcraft-core`. |
+| `crates/automation` | `wavcraft-automation` | library | `Request`, `Backend`, `Headless`, `Remote`. Its dependencies are `wavcraft-core` and `serde_json` (MIT OR Apache-2.0, workspace pin). |
 | `crates/testkit` | `wavcraft-testkit` | library and 4 binaries | Test file generator and the benches. |
 | `crates/craft-log` | `craft-log` | library | Logging and the system report. |
 | `crates/craft-stage` | `craft-stage` | library | No dependencies. Used by `craft-log`. |
@@ -70,7 +70,7 @@ wavcraft-core
   -> dirs, sysinfo, getrandom, serde, postcard, serde_json, log
   -> rustix                 (unix only)
 
-wavcraft-automation -> wavcraft-core
+wavcraft-automation -> wavcraft-core, serde_json
 wavcraft-testkit    -> wavcraft-core, soundcraft-audio-io, rayon
                     -> windows-sys   (Windows only)
 ```
@@ -361,13 +361,15 @@ Paths are from the repo root. "Items" are v1 item ids from the roadmap; "Uses" a
 
 | File | What it owns | Key names | Uses | Status | Items | Tests |
 |---|---|---|---|---|---|---|
-| `crates/automation/Cargo.toml` | The manifest of the wavcraft-automation library crate; its only dependency is wavcraft-core. The app takes it as a dev-dependency only (apps/wavcraft/Cargo.toml, for n1_parity_tests.rs). | `wavcraft-automation` | wavcraft-core | present, core only | N1 | none |
+| `crates/automation/Cargo.toml` | The manifest of the wavcraft-automation library crate; its dependencies are wavcraft-core and serde_json (for the MCP handler). The app takes it as a dev-dependency only (apps/wavcraft/Cargo.toml, for n1_parity_tests.rs). | `wavcraft-automation` | wavcraft-core | present, core only | N1 | none |
 | `crates/automation/src/headless.rs` | The windowless backend: it opens a file into a session store, keeps one editor, a selection and the file a bare SAVE writes, and answers each request with the same core calls the window makes: the registry effects and the one-shot effects (`actions::ONE_SHOT`: reverse, the fades) by `EFFECT` name, and `SAVE` with the window's options (sample type from bits=/float=, AIFF kind, Vorbis quality, meta=0 through `save_wav_with`) and its format choice (Wave64, CAF and AU through `save_as`; a name without an extension is a WAV). | `Headless`, `Headless::new`, `Headless::with_crossfades`, `Headless::document`, `impl Backend for Headless` | wavcraft_core io::open, actions::{Editor, ONE_SHOT}, doc::history::History, doc::edit::Crossfades, effects, save (`save_wav_with`, `save_aiff_kind`, `save_vorbis`, `save_as`) | present, core only | N1 | crates/automation/tests/headless.rs; apps/wavcraft/src/n1_parity_tests.rs |
 | `crates/automation/src/lib.rs` | The six control requests as one enum with a parser and a wire spelling, the `SAVE` options (`SaveArgs`: an optional path, then bits=, float=, aiff=, quality=, meta=, parsed as the window's `parse_save_args`, `take_quality` and `take_meta` do; a bare SAVE is valid), and the Backend trait that answers a request or a raw line with OK or ERR text. | `Request`, `Request::parse`, `Request::line`, `SaveArgs`, `SaveArgs::parse`, `Backend`, `Backend::answer_line`, verbs `OPEN` `SELECT` `ACTION` `EFFECT` `SAVE` `STATE` | wavcraft_core::save (`SampleType`, `AiffKind`); modules headless, remote. No caller in apps/wavcraft outside n1_parity_tests.rs: the window's control.rs still parses its own lines, and app.rs keeps its own copy of the SAVE option parser (N1.6 removes it) | present, core only | N1 | crates/automation/tests/request.rs |
+| `crates/automation/src/mcp.rs` | The MCP handler: one line of newline-delimited JSON-RPC 2.0 in, at most one line out. It answers `initialize` (echoing the client's protocolVersion, with `capabilities.tools` and `serverInfo.name` wavcraft) and `tools/list` (seven tools: open, select, action, effect, state, save, list_effects, each with an object input schema). A notification gets no reply; bad JSON is -32700 with a null id, an unknown method -32601, and the id is echoed. `tools/call` is not built yet. | `handle` | serde_json; the Backend is taken for `tools/call` and not used yet | present, core only | N3.1 | crates/automation/tests/mcp.rs |
 | `crates/automation/src/remote.rs` | The backend for a running app: it connects to the loopback control port, presents the token first, sends one request per line, and after OPEN and after SAVE polls STATE until busy=0, then asks LASTERROR and returns its text as the error unless it is `-`. | `Remote`, `Remote::connect`, `Remote::from_env`, `impl Backend for Remote`, env `WAVCRAFT_CONTROL_PORT`, `WAVCRAFT_CONTROL_TOKEN_FILE` | std::net; the wire format of apps/wavcraft/src/control.rs. Nothing outside its tests constructs it | present, core only | N1 | crates/automation/tests/remote.rs |
 | `crates/automation/tests/headless.rs` | Tests of the headless backend on a 16-bit WAV written in the test: delete, invert, effects with and without a selection, the one-shot reverse, crossfades, bad requests, and SAVE's options (bits=24, FLAC float refused, aiff=sowt, Vorbis quality, meta=0, a bare SAVE in place, a name without an extension, Wave64), each compared sample for sample or byte for byte after a save. | `delete_then_invert_then_save_matches_the_expected_samples`, `with_the_window_crossfades_only_the_edit_joins_differ`, `bad_requests_answer_err_and_change_nothing`, `effect_reverse_runs_the_one_shot`, `save_bits_24_writes_a_24_bit_file`, `save_meta_0_writes_only_audio`, `save_with_no_path_overwrites_the_source` | wavcraft_automation::headless, wavcraft_core | present, core only | N1 | 16 tests in the file |
 | `crates/automation/tests/remote.rs` | Tests of the remote backend's protocol against a scripted stand-in listener: the lines sent, the replies read, the wait after OPEN and after SAVE, LASTERROR turning a failed open or save into an error, and a refused token. It does not start the app. | `stand_in`, `open_waits_for_busy_to_clear`, `save_waits_for_busy_to_clear`, `a_failed_save_is_an_error`, `a_failed_open_is_an_error`, `a_refused_token_is_an_error` | wavcraft_automation::remote, std::net::TcpListener | present, core only | N1 | 6 tests in the file |
 | `crates/automation/tests/request.rs` | Tests that every request round-trips through its line, that EFFECT accepts the effect. prefix, that SAVE's options are not part of its path (and a bare SAVE is valid), and that bad lines are refused with the usage text. | `every_request_round_trips_through_its_line`, `save_options_are_not_part_of_the_path`, `bad_lines_are_refused_with_the_usage` | wavcraft_automation::{Request, SaveArgs}, wavcraft_core::save | present, core only | N1 | 4 tests in the file |
+| `crates/automation/tests/mcp.rs` | Tests of the MCP handler with a fake Backend: the initialize answer, the seven tools, a notification with no answer, bad JSON, an unknown method, and the id echoed as a number and as a string. | `initialize_answers_as_mcp_expects`, `tools_list_names_the_seven_tools`, `a_notification_gets_no_answer`, `bad_json_is_error_minus_32700`, `an_unknown_method_is_error_minus_32601`, `the_id_is_echoed` | wavcraft_automation::{mcp::handle, Backend, Request}, serde_json | present, core only | N3.1 | 6 tests in the file |
 
 ### The app: shell (`apps/wavcraft`)
 
@@ -1168,7 +1170,7 @@ These belong to open v1 issues (open, not labelled after-1.0). I checked each pa
 
 | Planned piece | Issue | What is on main today |
 |---|---|---|
-| `crates/automation/src/mcp.rs` and an `mcp` subcommand | #1108 | The file is absent. `crates/automation/src` holds only `lib.rs`, `headless.rs` and `remote.rs`. |
+| An `mcp` subcommand, and `tools/call` in `crates/automation/src/mcp.rs` | #1108 | The MCP handler is on main (`crates/automation/src/mcp.rs`, `initialize` and `tools/list`, core only). No subcommand, and `tools/call` is absent. |
 | `crates/automation/src/script.rs` and File > Run Script | #879 | The file is absent. No Run Script entry in `apps/wavcraft/src/menus.rs`. |
 | `apps/wavcraft/src/cli.rs` (`run`, `convert`, `inspect`) | #845 | The file is absent. `parse_args` in `main.rs` knows only a file, `--session-dir` and `--reset-preferences`. `crates/core/src/batch_cli.rs` exists, but only its own test file (`crates/core/tests/batch_cli.rs`) calls it. |
 | The app driven through `wavcraft-automation` | #1107 | The crate exists. The app takes it only as a dev-dependency (n1_parity_tests.rs), and `control.rs` and app.rs still parse their own requests. |

@@ -10,12 +10,15 @@
 //! - [`Backend`] answers a request with the reply text after `OK` (or the reason for `ERR`).
 //! - [`headless::Headless`] runs `wavcraft-core` in this process, with no window.
 //! - [`remote::Remote`] talks to a running app over the control channel (loopback, token first).
+//! - [`mcp::handle`] answers MCP clients (JSON-RPC 2.0, one message per line): `initialize` and
+//!   `tools/list` so far.
 //!
 //! Only the verbs above are here. The window still parses the rest of the channel itself, and
 //! its own copy of these (`parse_save_args`, `take_quality`, `take_meta` in `app.rs` are the
 //! model for [`SaveArgs::parse`]; N1.6 moves the window onto this parser).
 
 pub mod headless;
+pub mod mcp;
 pub mod remote;
 
 use std::path::PathBuf;
