@@ -27,6 +27,7 @@
 
 mod drift;
 mod hum;
+pub mod list;
 mod plosive;
 
 use std::f64::consts::PI;
