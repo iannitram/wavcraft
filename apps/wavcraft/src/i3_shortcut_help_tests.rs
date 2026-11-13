@@ -275,6 +275,18 @@ shortcut_case!(
     Z, false, false, "Z", "Z"
 );
 
+#[rustfmt::skip]
+shortcut_case!(
+    i3_help_next_finding, CheckNext, "check.next", "Next Finding",
+    F8, false, false, "F8", "F8"
+);
+
+#[rustfmt::skip]
+shortcut_case!(
+    i3_help_prev_finding, CheckPrev, "check.prev", "Previous Finding",
+    F8, false, true, "Shift+F8", "⇧F8"
+);
+
 #[test]
 #[rustfmt::skip]
 fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
@@ -332,6 +344,8 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("tool.hand", "Hand Tool", "H".to_string()),
         ("tool.zoom", "Zoom Tool", "Z".to_string()),
         ("tool.marquee", "Marquee Selection Tool", "E".to_string()),
+        ("check.next", "Next Finding", "F8".to_string()),
+        ("check.prev", "Previous Finding", "Shift+F8".to_string()),
         ("view.gotoTime", "Go to Time…", "Ctrl+J".to_string()),
         ("view.snap.toggle", "Snapping", "S".to_string()),
         ("transport.returnOnStop", "Return to Start Position on Stop", "Shift+X".to_string()),

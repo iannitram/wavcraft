@@ -564,6 +564,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-mp3"
+version = "1.1.0"
+source = "git+https://github.com/iannitram/craft-mp3?rev=456f04906efa02082bbf81eb3e32aaaadf42391b#456f04906efa02082bbf81eb3e32aaaadf42391b"
+
+[[package]]
 name = "craft-stage"
 version = "0.1.0"
 
@@ -3778,6 +3783,7 @@ name = "wavcraft-core"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "craft-mp3",
  "dirs",
  "getrandom 0.4.3",
  "log",

@@ -12,6 +12,9 @@ mod app;
 mod batch_panel;
 mod cd_ui;
 mod check_panel;
+// Not called yet: the window still reads its arguments with `parse_args`; the subcommands are a later step.
+#[allow(dead_code)]
+mod cli;
 mod control;
 mod convert_ui;
 mod diagnostics_panel;
@@ -44,6 +47,7 @@ mod shortcut_editor;
 mod spectrum;
 mod statspanel;
 mod theme;
+mod transcript_run;
 mod v1;
 mod video;
 #[cfg(windows)]
