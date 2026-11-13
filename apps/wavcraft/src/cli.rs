@@ -30,7 +30,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
     let mut args: Vec<OsString> = args.into_iter().collect();
     let mut session_dir = None;
     let is_convert = args.first().is_some_and(|a| a == "convert")
-        || (args.first().is_some_and(|a| a == "--session-dir") && args.get(2).is_some_and(|a| a == "convert"));
+        || (args.first().is_some_and(|a| a == "--session-dir") && args.get(2).is_some_and(|a| a == "convert"))
+        || (args.first().is_some_and(|a| a.to_string_lossy().starts_with("--session-dir=")) && args.get(1).is_some_and(|a| a == "convert"));
     if is_convert {
         let mut i = 0;
         while i < args.len() {
@@ -154,6 +155,14 @@ mod tests {
         assert_eq!(
             parse(argv(&["convert", "a.wav", "b.flac"])),
             Ok(Command::Convert { input: "a.wav".into(), output: "b.flac".into(), session_dir: None })
+        );
+    }
+
+    #[test]
+    fn convert_takes_session_dir_in_equals_form_before_the_subcommand() {
+        assert_eq!(
+            parse(argv(&["--session-dir=/x", "convert", "a.wav", "b.flac"])),
+            Ok(Command::Convert { input: "a.wav".into(), output: "b.flac".into(), session_dir: Some("/x".into()) })
         );
     }
 

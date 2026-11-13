@@ -95,3 +95,31 @@ fn no_session_is_left_behind() {
     assert!(std::fs::read_dir(&sessions).unwrap().next().is_none());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_missing_input_exits_2_with_a_message_and_leaves_no_session() {
+    let dir = scratch("missing-input");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    let out = run(&["convert", dir.join("no-such.wav").to_str().unwrap(), dir.join("out.flac").to_str().unwrap()], &sessions);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(!String::from_utf8_lossy(&out.stderr).trim().is_empty());
+    assert!(std::fs::read_dir(&sessions).unwrap().next().is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_unwritable_output_exits_2_with_a_message_and_leaves_no_session() {
+    let dir = scratch("unwritable-output");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    let src = dir.join("source.wav");
+    write_wav(&src);
+    // The folder above the output does not exist, so the save cannot create the file.
+    let target = dir.join("no-such-folder").join("out.flac");
+    let out = run(&["convert", src.to_str().unwrap(), target.to_str().unwrap()], &sessions);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(!String::from_utf8_lossy(&out.stderr).trim().is_empty());
+    assert!(std::fs::read_dir(&sessions).unwrap().next().is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
