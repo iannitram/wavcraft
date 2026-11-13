@@ -14,7 +14,7 @@ pub enum Command {
     /// `run <script> [FILE] [-o OUT]`.
     Run { script: PathBuf, file: Option<PathBuf>, out: Option<PathBuf> },
     /// `convert <in> <out>`.
-    Convert { input: PathBuf, output: PathBuf },
+    Convert { input: PathBuf, output: PathBuf, session_dir: Option<PathBuf> },
     /// `inspect <file>`.
     Inspect { file: PathBuf },
 }
@@ -27,13 +27,34 @@ const INSPECT_USAGE: &str = "usage: wavcraft inspect <file>";
 /// Parses the arguments after the program name. An unknown flag or a wrong number of operands is an error whose
 /// message names the problem and gives the usage line.
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
-    let args: Vec<OsString> = args.into_iter().collect();
+    let mut args: Vec<OsString> = args.into_iter().collect();
+    let mut session_dir = None;
+    let is_convert = args.first().is_some_and(|a| a == "convert")
+        || (args.first().is_some_and(|a| a == "--session-dir") && args.get(2).is_some_and(|a| a == "convert"))
+        || (args.first().is_some_and(|a| a.to_string_lossy().starts_with("--session-dir=")) && args.get(1).is_some_and(|a| a == "convert"));
+    if is_convert {
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == "--session-dir" {
+                if i + 1 >= args.len() {
+                    return Err("--session-dir needs a directory".to_owned());
+                }
+                session_dir = Some(PathBuf::from(args.remove(i + 1)));
+                args.remove(i);
+            } else if let Some(value) = args[i].to_string_lossy().strip_prefix("--session-dir=") {
+                session_dir = Some(PathBuf::from(value));
+                args.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
     let Some((first, rest)) = args.split_first() else {
         return window(&args);
     };
     match first.to_str() {
         Some("run") => run(rest),
-        Some("convert") => convert(rest),
+        Some("convert") => convert(rest, session_dir),
         Some("inspect") => inspect(rest),
         _ => window(&args),
     }
@@ -63,10 +84,10 @@ fn run(args: &[OsString]) -> Result<Command, String> {
     }
 }
 
-fn convert(args: &[OsString]) -> Result<Command, String> {
+fn convert(args: &[OsString], session_dir: Option<PathBuf>) -> Result<Command, String> {
     let parsed = scan(args, CONVERT_USAGE, false)?;
     match parsed.operands.as_slice() {
-        [input, output] => Ok(Command::Convert { input: input.clone(), output: output.clone() }),
+        [input, output] => Ok(Command::Convert { input: input.clone(), output: output.clone(), session_dir }),
         _ => Err(operand_error(&parsed.operands, 2, CONVERT_USAGE)),
     }
 }
@@ -131,7 +152,18 @@ mod tests {
 
     #[test]
     fn convert_takes_in_and_out() {
-        assert_eq!(parse(argv(&["convert", "a.wav", "b.flac"])), Ok(Command::Convert { input: "a.wav".into(), output: "b.flac".into() }));
+        assert_eq!(
+            parse(argv(&["convert", "a.wav", "b.flac"])),
+            Ok(Command::Convert { input: "a.wav".into(), output: "b.flac".into(), session_dir: None })
+        );
+    }
+
+    #[test]
+    fn convert_takes_session_dir_in_equals_form_before_the_subcommand() {
+        assert_eq!(
+            parse(argv(&["--session-dir=/x", "convert", "a.wav", "b.flac"])),
+            Ok(Command::Convert { input: "a.wav".into(), output: "b.flac".into(), session_dir: Some("/x".into()) })
+        );
     }
 
     #[test]
