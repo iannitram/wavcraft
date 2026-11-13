@@ -85,6 +85,8 @@ shortcuts! {
     tool_hand_h: "H" => A(ActionId::ToolHand);
     tool_zoom_z: "Z" => A(ActionId::ToolZoom);
     tool_marquee_e: "E" => A(ActionId::ToolMarquee);
+    check_next_f8: "F8" => A(ActionId::CheckNext);
+    check_prev_shift_f8: "Shift+F8" => A(ActionId::CheckPrev);
     convert_sample_type_shift_t: "Shift+T" => A(ActionId::ConvertSampleType);
     workspace_1_alt_shift_1: "Alt+Shift+1" => Command::Workspace(1);
     workspace_2_alt_shift_2: "Alt+Shift+2" => Command::Workspace(2);
@@ -102,6 +104,14 @@ fn the_default_table_has_no_chord_on_two_commands() {
     let found = conflicts(BINDINGS);
     assert!(found.is_empty(), "{found:?}");
     assert_eq!(Keymap::new().check(), Ok(()));
+}
+
+#[test]
+fn findings_shortcuts_resolve_next_and_previous() {
+    let map = Keymap::new();
+    assert_eq!(map.check(), Ok(()));
+    assert_eq!(map.resolve_text("F8"), Ok(A(ActionId::CheckNext)));
+    assert_eq!(map.resolve_text("Shift+F8"), Ok(A(ActionId::CheckPrev)));
 }
 
 #[test]
