@@ -100,3 +100,19 @@ fn the_pointer_drag_is_the_only_caller_of_the_snap() {
     let scrub = src.find("\"SCRUB\" => {").expect("the SCRUB verb");
     assert!(src[scrub..scrub + 400].contains("self.scrub_to(frame);"), "SCRUB must keep the exact frame");
 }
+
+/// C3.2: the control line `TOOLBAR run view.snap.toggle` replies OK, and the toolbar Snap button's
+/// pressed state follows the switch it flips.
+#[test]
+fn the_toolbar_snap_toggle_replies_ok_and_flips_the_pressed_state() {
+    let scratch = Scratch::new("toolbar-snap");
+    let mut app = a_window(&scratch);
+    let item = menus::toolbar_item("view.snap.toggle").expect("Snap is on the toolbar");
+    let before = app.settings.snap.enabled;
+    assert!(WaveApp::toolbar_item_on(&item, false, before) == before);
+
+    let answer = ask(&mut app, "TOOLBAR run view.snap.toggle");
+    assert!(answer.starts_with("OK"), "TOOLBAR run view.snap.toggle must reply OK: {answer}");
+    assert_eq!(app.settings.snap.enabled, !before);
+    assert_eq!(WaveApp::toolbar_item_on(&item, false, app.settings.snap.enabled), !before);
+}

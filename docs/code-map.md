@@ -555,9 +555,10 @@ One struct, `WaveApp`, holds the whole window. Almost everything is a method in 
 | 4998-5238 | Command dispatch: `run_command` (keyboard `Command`), extract channels, export ranges, batch run, `run_action` (the action table), statistics start and navigation, system clipboard. |
 | 5239-5412 | `run_window_action`: the actions that need the window (dialogs, panels, view, tools). |
 | 5413-5831 | Dialogs and small panels: Import Raw, Mix Paste, Tempo, Insert Silence, custom frame rate, `time_panel`, `selection_view_panel`, `time_box`. |
-| 5832-5993 | Menu rows as data: `item_enabled`, `run_item`, `menu_rows`, toolbar, tools panel, and the `CONTEXTMENU` and `TOOLBAR` verbs. |
-| 5994-6111 | History panel: draw, go to a step, delete a step, arrow keys. |
-| 6112-6319 | Metadata: apply an edit, metadata sets (`METASET`), the Metadata panel body. |
+| 5994-6174 | Menu rows as data: `item_enabled`, `run_item`, `menu_rows`, toolbar and its pressed-state rule, tools panel, and the `CONTEXTMENU` and `TOOLBAR` verbs. |
+| 6175-6292 | History panel: draw, go to a step, delete a step, arrow keys. |
+| 6293-6317 | Metadata edits and metadata sets (`METASET`). |
+| 6318-6371 | The Metadata panel body and metadata set helpers. |
 | 6320-6746 | Effects: the effect dialog, preview start and end, generators and the Generate menu, `run_effect`, the Effects Rack (`apply_rack`, `rack_ui`, `sync_rack`), DeClip, DeClick, Diagnostics scan and repair, Markers, Playlist and Properties panels, the clear-history prompt. |
 | 6747-6880 | `report` (error line), editing a multitrack clip's source in the waveform editor and returning to the session, `rebuild` (spectrogram and overview rebuild). |
 | 6881-7112 | Background jobs: `start_job`, Convert Sample Type, Interpret Sample Rate, their dialogs, Match Loudness finish and panel, `finish_job`, `finish_rebuild`. |
