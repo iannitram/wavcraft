@@ -304,10 +304,8 @@ impl MarkersUi {
                 let start = markers.iter().find(|m| m.id == id).map_or(0, |m| m.start);
                 let len = editor.history.current().len_frames();
                 editor.set_marker_extent(id, point_range(start, rate, len));
-            } else if to_point {
-                if let Some(m) = markers.iter().find(|m| m.id == id) {
-                    editor.set_marker_extent(id, m.start..m.start);
-                }
+            } else if to_point && let Some(m) = markers.iter().find(|m| m.id == id) {
+                editor.set_marker_extent(id, m.start..m.start);
             }
         }
         if let Some((id, n)) = set_color {
