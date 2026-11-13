@@ -37,6 +37,12 @@ pub fn buttons_for(markers: &Markers, pick: &MarkerPick) -> PickButtons {
     }
 }
 
+/// The one-second extent made by To Range. The range is clamped to the file's end.
+fn point_range(start: u64, rate: u32, len: u64) -> Range<u64> {
+    let end = start.saturating_add(u64::from(rate)).min(len);
+    start.min(end)..end
+}
+
 /// A marker being dragged in the ruler: the move is applied (one history step) on release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Drag {
@@ -237,15 +243,21 @@ impl MarkersUi {
                 }
             });
         });
-        // The picked markers: Merge (two or more), and one marker's colour and description.
+        // The picked markers: Delete, Merge, conversions, and one marker's colour and description.
         let picked_ids: Vec<u64> = self.pick.indices(&markers).iter().filter_map(|&i| markers.id_at(i)).collect();
         ui.separator();
         let mut merge = false;
+        let mut delete = false;
+        let mut to_range = false;
+        let mut to_point = false;
         let mut set_color = None;
         let mut set_desc: Option<(u64, String)> = None;
         let enabled = buttons_for(&markers, &self.pick);
         ui.horizontal(|ui| {
+            delete = ui.add_enabled(enabled.delete, egui::Button::new("Delete")).clicked();
             merge = ui.add_enabled(enabled.merge, egui::Button::new("Merge")).on_hover_text("Make the picked markers one range").clicked();
+            to_range = ui.add_enabled(enabled.to_range, egui::Button::new("To Range")).clicked();
+            to_point = ui.add_enabled(enabled.to_point, egui::Button::new("To Point")).clicked();
             if let [id] = picked_ids[..] {
                 let current = markers.iter().find(|m| m.id == id).map_or(0, |m| m.color);
                 if ui.selectable_label(current == 0, "No colour").clicked() {
@@ -277,9 +289,26 @@ impl MarkersUi {
         } else {
             self.desc_edit = None;
         }
+        if delete {
+            editor.delete_markers(&picked_ids);
+            self.pick.ids.clear();
+            self.renaming = None;
+            self.desc_edit = None;
+        }
         if merge {
             editor.merge_markers(&picked_ids);
             self.pick.ids.retain(|i| editor.history.current().markers().index_of(*i).is_some());
+        }
+        if let [id] = picked_ids[..] {
+            if to_range {
+                let start = markers.iter().find(|m| m.id == id).map_or(0, |m| m.start);
+                let len = editor.history.current().len_frames();
+                editor.set_marker_extent(id, point_range(start, rate, len));
+            } else if to_point {
+                if let Some(m) = markers.iter().find(|m| m.id == id) {
+                    editor.set_marker_extent(id, m.start..m.start);
+                }
+            }
         }
         if let Some((id, n)) = set_color {
             editor.set_marker_color(id, n);
@@ -441,6 +470,13 @@ mod tests {
             PickButtons { delete: true, merge: true, to_range: false, to_point: false },
             "a point and a range: delete and merge only"
         );
+    }
+
+    #[test]
+    fn to_range_makes_one_second_and_clamps_at_file_end() {
+        assert_eq!(point_range(48_000, 48_000, 240_000), 48_000..96_000);
+        assert_eq!(point_range(216_000, 48_000, 240_000), 216_000..240_000);
+        assert_eq!(point_range(240_000, 48_000, 240_000), 240_000..240_000);
     }
 
     #[test]
