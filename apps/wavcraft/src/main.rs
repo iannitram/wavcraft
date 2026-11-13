@@ -12,8 +12,6 @@ mod app;
 mod batch_panel;
 mod cd_ui;
 mod check_panel;
-// Not called yet: the window still reads its arguments with `parse_args`; the subcommands are a later step.
-#[allow(dead_code)]
 mod cli;
 mod control;
 mod convert_ui;
@@ -71,7 +69,19 @@ fn main() -> eframe::Result {
             std::process::exit(0);
         }
     }
-    let Args { file, session_dir, reset_preferences } = parse_args(std::env::args_os().skip(1));
+    let command = match cli::parse(std::env::args_os().skip(1)) {
+        Ok(command) => command,
+        Err(reason) => exit_error(reason),
+    };
+    if let cli::Command::Convert { input, output, session_dir } = &command {
+        match convert(input, output, session_dir.clone().unwrap_or_else(conversion_sessions_dir)) {
+            Ok(()) => std::process::exit(0),
+            Err(reason) => exit_error(reason),
+        }
+    }
+    let cli::Command::Window(Args { file, session_dir, reset_preferences }) = command else {
+        exit_error("command is not implemented yet".to_owned());
+    };
     selflog::install();
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("WavCraft").with_inner_size([1280.0, 720.0]).with_min_inner_size([640.0, 360.0]),
@@ -79,6 +89,24 @@ fn main() -> eframe::Result {
     };
     configure_graphics(&mut options);
     eframe::run_native("WavCraft", options, Box::new(move |cc| Ok(Box::new(app::WaveApp::new(cc, file, session_dir, reset_preferences)))))
+}
+
+fn exit_error(reason: String) -> ! {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{reason}");
+    std::process::exit(2)
+}
+
+fn conversion_sessions_dir() -> PathBuf {
+    std::env::var_os("WAVCRAFT_SESSION_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("wavcraft-sessions"))
+}
+
+fn convert(input: &std::path::Path, output: &std::path::Path, sessions: PathBuf) -> Result<(), String> {
+    use wavcraft_automation::{Backend, Request, SaveArgs, headless::Headless};
+    let mut backend = Headless::new(sessions);
+    backend.execute(&Request::Open(input.to_path_buf()))?;
+    backend.execute(&Request::Save { path: Some(output.to_path_buf()), args: SaveArgs::default() })?;
+    Ok(())
 }
 
 /// On Windows, start wgpu with DirectX 12 only unless `WGPU_BACKEND` says otherwise. SoundCraft
