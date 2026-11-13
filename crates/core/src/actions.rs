@@ -55,6 +55,9 @@ pub enum ActionId {
     InsertFile,
     CursorToStart,
     CursorToEnd,
+    /// Move Playhead to Previous / Next (C5.2, Alt+Left / Alt+Right): the window runs them (C5.3).
+    PlayheadPrev,
+    PlayheadNext,
     SetIn,
     SetOut,
     ZoomIn,
@@ -280,6 +283,9 @@ pub const TABLE: &[Action] = &[
     edit(ActionId::MarkerAdd, "marker.add", "Add Marker"),
     edit(ActionId::MarkerPrev, "marker.prev", "Playhead to Previous Marker"),
     edit(ActionId::MarkerNext, "marker.next", "Playhead to Next Marker"),
+    // Move Playhead to Previous / Next (C5.2): the window moves the playhead (C5.3); Alt+Left / Alt+Right.
+    window(ActionId::PlayheadPrev, "view.playhead.prev", "Move Playhead to Previous"),
+    window(ActionId::PlayheadNext, "view.playhead.next", "Move Playhead to Next"),
     // Delete and convert act on the markers the selection (or cursor) touches; no default keys.
     edit(ActionId::MarkerDelete, "marker.delete", "Delete Marker"),
     edit(ActionId::MarkerToRange, "marker.toRange", "Convert Marker to Range"),
@@ -714,6 +720,7 @@ impl Editor {
             ActionId::ToggleChannel(n) => usize::from(n) < self.channel_count(),
             ActionId::StatsShow | ActionId::StatsGotoPeak | ActionId::StatsNextClip | ActionId::StatsPrevClip => self.len() > 0,
             ActionId::EpisodeCheck | ActionId::CheckNext | ActionId::CheckPrev | ActionId::TranscriptRun => self.len() > 0,
+            ActionId::PlayheadPrev | ActionId::PlayheadNext => self.len() > 0,
             ActionId::MarkerAdd => self.len() > 0,
             ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
             ActionId::MarkerPrev => self.history.current().markers().prev_before(selection.start).is_some(),
@@ -1386,6 +1393,8 @@ impl Editor {
             | ActionId::ViewSyncSelection
             | ActionId::ViewSyncZoom
             | ActionId::ViewSyncPlayhead
+            | ActionId::PlayheadPrev
+            | ActionId::PlayheadNext
             | ActionId::ExtractChannels
             | ActionId::ExportRanges
             | ActionId::ToolSelect

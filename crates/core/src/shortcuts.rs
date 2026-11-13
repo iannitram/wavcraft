@@ -397,6 +397,8 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::MarkerAdd, key("M")),
     act(ActionId::MarkerPrev, cmd_alt("ArrowLeft")),
     act(ActionId::MarkerNext, cmd_alt("ArrowRight")),
+    act(ActionId::PlayheadPrev, alt("ArrowLeft")),
+    act(ActionId::PlayheadNext, alt("ArrowRight")),
     act(ActionId::ZoomIn, key("Equals")),
     act(ActionId::ZoomOut, key("Minus")),
     act(ActionId::ZoomToSelection, shift("S")),

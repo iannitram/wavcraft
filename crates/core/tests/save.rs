@@ -350,7 +350,7 @@ fn f35_the_extension_picks_the_format() {
         ("a.aif", Some(SaveFormat::Aiff)),
         ("a.AIFF", Some(SaveFormat::Aiff)),
         ("a.flac", Some(SaveFormat::Flac)),
-        ("a.mp3", None),
+        ("a.mp3", Some(SaveFormat::Mp3)),
         ("a", None),
     ] {
         assert_eq!(SaveFormat::from_path(Path::new(name)), want, "{name}");

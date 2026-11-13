@@ -219,5 +219,5 @@ fn f87_presets_refuse_bad_names_and_fit_the_type_to_the_format() {
     assert_eq!(p.get("ok").unwrap().ty, SampleType::Int24, "FLAC cannot hold float");
     // A missing file is no presets; junk lines are skipped.
     assert!(ExportPresets::load(Path::new("/nonexistent/f87/presets.txt")).presets.is_empty());
-    assert_eq!(ExportPresets::parse("junk\nname\twav\t24\taiff\nbad\tmp3\t24\taiff\n").presets.len(), 1);
+    assert_eq!(ExportPresets::parse("junk\nname\twav\t24\taiff\nbad\tm4a\t24\taiff\n").presets.len(), 1);
 }
