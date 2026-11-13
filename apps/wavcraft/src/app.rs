@@ -6064,7 +6064,7 @@ impl WaveApp {
                     }
                     Entry::Item(item) if matches!(item.cmd, Cmd::Tool(_)) => {}
                     Entry::Item(item) => {
-                        let on = item.cmd == Cmd::PlayStop && self.player.is_playing();
+                        let on = Self::toolbar_item_on(&item, self.player.is_playing(), self.settings.snap.enabled);
                         let b = egui::Button::new(menus::glyph(&item)).selected(on);
                         if ui.add_enabled(self.item_enabled(&item), b).on_hover_text(item.label).clicked() {
                             chosen = Some(item);
@@ -6078,6 +6078,11 @@ impl WaveApp {
         {
             self.notice = Some(e);
         }
+    }
+
+    /// Whether a toolbar button represents a currently active state.
+    fn toolbar_item_on(item: &Item, playing: bool, snap_on: bool) -> bool {
+        (item.cmd == Cmd::PlayStop && playing) || (item.name == "view.snap.toggle" && snap_on)
     }
 
     /// Window › Tools: the tools by name, the active one selected; unbuilt ones greyed.
@@ -13020,6 +13025,16 @@ fn one_shot_effect(name: &str) -> Option<ActionId> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_snap_button_is_pressed_while_snapping_is_on() {
+        let snap_item = super::menus::toolbar_item("view.snap.toggle").expect("Snap is on the toolbar");
+        let play_item = super::menus::toolbar_item("transport.playStop").expect("Play/Stop is on the toolbar");
+
+        assert!(super::WaveApp::toolbar_item_on(&snap_item, false, true));
+        assert!(!super::WaveApp::toolbar_item_on(&snap_item, false, false));
+        assert!(super::WaveApp::toolbar_item_on(&play_item, true, false));
+    }
+
     #[test]
     fn one_shot_effects_resolve_by_their_control_names() {
         use super::one_shot_effect as find;
