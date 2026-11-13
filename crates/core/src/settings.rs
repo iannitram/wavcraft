@@ -3,7 +3,7 @@
 //! Settings live in a small text file, `settings.txt` in the system's config folder under
 //! `wavcraft` (`%APPDATA%\wavcraft` on Windows, `~/Library/Application Support/wavcraft` on a
 //! Mac, `~/.config/wavcraft` on Linux): one `key = value` per line, `#` for comments. Today it
-//! holds `session_folder`, `hidden_panels`, `dither`, `panel_layout`, `zone_sizes`, `workspace`, `status_fields` and `spectral_view`, and the preferences of the Preferences dialog (see
+//! holds `session_folder`, `recordings_folder`, `hidden_panels`, `dither`, `panel_layout`, `zone_sizes`, `workspace`, `status_fields` and `spectral_view`, and the preferences of the Preferences dialog (see
 //! [`KEYS`]; `input_device` is one of them); a file from an older build, with fewer keys, loads
 //! with the defaults for the rest, and an older build reading a newer file ignores the keys it
 //! doesn't know.
@@ -40,6 +40,7 @@ pub const ENV_SESSION_DIR: &str = "WAVCRAFT_SESSION_DIR";
 pub const HOW_TO_CHANGE: &str = "File › Session Folder… in WavCraft, or the WAVCRAFT_SESSION_DIR environment variable";
 
 const KEY_SESSION_FOLDER: &str = "session_folder";
+const KEY_RECORDINGS_FOLDER: &str = "recordings_folder";
 /// A session folder path plain text can't hold (see [`needs_hex`]): its native bytes, in hex.
 const KEY_SESSION_FOLDER_HEX: &str = "session_folder_hex";
 const KEY_LANGUAGE: &str = "language";
@@ -116,12 +117,13 @@ pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
 /// menu and is not one of them).
-pub const KEYS: [&str; 45] = [
+pub const KEYS: [&str; 46] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
     KEY_OUTPUT,
     KEY_INPUT,
+    KEY_RECORDINGS_FOLDER,
     KEY_SRC_QUALITY,
     KEY_SAVE_META,
     KEY_MARKER_PATTERN,
@@ -474,6 +476,8 @@ const KEY_CHANNEL_LAYOUT: &str = "channel_layout";
 pub struct Settings {
     /// Where session stores go (`None`: the default).
     pub session_folder: Option<PathBuf>,
+    /// Where recordings go (`None`: the default).
+    pub recordings_folder: Option<PathBuf>,
     /// The interface language's code (`None`: English). Written only when set, so a file without
     /// it keeps its old format.
     pub language: Option<String>,
@@ -594,6 +598,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             session_folder: None,
+            recordings_folder: None,
             language: None,
             right_click_menu: false,
             hidden_panels: Vec::new(),
@@ -838,6 +843,7 @@ impl Settings {
     pub fn get(&self, key: &str) -> Result<String, String> {
         Ok(match key {
             KEY_SESSION_FOLDER => self.session_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+            KEY_RECORDINGS_FOLDER => self.recordings_folder.as_deref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             KEY_CUT_JOIN => self.cut_join_ms.to_string(),
             KEY_EDGE => self.edge_ms.to_string(),
             KEY_OUTPUT => self.output_device.clone().unwrap_or_else(|| SYSTEM_DEFAULT.to_string()),
@@ -902,6 +908,7 @@ impl Settings {
             _ => Err(format!("{key} is a whole number of milliseconds, 0 to {MAX_CROSSFADE_MS}")),
         };
         match key {
+            KEY_RECORDINGS_FOLDER => self.recordings_folder = (!value.is_empty()).then(|| PathBuf::from(value)),
             KEY_SESSION_FOLDER_HEX => {
                 self.session_folder = Some(
                     hex_decode(value)
@@ -1150,6 +1157,9 @@ impl Settings {
         if let Some(input_device) = &self.input_device {
             out.push_str(&format!("{KEY_INPUT} = {input_device}\n"));
         }
+        if let Some(recordings_folder) = &self.recordings_folder {
+            out.push_str(&format!("{KEY_RECORDINGS_FOLDER} = {}\n", recordings_folder.to_string_lossy()));
+        }
         if self.time_display != crate::view::TimeFormat::default() {
             out.push_str("# time_display: decimal, compact, samples, smpte_24, smpte_25, smpte_2997df, smpte_2997ndf, smpte_30, smpte_5994, custom, cd75 or bars_beats (View > Time Display).\n");
             out.push_str(&format!("{KEY_TIME_DISPLAY} = {}\n", self.time_display.name()));
@@ -1218,7 +1228,7 @@ impl Settings {
         // default, so a default file keeps the old format (see KEYS).
         let defaults = Settings::default();
         let mut block = String::new();
-        for k in KEYS[5..].iter().copied().filter(|k| *k != KEY_TIME_DISPLAY) {
+        for k in KEYS[5..].iter().copied().filter(|k| *k != KEY_TIME_DISPLAY && *k != KEY_RECORDINGS_FOLDER) {
             let v = self.get(k).unwrap_or_default();
             if v != defaults.get(k).unwrap_or_default() {
                 block.push_str(&format!("{k} = {v}\n"));

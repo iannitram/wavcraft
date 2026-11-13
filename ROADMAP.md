@@ -365,7 +365,7 @@ My ruling, 2026-11-03: "In v1, after Editor (Recommended)". Order: N1, then N2.1
 
 #### J1: Record a take into a new WAV (partial)
 
-- **On main:** Take writer and names in crates/core/src/record.rs (tests inside it). App side in apps/wavcraft/src/recording.rs, rec_input.rs and app.rs: Record button, Record Now, Shift+Space (issue1000_tests.rs). Missing: recordings folder preference, mic channel count by default.
+- **On main:** Take writer and names in crates/core/src/record.rs (tests inside it); the recordings folder preference key in crates/core/src/settings.rs (J1.1). App side in apps/wavcraft/src/recording.rs, rec_input.rs and app.rs: Record button, Record Now, Shift+Space (issue1000_tests.rs). Missing: app wiring for the recordings folder, mic channel count by default.
 - **Done check:** A 1-hour take on the 64 GB Linux tablet: dropped counter reads 0, and the file opens in WavCraft and in another player.
 - **Recorded so far:** not recorded
 - **Item issue:** #51
