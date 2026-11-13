@@ -3877,7 +3877,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-craft-mp3 1.0.0
+craft-mp3 1.1.0
 ---------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/iannitram/craft-mp3

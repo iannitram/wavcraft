@@ -42,10 +42,10 @@ soundcraft-model = { git = "https://github.com/iannitram/soundcraft", rev = "143
 soundcraft-time = { git = "https://github.com/iannitram/soundcraft", rev = "1435fd2874ed7d668cfe0b2f1ef884bce045dd91" }
 
 # A3.1 (#1310): craft-mp3, the pure-Rust MP3 encoder shared by WavCraft and SoundCraft (MIT OR Apache-2.0,
-# no dependencies). Pinned to the commit that the `v1.0.0` tag names (tag object 70852cd, peeled to c09ff5e),
-# as the SoundCraft crates are pinned: a commit, never a branch. craft-mp3's gapless work (PRs #25, #27, merged
-# 2026-11-12) is 9 commits past this tag, so it is NOT in this pin. Bump by moving `rev` and running `cargo update -p craft-mp3`.
-craft-mp3 = { git = "https://github.com/iannitram/craft-mp3", rev = "c09ff5e70ebd824569bef995dfbe5113d8a44904" }
+# no dependencies). Pinned to the commit that the `v1.1.0` tag names (456f049), as the SoundCraft crates are
+# pinned: a commit, never a branch. v1.1.0 adds gapless playback (LAME-layout delay and padding in the Info tag,
+# craft-mp3 #25 and #27); the API is unchanged from v1.0.0. Bump by moving `rev` and running `cargo update -p craft-mp3`.
+craft-mp3 = { git = "https://github.com/iannitram/craft-mp3", rev = "456f04906efa02082bbf81eb3e32aaaadf42391b" }
 
 serde_json = "1" # MIT OR Apache-2.0; already in Cargo.lock through the SoundCraft crates
 
