@@ -1,4 +1,4 @@
-//! Save (task 06): WAV, AIFF, FLAC and Ogg Vorbis (f93), MP3 as a format only until its writer lands (A3.3), and Sony Wave64, Apple CAF and Sun/NeXT AU (f91). The document is streamed out 64 K frames at a time with
+//! Save (task 06): WAV, AIFF, FLAC, Ogg Vorbis (f93) and MP3 (A3.4, through [`save_mp3`]), and Sony Wave64, Apple CAF and Sun/NeXT AU (f91). The document is streamed out 64 K frames at a time with
 //! [`DocState::read`], never flattened, so a three-hour file saves on an 8 GB machine. Integer
 //! samples are `round(x · 2^(bits−1))`, clamped (dither and noise shaping, [`crate::dither`], only
 //! when the document's `SourceFormat::dither` asks for them, A163): the exact inverse of how they
@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
+use craft_mp3::{Encoder as Mp3Encoder, EncoderConfig};
 use soundcraft_audio_io::SampleFormat;
 
 use crate::dither::Ditherer;
@@ -267,8 +268,10 @@ pub enum SaveFormat {
     Flac,
     /// Lossy, VBR by quality (-1 to 10); the sample type is ignored (f93).
     Vorbis,
-    /// Lossy MP3 (A3.3): the format is known, but its writer has not landed, so a save refuses it
-    /// with [`SaveError::Unsupported`]. The sample type is ignored, as for Vorbis.
+    /// Lossy MP3 (A3.4): written by the craft-mp3 encoder with the bitrate and mono choices of
+    /// `save_mp3` (the defaults through `save`). Only 32000, 44100 or 48000 Hz and mono or stereo
+    /// can be saved; anything else is refused with [`SaveError::Unsupported`]. The sample type is
+    /// ignored, as for Vorbis.
     Mp3,
 }
 
@@ -436,6 +439,8 @@ struct Hooks<'a> {
     /// The batch runner's per-chunk change (`None` for every other save): the samples written are
     /// the transform's `channels`, not the document's.
     transform: Option<&'a RefCell<Transform<'a>>>,
+    /// MP3 only (A3.4): the bitrate and mono choices; the defaults for every other format.
+    mp3: Mp3Options,
 }
 
 fn no_hooks<'a>() -> Hooks<'a> {
@@ -452,6 +457,7 @@ fn no_hooks<'a>() -> Hooks<'a> {
         cancel: None,
         block_delay: Duration::ZERO,
         transform: None,
+        mp3: Mp3Options::default(),
     }
 }
 
@@ -582,6 +588,14 @@ pub fn save(doc: &DocState, target: &Path, format: SaveFormat, ty: SampleType, p
     save_inner(doc, target, format, ty, &Part::whole(doc), progress, no_hooks())
 }
 
+/// Save `doc` to `target` as MP3 (A3.4) with `options`: the bitrate, and mono (a stereo document
+/// refuses it until A3.5). It is streamed through the craft-mp3 encoder and replaced atomically
+/// like every save. A rate or channel count MP3 cannot hold is refused with
+/// [`SaveError::Unsupported`] before any file is made.
+pub fn save_mp3(doc: &DocState, target: &Path, options: Mp3Options, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
+    save_inner(doc, target, SaveFormat::Mp3, SampleType::Float32, &Part::whole(doc), progress, Hooks { mp3: options, ..no_hooks() })
+}
+
 /// [`save_wav`] for any [`Container`]: the same atomic temporary-file-and-rename, the same streaming.
 pub fn save_as(doc: &DocState, target: &Path, container: Container, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
     let hooks = match container {
@@ -677,7 +691,12 @@ fn save_inner(
         return Err(SaveError::Unsupported(format!("{} cannot hold {} samples", format.name(), ty.describe())));
     }
     if format == SaveFormat::Mp3 {
-        return Err(SaveError::Unsupported("MP3 saving is not available yet".into()));
+        // Checked before the temporary file is made, so a refused save leaves no file behind.
+        let channels = u16::try_from(part.channels.len()).unwrap_or(u16::MAX);
+        let out_channels = mp3_check(doc.sample_rate(), channels, hooks.mp3).map_err(SaveError::Unsupported)?;
+        if usize::from(out_channels) != part.channels.len() {
+            return Err(SaveError::Unsupported("MP3 mono mixdown is not available yet".into()));
+        }
     }
     remove_leftover_temps(target);
     let tmp = TempFile::create(target, false).map_err(SaveError::Io)?;
@@ -875,6 +894,9 @@ fn write_stream(
     if format == SaveFormat::Vorbis {
         return write_vorbis_stream(doc, file, part, progress, hooks).map(|file| (file, Vec::new()));
     }
+    if format == SaveFormat::Mp3 {
+        return write_mp3_stream(doc, file, part, progress, hooks).map(|file| (file, Vec::new()));
+    }
     if let Some(container) = hooks.plain {
         // Wave64, CAF and AU have no RIFF chunk table: nothing is recorded for a later copy.
         return write_plain(doc, file, container, ty, part, progress, hooks).map(|file| (file, Vec::new()));
@@ -976,7 +998,7 @@ fn write_stream(
             })?;
         }
         SaveFormat::Vorbis => return Err(invalid("Vorbis has its own writer")),
-        SaveFormat::Mp3 => return Err(invalid("MP3 has no writer yet")),
+        SaveFormat::Mp3 => return Err(invalid("MP3 has its own writer")),
     }
     let file = out.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
@@ -1032,6 +1054,42 @@ fn write_vorbis_stream(doc: &DocState, file: File, part: &Part, progress: &mut d
     })?;
     let out = enc.finish().map_err(invalid_err)?;
     let file = out.into_inner().map_err(|e| e.into_error())?;
+    file.sync_all()?;
+    Ok(file)
+}
+
+/// The MP3 writer (A3.4): the craft-mp3 encoder takes the document in 64 K-frame blocks, and the
+/// stream is written to the temporary file once the encoder has finished.
+///
+/// **Why the stream is held in memory:** craft-mp3 v1.1.0 computes the Info tag's CRC over the whole
+/// stream in `finish`, which reads it from the very `Vec` the frames were written into. So the `Vec`
+/// must keep every frame until the end and must not be drained between calls. Only the encoded
+/// output is held (about 86 MB per hour at 192 kbps), never the source audio. A streaming `finish`
+/// in craft-mp3 would let this write frames as they come (the decider's note on #1351).
+fn write_mp3_stream(doc: &DocState, mut file: File, part: &Part, progress: &mut dyn FnMut(f64), hooks: Hooks) -> io::Result<File> {
+    let channels = u16::try_from(part.channels.len()).map_err(|_| invalid("too many channels for MP3"))?;
+    let config = EncoderConfig::new(doc.sample_rate(), channels, hooks.mp3.bitrate_kbps);
+    let mut enc = Mp3Encoder::new(config).map_err(|e| invalid(&format!("MP3 encoder: {e}")))?;
+    // Sized up front from the bit rate times the duration, so the Vec never grows by doubling (a
+    // doubling peaks near twice the stream: about 800 MB for 3 hours at 320 kbps). The slack covers
+    // the tag frame, the encoder's delay and frame rounding. Saturating arithmetic: no overflow.
+    let frames = part.frames.end.saturating_sub(part.frames.start);
+    let stream_bytes = u64::from(hooks.mp3.bitrate_kbps).saturating_mul(125).saturating_mul(frames) / u64::from(doc.sample_rate().max(1));
+    let capacity = usize::try_from(stream_bytes.saturating_add(16 * 1024)).unwrap_or(0);
+    let mut mp3: Vec<u8> = Vec::with_capacity(capacity);
+    stream_samples(doc, part, progress, hooks, |bufs, n| {
+        let block: Vec<&[f32]> = bufs.iter().map(|b| &b[..n]).collect();
+        enc.encode_planar(&block, &mut mp3);
+        Ok(())
+    })?;
+    if let Some(tag) = enc.finish(&mut mp3) {
+        // A checked copy over the placeholder frame at the start. `InfoTag::write_to` is not used:
+        // it panics on a short stream, and this returns an error instead.
+        let head = tag.as_bytes();
+        let dst = mp3.get_mut(..head.len()).ok_or_else(|| invalid("MP3 encoder gave a short stream"))?;
+        dst.copy_from_slice(head);
+    }
+    file.write_all(&mp3)?;
     file.sync_all()?;
     Ok(file)
 }
