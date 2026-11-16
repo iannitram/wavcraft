@@ -544,6 +544,10 @@ pub struct WaveApp {
     marquee: Option<MarqueeDrag>,
     /// Where the current drag began (set when a drag starts, for the Zoom tool and the ruler).
     drag_origin: Option<Pos2>,
+    /// The fade handle being dragged (E1.2); `None` when no fade drag is on.
+    fade_drag: Option<wavcraft_core::fade_handles::FadeHandle>,
+    /// Where the pointer was (screen y) when the fade drag began.
+    fade_origin_y: f32,
     /// Bumped on every open, so cached pictures of the previous file are dropped.
     generation: usize,
     view: Viewport,
@@ -969,6 +973,8 @@ impl WaveApp {
             marquee: None,
             drag_origin: None,
             selection: Selection::default(),
+            fade_drag: None,
+            fade_origin_y: 0.0,
             player: Player::new(output_choice(&settings), settings.output_map.clone(), settings.playback_quality),
             transport: Transport::default(),
             head_scrub: ScrubState::default(),
@@ -6783,6 +6789,38 @@ impl WaveApp {
         }
     }
 
+    /// Apply a fade handle gesture to its range as one undo step (E1.2). The selection is left
+    /// as it was, so the handles stay where they are.
+    fn run_fade(&mut self, gesture: &wavcraft_core::fade_handles::FadeGesture, ctx: &egui::Context) -> Result<bool, String> {
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
+        let call = crate::fade_drag::effect_call(gesture);
+        let Some(index) = wavcraft_core::effects::all().iter().position(|e| e.id() == call.id) else {
+            return Err(format!("no effect {}", call.id));
+        };
+        let Ok(index) = u16::try_from(index) else { return Err(format!("no effect {}", call.id)) };
+        let Some(editor) = self.editor.as_mut() else { return Err("no file is open".to_string()) };
+        match editor.run_effect(index, vec![f64::from(call.curve_param)], call.range) {
+            Ok(out) => {
+                self.notice = out.message;
+                self.error = None;
+                if out.doc_changed {
+                    self.rebuild(ctx);
+                }
+                Ok(out.doc_changed)
+            }
+            Err(e) => {
+                log::warn!(target: "wavcraft", "Fade: {e}");
+                self.error = Some(format!("Fade: {e}"));
+                Err(format!("Fade: {e}"))
+            }
+        }
+    }
+
     /// Process the selection (the whole file when none) through the Effects Rack as one step,
     /// then reset the rack to bypass (f31). Returns whether the document changed.
     fn apply_rack(&mut self, ctx: &egui::Context) -> Result<bool, String> {
@@ -11669,8 +11707,49 @@ impl WaveApp {
             && marquee_hit.is_some_and(|a| {
                 response.drag_started_by(egui::PointerButton::Primary) && ui.input(|i| i.pointer.press_origin()).is_some_and(|o| a.contains(o))
             });
+        // The fade handles (E1.2): at the waveform's top corners, with the Select tool. A press on one
+        // starts a fade drag, which wins over selecting; the release applies the fade as one step.
+        let mut fade_preview: Option<wavcraft_core::fade_handles::FadeGesture> = None;
+        if self.editor_shows("waveform") && self.tool == Tool::Select && frames > 0 {
+            let origin = body.min;
+            let hit = |view: &Viewport, sel: &Selection, p: egui::Pos2| {
+                wavcraft_core::fade_handles::handle_near(view, sel, frames, p.x - origin.x, p.y - origin.y)
+            };
+            if self.fade_drag.is_none() {
+                if let Some(pos) = ui.input(|i| i.pointer.hover_pos())
+                    && hit(&self.view, &self.selection, pos).is_some()
+                {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+                if response.drag_started_by(egui::PointerButton::Primary)
+                    && let Some(press) = ui.input(|i| i.pointer.press_origin())
+                    && let Some(h) = hit(&self.view, &self.selection, press)
+                {
+                    self.fade_drag = Some(h);
+                    self.fade_origin_y = press.y;
+                }
+            }
+            if let Some(h) = self.fade_drag {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+                    let ctrl = ui.input(|i| i.modifiers.command);
+                    let target = wavcraft_core::fade_handles::active_fade_range(&self.selection, frames);
+                    fade_preview = wavcraft_core::fade_handles::drag_fade(h, &self.view, target, pos.x - origin.x, pos.y - self.fade_origin_y, ctrl);
+                }
+                if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+                    self.fade_drag = None;
+                    if let Some(g) = fade_preview.take() {
+                        // A failure is already on the status line; nothing else to do.
+                        let _ = self.run_fade(&g, ui.ctx());
+                    }
+                }
+            }
+        }
         // Selection gestures: the Select tool's, and the Marquee tool's outside a marquee drag.
-        let select = (self.tool == Tool::Select || (marquee_tool && self.marquee.is_none() && !marquee_starts)) && !freq_busy && !on_freq_click;
+        let select = (self.tool == Tool::Select || (marquee_tool && self.marquee.is_none() && !marquee_starts))
+            && !freq_busy
+            && !on_freq_click
+            && self.fade_drag.is_none();
         let shift = ui.input(|i| i.modifiers.shift);
         let marker_drag_button = [egui::PointerButton::Primary, egui::PointerButton::Secondary, egui::PointerButton::Middle]
             .into_iter()
@@ -12019,6 +12098,10 @@ impl WaveApp {
                         toggled = Some(ch);
                     }
                 }
+            }
+            if frames > 0 {
+                let range = wavcraft_core::fade_handles::active_fade_range(&self.selection, frames);
+                draw_fade_handles(&painter, area, &self.view, range, self.fade_drag, fade_preview.as_ref());
             }
         }
         painter.rect_filled(Rect::from_min_max(amp_col.min, pos2(amp_col.right(), amp_col.top() + RULER_HEIGHT)), 0.0, theme::pal().ruler);
@@ -13044,6 +13127,44 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, f
             egui::FontId::monospace(11.0),
             text,
         );
+    }
+}
+
+/// The Fade In and Fade Out handles: small squares at the waveform's top corners of `range`, the
+/// one being dragged lit, and while dragging a line along the top edge for the fade's length.
+fn draw_fade_handles(
+    painter: &egui::Painter,
+    area: Rect,
+    view: &Viewport,
+    range: Range<usize>,
+    active: Option<wavcraft_core::fade_handles::FadeHandle>,
+    preview: Option<&wavcraft_core::fade_handles::FadeGesture>,
+) {
+    use wavcraft_core::fade_handles::{FadeHandle, HANDLE_HIT_PX};
+    let painter = painter.with_clip_rect(area);
+    let x_in = view.x_of(range.start as f64);
+    let x_out = view.x_of(range.end as f64);
+    if !x_in.is_finite() || !x_out.is_finite() {
+        return;
+    }
+    for (handle, x) in [(FadeHandle::In, area.left() + x_in), (FadeHandle::Out, area.left() + x_out)] {
+        let colour = if active == Some(handle) { theme::pal().white } else { theme::pal().marker };
+        // The square sits inside the area: its left edge at the In corner, its right edge at the Out corner.
+        let rect = match handle {
+            FadeHandle::In => Rect::from_min_size(pos2(x, area.top()), vec2(HANDLE_HIT_PX, HANDLE_HIT_PX)),
+            FadeHandle::Out => Rect::from_min_size(pos2(x - HANDLE_HIT_PX, area.top()), vec2(HANDLE_HIT_PX, HANDLE_HIT_PX)),
+        };
+        painter.rect_filled(rect, 0.0, colour);
+    }
+    if let Some(g) = preview {
+        let (from, to) = match g.handle {
+            FadeHandle::In => (x_in, view.x_of(g.range.end as f64)),
+            FadeHandle::Out => (x_out, view.x_of(g.range.start as f64)),
+        };
+        if from.is_finite() && to.is_finite() {
+            let y = area.top() + 0.5;
+            painter.line_segment([pos2(area.left() + from, y), pos2(area.left() + to, y)], Stroke::new(1.0, theme::pal().white));
+        }
     }
 }
 
