@@ -5140,7 +5140,32 @@ impl WaveApp {
                 let name = self.workspaces.nth(usize::from(n)).ok_or_else(|| format!("there is no workspace {n}"))?;
                 self.workspace_command(&format!("switch {name}")).map(|()| false)
             }
+            // Process › Noise Reduction…: the dialog only; OK in it runs the effect.
+            Command::NoiseReductionDialog => {
+                let i = wavcraft_core::effects::all()
+                    .iter()
+                    .position(|e| e.id() == "noise_reduction")
+                    .ok_or_else(|| "Noise Reduction is not available".to_string())?;
+                let i = u16::try_from(i).map_err(|_| "Noise Reduction is not available".to_string())?;
+                let sel = self.selection_range();
+                let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
+                if !editor.enabled(ActionId::Effect(i), &sel) || self.saving.is_some() || self.running.is_some() {
+                    return Err("Noise Reduction is not available now".to_string());
+                }
+                self.open_effect_dialog(i);
+                Ok(false)
+            }
         }
+    }
+
+    /// Open the dialog for the effect at `i` in `effects::all()`, from the settings it last ran
+    /// with when it was the last command, else from the defaults.
+    fn open_effect_dialog(&mut self, i: u16) {
+        let last = self.editor.as_ref().and_then(|e| match &e.last {
+            Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
+            _ => None,
+        });
+        self.effect_dialog = EffectDialog::new(i, last);
     }
 
     /// The open file's name without its folder and extension, for the names of files made from it.
@@ -10250,12 +10275,7 @@ impl WaveApp {
         }
         match chosen {
             Some((ActionId::Effect(i), true)) => {
-                // Start from the settings this effect last ran with, if it was the last command.
-                let last = self.editor.as_ref().and_then(|e| match &e.last {
-                    Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
-                    _ => None,
-                });
-                self.effect_dialog = EffectDialog::new(i, last);
+                self.open_effect_dialog(i);
                 ui.close();
             }
             Some((id, _)) => {
@@ -10280,12 +10300,7 @@ impl WaveApp {
         }
         if let Some(id) = chosen {
             if let ActionId::Effect(i) = id {
-                // Start from the settings this effect last ran with, if it was the last command.
-                let last = self.editor.as_ref().and_then(|e| match &e.last {
-                    Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
-                    _ => None,
-                });
-                self.effect_dialog = EffectDialog::new(i, last);
+                self.open_effect_dialog(i);
                 ui.close();
             } else {
                 let _ = self.run_action(id, ui.ctx());
@@ -13574,6 +13589,10 @@ mod j6_9_state_tests;
 #[cfg(test)]
 #[path = "c5_playhead_move_tests.rs"]
 mod c5_playhead_move_tests;
+
+#[cfg(test)]
+#[path = "g2_4_noise_dialog_tests.rs"]
+mod g2_4_noise_dialog_tests;
 
 #[cfg(test)]
 #[path = "d5_drop_notice_tests.rs"]

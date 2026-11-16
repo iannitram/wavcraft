@@ -22,7 +22,7 @@ macro_rules! shortcuts {
     };
 }
 
-use Command::{Action as A, Close, Open, PlayStop, Save, SaveAs};
+use Command::{Action as A, Close, NoiseReductionDialog, Open, PlayStop, Save, SaveAs};
 
 shortcuts! {
     open_ctrl_o: "Ctrl+O" => Open;
@@ -48,6 +48,7 @@ shortcuts! {
     clipboard_ctrl_4: "Ctrl+4" => A(ActionId::Clipboard4);
     clipboard_ctrl_5: "Ctrl+5" => A(ActionId::Clipboard5);
     capture_noise_print_shift_p: "Shift+P" => A(ActionId::CaptureNoisePrint);
+    noise_reduction_dialog_ctrl_shift_p: "Ctrl+Shift+P" => NoiseReductionDialog;
     delete_delete: "Delete" => A(ActionId::Delete);
     delete_backspace: "Backspace" => A(ActionId::Delete);
     crop_ctrl_t: "Ctrl+T" => A(ActionId::Crop);
@@ -156,7 +157,7 @@ fn every_action_in_a_binding_exists_and_command_names_are_unique() {
             assert!(ids.contains(&id), "{id:?} is not in the action table");
         }
     }
-    for c in [Open, Save, SaveAs, Close, PlayStop] {
+    for c in [Open, Save, SaveAs, Close, PlayStop, NoiseReductionDialog] {
         assert!(names.insert(c.name()));
         assert!(TABLE.iter().all(|a| a.name != c.name()), "{} clashes with an action name", c.name());
     }
