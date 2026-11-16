@@ -503,11 +503,16 @@ impl Player {
     }
 
     /// Play through the device named `wanted` from now on (`None`: the system default): stops
-    /// playback and reopens the output.
+    /// playback and reopens the output. While muted (a take is being recorded) the choice is kept
+    /// and the output reopens on it after the take, as a device change does (see `maintain`).
     pub fn set_output(&mut self, wanted: OutputChoice) {
         self.stop();
         self.wanted = wanted;
-        self.reopen();
+        if self.is_muted() {
+            self.shared.device_changed.store(true, Ordering::Release);
+        } else {
+            self.reopen();
+        }
     }
 
     /// Route the document's channels to the device's from now on (takes effect at once).
