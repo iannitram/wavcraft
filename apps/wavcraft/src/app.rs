@@ -34,6 +34,7 @@ use wavcraft_core::keyboard::Mods;
 use wavcraft_core::match_loudness::Target;
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
+use wavcraft_core::mp3_options::{MP3_DEFAULT_BITRATE, Mp3Options};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
 use wavcraft_core::probe::{self, FileInfo};
 use wavcraft_core::readout::{self, EditorLayout, Readout};
@@ -41,7 +42,7 @@ use wavcraft_core::recent::{self, Recent};
 use wavcraft_core::resample::Quality;
 use wavcraft_core::save::{
     AiffKind, Container, ExtraChunk, FileKind, Part, SampleType, SaveError, SaveFormat, SaveOptions, SizeEstimate, VORBIS_DEFAULT_QUALITY,
-    estimate_size, save_aiff_kind, save_as as save_container, save_vorbis, save_wav_with, write_file,
+    estimate_size, save_aiff_kind, save_as as save_container, save_mp3, save_vorbis, save_wav_with, write_file,
 };
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcut_sets::{DEFAULT_SET, SetStore};
@@ -669,6 +670,10 @@ pub struct WaveApp {
     vorbis_quality: f32,
     /// How AIFF files are written (the export dialog, an export preset, or `SAVE … aiff=`).
     aiff_kind: AiffKind,
+    /// MP3 export bit rate in kbps (`SAVE ... bitrate=`; sticky once given).
+    mp3_bitrate: u32,
+    /// MP3 export mixes a stereo document down to mono (`SAVE ... channels=1`; sticky once given).
+    mp3_mono: bool,
     /// The Save As / Export dialog is up.
     export_open: bool,
     /// The control channel's answer to the next file dialog (`None` inside: the dialog was cancelled).
@@ -1050,6 +1055,8 @@ impl WaveApp {
             save_type: None,
             vorbis_quality: VORBIS_DEFAULT_QUALITY,
             aiff_kind: AiffKind::Aiff,
+            mp3_bitrate: MP3_DEFAULT_BITRATE,
+            mp3_mono: false,
             export_open: false,
             scripted_pick: None,
             export_choice: ExportChoice::default(),
@@ -7558,7 +7565,7 @@ impl WaveApp {
         } else if path.extension().is_none() {
             (path.with_extension("wav"), SaveFormat::Wav, None)
         } else {
-            return Err(format!("{} is not a format WavCraft saves: use .wav, .w64, .caf, .au, .aiff, .flac or .ogg", path.display()));
+            return Err(format!("{} is not a format WavCraft saves: use .wav, .w64, .caf, .au, .aiff, .flac, .mp3 or .ogg", path.display()));
         };
         let wanted = ty.unwrap_or_else(|| SampleType::for_source(state.source()));
         if !format.accepts(wanted) && (explicit || ty.is_some()) {
@@ -7569,6 +7576,7 @@ impl WaveApp {
         let progress = Arc::new(AtomicU32::new(0));
         let aiff = self.aiff_kind;
         let quality = self.vorbis_quality;
+        let mp3 = Mp3Options { bitrate_kbps: self.mp3_bitrate, mono: self.mp3_mono };
         // Cancel and the metadata switch (A262, A263) are for a WAV save of the whole file.
         let cancel = (format == SaveFormat::Wav && container.is_none()).then(|| Arc::new(AtomicBool::new(false)));
         let job_cancel = cancel.clone();
@@ -7586,6 +7594,7 @@ impl WaveApp {
                     let opts = SaveOptions { include_metadata, extra_chunks, cancel: job_cancel.as_deref(), block_delay };
                     save_wav_with(&job_state, &job_path, ty, &opts, &mut report)
                 }
+                None if format == SaveFormat::Mp3 => save_mp3(&job_state, &job_path, mp3, &mut report),
                 None => save_aiff_kind(&job_state, &job_path, format, ty, aiff, &mut report),
             };
             let _ = tx.send(done);
@@ -9949,7 +9958,7 @@ impl WaveApp {
                 }
             }
             "SAVE" => {
-                // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10] [meta=0|1]`: the options end the line.
+                // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10] [meta=0|1] [bitrate=32..320] [channels=1|2]`: the options end the line.
                 match wavcraft_automation::Request::parse(line) {
                     Err(e) => format!("ERR {e}"),
                     Ok(wavcraft_automation::Request::Save { path, args }) => {
@@ -9959,6 +9968,12 @@ impl WaveApp {
                         }
                         if let Some(m) = meta {
                             self.set_include_meta(m);
+                        }
+                        if let Some(b) = args.bitrate {
+                            self.mp3_bitrate = b;
+                        }
+                        if let Some(c) = args.channels {
+                            self.mp3_mono = c == 1;
                         }
                         let to = path;
                         // `aiff=` is for this save only.
