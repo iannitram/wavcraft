@@ -1,4 +1,5 @@
-//! Tests for roadmap B1.2: the frame-time summary (count, median, worst and frames over 16.7 ms).
+//! Tests for roadmap B1.2 and B1.3: the frame-time summary (count, median, p95, worst and frames
+//! over 16.7 ms).
 
 use wavcraft_core::frame_stats::{FrameSummary, summarize_frames};
 
@@ -7,8 +8,24 @@ fn summary_of_five_frames() {
     let s = summarize_frames(&[10.0, 12.0, 14.0, 16.0, 100.0]);
     assert_eq!(s.count, 5);
     assert_eq!(s.median_ms, 14.0);
+    assert_eq!(s.p95_ms, 100.0);
     assert_eq!(s.worst_ms, 100.0);
     assert_eq!(s.over_budget, 1);
+}
+
+#[test]
+fn p95_is_the_nearest_rank() {
+    let times: Vec<f64> = (1..=100).map(f64::from).collect();
+    let s = summarize_frames(&times);
+    assert_eq!(s.count, 100);
+    assert_eq!(s.median_ms, 50.5);
+    assert_eq!(s.p95_ms, 95.0);
+}
+
+#[test]
+fn p95_of_one_frame_is_that_frame() {
+    let s = summarize_frames(&[7.0]);
+    assert_eq!(s.p95_ms, 7.0);
 }
 
 #[test]
@@ -17,6 +34,7 @@ fn an_empty_list_is_all_zero() {
     assert_eq!(s, FrameSummary::default());
     assert_eq!(s.count, 0);
     assert_eq!(s.median_ms, 0.0);
+    assert_eq!(s.p95_ms, 0.0);
     assert_eq!(s.worst_ms, 0.0);
     assert_eq!(s.over_budget, 0);
 }

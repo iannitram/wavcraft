@@ -214,6 +214,9 @@ const HW_KEYS: [&str; 6] = ["audio_host", "output_device", "input_device", "buff
 /// Frames at the start in which a held Shift means "reset the preferences".
 const SHIFT_RESET_FRAMES: u32 = 30;
 
+/// How many frame times the FRAMETIMES verb keeps (the newest ones).
+const FRAME_TIMES_CAP: usize = 20_000;
+
 /// Dragging the playhead along the ruler (task f36): the drag asks for grains, the window plays them.
 #[derive(Default)]
 struct ScrubState {
@@ -561,6 +564,10 @@ pub struct WaveApp {
     head_scrub: ScrubState,
     hold: Hold,
     clock: Instant,
+    /// The start of the current frame's work (set at the start of `logic`, read at the end of `ui`).
+    frame_start: Option<Instant>,
+    /// The work time in milliseconds of the last frames, newest last (the FRAMETIMES verb).
+    frame_times: VecDeque<f64>,
     params: SpectrogramParams,
     /// Which registered panels are shown (Window menu; kept in the settings file).
     panels: PanelSet,
@@ -974,6 +981,8 @@ impl WaveApp {
             head_scrub: ScrubState::default(),
             hold: Hold::default(),
             clock: Instant::now(),
+            frame_start: None,
+            frame_times: VecDeque::with_capacity(FRAME_TIMES_CAP),
             params: {
                 let mut p = SpectrogramParams::default();
                 settings.apply_to_spectrogram(&mut p);
@@ -1232,6 +1241,24 @@ impl WaveApp {
     }
 
     /// Write the settings file (the message says why not, in words).
+    /// Starts timing the work of one frame (called first in `logic`).
+    fn frame_timer_begin(&mut self) {
+        self.frame_start = Some(Instant::now());
+    }
+
+    /// Ends the timing of one frame and keeps its work time in ms (called last in `ui`). Does
+    /// nothing when no frame was started, as when the window is hidden.
+    fn frame_timer_end(&mut self) {
+        let Some(start) = self.frame_start.take() else {
+            return;
+        };
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        if self.frame_times.len() >= FRAME_TIMES_CAP {
+            self.frame_times.pop_front();
+        }
+        self.frame_times.push_back(ms);
+    }
+
     /// The visible range as `<first>-<last>` frames, for NAV.
     fn view_text(&self) -> String {
         let frames = self.doc.as_ref().map_or(0, Document::frames) as f64;
@@ -8447,6 +8474,19 @@ impl WaveApp {
             "MARKER" => self.control_marker(rest),
             // `PLAYLIST add <marker> [loops=<n>] | move <i> <j> | remove <i> | loops <i> <n> | play | stop | clear | state | sequence`.
             "PLAYLIST" => self.control_playlist(rest),
+            // `FRAMETIMES` → `OK n=<n> median_ms=<x> p95_ms=<x> worst_ms=<x> over=<n>` (B1.3); `FRAMETIMES reset` → `OK n=0`.
+            "FRAMETIMES" => match rest.trim() {
+                "reset" => {
+                    self.frame_times.clear();
+                    "OK n=0".to_string()
+                }
+                "" => {
+                    let times: Vec<f64> = self.frame_times.iter().copied().collect();
+                    let s = wavcraft_core::frame_stats::summarize_frames(&times);
+                    format!("OK n={} median_ms={:.2} p95_ms={:.2} worst_ms={:.2} over={}", s.count, s.median_ms, s.p95_ms, s.worst_ms, s.over_budget)
+                }
+                _ => "ERR FRAMETIMES [reset]".to_string(),
+            },
             "PEAKCACHE" => match rest.trim() {
                 "info" => {
                     let (files, bytes) = wavcraft_core::peakcache::info(&self.peak_dir);
@@ -12190,6 +12230,7 @@ impl eframe::App for WaveApp {
     /// control channel must not wait for the window to be shown (the 2026-10-19 by-eye check
     /// found the channel silent behind another window).
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.frame_timer_begin();
         self.keeper.tick(ctx, frame);
         self.finish_opening();
         self.pump_open_queue(ctx);
@@ -12662,6 +12703,7 @@ impl eframe::App for WaveApp {
         if self.layout_dirty && !ctx.input(|i| i.pointer.any_down()) {
             self.save_panels();
         }
+        self.frame_timer_end();
     }
 }
 
@@ -13647,6 +13689,9 @@ mod n3_mcp_window_tests;
 #[cfg(test)]
 #[path = "a3_mp3_tests.rs"]
 mod a3_mp3_tests;
+#[cfg(test)]
+#[path = "b1_frametimes_tests.rs"]
+mod b1_frametimes_tests;
 
 #[cfg(test)]
 mod reset_tests {
