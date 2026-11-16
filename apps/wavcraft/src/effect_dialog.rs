@@ -112,7 +112,8 @@ impl EffectDialog {
     }
 
     /// The values to send to the preview worker, when they differ from those last sent. Returns
-    /// `None` on an unchanged frame, so a slider drag, Reset or a preset load each give one message.
+    /// `None` on an unchanged frame: one message per frame in which the values changed; an
+    /// unchanged frame gives none.
     pub fn take_changed_values(&mut self) -> Option<Vec<f64>> {
         if self.values == self.sent {
             return None;

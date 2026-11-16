@@ -5540,8 +5540,14 @@ impl WaveApp {
                 self.mic_dialog.get_or_insert(MicDialog { secs: 5.0, result: None });
                 return Ok(false);
             }
-            ActionId::SpectralResolutionUp => self.step_resolution(1),
-            ActionId::SpectralResolutionDown => self.step_resolution(-1),
+            ActionId::SpectralResolutionUp => {
+                self.step_resolution(1);
+                return Ok(false);
+            }
+            ActionId::SpectralResolutionDown => {
+                self.step_resolution(-1);
+                return Ok(false);
+            }
             ActionId::ViewSpectralToggle => {
                 let shown = self.panels.is_shown("spectral");
                 self.set_panel("spectral", !shown);
