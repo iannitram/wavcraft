@@ -67,7 +67,6 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "history", title: "History", default_dock: DockSide::Right },
     PanelInfo { id: "selection", title: "Selection/View", default_dock: DockSide::Bottom },
     PanelInfo { id: "freq", title: "Frequency Analysis", default_dock: DockSide::Bottom },
-    PanelInfo { id: "markers", title: "Markers", default_dock: DockSide::Right },
     PanelInfo { id: "playlist", title: "Playlist", default_dock: DockSide::Right },
     PanelInfo { id: "properties", title: "Properties", default_dock: DockSide::Bottom },
     PanelInfo { id: "transport", title: "Transport", default_dock: DockSide::Bottom },
@@ -75,6 +74,7 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "zoom", title: "Zoom", default_dock: DockSide::Bottom },
     PanelInfo { id: "tools", title: "Tools", default_dock: DockSide::Left },
     PanelInfo { id: "files", title: "Files", default_dock: DockSide::Left },
+    PanelInfo { id: "markers", title: "Markers", default_dock: DockSide::Left },
     PanelInfo { id: "match", title: "Match Loudness", default_dock: DockSide::Right },
     PanelInfo { id: "findings", title: "Episode Check", default_dock: DockSide::Right },
 ];
@@ -977,12 +977,12 @@ mod tests {
         let mut s = PanelSet::default();
         assert_eq!(
             s.report(),
-            "editor=1 waveform=1 spectral=1 rack=1 history=1 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1 time=1 zoom=1 tools=1 files=1 match=1 findings=1"
+            "editor=1 waveform=1 spectral=1 rack=1 history=1 selection=1 freq=1 playlist=1 properties=1 transport=1 time=1 zoom=1 tools=1 files=1 markers=1 match=1 findings=1"
         );
         assert_eq!(s.apply_action("window.toggle.history"), Some(Ok(false)));
         assert_eq!(
             s.report(),
-            "editor=1 waveform=1 spectral=1 rack=1 history=0 selection=1 freq=1 markers=1 playlist=1 properties=1 transport=1 time=1 zoom=1 tools=1 files=1 match=1 findings=1"
+            "editor=1 waveform=1 spectral=1 rack=1 history=0 selection=1 freq=1 playlist=1 properties=1 transport=1 time=1 zoom=1 tools=1 files=1 markers=1 match=1 findings=1"
         );
         assert_eq!(s.apply_action("window.show.history"), Some(Ok(true)));
         assert_eq!(s.apply_action("window.hide.spectral"), Some(Ok(false)));
@@ -998,8 +998,8 @@ mod tests {
     #[test]
     fn the_default_layout_follows_the_registry() {
         let (l, set) = (Layout::default(), all());
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "markers", "playlist", "match", "findings"]);
-        assert_eq!(l.visible(DockSide::Left, &set), vec!["tools", "files"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "playlist", "match", "findings"]);
+        assert_eq!(l.visible(DockSide::Left, &set), vec!["tools", "files", "markers"]);
         assert_eq!(l.visible(DockSide::Center, &set), vec!["editor", "waveform", "spectral"]);
         assert_eq!(l.visible(DockSide::Bottom, &set), vec!["selection", "freq", "properties", "transport", "time", "zoom"]);
         assert_eq!(l.zone_of("selection"), Some(DockSide::Bottom));
@@ -1035,13 +1035,13 @@ mod tests {
         let (mut l, set) = (Layout::default(), all());
         l.move_to("selection", DockSide::Right, Some(1)).unwrap();
         l.move_to("history", DockSide::Left, None).unwrap();
-        assert_eq!(l.visible(DockSide::Left, &set), vec!["tools", "files", "history"]);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "selection", "markers", "playlist", "match", "findings"]);
+        assert_eq!(l.visible(DockSide::Left, &set), vec!["tools", "files", "markers", "history"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "selection", "playlist", "match", "findings"]);
         l.move_to("selection", DockSide::Left, Some(0)).unwrap();
-        assert_eq!(l.visible(DockSide::Left, &set), vec!["selection", "tools", "files", "history"]);
+        assert_eq!(l.visible(DockSide::Left, &set), vec!["selection", "tools", "files", "markers", "history"]);
         assert_eq!(l.active_in(DockSide::Left, &set), Some("selection"));
         l.move_to("history", DockSide::Left, Some(0)).unwrap();
-        assert_eq!(l.visible(DockSide::Left, &set), vec!["history", "selection", "tools", "files"]);
+        assert_eq!(l.visible(DockSide::Left, &set), vec!["history", "selection", "tools", "files", "markers"]);
         assert!(l.move_to("waveform", DockSide::Left, None).is_err(), "the editor stays");
         assert!(l.move_to("history", DockSide::Center, None).is_err());
         assert!(l.move_to("nope", DockSide::Left, None).is_err());
@@ -1053,11 +1053,11 @@ mod tests {
         l.move_to("selection", DockSide::Right, None).unwrap();
         l.activate("selection");
         set.set("selection", false);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "markers", "playlist", "match", "findings"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "playlist", "match", "findings"]);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("rack"), "a hidden front tab gives way");
         set.set("selection", true);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "markers", "playlist", "match", "findings", "selection"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "playlist", "match", "findings", "selection"]);
     }
 
     #[test]
@@ -1065,9 +1065,7 @@ mod tests {
         let (mut l, set) = (Layout::default(), all());
         l.move_to("selection", DockSide::Right, None).unwrap();
         l.activate("history");
-        // `move_to` with no position puts selection last: rack, history, markers, playlist, match, findings, selection.
-        l.cycle(DockSide::Right, &set, 1);
-        assert_eq!(l.active_in(DockSide::Right, &set), Some("markers"));
+        // `move_to` with no position puts selection last: rack, history, playlist, match, findings, selection.
         l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("playlist"));
         l.cycle(DockSide::Right, &set, 1);
@@ -1111,7 +1109,7 @@ mod tests {
         let (tabs, sizes) = l.encode();
         assert_eq!(
             tabs,
-            "left:tools,files,selection*;right:rack,markers,playlist,match,findings;bottom:freq,properties,transport,time,zoom,history*"
+            "left:tools,files,markers,selection*;right:rack,playlist,match,findings;bottom:freq,properties,transport,time,zoom,history*"
         );
         assert_eq!(sizes, "left:220,right:240,bottom:300");
         let back = Layout::decode(&tabs, &sizes);
@@ -1123,10 +1121,10 @@ mod tests {
     fn decoding_ignores_nonsense_and_places_missing_panels() {
         let l = Layout::decode("left:waveform,history,history,gone;moon:selection;right:", "left:5,bottom:abc,right:nan,x:1");
         let set = all();
-        assert_eq!(l.visible(DockSide::Left, &set), vec!["history", "tools", "files"]);
+        assert_eq!(l.visible(DockSide::Left, &set), vec!["history", "tools", "files", "markers"]);
         assert_eq!(
             l.visible(DockSide::Right, &set),
-            vec!["rack", "markers", "playlist", "match", "findings"],
+            vec!["rack", "playlist", "match", "findings"],
             "the missing panels return to their default zone"
         );
         assert_eq!(l.zone_of("selection"), Some(DockSide::Bottom), "the missing panel returns to its default zone");
@@ -1160,11 +1158,11 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         assert_eq!(
             l.report(&set),
-            "zone.left=tools,files zone.right=rack,history,markers,playlist,match,findings zone.bottom=selection,freq,properties,transport,time,zoom zone.center=editor,waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=tools front.right=rack front.bottom=selection maximized=- floating=-"
+            "zone.left=tools,files,markers zone.right=rack,history,playlist,match,findings zone.bottom=selection,freq,properties,transport,time,zoom zone.center=editor,waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=tools front.right=rack front.bottom=selection maximized=- floating=-"
         );
         l.apply_command(&mut set, "move selection left").unwrap();
         l.apply_command(&mut set, "maximize selection").unwrap();
-        assert!(l.report(&set).starts_with("zone.left=tools,files,selection zone.right=rack,history,markers,playlist,match,findings "));
+        assert!(l.report(&set).starts_with("zone.left=tools,files,markers,selection zone.right=rack,history,playlist,match,findings "));
         assert!(l.report(&set).contains("maximized=selection"));
     }
 

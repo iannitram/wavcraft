@@ -69,7 +69,7 @@ fn the_panel_layout_is_kept_in_the_settings_file() {
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
         text.contains(
-            "panel_layout = left:tools,files;right:rack,markers,playlist,match,findings;bottom:selection,freq,properties,transport,time,zoom,history*"
+            "panel_layout = left:tools,files,markers;right:rack,playlist,match,findings;bottom:selection,freq,properties,transport,time,zoom,history*"
         ),
         "{text}"
     );
