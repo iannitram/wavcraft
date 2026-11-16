@@ -6,7 +6,7 @@
 No real input device is opened: WAVCRAFT_FAKE_INPUT=sine:440 replaces it. Run 1 records about
 3 s (default format: 48 kHz, mono, 24-bit), stops, and checks STATE and the file's length,
 format and frequency. Run 2 records and is killed mid-take (proc.kill()): the take on disk must be
-readable and hold nearly what was recorded; a third run opens it. Every run's log must hold no ERROR line.
+readable and hold nearly what was recorded; a third run opens it. Run 4 unsets WAVCRAFT_RECORD_DIR, sets the recordings folder with PREF set recordings_folder, records with RECORD quick, restarts and records again; both takes must land in that folder. Every run's log must hold no ERROR line.
 Run 1 also checks the Levels meter over METERS: a new take clears the clip lights, and the meter shows the take.
 """
 import argparse, json, os, shutil, subprocess, sys, tempfile, time, wave
@@ -49,6 +49,10 @@ def meters(c):
     return dict(kv.split("=", 1) for kv in c.ask("METERS").split()[1:])
 
 
+def in_dir(path, folder):
+    return os.path.normcase(os.path.realpath(os.path.dirname(path))) == os.path.normcase(os.path.realpath(folder))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", required=True)
@@ -75,7 +79,7 @@ def main():
         check("STATE before recording says recording=0", st.get("recording") == "0", st)
         c.ask("METERS PUSH 1.0 1.0")
         before = meters(c)
-        check("clip lights are lit before the take: lit before", before["l_clip"] == "1", before)
+        check("a new take clears the clip lights: lit before", before["l_clip"] == "1", before)
         r = c.ask("RECORD start")
         path = r.partition("path=")[2]
         check("RECORD start answers OK with the new file's path", r.startswith("OK path=") and os.path.exists(path), r)
@@ -135,6 +139,40 @@ def main():
     try:
         st = c.state(timeout=30)
         check("the app opens the killed take with its length", int(st["frames"]) == t["frames"] and st["channels"] == "2", st)
+        c.ask("QUIT discard")
+        proc.wait(timeout=20)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    # Run 4: WAVCRAFT_RECORD_DIR unset; the recordings folder comes from the preference and survives a restart.
+    pref_takes = os.path.join(work, "pref_takes")  # not created here: the app makes it
+    env4 = {k: v for k, v in env.items() if k != "WAVCRAFT_RECORD_DIR"}
+    proc, c = launch(a.exe, env4)
+    try:
+        r = c.ask(f"PREF set recordings_folder {pref_takes}")
+        q1 = c.ask("RECORD quick")
+        p1 = q1.partition("path=")[2]
+        check("PREF set recordings_folder answers OK and RECORD quick records into it",
+              r == "OK" and q1.startswith("OK path=") and in_dir(p1, pref_takes) and os.path.basename(p1).startswith("Take ") and p1.endswith(".wav"),
+              {"pref": r, "quick": q1})
+        time.sleep(1.5)
+        c.ask("RECORD stop")
+        c.ask("QUIT discard")
+        proc.wait(timeout=20)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    # Run 4, again after a restart: no PREF set this time; the saved preference is read back.
+    proc, c = launch(a.exe, env4)
+    try:
+        q2 = c.ask("RECORD quick")
+        p2 = q2.partition("path=")[2]
+        check("after a restart RECORD quick still records into the preference's folder",
+              q2.startswith("OK path=") and in_dir(p2, pref_takes) and p2 != p1, q2)
+        time.sleep(1.5)
+        c.ask("RECORD stop")
         c.ask("QUIT discard")
         proc.wait(timeout=20)
     finally:
