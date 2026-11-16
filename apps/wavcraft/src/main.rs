@@ -79,6 +79,12 @@ fn main() -> eframe::Result {
             Err(reason) => exit_error(reason),
         }
     }
+    if let cli::Command::Mcp { attach } = &command {
+        match serve_mcp(*attach) {
+            Ok(()) => std::process::exit(0),
+            Err(reason) => exit_error(reason),
+        }
+    }
     let cli::Command::Window(Args { file, session_dir, reset_preferences }) = command else {
         exit_error("command is not implemented yet".to_owned());
     };
@@ -106,6 +112,35 @@ fn convert(input: &std::path::Path, output: &std::path::Path, sessions: PathBuf)
     let mut backend = Headless::new(sessions);
     backend.execute(&Request::Open(input.to_path_buf()))?;
     backend.execute(&Request::Save { path: Some(output.to_path_buf()), args: SaveArgs::default() })?;
+    Ok(())
+}
+
+/// `wavcraft mcp`: answer MCP lines on standard input over a headless engine; `mcp --attach`: over the
+/// running app's control port (`WAVCRAFT_CONTROL_PORT`). The connection is made before any line is read,
+/// so a missing port fails at once.
+fn serve_mcp(attach: bool) -> Result<(), String> {
+    if attach {
+        let mut backend = wavcraft_automation::remote::Remote::from_env().map_err(|e| e.to_string())?;
+        serve(&mut backend)
+    } else {
+        let mut backend = wavcraft_automation::headless::Headless::new(conversion_sessions_dir());
+        serve(&mut backend)
+    }
+}
+
+/// One MCP reply per input line, flushed as it is written; the end of standard input ends the loop.
+fn serve(backend: &mut impl wavcraft_automation::Backend) -> Result<(), String> {
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    for line in stdin.lock().lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        if let Some(reply) = wavcraft_automation::mcp::handle(&line, backend) {
+            writeln!(out, "{reply}").map_err(|e| e.to_string())?;
+            out.flush().map_err(|e| e.to_string())?;
+        }
+    }
     Ok(())
 }
 

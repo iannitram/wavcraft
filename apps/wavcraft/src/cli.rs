@@ -1,5 +1,5 @@
 //! The command line: `wavcraft [--session-dir DIR] [--reset-preferences] [FILE]` opens the window, and the
-//! subcommands `run`, `convert` and `inspect` work without one. A pure parser: it opens no file and prints nothing.
+//! subcommands `run`, `convert`, `inspect` and `mcp` work without one. A pure parser: it opens no file and prints nothing.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -17,12 +17,15 @@ pub enum Command {
     Convert { input: PathBuf, output: PathBuf, session_dir: Option<PathBuf> },
     /// `inspect <file>`.
     Inspect { file: PathBuf },
+    /// `mcp [--attach]`.
+    Mcp { attach: bool },
 }
 
 const WINDOW_USAGE: &str = "usage: wavcraft [--session-dir DIR] [--reset-preferences] [FILE]";
 const RUN_USAGE: &str = "usage: wavcraft run <script> [FILE] [-o OUT]";
 const CONVERT_USAGE: &str = "usage: wavcraft convert <in> <out>";
 const INSPECT_USAGE: &str = "usage: wavcraft inspect <file>";
+const MCP_USAGE: &str = "usage: wavcraft mcp [--attach]";
 
 /// Parses the arguments after the program name. An unknown flag or a wrong number of operands is an error whose
 /// message names the problem and gives the usage line.
@@ -56,6 +59,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
         Some("run") => run(rest),
         Some("convert") => convert(rest, session_dir),
         Some("inspect") => inspect(rest),
+        Some("mcp") => mcp(rest),
         _ => window(&args),
     }
 }
@@ -98,6 +102,22 @@ fn inspect(args: &[OsString]) -> Result<Command, String> {
         [file] => Ok(Command::Inspect { file: file.clone() }),
         _ => Err(operand_error(&parsed.operands, 1, INSPECT_USAGE)),
     }
+}
+
+/// `mcp [--attach]`: no operands; `--attach` is the only flag.
+fn mcp(args: &[OsString]) -> Result<Command, String> {
+    let mut attach = false;
+    for arg in args {
+        let text = arg.to_string_lossy();
+        if text == "--attach" {
+            attach = true;
+        } else if is_flag(&text) {
+            return Err(format!("unknown option '{text}'\n{MCP_USAGE}"));
+        } else {
+            return Err(format!("unexpected argument '{text}'\n{MCP_USAGE}"));
+        }
+    }
+    Ok(Command::Mcp { attach })
 }
 
 /// A subcommand's arguments split into operands and the `-o` value (when the subcommand takes one).
@@ -195,5 +215,17 @@ mod tests {
             parse(argv(&["run", "s.txt", "a.wav", "-o", "b.wav"])),
             Ok(Command::Run { script: "s.txt".into(), file: Some("a.wav".into()), out: Some("b.wav".into()) })
         );
+    }
+
+    #[test]
+    fn mcp_takes_attach() {
+        assert_eq!(parse(argv(&["mcp"])), Ok(Command::Mcp { attach: false }));
+        assert_eq!(parse(argv(&["mcp", "--attach"])), Ok(Command::Mcp { attach: true }));
+    }
+
+    #[test]
+    fn mcp_refuses_a_bad_flag_and_an_operand() {
+        assert!(err(&["mcp", "--nope"]).contains("--nope"));
+        assert!(err(&["mcp", "x.wav"]).contains("unexpected argument"));
     }
 }
