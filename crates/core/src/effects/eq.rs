@@ -105,11 +105,11 @@ impl Effect for ParametricEq {
     fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
         Ok(Some(Box::new(parametric_chains(params, ctx.channels.len(), rate(ctx)))))
     }
-    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Result<Option<Box<dyn EffectStream>>, String> {
         if params.len() != 10 {
-            return None;
+            return Ok(None);
         }
-        Some(Box::new(parametric_chains(params, channels, rate as f32)))
+        Ok(Some(Box::new(parametric_chains(params, channels, rate as f32))))
     }
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "Parametric EQ needs the sample rate: run it through effects::apply"))
@@ -146,11 +146,11 @@ impl Effect for HighPass {
     fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
         Ok(Some(Box::new(cut_chains(FilterType::HighPass, params, ctx.channels.len(), rate(ctx)))))
     }
-    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Result<Option<Box<dyn EffectStream>>, String> {
         if params.len() != 2 {
-            return None;
+            return Ok(None);
         }
-        Some(Box::new(cut_chains(FilterType::HighPass, params, channels, rate as f32)))
+        Ok(Some(Box::new(cut_chains(FilterType::HighPass, params, channels, rate as f32))))
     }
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "High-Pass Filter needs the sample rate: run it through effects::apply"))
@@ -175,11 +175,11 @@ impl Effect for LowPass {
     fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
         Ok(Some(Box::new(cut_chains(FilterType::LowPass, params, ctx.channels.len(), rate(ctx)))))
     }
-    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Result<Option<Box<dyn EffectStream>>, String> {
         if params.len() != 2 {
-            return None;
+            return Ok(None);
         }
-        Some(Box::new(cut_chains(FilterType::LowPass, params, channels, rate as f32)))
+        Ok(Some(Box::new(cut_chains(FilterType::LowPass, params, channels, rate as f32))))
     }
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "Low-Pass Filter needs the sample rate: run it through effects::apply"))
@@ -216,11 +216,11 @@ impl Effect for Notch {
     fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
         Ok(Some(Box::new(notch_chains(params, ctx.channels.len(), rate(ctx)))))
     }
-    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Result<Option<Box<dyn EffectStream>>, String> {
         if params.len() != 3 {
-            return None;
+            return Ok(None);
         }
-        Some(Box::new(notch_chains(params, channels, rate as f32)))
+        Ok(Some(Box::new(notch_chains(params, channels, rate as f32))))
     }
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "Notch Filter needs the sample rate: run it through effects::apply"))

@@ -102,8 +102,8 @@ impl Effect for Dynamics {
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::other("Dynamics needs its run"))
     }
-    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
-        Some(Box::new(DynamicsRun::new(params, rate, channels)))
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Result<Option<Box<dyn EffectStream>>, String> {
+        Ok(Some(Box::new(DynamicsRun::new(params, rate, channels))))
     }
 }
 
