@@ -67,10 +67,9 @@ pub fn tool_offered_in(release: bool, name: &str) -> bool {
 /// The formats the Save As file dialog offers, in filter order, with `first` (the document's own
 /// format or the one picked last) at the front. Each format appears once. A release build leaves
 /// out Ogg Vorbis, so it is never offered or suggested there; a debug build offers it as before.
-/// Mp3 is not in this list yet (A3.7 adds it).
 pub fn save_formats_in(release: bool, first: SaveFormat) -> Vec<SaveFormat> {
-    let mut formats: Vec<SaveFormat> = Vec::with_capacity(5);
-    for f in [first, SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac, SaveFormat::Vorbis] {
+    let mut formats: Vec<SaveFormat> = Vec::with_capacity(6);
+    for f in [first, SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac, SaveFormat::Mp3, SaveFormat::Vorbis] {
         if !formats.contains(&f) && !(release && f == SaveFormat::Vorbis) {
             formats.push(f);
         }
@@ -110,11 +109,11 @@ mod tests {
 
     #[test]
     fn a_release_build_offers_no_ogg_save() {
-        use wavcraft_core::save::SaveFormat::{Aiff, Flac, Vorbis, Wav};
-        assert_eq!(save_formats_in(true, Wav), vec![Wav, Aiff, Flac]);
-        assert_eq!(save_formats_in(true, Vorbis), vec![Wav, Aiff, Flac]);
-        assert_eq!(save_formats_in(false, Vorbis), vec![Vorbis, Wav, Aiff, Flac]);
-        assert_eq!(save_formats_in(false, Wav), vec![Wav, Aiff, Flac, Vorbis]);
+        use wavcraft_core::save::SaveFormat::{Aiff, Flac, Mp3, Vorbis, Wav};
+        assert_eq!(save_formats_in(true, Wav), vec![Wav, Aiff, Flac, Mp3]);
+        assert_eq!(save_formats_in(true, Vorbis), vec![Wav, Aiff, Flac, Mp3]);
+        assert_eq!(save_formats_in(false, Vorbis), vec![Vorbis, Wav, Aiff, Flac, Mp3]);
+        assert_eq!(save_formats_in(false, Wav), vec![Wav, Aiff, Flac, Mp3, Vorbis]);
     }
 
     #[test]

@@ -186,3 +186,42 @@ fn an_unknown_extension_names_mp3() {
     let answer = ask(&mut app, &format!("SAVE {}", scratch.0.join("x.xyz").display()));
     assert!(answer.starts_with("ERR") && answer.contains(".mp3"), "{answer}");
 }
+
+#[test]
+fn the_dialog_choice_reaches_the_file() {
+    let scratch = Scratch::new("dialog");
+    let mut app = open_wav(&scratch, "five.wav", &stereo_samples(240_000));
+    app.mp3_bitrate = 128;
+    app.mp3_mono = true;
+    let out = scratch.0.join("d.mp3");
+    assert_eq!(ask(&mut app, &format!("SAVEOPTS dialog mp3 16 {}", out.display())), "OK");
+    settle(&mut app);
+    assert!((78_400..=81_600).contains(&size_of(&out)), "{}", size_of(&out));
+    assert!(ask(&mut app, "SAVEOPTS show").contains("format=mp3"));
+    assert_eq!(ask(&mut app, &format!("OPEN {}", out.display())), "OK");
+    settle(&mut app);
+    let state = ask(&mut app, "STATE");
+    assert!(state.contains("channels=1"), "{state}");
+}
+
+#[test]
+fn the_size_line_follows_the_dialog_choice() {
+    let scratch = Scratch::new("size-choice");
+    let mut app = open_wav(&scratch, "five.wav", &stereo_samples(240_000));
+    assert!(ask(&mut app, "SAVEOPTS set mp3 16").starts_with("OK format=mp3"));
+    app.mp3_bitrate = 128;
+    app.mp3_mono = false;
+    let estimate = app.export_estimate().and_then(Result::ok).expect("an MP3 estimate");
+    assert!((79_200..=80_800).contains(&estimate.bytes) && !estimate.exact, "{estimate:?}");
+    app.mp3_bitrate = 320;
+    let estimate = app.export_estimate().and_then(Result::ok).expect("an MP3 estimate");
+    assert!((198_000..=202_000).contains(&estimate.bytes) && !estimate.exact, "{estimate:?}");
+    let answer = ask(&mut app, "SAVEOPTS estimate mp3 16");
+    assert!(answer.starts_with("OK bytes="), "{answer}");
+    let bytes = answer
+        .strip_prefix("OK bytes=")
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse::<u64>().ok())
+        .expect("a byte count after bytes=");
+    assert!((198_000..=202_000).contains(&bytes), "{answer}");
+}
