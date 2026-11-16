@@ -59,7 +59,7 @@ pub use fade::{FadeIn, FadeOut};
 pub use fft_filter::FftFilter;
 pub use gain::Gain;
 pub use graphic_eq::GraphicEq;
-pub use noise_reduction::NoiseReduction;
+pub use noise_reduction::{NoiseReduction, threshold_curve_db};
 pub use normalize::{Normalize, normalize_gains, target_peak};
 pub use phase_correction::{PhaseCorrection, measure_lag};
 pub use pitch_saturate::{PitchShift, Saturator};
