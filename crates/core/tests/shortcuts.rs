@@ -37,6 +37,10 @@ shortcuts! {
     repeat_last_shift_r: "Shift+R" => A(ActionId::RepeatLast);
     spectral_up_ctrl_shift_up: "Ctrl+Shift+ArrowUp" => A(ActionId::SpectralResolutionUp);
     spectral_down_ctrl_shift_down: "Ctrl+Shift+ArrowDown" => A(ActionId::SpectralResolutionDown);
+    scale_more_log_ctrl_alt_up: "Ctrl+Alt+ArrowUp" => A(ActionId::SpectralScaleMoreLog);
+    scale_more_linear_ctrl_alt_down: "Ctrl+Alt+ArrowDown" => A(ActionId::SpectralScaleMoreLinear);
+    scale_full_log_ctrl_alt_page_up: "Ctrl+Alt+PageUp" => A(ActionId::SpectralScaleFullLog);
+    scale_full_linear_ctrl_alt_page_down: "Ctrl+Alt+PageDown" => A(ActionId::SpectralScaleFullLinear);
     spectral_toggle_shift_d: "Shift+D" => A(ActionId::ViewSpectralToggle);
     spectral_toggle_f9: "F9" => A(ActionId::ViewSpectralToggle);
     repeat_last_dialog_f2: "F2" => A(ActionId::RepeatLastDialog);

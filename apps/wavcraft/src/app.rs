@@ -17,6 +17,7 @@ use wavcraft_core::appearance;
 use wavcraft_core::bundle;
 use wavcraft_core::chanmap::ChannelMap;
 use wavcraft_core::convert::{self, ConvertSettings, PresetFile};
+use wavcraft_core::dither::{DEFAULT_SEED, DitherSettings, DitherType, Shaping};
 use wavcraft_core::doc::append::{self, AppendReport, NewReport};
 use wavcraft_core::doc::edit as doc_edit;
 use wavcraft_core::doc::newdoc::{self, NewDocOptions};
@@ -42,7 +43,7 @@ use wavcraft_core::recent::{self, Recent};
 use wavcraft_core::resample::Quality;
 use wavcraft_core::save::{
     AiffKind, Container, ExtraChunk, FileKind, Part, SampleType, SaveError, SaveFormat, SaveOptions, SizeEstimate, VORBIS_DEFAULT_QUALITY,
-    estimate_size, save_aiff_kind, save_as as save_container, save_mp3, save_vorbis, save_wav_with, write_file,
+    estimate_size, save_aiff_kind, save_as as save_container, save_dithered, save_mp3, save_vorbis, save_wav_with, write_file,
 };
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcut_sets::{DEFAULT_SET, SetStore};
@@ -687,6 +688,13 @@ pub struct WaveApp {
     scripted_pick: Option<Option<PathBuf>>,
     /// What the export dialog (and `SAVEOPTS`) has chosen.
     export_choice: ExportChoice,
+    /// The Save As dither choice (A4.4): used when the saved depth is lower than the file's. Not remembered.
+    export_dither: DitherSettings,
+    /// The Dithering checkbox, and the type it keeps while unticked (A4.4).
+    export_dithering: bool,
+    export_dither_type: DitherType,
+    /// `export_dither` while `export_go` runs a save (A4.4); `None` for every other save.
+    save_dither: Option<DitherSettings>,
     /// The named choices, and the file they are kept in.
     export_presets: ExportPresets,
     export_presets_path: Option<PathBuf>,
@@ -1069,6 +1077,10 @@ impl WaveApp {
             export_open: false,
             scripted_pick: None,
             export_choice: ExportChoice::default(),
+            export_dither: DitherSettings::default(),
+            export_dithering: false,
+            export_dither_type: DitherType::Triangular,
+            save_dither: None,
             export_presets_path: ExportPresets::default_path(),
             export_presets: ExportPresets::default_path().as_deref().map(ExportPresets::load).unwrap_or_default(),
             export_preset_name: String::new(),
@@ -5212,6 +5224,12 @@ impl WaveApp {
         }
     }
 
+    /// The Noise Reduction dialog's Select Entire File: select every frame; the dialog stays open.
+    fn select_entire_file(&mut self) {
+        let frames = self.doc.as_ref().map_or(0, Document::frames);
+        self.selection = crate::noise_reduction_ui::select_entire_file(frames);
+    }
+
     /// The selection as a frame range (`start == end` is just the cursor).
     fn selection_range(&self) -> Range<u64> {
         self.selection.start() as u64..self.selection.end() as u64
@@ -5530,6 +5548,13 @@ impl WaveApp {
             }
             ActionId::SpectralResolutionUp => self.step_resolution(1),
             ActionId::SpectralResolutionDown => self.step_resolution(-1),
+            ActionId::SpectralScaleMoreLog
+            | ActionId::SpectralScaleMoreLinear
+            | ActionId::SpectralScaleFullLog
+            | ActionId::SpectralScaleFullLinear => {
+                self.step_freq_scale(id);
+                return Ok(false);
+            }
             ActionId::ViewSpectralToggle => {
                 let shown = self.panels.is_shown("spectral");
                 self.set_panel("spectral", !shown);
@@ -6706,6 +6731,7 @@ impl WaveApp {
                     self.error = Some(why);
                 }
             }
+            Some(Answer::SelectEntireFile) => self.select_entire_file(),
             Some(answer) => {
                 let _ = self.finish_effect_dialog(answer == Answer::Ok, ctx);
             }
@@ -7668,6 +7694,7 @@ impl WaveApp {
         let (tx, rx) = channel();
         let progress = Arc::new(AtomicU32::new(0));
         let aiff = self.aiff_kind;
+        let dither = self.save_dither;
         let quality = self.vorbis_quality;
         let mp3 = Mp3Options { bitrate_kbps: self.mp3_bitrate, mono: self.mp3_mono };
         // Cancel and the metadata switch (A262, A263) are for a WAV save of the whole file.
@@ -7684,11 +7711,14 @@ impl WaveApp {
                 Some(c) => save_container(&job_state, &job_path, c, ty, &mut report),
                 None if format == SaveFormat::Vorbis => save_vorbis(&job_state, &job_path, quality, &mut report),
                 None if format == SaveFormat::Wav => {
-                    let opts = SaveOptions { include_metadata, extra_chunks, cancel: job_cancel.as_deref(), block_delay };
+                    let opts = SaveOptions { include_metadata, extra_chunks, cancel: job_cancel.as_deref(), block_delay, dither };
                     save_wav_with(&job_state, &job_path, ty, &opts, &mut report)
                 }
                 None if format == SaveFormat::Mp3 => save_mp3(&job_state, &job_path, mp3, &mut report),
-                None => save_aiff_kind(&job_state, &job_path, format, ty, aiff, &mut report),
+                None => match dither {
+                    Some(d) => save_dithered(&job_state, &job_path, format, ty, aiff, d, &mut report),
+                    None => save_aiff_kind(&job_state, &job_path, format, ty, aiff, &mut report),
+                },
             };
             let _ = tx.send(done);
             ctx.request_repaint();
@@ -7900,7 +7930,9 @@ impl WaveApp {
         self.dialog_format = Some(choice.format);
         let kept = self.aiff_kind;
         self.aiff_kind = choice.aiff;
+        self.save_dither = Some(self.export_dither);
         let r = self.save_with(ctx, true, None, false, Some(choice.ty), false);
+        self.save_dither = None;
         self.aiff_kind = kept;
         r
     }
@@ -7939,6 +7971,7 @@ impl WaveApp {
         let est = self.export_estimate();
         let mut open = true;
         let (mut go, mut choice) = (false, self.export_choice);
+        let (mut dithering, mut dither_type, mut shaping) = (self.export_dithering, self.export_dither_type, self.export_dither.shaping);
         let mut save_preset = false;
         let mut delete = None;
         let mut load = None;
@@ -7960,6 +7993,26 @@ impl WaveApp {
                         ui.add_enabled_ui(choice.format.accepts(ty), |ui| ui.radio_value(&mut choice.ty, ty, ty.describe()));
                     }
                 });
+                ui.add_enabled_ui(matches!(choice.ty, SampleType::Int16 | SampleType::Int24 | SampleType::Int32), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut dithering, "Dithering");
+                        ui.add_enabled_ui(dithering, |ui| {
+                            ui.label("Dither Type:");
+                            egui::ComboBox::from_id_salt("export-dither-type").selected_text(dither_type.name()).show_ui(ui, |ui| {
+                                for d in [DitherType::Triangular, DitherType::Rectangular] {
+                                    ui.selectable_value(&mut dither_type, d, d.name());
+                                }
+                            });
+                        });
+                        ui.label("Noise shaping:");
+                        egui::ComboBox::from_id_salt("export-shaping").selected_text(shaping.name()).show_ui(ui, |ui| {
+                            for sh in Shaping::ALL {
+                                ui.selectable_value(&mut shaping, sh, sh.name());
+                            }
+                        });
+                    });
+                });
+                ui.weak("Used when the saved depth is lower than the file's depth. Dither is off unless you choose it.");
                 if choice.format == SaveFormat::Aiff {
                     ui.horizontal(|ui| {
                         ui.label("AIFF:");
@@ -8000,6 +8053,9 @@ impl WaveApp {
                 }
             });
         self.export_choice = choice.fitted();
+        self.export_dithering = dithering;
+        self.export_dither_type = dither_type;
+        self.export_dither = DitherSettings { dither: if dithering { dither_type } else { DitherType::None }, shaping, seed: DEFAULT_SEED };
         if let Some(name) = load
             && let Some(c) = self.export_presets.get(&name)
         {
@@ -13876,6 +13932,10 @@ impl wavcraft_automation::Backend for ScriptBackend<'_> {
 #[cfg(test)]
 #[path = "issue1219_tests.rs"]
 mod issue1219_tests;
+
+#[cfg(test)]
+#[path = "b2_3_freq_scale_tests.rs"]
+mod b2_3_freq_scale_tests;
 
 #[cfg(test)]
 #[path = "g3_alt5_tests.rs"]

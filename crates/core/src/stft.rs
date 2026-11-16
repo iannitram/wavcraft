@@ -157,6 +157,51 @@ impl Stft {
     }
 }
 
+/// The untouched audio plus only the masked part of what a process changed: the short-time
+/// spectrum of `processed - untouched`, scaled bin by bin by `mask`, is added back to `untouched`.
+///
+/// `first_frame` is the document frame of `untouched[0]`. `mask(frame, hz)` takes a document
+/// frame and a frequency in Hz and returns 0 to 1 (a value that is not a number counts as 0).
+/// It is read at the middle of each STFT frame, so a mask edge is as sharp as one frame is long.
+/// Where the mask is 0 the output is the untouched input. Offline only: it allocates.
+///
+/// Returns an error if the slices differ in length or `rate` is 0.
+pub fn blend_in_band<M>(stft: &Stft, untouched: &[f32], processed: &[f32], first_frame: i64, rate: u32, mask: M) -> Result<Vec<f32>, String>
+where
+    M: Fn(usize, f32) -> f32,
+{
+    if untouched.len() != processed.len() {
+        return Err(format!("untouched has {} samples but processed has {}", untouched.len(), processed.len()));
+    }
+    if rate == 0 {
+        return Err("sample rate is 0".to_string());
+    }
+    if untouched.is_empty() {
+        return Ok(Vec::new());
+    }
+    let diff: Vec<f32> = processed.iter().zip(untouched).map(|(p, u)| p - u).collect();
+    let mut out = vec![0.0f32; untouched.len()];
+    let (n, hop) = (stft.size() as i64, stft.hop() as i64);
+    let first_start = first_frame - (n - hop);
+    let mut i: i64 = 0;
+    let at = Placement { input_abs: first_frame, out_abs: first_frame, grid: first_frame, warmup: 0 };
+    stft.process(&diff, &mut out, at, |spec| {
+        let centre = first_start.saturating_add(i.saturating_mul(hop)).saturating_add(n / 2).max(0);
+        let centre = usize::try_from(centre).unwrap_or(0);
+        i += 1;
+        for (b, s) in spec.iter_mut().enumerate() {
+            let hz = b as f32 * rate as f32 / n as f32;
+            let m = mask(centre, hz);
+            let m = if m.is_finite() { m.clamp(0.0, 1.0) } else { 0.0 };
+            *s *= m;
+        }
+    });
+    for (o, u) in out.iter_mut().zip(untouched) {
+        *o += u;
+    }
+    Ok(out)
+}
+
 /// `len` frames of channel `channel` starting at document frame `from` (which may be negative);
 /// frames before the start or past the end of the document read as silence. A run uses it to
 /// fetch the audio around a chunk.
