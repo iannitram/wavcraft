@@ -8260,7 +8260,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {win} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} snapmarkers={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0{rec_state} {win} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} snapmarkers={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         u8::from(self.player.is_playing()),
@@ -10260,6 +10260,34 @@ impl WaveApp {
         }
     }
 
+    /// The Favorites menu: the favorite effects (`menus::FAVORITES`), each drawn with "…". A click
+    /// opens the effect dialog for any `ActionId::Effect`, starting from the settings it last ran
+    /// with; any other action runs at once.
+    fn favorites_menu(&mut self, ui: &mut egui::Ui) {
+        let sel = self.selection_range();
+        let mut chosen = None;
+        for f in menus::FAVORITES {
+            let Some(a) = menus::favorite_action(f) else { continue };
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none() && self.running.is_none();
+            if ui.add_enabled(enabled, egui::Button::new(format!("{}…", f.label))).clicked() {
+                chosen = Some(a.id);
+            }
+        }
+        if let Some(id) = chosen {
+            if let ActionId::Effect(i) = id {
+                // Start from the settings this effect last ran with, if it was the last command.
+                let last = self.editor.as_ref().and_then(|e| match &e.last {
+                    Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
+                    _ => None,
+                });
+                self.effect_dialog = EffectDialog::new(i, last);
+                ui.close();
+            } else {
+                let _ = self.run_action(id, ui.ctx());
+            }
+        }
+    }
+
     /// File › Open Recent: the last files opened, a missing one greyed (clicking it takes it
     /// off the list and says so), and Clear Recent.
     fn recent_menu(&mut self, ui: &mut egui::Ui) {
@@ -10558,6 +10586,7 @@ impl WaveApp {
                 }
             });
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
+            ui.menu_button("Favorites", |ui| self.favorites_menu(ui));
             ui.menu_button("Generate", |ui| self.generate_menu(ui));
             ui.menu_button(tr("menu.view"), |ui| {
                 let mut switched = ui.radio_value(&mut self.mtv.show, false, "Waveform editor").clicked();
@@ -13522,6 +13551,10 @@ mod a2_close_prompt_tests;
 #[cfg(test)]
 #[path = "c5_space_return_tests.rs"]
 mod c5_space_return_tests;
+
+#[cfg(test)]
+#[path = "j6_9_state_tests.rs"]
+mod j6_9_state_tests;
 
 #[cfg(test)]
 #[path = "c5_playhead_move_tests.rs"]
