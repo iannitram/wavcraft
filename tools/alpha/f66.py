@@ -3,7 +3,9 @@
 scratch HOME, in the decimal and the SMPTE 30 fps format: GOTO <time> moves the cursor (checked in
 STATE's cursor and cursor_text), a time past the end is clamped, a time that does not read is
 refused, INSERT_SILENCE_FMT <length> inserts a length written in the format (checked in frames),
-and ACTION view.gotoTime is accepted. The app's log has no ERROR line.
+and ACTION view.gotoTime is accepted. On a 48 kHz file, SELBOX types a start, end or duration
+into a Selection box (in decimal and samples), and a bad value or box is refused. The app's log
+has no ERROR line.
 
     python3 tools/alpha/f66.py --exe <path to the release wavcraft>
 """
@@ -45,10 +47,10 @@ class Control:
         return d
 
 
-def make_wav(path, seconds=10):
+def make_wav(path, seconds=10, rate=RATE):
     with wave.open(path, "wb") as w:
-        w.setnchannels(2), w.setsampwidth(2), w.setframerate(RATE)
-        frames = b"".join(struct.pack("<hh", int(8000 * math.sin(i * 0.05)), int(8000 * math.sin(i * 0.07))) for i in range(RATE))
+        w.setnchannels(2), w.setsampwidth(2), w.setframerate(rate)
+        frames = b"".join(struct.pack("<hh", int(8000 * math.sin(i * 0.05)), int(8000 * math.sin(i * 0.07))) for i in range(rate))
         for _ in range(seconds):
             w.writeframes(frames)
 
@@ -118,6 +120,35 @@ def main():
         check("samples: GOTO 1,000 is frame 1000", c.state().get("cursor_frame") == "1000" and c.state().get("cursor_text") == "1000")
         ans = c.ask("ACTION view.gotoTime")
         check("the Go to Time action is accepted", ans.startswith("OK"), ans)
+
+        # SELBOX on a 48 kHz file: typing a time into a Selection box, as the panel does.
+        path48 = os.path.join(work, "tone48.wav")
+        make_wav(path48, 10, 48000)
+        c.ask("OPEN " + path48)
+        st = {}
+        for _ in range(150):
+            st = c.state()
+            if st.get("frames") == "480000":
+                break
+            time.sleep(0.2)
+        check("the 48 kHz file opens", st.get("frames") == "480000", f"frames={st.get('frames')}")
+        c.ask("ACTION view.time_display.samples")
+        check("SELECT 100 1000 sets the selection", c.ask("SELECT 100 1000").startswith("OK") and c.state().get("selection") == "100-1000")
+        ans = c.ask("SELBOX start 150")
+        check("SELBOX start 150 gives selection 150-1000", ans == "OK selection=150-1000" and c.state().get("selection") == "150-1000", ans)
+        ans = c.ask("SELBOX end 900")
+        check("SELBOX end 900 gives 150-900", ans == "OK selection=150-900" and c.state().get("selection") == "150-900", ans)
+        ans = c.ask("SELBOX duration 500")
+        check("SELBOX duration 500 gives 150-650", ans == "OK selection=150-650" and c.state().get("selection") == "150-650", ans)
+        c.ask("SELECT 100 3000")
+        ans = c.ask("SELBOX start 1,000")
+        check("samples: SELBOX start 1,000 gives start 1000", ans == "OK selection=1000-3000" and c.state().get("selection", "").startswith("1000-"), ans)
+        before = c.state().get("selection")
+        ans = c.ask("SELBOX start abc")
+        check("SELBOX with a bad value is refused", ans.startswith("ERR") and c.state().get("selection") == before, ans)
+        ans = c.ask("SELBOX middle 5")
+        check("SELBOX with an unknown box is refused", ans.startswith("ERR") and c.state().get("selection") == before, ans)
+
         check("QUIT", c.ask("QUIT discard") == "OK")
         proc.wait(20)
     except Exception as e:

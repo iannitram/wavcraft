@@ -6052,6 +6052,13 @@ impl WaveApp {
         if self.doc.is_none() {
             return;
         }
+        self.apply_panel_box(name, frame, frames, width);
+    }
+
+    /// Applies a confirmed Selection/View box (`sel_start`, `sel_end`, `sel_len`, `view_start`,
+    /// `view_end`, `view_len`) with the Selection and view methods; a selection box halts play.
+    /// The panel and the `SELBOX` control verb both call it, so both behave the same.
+    fn apply_panel_box(&mut self, name: &str, frame: usize, frames: usize, width: f32) {
         match name {
             "sel_start" => self.selection = self.selection.with_start(frame, frames),
             "sel_end" => self.selection = self.selection.with_end(frame, frames),
@@ -8919,6 +8926,31 @@ impl WaveApp {
                         format!("OK selection={}", sel(self))
                     }
                     _ => format!("ERR SELECT_TIME <start> <end>, each written as {} (no spaces inside a time)", self.time_format.menu()),
+                }
+            }
+            // `SELBOX <start|end|duration> <time>`: types a time into a Selection box through the
+            // panel's own code (`apply_panel_box`), the time written in the chosen time format.
+            "SELBOX" => {
+                let Some((rate, frames)) =
+                    self.editor.as_ref().map(|e| (e.history.current().sample_rate(), e.history.current().len_frames() as usize))
+                else {
+                    return "ERR no file is open".to_string();
+                };
+                let (box_word, value) = rest.trim().split_once(char::is_whitespace).map_or((rest.trim(), ""), |(b, v)| (b, v.trim()));
+                let name = match box_word {
+                    "start" => Some("sel_start"),
+                    "end" => Some("sel_end"),
+                    "duration" => Some("sel_len"),
+                    _ => None,
+                };
+                let (fmt, tempo) = (self.time_format, self.tempo);
+                match (name, fmt.parse_with(value, rate, &tempo)) {
+                    (Some(name), Some(frame)) => {
+                        let width = self.editor_width.max(1.0);
+                        self.apply_panel_box(name, frame, frames, width);
+                        format!("OK selection={}", sel(self))
+                    }
+                    _ => format!("ERR SELBOX <start|end|duration> <time>, written as {}", fmt.menu()),
                 }
             }
             // `MONITORS` | `MONITORS simulate <name>:<x>,<y>,<w>,<h>[;…]` (the first is the primary;
