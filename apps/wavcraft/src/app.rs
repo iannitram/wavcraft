@@ -35,7 +35,7 @@ use wavcraft_core::keyboard::Mods;
 use wavcraft_core::match_loudness::Target;
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
-use wavcraft_core::mp3_options::{MP3_DEFAULT_BITRATE, Mp3Options};
+use wavcraft_core::mp3_options::{MP3_BITRATES, MP3_DEFAULT_BITRATE, Mp3Options};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
 use wavcraft_core::probe::{self, FileInfo};
 use wavcraft_core::readout::{self, EditorLayout, Readout};
@@ -43,7 +43,7 @@ use wavcraft_core::recent::{self, Recent};
 use wavcraft_core::resample::Quality;
 use wavcraft_core::save::{
     AiffKind, Container, ExtraChunk, FileKind, Part, SampleType, SaveError, SaveFormat, SaveOptions, SizeEstimate, VORBIS_DEFAULT_QUALITY,
-    estimate_size, save_aiff_kind, save_as as save_container, save_dithered, save_mp3, save_vorbis, save_wav_with, write_file,
+    estimate_mp3_size, estimate_size, save_aiff_kind, save_as as save_container, save_dithered, save_mp3, save_vorbis, save_wav_with, write_file,
 };
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcut_sets::{DEFAULT_SET, SetStore};
@@ -277,7 +277,7 @@ struct Running {
 }
 
 /// What a shown size estimate was worked out for: the choice and the document step.
-type SizeKey = (SaveFormat, SampleType, AiffKind, usize);
+type SizeKey = (SaveFormat, SampleType, AiffKind, usize, u32, bool);
 
 /// A file being streamed into the open document's session store for Insert > Audio from File.
 struct Inserting {
@@ -7973,9 +7973,14 @@ impl WaveApp {
     fn export_estimate(&mut self) -> Option<Result<SizeEstimate, String>> {
         let state = self.editor.as_ref()?.history.current().clone();
         let c = self.export_choice;
-        let key = (c.format, c.ty, c.aiff, Arc::as_ptr(&state) as usize);
+        let key = (c.format, c.ty, c.aiff, Arc::as_ptr(&state) as usize, self.mp3_bitrate, self.mp3_mono);
         if self.size_cache.as_ref().is_none_or(|(k, _)| *k != key) {
-            let est = estimate_size(&state, c.format, c.ty, c.aiff).map_err(|e| e.to_string());
+            let est = if c.format == SaveFormat::Mp3 {
+                estimate_mp3_size(&state, Mp3Options { bitrate_kbps: self.mp3_bitrate, mono: self.mp3_mono })
+            } else {
+                estimate_size(&state, c.format, c.ty, c.aiff)
+            }
+            .map_err(|e| e.to_string());
             self.size_cache = Some((key, est));
         }
         self.size_cache.as_ref().map(|(_, e)| e.clone())
@@ -7997,6 +8002,8 @@ impl WaveApp {
         let mut open = true;
         let (mut go, mut choice) = (false, self.export_choice);
         let (mut dithering, mut dither_type, mut shaping) = (self.export_dithering, self.export_dither_type, self.export_dither.shaping);
+        let (mut mp3_bitrate, mut mp3_mono) = (self.mp3_bitrate, self.mp3_mono);
+        let mono_file = self.editor.as_ref().is_some_and(|e| e.history.current().channel_count() < 2);
         let mut save_preset = false;
         let mut delete = None;
         let mut load = None;
@@ -8008,35 +8015,40 @@ impl WaveApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Format:");
-                    for f in [SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac] {
+                    for f in [SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac, SaveFormat::Mp3] {
                         ui.radio_value(&mut choice.format, f, f.name());
                     }
                 });
                 ui.horizontal(|ui| {
                     ui.label("Sample type:");
                     for ty in [SampleType::Int16, SampleType::Int24, SampleType::Int32, SampleType::Float32] {
-                        ui.add_enabled_ui(choice.format.accepts(ty), |ui| ui.radio_value(&mut choice.ty, ty, ty.describe()));
+                        ui.add_enabled_ui(choice.format != SaveFormat::Mp3 && choice.format.accepts(ty), |ui| {
+                            ui.radio_value(&mut choice.ty, ty, ty.describe())
+                        });
                     }
                 });
-                ui.add_enabled_ui(matches!(choice.ty, SampleType::Int16 | SampleType::Int24 | SampleType::Int32), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut dithering, "Dithering");
-                        ui.add_enabled_ui(dithering, |ui| {
-                            ui.label("Dither Type:");
-                            egui::ComboBox::from_id_salt("export-dither-type").selected_text(dither_type.name()).show_ui(ui, |ui| {
-                                for d in [DitherType::Triangular, DitherType::Rectangular] {
-                                    ui.selectable_value(&mut dither_type, d, d.name());
+                ui.add_enabled_ui(
+                    choice.format != SaveFormat::Mp3 && matches!(choice.ty, SampleType::Int16 | SampleType::Int24 | SampleType::Int32),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut dithering, "Dithering");
+                            ui.add_enabled_ui(dithering, |ui| {
+                                ui.label("Dither Type:");
+                                egui::ComboBox::from_id_salt("export-dither-type").selected_text(dither_type.name()).show_ui(ui, |ui| {
+                                    for d in [DitherType::Triangular, DitherType::Rectangular] {
+                                        ui.selectable_value(&mut dither_type, d, d.name());
+                                    }
+                                });
+                            });
+                            ui.label("Noise shaping:");
+                            egui::ComboBox::from_id_salt("export-shaping").selected_text(shaping.name()).show_ui(ui, |ui| {
+                                for sh in Shaping::ALL {
+                                    ui.selectable_value(&mut shaping, sh, sh.name());
                                 }
                             });
                         });
-                        ui.label("Noise shaping:");
-                        egui::ComboBox::from_id_salt("export-shaping").selected_text(shaping.name()).show_ui(ui, |ui| {
-                            for sh in Shaping::ALL {
-                                ui.selectable_value(&mut shaping, sh, sh.name());
-                            }
-                        });
-                    });
-                });
+                    },
+                );
                 ui.weak("Used when the saved depth is lower than the file's depth. Dither is off unless you choose it.");
                 if choice.format == SaveFormat::Aiff {
                     ui.horizontal(|ui| {
@@ -8048,6 +8060,17 @@ impl WaveApp {
                     if choice.ty == SampleType::Float32 {
                         ui.weak("32-bit float is always AIFF-C fl32, big-endian.");
                     }
+                }
+                if choice.format == SaveFormat::Mp3 {
+                    ui.horizontal(|ui| {
+                        ui.label("Bit rate:");
+                        egui::ComboBox::from_id_salt("export-mp3-bitrate").selected_text(format!("{mp3_bitrate} kbps")).show_ui(ui, |ui| {
+                            for b in MP3_BITRATES {
+                                ui.selectable_value(&mut mp3_bitrate, b, format!("{b} kbps"));
+                            }
+                        });
+                        ui.add_enabled(!mono_file, egui::Checkbox::new(&mut mp3_mono, "Mono"));
+                    });
                 }
                 match &est {
                     Some(Ok(e)) => ui.label(format_size_label(e, self.export_choice.format)),
@@ -8079,6 +8102,8 @@ impl WaveApp {
             });
         self.export_choice = choice.fitted();
         self.export_dithering = dithering;
+        self.mp3_bitrate = mp3_bitrate;
+        self.mp3_mono = mp3_mono;
         self.export_dither_type = dither_type;
         self.export_dither = DitherSettings { dither: if dithering { dither_type } else { DitherType::None }, shaping, seed: DEFAULT_SEED };
         if let Some(name) = load
@@ -8157,7 +8182,12 @@ impl WaveApp {
             }
             "estimate" => {
                 let Some(editor) = &self.editor else { return "ERR no file is open".to_string() };
-                match estimate_size(editor.history.current(), format, ty, aiff) {
+                let estimate = if format == SaveFormat::Mp3 {
+                    estimate_mp3_size(editor.history.current(), Mp3Options { bitrate_kbps: self.mp3_bitrate, mono: self.mp3_mono })
+                } else {
+                    estimate_size(editor.history.current(), format, ty, aiff)
+                };
+                match estimate {
                     Ok(e) => format!("OK bytes={} exact={}", e.bytes, u8::from(e.exact)),
                     Err(e) => format!("ERR {e}"),
                 }
