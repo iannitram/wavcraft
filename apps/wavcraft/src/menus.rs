@@ -48,6 +48,23 @@ pub const TOOLS: &[ToolEntry] = &[
     ToolEntry { name: "tool.spotHealing", label: "Spot Healing", tool: None, hint: "Not available yet" },
 ];
 
+/// One entry of the Favorites menu: a registered effect, shown under its own name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Favorite {
+    pub label: &'static str,
+    pub effect_id: &'static str,
+}
+
+/// The Favorites menu. v1 needs only these two; Audition's longer Favorites list is after 1.0 (#630).
+pub const FAVORITES: &[Favorite] = &[Favorite { label: "Fade In", effect_id: "fade_in" }, Favorite { label: "Fade Out", effect_id: "fade_out" }];
+
+/// The action row a favorite runs: the table row named `effect.<effect_id>`. `None` when no
+/// registered effect has that id (the app then leaves the entry out).
+pub fn favorite_action(f: &Favorite) -> Option<&'static actions::Action> {
+    let name = format!("effect.{}", f.effect_id);
+    actions::all_actions().find(|a| a.name == name)
+}
+
 /// One menu or toolbar entry. `Sep` is a separator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Entry {
@@ -258,5 +275,19 @@ mod tests {
             assert!(n.contains(&t.name));
         }
         assert!(TOOLS.iter().any(|t| t.tool.is_none()), "planned tools are listed");
+    }
+
+    #[test]
+    fn e1_favorites_menu_lists_fade_in_and_fade_out() {
+        assert_eq!(FAVORITES.len(), 2);
+        assert_eq!(FAVORITES.iter().map(|f| f.label).collect::<Vec<_>>(), ["Fade In", "Fade Out"]);
+        assert_eq!(FAVORITES.iter().map(|f| f.effect_id).collect::<Vec<_>>(), ["fade_in", "fade_out"]);
+        for f in FAVORITES {
+            let a = favorite_action(f).expect("every favorite is a registered effect");
+            let want = format!("effect.{}", f.effect_id);
+            assert_eq!(a.name, want);
+            assert_eq!(a.menu, f.label);
+            assert!(matches!(a.id, ActionId::Effect(_)));
+        }
     }
 }
