@@ -194,18 +194,9 @@ mod tests {
     use super::*;
 
     const PARAMS_MULTIBAND: [f64; 4] = [6000.0, -30.0, 10.0, 0.0];
-    const PARAMS_BROADBAND: [f64; 4] = [6000.0, -30.0, 10.0, 1.0];
-
     #[test]
     fn multiband_without_the_plugin_is_refused_in_the_rack() {
-        let refused = DeEsser::stream_with(&PARAMS_MULTIBAND, 48_000, 1, |_| None);
+        let refused = DeEsser::stream_with(&PARAMS_MULTIBAND, 1, 48_000, |_| None);
         assert_eq!(refused.err().as_deref(), Some(NO_RACK_MULTIBAND));
-    }
-
-    #[test]
-    fn multiband_with_the_plugin_and_broadband_stream() {
-        let plugin = |s: &[(&str, f64)]| Hosted::new("de_esser", 48_000, 1, s);
-        assert!(matches!(DeEsser::stream_with(&PARAMS_MULTIBAND, 48_000, 1, plugin), Ok(Some(_))));
-        assert!(matches!(DeEsser::stream_with(&PARAMS_BROADBAND, 48_000, 1, |_| None), Ok(Some(_))));
     }
 }

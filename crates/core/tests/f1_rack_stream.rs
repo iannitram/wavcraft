@@ -253,8 +253,10 @@ fn f1_every_slot_menu_effect_changes_audio_like_offline() {
         for (c, ch) in got.iter().enumerate() {
             assert!(ch.iter().all(|v| v.is_finite()), "{id}: channel {c} has a non-finite sample");
         }
-        let d = max_diff(&got[0], &want[0]);
-        assert!(d <= 1e-6, "{id} {args:?}: differs from effects::apply by {d}");
+        for c in 0..got.len() {
+            let d = max_diff(&got[c], &want[c]);
+            assert!(d <= 1e-6, "{id} {args:?}: channel {c} differs from effects::apply by {d}");
+        }
         let moved = max_diff(&got[0], &input[0]);
         assert!(moved > 1e-3, "{id} {args:?}: passes audio through (max change {moved})");
         if id == "invert" {
