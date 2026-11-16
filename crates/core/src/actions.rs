@@ -834,10 +834,19 @@ impl Editor {
     }
 
     /// What [`ActionId::RepeatLastDialog`] (`F2` / `Ctrl+R`) opens or runs for `selection`.
-    #[allow(clippy::todo)]
     pub fn repeat_dialog(&self, selection: &Range<u64>) -> RepeatDialog {
-        let _ = selection;
-        todo!()
+        if !self.enabled(ActionId::RepeatLast, selection) {
+            return RepeatDialog::Unavailable;
+        }
+        match self.last.clone() {
+            Some(Repeat::Effect(i, params)) => {
+                let has_dialog = effects::all().get(usize::from(i)).is_some_and(|effect| !effect.parameters().is_empty());
+                if has_dialog { RepeatDialog::Effect(i, params) } else { RepeatDialog::RunNow }
+            }
+            Some(Repeat::InsertSilence(frames)) => RepeatDialog::InsertSilence(frames),
+            Some(_) => RepeatDialog::RunNow,
+            None => RepeatDialog::Unavailable,
+        }
     }
 
     /// The zero-crossing adjusts: each moved edge goes to the nearest sign change within
