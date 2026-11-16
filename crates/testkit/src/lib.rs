@@ -694,3 +694,145 @@ pub fn content_hash(doc: &wavcraft_core::DocState) -> io::Result<u64> {
     }
     Ok(h.finish())
 }
+
+// ---------------------------------------------------------------------------------------------
+// Noise Reduction measure (G2.7; the wavcraft-nr-bench binary prints it)
+
+/// The Noise Reduction settings [`nr_measure`] runs with. The default is Audition's: Reduce By
+/// 16 dB, Noise Reduction 50 %, FFT size 4096.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NrSettings {
+    pub reduce_db: f64,
+    pub reduction: f64,
+    pub fft_size: u32,
+}
+
+impl Default for NrSettings {
+    fn default() -> NrSettings {
+        NrSettings { reduce_db: 16.0, reduction: 50.0, fft_size: 4096 }
+    }
+}
+
+/// What [`nr_measure`] found, all in dB except `print_frames`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NrMeasure {
+    /// The level of the gaps before minus after (positive when the floor dropped).
+    pub floor_drop_db: f64,
+    /// The level of the speech windows after minus before (0 when speech is untouched).
+    pub speech_change_db: f64,
+    /// The length in frames of the stretch the noise print was captured from.
+    pub print_frames: u64,
+}
+
+/// Run Noise Reduction on `noisy` and measure it against `clean` (the same audio without the
+/// noise; same rate, length and channel count, or the answer is an error). Channel 0 is measured;
+/// every channel is processed.
+///
+/// Windows are 100 ms. A window is a gap when the clean file's power in it is at most 1e-4 (-40 dB)
+/// of the loudest window's, and speech when it is at least 1e-2 (-20 dB) of it. The print is
+/// captured from the longest run of gap windows in `noisy` (an error if the run is under 4096
+/// frames, or there is no gap or no speech window). The print is the session-wide one in
+/// `wavcraft_core::noise`, and this replaces it.
+pub fn nr_measure(clean: &wavcraft_core::DocState, noisy: &wavcraft_core::DocState, s: &NrSettings) -> Result<NrMeasure, String> {
+    use wavcraft_core::actions::Editor;
+    use wavcraft_core::doc::history::History;
+    use wavcraft_core::{effects, noise};
+
+    if clean.sample_rate() != noisy.sample_rate() || clean.len_frames() != noisy.len_frames() || clean.channel_count() != noisy.channel_count() {
+        return Err("the clean and noisy files differ in rate, length or channel count".to_string());
+    }
+    let window = (u64::from(noisy.sample_rate()) / 10).max(1);
+    let windows = noisy.len_frames() / window;
+    let read = |doc: &wavcraft_core::DocState, w: u64| -> Result<Vec<f32>, String> {
+        let mut buf = vec![0.0f32; window as usize];
+        let n = doc.read(0, w * window, &mut buf).map_err(|e| e.to_string())?;
+        buf.truncate(n);
+        Ok(buf)
+    };
+    let power = |x: &[f32]| x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+    let clean_power: Vec<f64> = (0..windows).map(|w| read(clean, w).map(|x| power(&x))).collect::<Result<_, _>>()?;
+    let loudest = clean_power.iter().copied().fold(0.0f64, f64::max);
+    let is_gap = |w: u64| clean_power.get(w as usize).is_some_and(|p| *p <= loudest * 1e-4);
+    let is_speech = |w: u64| clean_power.get(w as usize).is_some_and(|p| *p >= loudest * 1e-2);
+    let (mut best, mut run_start, mut run) = ((0u64, 0u64), 0u64, 0u64);
+    for w in 0..=windows {
+        if w < windows && is_gap(w) {
+            if run == 0 {
+                run_start = w;
+            }
+            run += 1;
+            if run > best.1 {
+                best = (run_start, run);
+            }
+        } else {
+            run = 0;
+        }
+    }
+    let print_frames = best.1 * window;
+    if print_frames < 4096 || !(0..windows).any(is_speech) {
+        return Err("the clean file needs a gap of at least 4096 frames and some speech".to_string());
+    }
+    let print = noise::capture(noisy, best.0 * window..best.0 * window + print_frames)?;
+    noise::set_current(print);
+
+    let index = effects::all().iter().position(|e| e.id() == "noise_reduction").ok_or("no Noise Reduction effect")?;
+    let text = format!("reduce_db={} reduction={} fft_size={}", s.reduce_db, s.reduction, s.fft_size);
+    let params = effects::parse_params(effects::all()[index], &text)?;
+    let mut editor = Editor::new(History::new(noisy.clone(), u64::MAX));
+    editor.run_effect(u16::try_from(index).map_err(|e| e.to_string())?, params, 0..0).map_err(|e| e.to_string())?;
+    let after = editor.history.current();
+
+    let (mut gap_before, mut gap_after, mut speech_before, mut speech_after) = (0.0, 0.0, 0.0, 0.0);
+    for w in 0..windows {
+        let (gap, speech) = (is_gap(w), is_speech(w));
+        if gap || speech {
+            let (before, now) = (power(&read(noisy, w)?), power(&read(after, w)?));
+            if gap {
+                gap_before += before;
+                gap_after += now;
+            } else {
+                speech_before += before;
+                speech_after += now;
+            }
+        }
+    }
+    let db = |a: f64, b: f64| 10.0 * (a.max(1e-30) / b.max(1e-30)).log10();
+    Ok(NrMeasure { floor_drop_db: db(gap_before, gap_after), speech_change_db: db(speech_after, speech_before), print_frames })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod nr_tests {
+    use super::*;
+    use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
+    use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
+
+    fn doc(dir: &Path, x: &[f32]) -> DocState {
+        let s = Store::create_with(dir, StoreOptions::default()).unwrap();
+        let ch = Channel::from_pieces(x.chunks(BLOCK_FRAMES).map(|b| Piece::whole(s.append(b).unwrap()).unwrap()));
+        DocState::new(s, vec![ch], 48_000, SourceFormat::synthetic(48_000, 1)).unwrap()
+    }
+
+    #[test]
+    fn g2_measure_reports_floor_drop_and_speech_change() {
+        // 12 s at 48 kHz: 2 s of silence, then 0.5 s bursts of a 1 kHz tone (amplitude 0.3) every
+        // second; white noise (uniform, amplitude 0.0367) added everywhere: 20 dB under the bursts.
+        let n = 12 * 48_000usize;
+        let clean: Vec<f32> = (0..n)
+            .map(|i| if i >= 96_000 && (i / 24_000) % 2 == 0 { (0.3 * (TAU * 1000.0 * i as f64 / 48_000.0).sin()) as f32 } else { 0.0 })
+            .collect();
+        let mut rng = Rng::new(DEFAULT_SEED, "g2-measure");
+        let noisy: Vec<f32> = clean.iter().map(|c| c + (0.0367 * rng.signed()) as f32).collect();
+        let dir = std::env::temp_dir().join(format!("wavcraft-nr-measure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (a, b) = (doc(&dir.join("clean"), &clean), doc(&dir.join("noisy"), &noisy));
+        let s = NrSettings { reduce_db: 16.0, reduction: 100.0, fft_size: 4096 };
+        let m = nr_measure(&a, &b, &s);
+        let _ = std::fs::remove_dir_all(&dir);
+        let m = m.unwrap();
+        println!("{m:?}");
+        assert!((14.0..=18.0).contains(&m.floor_drop_db), "floor drop {} dB", m.floor_drop_db);
+        assert!(m.speech_change_db.abs() < 1.0, "speech change {} dB", m.speech_change_db);
+        assert!(m.print_frames >= 96_000);
+    }
+}
