@@ -1085,8 +1085,14 @@ fn write_vorbis_stream(doc: &DocState, file: File, part: &Part, progress: &mut d
 fn write_mp3_stream(doc: &DocState, mut file: File, part: &Part, progress: &mut dyn FnMut(f64), hooks: Hooks) -> io::Result<File> {
     let channels = u16::try_from(part.channels.len()).map_err(|_| invalid("too many channels for MP3"))?;
     let config = EncoderConfig::new(doc.sample_rate(), channels, hooks.mp3.bitrate_kbps);
-    let mut enc = Mp3Encoder::new(config).map_err(invalid_err)?;
-    let mut mp3: Vec<u8> = Vec::new();
+    let mut enc = Mp3Encoder::new(config).map_err(|e| invalid(&format!("MP3 encoder: {e}")))?;
+    // Sized up front from the bit rate times the duration, so the Vec never grows by doubling (a
+    // doubling peaks near twice the stream: about 800 MB for 3 hours at 320 kbps). The slack covers
+    // the tag frame, the encoder's delay and frame rounding. Saturating arithmetic: no overflow.
+    let frames = part.frames.end.saturating_sub(part.frames.start);
+    let stream_bytes = u64::from(hooks.mp3.bitrate_kbps).saturating_mul(125).saturating_mul(frames) / u64::from(doc.sample_rate().max(1));
+    let capacity = usize::try_from(stream_bytes.saturating_add(16 * 1024)).unwrap_or(0);
+    let mut mp3: Vec<u8> = Vec::with_capacity(capacity);
     stream_samples(doc, part, progress, hooks, |bufs, n| {
         let block: Vec<&[f32]> = bufs.iter().map(|b| &b[..n]).collect();
         enc.encode_planar(&block, &mut mp3);

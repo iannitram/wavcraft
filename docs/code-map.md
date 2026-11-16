@@ -297,7 +297,7 @@ wavcraft (app)
 
 wavcraft-core
   -> soundcraft-audio-io, -dsp, -model, -time, -mix, -vst3-host
-  -> craft-mp3              (pinned, no caller yet)
+  -> craft-mp3              (pinned; the MP3 writer in save.rs calls it, A3.4)
   -> symphonia, vorbis_rs, rustfft, rayon, bytemuck
   -> dirs, sysinfo, getrandom, serde, postcard, serde_json, log
   -> rustix                 (unix only)
@@ -327,7 +327,7 @@ What I use each one for:
 ### Other external crates
 
 - `symphonia` 0.5.5, MPL-2.0. I use it unmodified to decode MP3, FLAC, Vorbis, AAC, ALAC, ADPCM, MP4, CAF and MKV (`open_symphonia` in `crates/core/src/io.rs`), and the WAV, AIFF and CAF files whose codec `open_wav`, `open_aiff` and `containers::open_caf` hand over. `Cargo.lock` holds two versions: 0.5.5 (mine, for `wavcraft-core`) and 0.6.1 (through `soundcraft-audio-io`). The comment above `symphonia` in the root `Cargo.toml` still says both are the same version and features; that is out of date.
-- `craft-mp3` 1.1.0, MIT OR Apache-2.0, a git dependency pinned by `rev` to commit `456f049`, the commit the `v1.1.0` tag of the craft-mp3 repo names (A3.1, #1310; moved up from 1.0.0 in `87b10c6`). 1.1.0 adds gapless playback: the encoder delay and padding in the Info tag (craft-mp3 #25 and #27). The comment in the root `Cargo.toml` says the API is the same as 1.0.0. A pure-Rust MP3 encoder with no dependencies, shared with SoundCraft and listed in `THIRD-PARTY-NOTICES.txt`. Only `crates/core/Cargo.toml` depends on it, and no code calls `craft_mp3` yet (A3.4 is the writer).
+- `craft-mp3` 1.1.0, MIT OR Apache-2.0, a git dependency pinned by `rev` to commit `456f049`, the commit the `v1.1.0` tag of the craft-mp3 repo names (A3.1, #1310; moved up from 1.0.0 in `87b10c6`). 1.1.0 adds gapless playback: the encoder delay and padding in the Info tag (craft-mp3 #25 and #27). The comment in the root `Cargo.toml` says the API is the same as 1.0.0. A pure-Rust MP3 encoder with no dependencies, shared with SoundCraft and listed in `THIRD-PARTY-NOTICES.txt`. Only `crates/core/Cargo.toml` depends on it, and only `crates/core/src/save.rs` calls `craft_mp3`, in the MP3 writer (A3.4).
 - `vorbis_rs` 0.5.6, BSD-3-Clause. It vendors libvorbis and libogg as C source (`aotuv_lancer_vorbis_sys` and `ogg_next_sys`, both built with `cc`). Every build needs a C compiler.
 - `eframe` and `egui` 0.36 with features `wgpu`, `wayland`, `x11` and `default_fonts`. The bundled fonts are Hack (MIT and Bitstream Vera), Ubuntu Light (Ubuntu Font Licence 1.0), Noto Emoji (OFL 1.1) and emoji-icon-font (MIT). `THIRD-PARTY-NOTICES.txt` lists them. `tools/notices.py` makes that file.
 - `cpal` 0.18 for audio devices. `rfd` 0.17 for file dialogs (XDG portal on Linux). `arboard` 3.6 for the clipboard, default features off.
@@ -1069,7 +1069,7 @@ Verbs marked "not in header" have a match arm but no line in the `control.rs` he
 | `NEWDOC [rate= ch= bits=]` | A new empty document (not in header) | app.rs |
 | `SWITCH <i>` | Make document `i` the current one | app.rs |
 | `CLOSE [discard]` | Close the current document | app.rs |
-| `SAVE [path] [bits= float= aiff= quality= meta=]` | Save, or Save As with the format from the extension (`.wav`, `.aiff` or `.aif`, `.flac`, `.ogg` or `.oga`, `.w64`, `.caf`, `.au` or `.snd`; a name with no extension gets `.wav` and is saved as a WAV). A `.mp3` path is taken as MP3, but there is no MP3 writer yet (A3.3): `SAVE` answers `OK`, then `LASTERROR` says `Not written: MP3 saving is not available yet` | app.rs (`save_with`), parsed by `wavcraft_automation::Request::parse` |
+| `SAVE [path] [bits= float= aiff= quality= meta=]` | Save, or Save As with the format from the extension (`.wav`, `.aiff` or `.aif`, `.flac`, `.ogg` or `.oga`, `.w64`, `.caf`, `.au` or `.snd`; a name with no extension gets `.wav` and is saved as a WAV). A `.mp3` path is taken as MP3 and written at the defaults (192 kbps, stereo; A3.4), through `save_aiff_kind`. A stereo save with mono set is refused until A3.5. `Headless` still refuses MP3 (A3.11). | app.rs (`save_with`), parsed by `wavcraft_automation::Request::parse` |
 | `SAVE_CANCEL` | Stop the running save | app.rs |
 | `SAVE_SELECTION <path>` | Save only the selection to a new WAV | app.rs |
 | `EXPORT <path>` | Export the whole document to another WAV | app.rs |

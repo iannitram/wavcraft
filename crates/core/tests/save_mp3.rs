@@ -64,6 +64,16 @@ fn a_stereo_tone_round_trips_at_192() {
     let len = std::fs::metadata(&target).unwrap().len();
     assert!((238_000..=243_000).contains(&len), "file is {len} bytes");
 
+    // The finished Info tag replaced the placeholder at the start: a stereo first frame has 32
+    // bytes of side information after its 4-byte header, so "Info" sits at 36 and the frame count
+    // (big-endian, after the id and flags) at 44. The placeholder has none, so this fails without the copy.
+    let bytes = std::fs::read(&target).unwrap();
+    assert_eq!(&bytes[36..40], b"Info", "no Info tag at the start of the file");
+    let tag_frames = u32::from_be_bytes(bytes[44..48].try_into().unwrap());
+    assert!(tag_frames > 0, "the Info tag still holds the placeholder (0 frames)");
+    let tagged = u64::from(tag_frames) * 1152;
+    assert!((441_000..=444_500).contains(&tagged), "the tag counts {tagged} samples");
+
     let target2 = dir.0.join("tone2.mp3");
     save(&doc, &target2, SaveFormat::Mp3, SampleType::Float32, &mut |_| {}).unwrap();
     let len2 = std::fs::metadata(&target2).unwrap().len();
