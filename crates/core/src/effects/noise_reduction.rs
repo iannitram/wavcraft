@@ -34,17 +34,17 @@ const MARGIN: f32 = 3.5;
 const ALLOWANCE_DB: f32 = 0.25;
 /// Frames analysed before each chunk to prime the decay and smoothing state.
 const WARMUP: usize = 16;
-const SIZES: [usize; 4] = [1024, 2048, 4096, 8192];
+const SIZES: [usize; 6] = [512, 1024, 2048, 4096, 8192, 16384];
 
 pub struct NoiseReduction;
 
 const P: &[ParamDesc] = &[
     ParamDesc::db("reduce_db", "Reduce by", 1.0, 100.0, 16.0),
-    ParamDesc::percent("reduction", "Noise reduction", 0.0, 100.0, 100.0),
+    ParamDesc::percent("reduction", "Noise reduction", 0.0, 100.0, 50.0),
     ParamDesc::percent("smoothing_freq", "Smoothing over frequency", 0.0, 100.0, 20.0),
     ParamDesc::percent("smoothing_time", "Smoothing over time", 0.0, 100.0, 25.0),
     ParamDesc::percent("decay", "Spectral decay rate", 0.0, 100.0, 65.0),
-    ParamDesc::choice("fft_size", "FFT size", &["1024", "2048", "4096", "8192"], 2),
+    ParamDesc::choice("fft_size", "FFT size", &["512", "1024", "2048", "4096", "8192", "16384"], 3),
     ParamDesc::choice("noise_only", "Output noise only", &["Off", "On"], 0),
 ];
 

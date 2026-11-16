@@ -193,7 +193,7 @@ fn noise_reduction_lowers_the_noise_floor_by_the_set_amount_and_keeps_the_tone()
     assert_eq!(e.history.undo_label(), None, "capturing is not an edit");
     for reduce in [12.0, 24.0] {
         let mut e2 = editor(&tmp.0.join("x"), std::slice::from_ref(&x));
-        e2.run_effect(nr_index(), params(&format!("reduce_db={reduce}")), 0..0).unwrap();
+        e2.run_effect(nr_index(), params(&format!("reduce_db={reduce} reduction=100")), 0..0).unwrap();
         assert_eq!(e2.history.undo_label(), Some("Noise Reduction"));
         let y = &now(&e2)[0];
         assert_eq!(y.len(), frames);
@@ -220,10 +220,10 @@ fn noise_reduction_does_not_depend_on_how_the_range_is_cut_into_chunks() {
     // The whole file in one run (about 9 chunks), against the same audio as a selection that
     // starts mid-file with its grid there: both must leave the audio outside alone and be sane.
     let mut e1 = editor(&tmp.0.join("a"), std::slice::from_ref(&x));
-    e1.run_effect(nr_index(), params("reduce_db=12"), 0..0).unwrap();
+    e1.run_effect(nr_index(), params("reduce_db=12 reduction=100"), 0..0).unwrap();
     let mut e2 = editor(&tmp.0.join("b"), std::slice::from_ref(&x));
     let sel = 100_003..(frames as u64 - 99_991);
-    e2.run_effect(nr_index(), params("reduce_db=12"), sel.clone()).unwrap();
+    e2.run_effect(nr_index(), params("reduce_db=12 reduction=100"), sel.clone()).unwrap();
     let (a, b) = (&now(&e1)[0], &now(&e2)[0]);
     assert_eq!(&b[..100_003], &x[..100_003]);
     assert_eq!(&b[frames - 99_991..], &x[frames - 99_991..]);
@@ -240,7 +240,7 @@ fn output_noise_only_is_what_reduction_removed() {
     let (x, tone_from, _) = tone_and_noise(0.02);
     let mut e = editor(&tmp.0, std::slice::from_ref(&x));
     e.run(ActionId::CaptureNoisePrint, 0..2 * RATE as u64).unwrap();
-    e.run_effect(nr_index(), params("reduce_db=12 noise_only=On"), 0..0).unwrap();
+    e.run_effect(nr_index(), params("reduce_db=12 reduction=100 noise_only=On"), 0..0).unwrap();
     let y = &now(&e)[0];
     // Over the tone almost nothing is removed; over the noise almost all of it is.
     let tone_part = (tone_from + RATE as usize)..(tone_from + 4 * RATE as usize);
@@ -286,7 +286,7 @@ fn stereo_gets_a_print_per_channel() {
     assert_eq!(p.density.len(), 2);
     let ratio = p.density[1].iter().sum::<f32>() / p.density[0].iter().sum::<f32>();
     assert!((8.0..12.5).contains(&ratio), "print ratio {ratio}");
-    e.run_effect(nr_index(), params("reduce_db=12"), 0..0).unwrap();
+    e.run_effect(nr_index(), params("reduce_db=12 reduction=100"), 0..0).unwrap();
     let y = now(&e);
     for c in 0..2 {
         let region = (RATE as usize / 4)..(frames - RATE as usize / 4);
