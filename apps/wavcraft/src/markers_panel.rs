@@ -71,9 +71,39 @@ pub struct MarkersUi {
     /// When a click opened the rename (input time), so the second half of a double-click that
     /// lands in the new editor still goes to the row.
     rename_opened: Option<f64>,
+    /// The time being typed into a Start or End cell: (marker id, which edge, text so far). Empty
+    /// text shows the cell's current time as a hint.
+    typing: Option<(u64, Edge, String)>,
+    focus_typing: bool,
+    /// When a click opened the typed edit (input time), as `rename_opened` does for a rename.
+    typing_opened: Option<f64>,
     /// The description being typed for the one picked marker: (id, text so far).
     desc_edit: Option<(u64, String)>,
     pub drag: Option<Drag>,
+}
+
+/// What a Start or End cell needs to know about its row and the input.
+#[derive(Clone, Copy)]
+struct CellCtx {
+    /// The row is picked.
+    picked: bool,
+    /// The row is the only picked one (before this frame's click).
+    only: bool,
+    now: f64,
+    delay: f64,
+}
+
+/// A cell's click: None, or Some(double). A triple-click's third click is nothing.
+fn hit(r: egui::Response) -> Option<bool> {
+    if r.triple_clicked() {
+        None
+    } else if r.double_clicked() {
+        Some(true)
+    } else if r.clicked() {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 impl MarkersUi {
@@ -106,6 +136,7 @@ impl MarkersUi {
             let name = markers.iter().find(|m| m.id == id).map(|m| m.name.clone()).unwrap_or_default();
             self.renaming = Some((id, name));
             self.focus_rename = true;
+            self.typing = None;
             return None;
         }
         self.renaming = None;
@@ -170,6 +201,7 @@ impl MarkersUi {
         // The clicked row, whether it was a double-click, and whether it was the Name cell.
         let mut clicked: Option<(usize, bool, bool)> = None;
         let mut commit: Option<(u64, String)> = None;
+        let mut commit_extent: Option<(u64, Edge, String)> = None;
         egui::ScrollArea::both().show(ui, |ui| {
             egui::Grid::new("markers-table").striped(true).num_columns(6).show(ui, |ui| {
                 ui.strong("Name");
@@ -181,18 +213,7 @@ impl MarkersUi {
                 ui.end_row();
                 for (index, m) in markers.iter().enumerate() {
                     let picked = self.pick.ids.contains(&m.id);
-                    // A cell's click: None, or Some(double). A triple-click's third click is nothing.
-                    let hit = |r: egui::Response| {
-                        if r.triple_clicked() {
-                            None
-                        } else if r.double_clicked() {
-                            Some(true)
-                        } else if r.clicked() {
-                            Some(false)
-                        } else {
-                            None
-                        }
-                    };
+                    let ctx = CellCtx { picked, only: self.pick.ids == [m.id], now, delay };
                     let cell = |ui: &mut egui::Ui, text: String| hit(ui.selectable_label(picked, text));
                     match &mut self.renaming {
                         Some((id, text)) if *id == m.id => {
@@ -225,10 +246,10 @@ impl MarkersUi {
                         }
                     };
                     if cols.start {
-                        take(cell(ui, time(m.start)));
+                        take(self.time_cell(ui, m, Edge::Start, time(m.start), ctx, &mut commit_extent));
                     }
                     if cols.end {
-                        take(cell(ui, time(m.end.max(m.start))));
+                        take(self.time_cell(ui, m, Edge::End, time(m.end.max(m.start)), ctx, &mut commit_extent));
                     }
                     if cols.duration {
                         take(cell(ui, if m.is_point() { String::new() } else { time(m.end - m.start) }));
@@ -293,6 +314,7 @@ impl MarkersUi {
             editor.delete_markers(&picked_ids);
             self.pick.ids.clear();
             self.renaming = None;
+            self.typing = None;
             self.desc_edit = None;
         }
         if merge {
@@ -318,17 +340,77 @@ impl MarkersUi {
         if let Some((index, double, name)) = clicked {
             out.select = self.row_click(&markers, index, shift, ctrl, double, name);
             self.rename_opened = (self.renaming.is_some() && self.focus_rename).then_some(now);
+            self.typing_opened = (self.typing.is_some() && self.focus_typing).then_some(now);
+        }
+        // A typed edit ends when the pick is no longer that one marker alone.
+        if self.typing.as_ref().is_some_and(|(id, _, _)| self.pick.ids != [*id]) {
+            self.typing = None;
         }
         if let Some((id, name)) = commit {
             editor.rename_marker(id, &name);
         }
+        if let Some((id, edge, text)) = commit_extent {
+            commit_typed_extent(editor, id, edge, &text);
+        }
         out
+    }
+
+    /// One Start or End cell of row `m`. While the typed edit is open on this cell it is a text
+    /// field: Enter commits (into `commit`), Escape or a click elsewhere cancels. A single click on
+    /// the cell of the only picked row opens the edit. Returns the cell's click, as `hit` does.
+    fn time_cell(
+        &mut self,
+        ui: &mut egui::Ui,
+        m: &Marker,
+        edge: Edge,
+        label: String,
+        ctx: CellCtx,
+        commit: &mut Option<(u64, Edge, String)>,
+    ) -> Option<bool> {
+        match self.typing.take() {
+            Some((id, e, mut text)) if id == m.id && e == edge => {
+                let edit = ui.add(egui::TextEdit::singleline(&mut text).hint_text(label).desired_width(90.0));
+                if self.focus_typing {
+                    edit.request_focus();
+                    self.focus_typing = false;
+                }
+                // The click that opened the edit, then a second one in it: a double-click goes to the row.
+                let double = edit.double_clicked() && self.typing_opened.is_some_and(|t| ctx.now - t <= ctx.delay);
+                let (esc, enter) = ui.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::Enter)));
+                if enter {
+                    *commit = Some((id, edge, text));
+                } else if !(esc || double || edit.lost_focus()) {
+                    self.typing = Some((id, e, text));
+                }
+                return double.then_some(true);
+            }
+            other => self.typing = other,
+        }
+        let clicked = hit(ui.selectable_label(ctx.picked, label));
+        if clicked == Some(false) && ctx.only {
+            self.typing = Some((m.id, edge, String::new()));
+            self.focus_typing = true;
+            self.renaming = None;
+        }
+        clicked
     }
 }
 
-/// Which end of a marker's extent typed text sets. Not called by the panel yet (the typed-edit step
-/// wires it in), so the binary sees it as unused.
-#[allow(dead_code)]
+/// Makes the typed `text` the new Start or End of marker `id` (one "Move Marker" step). Text that is
+/// not a usable time changes nothing. Returns whether the marker moved.
+fn commit_typed_extent(editor: &mut Editor, id: u64, edge: Edge, text: &str) -> bool {
+    let doc = editor.history.current();
+    let Some(m) = doc.markers().iter().find(|m| m.id == id) else {
+        return false;
+    };
+    let (range, rate, len) = (m.start..m.end.max(m.start), doc.sample_rate(), doc.len_frames());
+    match typed_extent(range, edge, text, rate, len) {
+        Some(extent) => editor.set_marker_extent(id, extent),
+        None => false,
+    }
+}
+
+/// Which end of a marker's extent typed text sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
     Start,
@@ -336,7 +418,6 @@ pub enum Edge {
 }
 
 /// A run of ASCII digits as a number; None for an empty, signed or non-digit text.
-#[allow(dead_code)]
 fn digits(s: &str) -> Option<u64> {
     if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) { None } else { s.parse().ok() }
 }
@@ -344,7 +425,6 @@ fn digits(s: &str) -> Option<u64> {
 /// Parses a time in the form the panel shows (`format_time`): `m:ss.mmm`, or `h:mm:ss.mmm` from an
 /// hour on. Minutes and seconds are 0..=59; the fraction is one to three digits. Returns the frame
 /// at `rate`; None for any other text, a zero rate, or a time too large to count.
-#[allow(dead_code)]
 pub fn parse_time(text: &str, rate: u32) -> Option<u64> {
     if rate == 0 {
         return None;
@@ -375,13 +455,14 @@ pub fn parse_time(text: &str, rate: u32) -> Option<u64> {
 /// The extent that typed `text` gives the marker covering `range`, in a file of `len` frames at
 /// `rate`. The Start or the End moves to the typed time. None when the text is not a time, the time
 /// is past the file, or it would put the end before the start. A start equal to the end is a point.
-#[allow(dead_code)]
+/// A point moves as a whole: typing its Start gives a point at the typed time.
 pub fn typed_extent(range: Range<u64>, edge: Edge, text: &str, rate: u32, len: u64) -> Option<Range<u64>> {
     let frame = parse_time(text, rate)?;
     if frame > len {
         return None;
     }
     match edge {
+        Edge::Start if range.is_empty() => Some(frame..frame),
         Edge::Start if frame <= range.end => Some(frame..range.end),
         Edge::End if frame >= range.start => Some(range.start..frame),
         _ => None,
@@ -405,6 +486,35 @@ mod tests {
         assert_eq!(typed_extent(range.clone(), Edge::End, "0:05.000", rate, len), None, "past the 4 s file");
         assert_eq!(typed_extent(range.clone(), Edge::End, "0:04.000", rate, len), Some(48_000..192_000), "the file's last frame is in it");
         assert_eq!(typed_extent(range, Edge::Start, "0:02.000", rate, len), Some(96_000..96_000), "a start at the end is a point");
+        assert_eq!(typed_extent(48_000..48_000, Edge::Start, "0:02.000", rate, len), Some(96_000..96_000), "a point moves as a whole");
+    }
+
+    #[test]
+    fn typing_a_start_commits_one_move_marker_step() {
+        // A 4 s, 48 kHz, one-channel file with a point marker at 1.000 s.
+        let audio = wavcraft_core::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 192_000]] };
+        let state = wavcraft_core::Document::from_buffer(audio).expect("a document").state;
+        let mut e = Editor::new(wavcraft_core::doc::history::History::new(state, u64::MAX));
+        e.run(wavcraft_core::actions::ActionId::MarkerAdd, 48_000..48_000).expect("a marker");
+        let id = e.history.current().markers().id_at(0).expect("the marker");
+        let span = |e: &Editor| e.history.current().markers().iter().map(|m| (m.start, m.end)).collect::<Vec<_>>();
+        assert_eq!(span(&e), [(48_000, 48_000)]);
+
+        let steps = e.history.steps().len();
+        assert!(commit_typed_extent(&mut e, id, Edge::Start, "0:02.000"));
+        assert_eq!(span(&e), [(96_000, 96_000)]);
+        assert_eq!(e.history.steps().len(), steps + 1, "one step");
+        assert_eq!(e.history.undo_label(), Some("Move Marker"));
+        e.run(wavcraft_core::actions::ActionId::Undo, 0..0).expect("undo");
+        assert_eq!(span(&e), [(48_000, 48_000)]);
+
+        // Refusals change nothing and add no step.
+        let steps = e.history.steps().len();
+        assert!(!commit_typed_extent(&mut e, id, Edge::Start, "abc"));
+        assert!(!commit_typed_extent(&mut e, id, Edge::End, "0:00.500"), "an end before the start");
+        assert!(!commit_typed_extent(&mut e, id, Edge::End, "0:05.000"), "past the 4 s file");
+        assert_eq!(span(&e), [(48_000, 48_000)]);
+        assert_eq!(e.history.steps().len(), steps);
     }
 
     #[test]
