@@ -1065,7 +1065,7 @@ mod tests {
         let (mut l, set) = (Layout::default(), all());
         l.move_to("selection", DockSide::Right, None).unwrap();
         l.activate("history");
-        // `move_to` with no position puts selection last: history, markers, playlist, match, findings, selection.
+        // `move_to` with no position puts selection last: rack, history, markers, playlist, match, findings, selection.
         l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("markers"));
         l.cycle(DockSide::Right, &set, 1);

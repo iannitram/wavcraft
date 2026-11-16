@@ -1,4 +1,4 @@
-//! The Effects Rack panel (f31): a window with the rack's slots (effect, power, settings), the
+//! The Effects Rack panel (f31): a docked panel (`rack`) with the rack's slots (effect, power, settings), the
 //! master power, input and output gain and Mix, rack and effect presets, Preview and Apply. It
 //! edits a [`RackConfig`]; the app pushes that to the player and runs Apply.
 
