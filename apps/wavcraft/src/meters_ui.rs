@@ -14,10 +14,7 @@ use egui::{Align2, FontId, Rect, Sense, Stroke, pos2, vec2};
 use wavcraft_core::DocState;
 use wavcraft_core::levels::{FLOOR_DB, Levels, Reading};
 use wavcraft_core::loudness::{self, Loudness};
-
-/// Colour changes at these levels, dBFS.
-const AMBER_FROM: f32 = -18.0;
-const RED_FROM: f32 = -6.0;
+use wavcraft_core::meters::levels_scale::{RED_FROM_DB, YELLOW_FROM_DB, bar_fraction};
 
 /// A measurement running on a worker thread.
 struct Running {
@@ -78,7 +75,7 @@ impl MetersUi {
         let bar = Rect::from_min_max(pos2(rect.left() + label_w, rect.top() + 2.0), pos2(rect.right() - clip_w - num_w - 8.0, rect.bottom() - 16.0));
         let font = FontId::proportional(11.0);
         let dim = theme::pal().text_dim;
-        let x_of = |db: f32| bar.left() + bar.width() * ((db.clamp(FLOOR_DB, 0.0) - FLOOR_DB) / -FLOOR_DB);
+        let x_of = |db: f32| bar_x(bar, db);
         let lane_h = (bar.height() - 3.0) / 2.0;
         let mut reset = false;
         for ch in 0..2 {
@@ -87,7 +84,7 @@ impl MetersUi {
             let r = self.levels.reading(ch);
             painter.text(pos2(rect.left() + 2.0, lane.center().y), Align2::LEFT_CENTER, if ch == 0 { "L" } else { "R" }, font.clone(), dim);
             painter.rect_filled(lane, 1.0, theme::pal().meter_track);
-            paint_bar(&painter, lane, r.level_db, &x_of);
+            paint_bar(&painter, lane, r.level_db);
             if r.hold_db > FLOOR_DB {
                 let x = x_of(r.hold_db);
                 painter.line_segment([pos2(x, lane.top()), pos2(x, lane.bottom())], Stroke::new(2.0, theme::pal().text_strong));
@@ -192,15 +189,21 @@ impl MetersUi {
     }
 }
 
-fn paint_bar(painter: &egui::Painter, lane: Rect, level_db: f32, x_of: &dyn Fn(f32) -> f32) {
+/// The x position of a level of `db` dBFS along a lane: the one place dB becomes x.
+fn bar_x(lane: Rect, db: f32) -> f32 {
+    lane.left() + lane.width() * bar_fraction(db)
+}
+
+fn paint_bar(painter: &egui::Painter, lane: Rect, level_db: f32) {
     if level_db <= FLOOR_DB {
         return;
     }
-    // Segments up to -18, -6 and 0, each in its colour, cut at the level.
-    let stops = [(FLOOR_DB, AMBER_FROM, theme::pal().ok), (AMBER_FROM, RED_FROM, theme::pal().caution), (RED_FROM, 0.0, theme::pal().alert)];
+    // Segments up to the yellow and red crossovers and 0 dBFS, each in its colour, cut at the level.
+    let stops =
+        [(FLOOR_DB, YELLOW_FROM_DB, theme::pal().ok), (YELLOW_FROM_DB, RED_FROM_DB, theme::pal().caution), (RED_FROM_DB, 0.0, theme::pal().alert)];
     for (from, to, color) in stops {
         if level_db > from {
-            let seg = Rect::from_min_max(pos2(x_of(from), lane.top()), pos2(x_of(level_db.min(to)), lane.bottom()));
+            let seg = Rect::from_min_max(pos2(bar_x(lane, from), lane.top()), pos2(bar_x(lane, level_db.min(to)), lane.bottom()));
             painter.rect_filled(seg, 0.0, color);
         }
     }
@@ -231,4 +234,20 @@ pub fn readings_line(levels: &Levels) -> String {
     let f = |v: f32| if v > FLOOR_DB - 80.0 { format!("{v:.2}") } else { "-inf".to_string() };
     let one = |tag: &str, r: Reading| format!("{tag}={} {tag}_hold={} {tag}_clip={}", f(r.level_db), f(r.hold_db), u8::from(r.clipped));
     format!("OK {} {}", one("l", levels.reading(0)), one("r", levels.reading(1)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bar_uses_the_core_scale() {
+        let lane = Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 20.0));
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(close(bar_x(lane, -30.0), 300.0));
+        assert!(close(bar_x(lane, -18.0), 420.0));
+        assert!(close(bar_x(lane, -6.0), 540.0));
+        assert!(close(bar_x(lane, -60.0), 0.0));
+        assert!(close(bar_x(lane, 0.0), 600.0));
+    }
 }
