@@ -46,6 +46,8 @@ pub struct ConvertDialog {
     /// The Dither Type combo, used only while `dithering` is on.
     dither_type: DitherType,
     shaping: Shaping,
+    /// The seed of the dither noise; kept from a loaded preset so it is written back out unchanged.
+    seed: u64,
     quality: Quality,
     preset_name: String,
     message: Option<String>,
@@ -63,6 +65,7 @@ impl ConvertDialog {
             dithering: false,
             dither_type: DitherType::Triangular,
             shaping: Shaping::None,
+            seed: DEFAULT_SEED,
             quality: Quality::default(),
             preset_name: String::new(),
             message: None,
@@ -92,6 +95,7 @@ impl ConvertDialog {
         self.dithering = d.dither != DitherType::None;
         self.dither_type = if d.dither == DitherType::None { DitherType::Triangular } else { d.dither };
         self.shaping = d.shaping;
+        self.seed = d.seed;
         self.quality = s.quality;
     }
 
@@ -118,7 +122,7 @@ impl ConvertDialog {
             dither: Some(DitherSettings {
                 dither: if self.dithering { self.dither_type } else { DitherType::None },
                 shaping: self.shaping,
-                seed: DEFAULT_SEED,
+                seed: self.seed,
             }),
             quality: self.quality,
         })
@@ -299,5 +303,25 @@ mod tests {
         let Some(ds) = s.dither else { panic!("the dialog should always give dither settings") };
         assert_eq!(ds.dither, DitherType::Triangular);
         assert_eq!(ds.shaping, Shaping::None);
+    }
+
+    #[test]
+    fn a4_dialog_keeps_a_preset_seed() {
+        let mut d = ConvertDialog::new(44_100, 2);
+        let preset = ConvertSettings {
+            dither: Some(DitherSettings { dither: DitherType::Rectangular, shaping: Shaping::Light, seed: 7 }),
+            ..Default::default()
+        };
+        d.load(&preset);
+        let Ok(s) = d.settings() else { panic!("a loaded preset should give usable settings") };
+        let Some(ds) = s.dither else { panic!("the dialog should always give dither settings") };
+        assert_eq!(ds.seed, 7);
+        assert_eq!(ds.dither, DitherType::Rectangular);
+        assert_eq!(ds.shaping, Shaping::Light);
+        d.dithering = false;
+        let Ok(s) = d.settings() else { panic!("the settings with dithering off should be usable") };
+        let Some(ds) = s.dither else { panic!("the dialog should always give dither settings") };
+        assert_eq!(ds.seed, 7);
+        assert_eq!(ds.dither, DitherType::None);
     }
 }
