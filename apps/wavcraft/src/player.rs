@@ -751,8 +751,12 @@ impl Player {
 
     /// Follow the system: reopen the output when the default device changed (while the output
     /// follows the default) or when the stream failed during a play, keeping the place. Called
-    /// every frame by the app. Returns whether it reopened.
+    /// every frame by the app. Returns whether it reopened. While muted (a take is being recorded)
+    /// it does nothing: the change is kept, and the output reopens after the take.
     pub fn maintain(&mut self) -> bool {
+        if self.is_muted() {
+            return false;
+        }
         let changed = self.shared.device_changed.load(Ordering::Acquire);
         let failed_while_playing = self.failed() && self.is_playing();
         if !changed && !failed_while_playing {
@@ -2605,3 +2609,7 @@ mod tests {
 #[cfg(test)]
 #[path = "f48_device_change_tests.rs"]
 mod f48_device_change_tests;
+
+#[cfg(test)]
+#[path = "j2_no_output_tests.rs"]
+mod j2_no_output_tests;
