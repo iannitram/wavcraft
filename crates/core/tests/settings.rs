@@ -741,3 +741,31 @@ fn large_controls_is_saved_and_defaults_to_off() {
     assert!(fresh.set("large_controls", "banana").is_err(), "banana is refused");
     assert_eq!(fresh.get("large_controls").unwrap(), "false", "the value stays false");
 }
+
+#[test]
+fn hiding_the_levels_strip_survives_a_settings_save_and_load() {
+    // I2.1: show_levels is on by default; off is saved, and every other key comes back unchanged.
+    let default = Settings::default();
+    assert!(default.show_levels, "the Levels strip is shown by default");
+    assert_eq!(default.get("show_levels").unwrap(), "on");
+    assert!(wavcraft_core::settings::KEYS.contains(&"show_levels"), "show_levels is in KEYS");
+    assert!(!default.to_text().contains("show_levels"), "a default file does not write show_levels");
+
+    let dir = TempDir::new("show-levels");
+    let file = dir.0.join("settings.txt");
+    let s = Settings { show_levels: false, ..Settings::default() };
+    s.save(&file).unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.lines().any(|l| l == "show_levels = off"), "off is written: {text}");
+    let back = Settings::load(&file);
+    assert!(!back.show_levels, "hidden survives save and load");
+    assert_eq!(back.get("show_levels").unwrap(), "off");
+    assert_eq!(back, s, "every other key is unchanged");
+
+    let mut fresh = Settings::default();
+    assert!(fresh.set("show_levels", "banana").is_err(), "banana is refused");
+    assert!(fresh.show_levels, "the value stays true");
+    fresh.set("show_levels", "on").unwrap();
+    fresh.save(&file).unwrap();
+    assert!(Settings::load(&file).show_levels, "shown again survives save and load");
+}
