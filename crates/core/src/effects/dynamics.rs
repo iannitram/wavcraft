@@ -224,6 +224,13 @@ impl Run for DynamicsRun {
 
 impl EffectStream for DynamicsRun {
     fn process_block(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
+        // Check the channel count first: `Run::process` would build an error (an allocation) for it.
+        if input.len() != self.ring.len() || output.len() != input.len() {
+            for (i, o) in input.iter().zip(output.iter_mut()) {
+                o.copy_from_slice(i);
+            }
+            return;
+        }
         if Run::process(self, 0, input, output).is_err() {
             for (i, o) in input.iter().zip(output.iter_mut()) {
                 o.copy_from_slice(i);

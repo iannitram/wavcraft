@@ -160,6 +160,8 @@ mod tests {
         let set = PanelSet::for_build(release);
         v.extend(panels::REGISTRY.iter().filter(|p| set.offers(p.id)).map(|p| p.title.to_string()));
         v.extend(super::super::menus::TOOLS.iter().filter(|t| tool_offered_in(release, t.name)).map(|t| t.label.to_string()));
+        // The Effects menu (the rack's slot picker no longer lists every effect, since F1.3).
+        v.extend(crate::app::WaveApp::effects_menu_rows(release).iter().map(|a| a.menu.to_string()));
         v.extend(crate::rack_panel::slot_effects(release).iter().map(|e| e.name().to_string()));
         v.extend(crate::rack_panel::slot_plugins(release));
         v.extend(crate::shortcut_editor::listed(release).map(|c| c.label().to_string()));
@@ -178,8 +180,8 @@ mod tests {
         let rack = |release| crate::rack_panel::slot_effects(release).iter().map(|e| e.name()).collect::<Vec<&str>>();
         let listed = rack(true);
         assert!(!listed.contains(&"DeHummer") && !listed.contains(&"DeReverb"), "{listed:?}");
-        assert!(listed.contains(&"Noise Reduction"), "{listed:?}");
-        assert_eq!(rack(false).len(), wavcraft_core::effects::all().len());
+        assert!(listed.contains(&"Dynamics"), "{listed:?}");
+        assert_eq!(rack(false).len(), 10);
     }
 
     #[test]

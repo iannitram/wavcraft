@@ -1,4 +1,4 @@
-//! F1: the Effects Rack runs real effects (F1.1 filters, F1.2 Dynamics; F1.3 adds more).
+//! F1: the Effects Rack runs real effects (F1.1 filters, F1.2 Dynamics, F1.3 refuses what cannot stream).
 
 use std::f64::consts::TAU;
 use std::path::{Path, PathBuf};
@@ -205,4 +205,53 @@ fn f1_rack_dynamics_reset_matches_a_new_rack() {
     let mut expected = quiet.clone();
     run_blocks(&mut fresh, &mut expected, 1024);
     assert_eq!(after, expected, "reset state differs from a new rack");
+}
+
+#[test]
+fn f1_open_stream_refuses_effects_that_cannot_stream() {
+    for id in effects::NO_STREAM {
+        let e = effects::find(id).unwrap();
+        match effects::open_stream(e, &effects::parse_params(e, "").unwrap(), 1, RATE) {
+            Ok(_) => panic!("{id} opened a stream"),
+            Err(m) => assert!(m.contains("cannot run in the Effects Rack"), "{id}: {m}"),
+        }
+    }
+    let n = effects::find("normalize").unwrap();
+    assert!(effects::open_stream(n, &effects::parse_params(n, "").unwrap(), 1, RATE).is_err());
+    for id in ["invert", "gain", "dynamics", "parametric_eq"] {
+        let e = effects::find(id).unwrap();
+        assert!(effects::open_stream(e, &effects::parse_params(e, "").unwrap(), 1, RATE).is_ok(), "{id}");
+    }
+    assert!(RackProcessor::new(&rack_for("normalize", ""), 1, RATE).is_err());
+}
+
+#[test]
+fn f1_every_slot_menu_effect_changes_audio_like_offline() {
+    let list: Vec<_> = effects::listed(false).map(|(_, e)| e).filter(|e| effects::can_stream(*e)).collect();
+    assert_eq!(list.len(), 10);
+    let input = vec![pink(48_000, 1)];
+    for e in list {
+        let id = e.id();
+        let want = offline(id, "", &input);
+        let got = through_rack(id, "", &input, 1024);
+        let d = max_diff(&got[0], &want[0]);
+        assert!(d <= 1e-6, "{id}: differs from effects::apply by {d}");
+        if id == "invert" {
+            assert!((0..100).all(|i| got[0][i] == -input[0][i]), "invert does not negate");
+        }
+    }
+}
+
+#[test]
+fn f1_rack_dynamics_does_not_allocate_on_wrong_channel_count() {
+    // A test cannot count allocations; the check is the behaviour: a wrong channel count is
+    // copied through, and the stream never builds an error for it.
+    let e = effects::find("dynamics").unwrap();
+    let mut s = effects::open_stream(e, &effects::parse_params(e, "").unwrap(), 1, RATE).unwrap();
+    let a = vec![0.25f32; 256];
+    let mut o1 = vec![0.0f32; 256];
+    let mut o2 = vec![0.0f32; 256];
+    s.process_block(&[&a, &a], &mut [&mut o1, &mut o2]);
+    assert_eq!(o1, a);
+    assert_eq!(o2, a);
 }
