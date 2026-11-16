@@ -7,6 +7,7 @@ No real input device is opened: WAVCRAFT_FAKE_INPUT=sine:440 replaces it. Run 1 
 3 s (default format: 48 kHz, mono, 24-bit), stops, and checks STATE and the file's length,
 format and frequency. Run 2 records and is killed mid-take (proc.kill()): the take on disk must be
 readable and hold nearly what was recorded; a third run opens it. Run 4 unsets WAVCRAFT_RECORD_DIR, sets the recordings folder with PREF set recordings_folder, records with RECORD quick, restarts and records again; both takes must land in that folder. Every run's log must hold no ERROR line.
+Run 1 also checks the Levels meter over METERS: a new take clears the clip lights, and the meter shows the take.
 """
 import argparse, json, os, shutil, subprocess, sys, tempfile, time, wave
 
@@ -44,6 +45,10 @@ def launch(exe, env, args=()):
     return proc, Control(PORT, open(token).read().strip())
 
 
+def meters(c):
+    return dict(kv.split("=", 1) for kv in c.ask("METERS").split()[1:])
+
+
 def in_dir(path, folder):
     return os.path.normcase(os.path.realpath(os.path.dirname(path))) == os.path.normcase(os.path.realpath(folder))
 
@@ -72,15 +77,22 @@ def main():
     try:
         st = c.state()
         check("STATE before recording says recording=0", st.get("recording") == "0", st)
+        c.ask("METERS PUSH 1.0 1.0")
+        before = meters(c)
+        check("a new take clears the clip lights: lit before", before["l_clip"] == "1", before)
         r = c.ask("RECORD start")
         path = r.partition("path=")[2]
         check("RECORD start answers OK with the new file's path", r.startswith("OK path=") and os.path.exists(path), r)
+        after = meters(c)
+        check("a new take clears the clip lights", before["l_clip"] == "1" and after["l_clip"] == "0", {"before": before, "after": after})
         again = c.ask("RECORD start")
         check("a second RECORD start is refused", again.startswith("ERR"), again)
         time.sleep(1.2)
         mid = c.state()
         check("STATE reports the take growing, no drops", mid["recording"] == "1" and int(mid["rec_frames"]) > 20000 and mid["rec_dropped"] == "0"
               and int(mid["rec_bytes"]) > 44 and int(mid["rec_left_s"]) != 0, mid)
+        m = meters(c)
+        check("the Levels meter shows the take", m["l"] != "-inf" and -7.0 < float(m["l"]) < -5.0 and m["l_clip"] == "0" and m["view"] == "input", m)
         header_mid = os.path.getsize(path)
         check("the file is on disk and growing while recording", header_mid > 44, header_mid)
         time.sleep(1.9)
