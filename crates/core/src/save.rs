@@ -1317,7 +1317,8 @@ pub(crate) fn write_header(
 pub struct SizeEstimate {
     pub bytes: u64,
     /// True for PCM (WAV, AIFF): the size is the file's size, from the header writer itself.
-    /// False for FLAC, which depends on the audio.
+    /// False for FLAC, which depends on the audio, and for MP3, whose constant-bit-rate size
+    /// leaves out the frame headers and tags of the real file.
     pub exact: bool,
 }
 
@@ -1416,8 +1417,9 @@ pub fn estimate_mp3_size(doc: &DocState, options: Mp3Options) -> io::Result<Size
     let channels = u16::try_from(channels).map_err(|_| invalid("too many channels for MP3"))?;
     mp3_check(rate, channels, options).map_err(|text| invalid(&text))?;
     // `mp3_check` has accepted the rate, so it is never zero here.
-    let bits = u128::from(frames) * u128::from(options.bitrate_kbps) * 125;
-    let bytes = (bits + u128::from(rate) / 2) / u128::from(rate);
+    // Bytes times the rate: frames · kbps · 125, before dividing by the rate.
+    let bytes_times_rate = u128::from(frames) * u128::from(options.bitrate_kbps) * 125;
+    let bytes = (bytes_times_rate + u128::from(rate) / 2) / u128::from(rate);
     Ok(SizeEstimate { bytes: u64::try_from(bytes).unwrap_or(u64::MAX), exact: false })
 }
 
