@@ -4384,6 +4384,7 @@ impl WaveApp {
         match self.rec.start(fmt, max_secs) {
             Ok(path) => {
                 self.error = None;
+                self.meters.levels.reset_clip();
                 self.notice = None;
                 self.attach_monitor();
                 Ok(path)
