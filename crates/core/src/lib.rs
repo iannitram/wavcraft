@@ -64,6 +64,7 @@ pub mod export_chunks;
 pub mod export_presets;
 pub mod fade_handles;
 mod flac_enc;
+pub mod frame_stats;
 pub mod freq_axis;
 pub mod generate;
 pub mod hwprofile;

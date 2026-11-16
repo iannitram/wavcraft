@@ -50,6 +50,24 @@ impl Scale {
             Scale::LogFull => "log",
         }
     }
+
+    /// One step more logarithmic: linear to partly logarithmic, partly to fully; fully stays put.
+    pub fn more_log(self) -> Scale {
+        match self {
+            Scale::Linear => Scale::LogPartial,
+            Scale::LogPartial => Scale::LogFull,
+            Scale::LogFull => Scale::LogFull,
+        }
+    }
+
+    /// One step more linear: fully logarithmic to partly, partly to linear; linear stays put.
+    pub fn more_linear(self) -> Scale {
+        match self {
+            Scale::LogFull => Scale::LogPartial,
+            Scale::LogPartial => Scale::Linear,
+            Scale::Linear => Scale::Linear,
+        }
+    }
 }
 
 /// The band shown and the scale it is drawn on.
