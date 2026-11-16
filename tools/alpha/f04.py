@@ -6,7 +6,7 @@
 Opens three synthetic files in one window, edits two of them, switches between them and checks
 that each keeps its own history, selection and unsaved mark; that Close and Quit refuse while any
 document has unsaved changes (also one that is not the current document); that Close picks a
-neighbour; then QUITs and fails on an ERROR line in the app's log. HOME, the session folder, the
+neighbour; that each file keeps its own zoom across a switch; then QUITs and fails on an ERROR line in the app's log. HOME, the session folder, the
 log folder and the token file are all inside a fresh scratch folder, removed at the end.
 """
 import argparse, os, shutil, socket, subprocess, sys, tempfile, time
@@ -107,6 +107,31 @@ def main():
         ask("SWITCH 0")
         st = state()
         check("A keeps its selection and history after the round trip", st["selection"] == "1000-2000" and st["steps"] == "2" and st["undo"] == "Silence", st)
+
+        # Each file keeps its own zoom across a switch. The View sync options carry the view over, so turn
+        # off any that are on (by default none are) and check with them off.
+        st = state()
+        if st["sync"] != "-":
+            for opt in ("selection", "zoom", "playhead"):
+                if opt in st["sync"].split(","):
+                    ask(f"ACTION view.sync.{opt}")
+            st = state()
+        check("the View sync options are off", st["sync"] == "-", st)
+        ask("SWITCH 1")
+        b0 = state()["view"]
+        ask("SWITCH 0")
+        ask("ACTION view.zoomIn")
+        ask("ACTION view.zoomIn")
+        time.sleep(1)
+        a0 = state()["view"]
+        ask("SWITCH 1")
+        ask("SWITCH 0")
+        a1 = state()["view"]
+        check("A keeps its zoom after the round trip", a1 == a0 and a0 != b0 and int(a0.split("-")[1]) < A, (a0, a1, b0))
+        ask("SWITCH 1")
+        b1 = state()["view"]
+        check("B keeps its zoom", b1 == b0 and b0.startswith("0-"), (b0, b1))
+        ask("SWITCH 0")
 
         # Unsaved handling.
         check("CLOSE refuses with unsaved changes", ask("CLOSE").startswith("ERR unsaved"))
