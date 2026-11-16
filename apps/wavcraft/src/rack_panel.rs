@@ -2,7 +2,6 @@
 //! master power, input and output gain and Mix, rack and effect presets, Preview and Apply. It
 //! edits a [`RackConfig`]; the app pushes that to the player and runs Apply.
 
-use egui::Align2;
 use wavcraft_core::effects;
 use wavcraft_core::presets::{Presets, RACK};
 use wavcraft_core::rack::{GAIN_DB, RackConfig};
@@ -39,7 +38,6 @@ pub enum Request {
 
 pub struct RackPanel {
     pub config: RackConfig,
-    pub open: bool,
     /// The config last handed to the player.
     pub pushed: Option<RackConfig>,
     /// The name typed for saving a preset.
@@ -58,7 +56,6 @@ impl RackPanel {
     pub fn new() -> RackPanel {
         RackPanel {
             config: RackConfig::new(),
-            open: false,
             pushed: None,
             name: String::new(),
             note: String::new(),
@@ -138,94 +135,87 @@ impl RackPanel {
         self.presets.as_ref().ok_or_else(|| "there is no config folder for presets on this machine".to_string())
     }
 
-    /// Draw the window. `playing` labels the Preview button; `can_apply` enables Apply.
-    pub fn show(&mut self, ctx: &egui::Context, playing: bool, can_apply: bool) {
-        self.poll_scan();
-        if !self.open {
-            return;
-        }
-        let mut open = true;
-        egui::Window::new("Effects Rack").open(&mut open).resizable(false).anchor(Align2::LEFT_TOP, egui::vec2(12.0, 40.0)).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.config.power, "Power");
-                if ui.button(if playing { "■ Stop" } else { "▶ Preview" }).on_hover_text("Play with the rack on").clicked() {
-                    self.requests.push(Request::TogglePlay);
-                }
-                if ui
-                    .add_enabled(can_apply, egui::Button::new("Apply"))
-                    .on_hover_text("Process the selection (the whole file when none) as one step, then reset the rack to bypass")
-                    .clicked()
-                {
-                    self.requests.push(Request::Apply);
-                }
-            });
-            egui::Grid::new("rack_levels").num_columns(2).show(ui, |ui| {
-                ui.label("Input");
-                ui.add(egui::Slider::new(&mut self.config.input_db, GAIN_DB.0..=GAIN_DB.1).suffix(" dB").clamping(egui::SliderClamping::Always));
-                ui.end_row();
-                ui.label("Output");
-                ui.add(egui::Slider::new(&mut self.config.output_db, GAIN_DB.0..=GAIN_DB.1).suffix(" dB").clamping(egui::SliderClamping::Always));
-                ui.end_row();
-                ui.label("Mix");
-                ui.add(egui::Slider::new(&mut self.config.mix_pct, 0.0..=100.0).suffix(" %").clamping(egui::SliderClamping::Always));
-                ui.end_row();
-            });
-            ui.separator();
-            egui::Grid::new("rack_slots").num_columns(5).spacing([8.0, 4.0]).show(ui, |ui| {
-                for i in 0..self.config.slots.len() {
-                    self.slot_row(ui, i);
-                    ui.end_row();
-                }
-            });
-            ui.separator();
-            if v1::offered(Feature::Plugins) {
-                ui.horizontal(|ui| {
-                    let scanning = self.scan.is_some();
-                    if ui
-                        .add_enabled(!scanning, egui::Button::new("Scan VST3"))
-                        .on_hover_text("Look for VST3 effects in the standard folders (in separate processes)")
-                        .clicked()
-                    {
-                        self.note = match self.start_scan() {
-                            Ok(()) => "Scanning for VST3 plugins…".to_string(),
-                            Err(e) => e,
-                        };
-                    }
-                    ui.label(if scanning { "scanning…".to_string() } else { format!("{} VST3 found", wavcraft_core::vst3::found().len()) });
-                });
+    /// Draw the rack into the docked panel `ui`. `playing` labels the Preview button; `can_apply`
+    /// enables Apply.
+    pub fn show(&mut self, ui: &mut egui::Ui, playing: bool, can_apply: bool) {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.config.power, "Power");
+            if ui.button(if playing { "■ Stop" } else { "▶ Preview" }).on_hover_text("Play with the rack on").clicked() {
+                self.requests.push(Request::TogglePlay);
             }
-            ui.horizontal(|ui| {
-                ui.label("Preset");
-                ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(120.0).hint_text("name"));
-                if ui.button("Save rack").clicked() {
-                    self.note = self.preset_cmd("save", RACK, &self.name.clone(), &mut None);
-                }
-                ui.menu_button("Load rack", |ui| {
-                    let names = self.presets().and_then(|p| p.list(RACK)).unwrap_or_default();
-                    if names.is_empty() {
-                        ui.label("No saved racks");
-                    }
-                    for n in names {
-                        if ui.button(&n).clicked() {
-                            self.note = self.preset_cmd("load", RACK, &n, &mut None);
-                            ui.close();
-                        }
-                    }
-                });
-                ui.menu_button("Delete rack", |ui| {
-                    for n in self.presets().and_then(|p| p.list(RACK)).unwrap_or_default() {
-                        if ui.button(&n).clicked() {
-                            self.note = self.preset_cmd("delete", RACK, &n, &mut None);
-                            ui.close();
-                        }
-                    }
-                });
-            });
-            if !self.note.is_empty() {
-                ui.weak(&self.note);
+            if ui
+                .add_enabled(can_apply, egui::Button::new("Apply"))
+                .on_hover_text("Process the selection (the whole file when none) as one step, then reset the rack to bypass")
+                .clicked()
+            {
+                self.requests.push(Request::Apply);
             }
         });
-        self.open = open;
+        egui::Grid::new("rack_levels").num_columns(2).show(ui, |ui| {
+            ui.label("Input");
+            ui.add(egui::Slider::new(&mut self.config.input_db, GAIN_DB.0..=GAIN_DB.1).suffix(" dB").clamping(egui::SliderClamping::Always));
+            ui.end_row();
+            ui.label("Output");
+            ui.add(egui::Slider::new(&mut self.config.output_db, GAIN_DB.0..=GAIN_DB.1).suffix(" dB").clamping(egui::SliderClamping::Always));
+            ui.end_row();
+            ui.label("Mix");
+            ui.add(egui::Slider::new(&mut self.config.mix_pct, 0.0..=100.0).suffix(" %").clamping(egui::SliderClamping::Always));
+            ui.end_row();
+        });
+        ui.separator();
+        egui::Grid::new("rack_slots").num_columns(5).spacing([8.0, 4.0]).show(ui, |ui| {
+            for i in 0..self.config.slots.len() {
+                self.slot_row(ui, i);
+                ui.end_row();
+            }
+        });
+        ui.separator();
+        if v1::offered(Feature::Plugins) {
+            ui.horizontal(|ui| {
+                let scanning = self.scan.is_some();
+                if ui
+                    .add_enabled(!scanning, egui::Button::new("Scan VST3"))
+                    .on_hover_text("Look for VST3 effects in the standard folders (in separate processes)")
+                    .clicked()
+                {
+                    self.note = match self.start_scan() {
+                        Ok(()) => "Scanning for VST3 plugins…".to_string(),
+                        Err(e) => e,
+                    };
+                }
+                ui.label(if scanning { "scanning…".to_string() } else { format!("{} VST3 found", wavcraft_core::vst3::found().len()) });
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.label("Preset");
+            ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(120.0).hint_text("name"));
+            if ui.button("Save rack").clicked() {
+                self.note = self.preset_cmd("save", RACK, &self.name.clone(), &mut None);
+            }
+            ui.menu_button("Load rack", |ui| {
+                let names = self.presets().and_then(|p| p.list(RACK)).unwrap_or_default();
+                if names.is_empty() {
+                    ui.label("No saved racks");
+                }
+                for n in names {
+                    if ui.button(&n).clicked() {
+                        self.note = self.preset_cmd("load", RACK, &n, &mut None);
+                        ui.close();
+                    }
+                }
+            });
+            ui.menu_button("Delete rack", |ui| {
+                for n in self.presets().and_then(|p| p.list(RACK)).unwrap_or_default() {
+                    if ui.button(&n).clicked() {
+                        self.note = self.preset_cmd("delete", RACK, &n, &mut None);
+                        ui.close();
+                    }
+                }
+            });
+        });
+        if !self.note.is_empty() {
+            ui.weak(&self.note);
+        }
     }
 
     fn slot_row(&mut self, ui: &mut egui::Ui, i: usize) {

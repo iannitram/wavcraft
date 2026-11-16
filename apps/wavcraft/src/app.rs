@@ -3771,6 +3771,11 @@ impl WaveApp {
             "transport" => self.transport_panel(ui),
             "match" => self.match_panel(ui),
             "files" => self.files_panel(ui),
+            "rack" => {
+                let can_apply = self.editor.is_some() && self.saving.is_none() && self.running.is_none();
+                let playing = self.player.is_playing();
+                self.rack.show(ui, playing, can_apply);
+            }
             _ => {}
         }
     }
@@ -6676,11 +6681,10 @@ impl WaveApp {
         }
     }
 
-    /// Draw the Effects Rack window, carry out what it asked for, and keep the player's copy of
-    /// the rack current.
+    /// Poll the rack's VST3 scan, carry out what the docked Effects Rack panel asked for, and keep
+    /// the player's copy of the rack current.
     fn rack_ui(&mut self, ctx: &egui::Context) {
-        let can_apply = self.editor.is_some() && self.saving.is_none() && self.running.is_none();
-        self.rack.show(ctx, self.player.is_playing(), can_apply);
+        self.rack.poll_scan();
         for request in std::mem::take(&mut self.rack.requests) {
             match request {
                 Request::EditSlot(i) => self.effect_dialog = self.rack.dialog_for(i),
@@ -10222,7 +10226,9 @@ impl WaveApp {
         }
         ui.separator();
         if ui.button("Effects Rack…").clicked() {
-            self.rack.open = !self.rack.open;
+            self.set_panel("rack", true);
+            self.layout.activate("rack");
+            self.layout_dirty = true;
             ui.close();
         }
         if v1::offered(Feature::Diagnostics) && ui.button(Feature::Diagnostics.menu_text()).clicked() {
