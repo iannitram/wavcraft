@@ -156,7 +156,7 @@ fn every_action_in_a_binding_exists_and_command_names_are_unique() {
             assert!(ids.contains(&id), "{id:?} is not in the action table");
         }
     }
-    for c in [Open, Save, SaveAs, Close, PlayStop] {
+    for c in [Open, Save, SaveAs, Close, PlayStop, NoiseReductionDialog] {
         assert!(names.insert(c.name()));
         assert!(TABLE.iter().all(|a| a.name != c.name()), "{} clashes with an action name", c.name());
     }
