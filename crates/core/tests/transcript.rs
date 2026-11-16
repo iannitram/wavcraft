@@ -205,3 +205,10 @@ fn range_of_words() {
     // An index past the last word gives the empty range, not a panic.
     assert_eq!(t.range_of(0, 3), 0..0);
 }
+
+#[test]
+fn lane_boxes_follow_the_view() {
+    let words = vec![word("inside", 48_000, 72_000), word("clipped", 90_000, 120_000), word("outside", 200_000, 220_000)];
+    let boxes = transcript::lane_boxes(&words, 0, 96_000, 960);
+    assert_eq!(boxes, vec![(480, 720, 0), (900, 960, 1)]);
+}
