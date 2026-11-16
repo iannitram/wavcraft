@@ -5,12 +5,16 @@
 //! `-32601`. Every reply echoes the request's id (number, string or null). Replies carry no
 //! trailing newline: the caller writes one after each.
 //!
-//! `tools/call` is not answered yet, so it gets `-32601` like any other unknown method. The
-//! backend is taken now for that call, which will run [`Request`](crate::Request)s through it.
+//! `tools/call` runs the tool's [`Request`](crate::Request) on the backend and answers with the
+//! reply as text; a backend error is an `isError` result, not a protocol error. An unknown tool
+//! name gets `-32602`.
 
-use serde_json::{Value, json};
+use std::path::PathBuf;
 
-use crate::Backend;
+use serde_json::{Map, Value, json};
+use wavcraft_core::effects;
+
+use crate::{Backend, Request, SaveArgs};
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -19,7 +23,7 @@ const INVALID_PARAMS: i64 = -32602;
 
 /// Answer one line of MCP traffic. `None` means there is nothing to send back (a blank line or
 /// a notification).
-pub fn handle(line: &str, _backend: &mut impl Backend) -> Option<String> {
+pub fn handle(line: &str, backend: &mut impl Backend) -> Option<String> {
     let line = line.trim();
     if line.is_empty() {
         return None;
@@ -53,8 +57,120 @@ pub fn handle(line: &str, _backend: &mut impl Backend) -> Option<String> {
             None => error_reply(id, INVALID_PARAMS, "initialize needs protocolVersion"),
         },
         "tools/list" => result_reply(id, json!({ "tools": tools() })),
+        "tools/call" => call(id, params, backend),
         _ => error_reply(id, METHOD_NOT_FOUND, "Method not found"),
     })
+}
+
+/// `tools/call`: run one tool. A missing or wrongly typed argument, and a backend error, are
+/// tool failures (an `isError` result); only a missing tool name or an unknown tool is a protocol
+/// error.
+fn call(id: Value, params: &Value, backend: &mut impl Backend) -> String {
+    let Some(name) = params.get("name").and_then(Value::as_str) else {
+        return error_reply(id, INVALID_PARAMS, "tools/call needs a tool name");
+    };
+    let empty = Map::new();
+    let args = match params.get("arguments") {
+        None | Some(Value::Null) => &empty,
+        Some(Value::Object(args)) => args,
+        Some(_) => return error_reply(id, INVALID_PARAMS, "tools/call arguments must be an object"),
+    };
+    match name {
+        "list_effects" => tool_reply(id, &list_effects(), false),
+        "open" | "select" | "action" | "effect" | "state" | "save" => {
+            let req = match request_for(name, args) {
+                Ok(req) => req,
+                Err(why) => return tool_reply(id, &why, true),
+            };
+            match backend.execute(&req) {
+                Ok(text) if text.is_empty() => tool_reply(id, "ok", false),
+                Ok(text) => tool_reply(id, &text, false),
+                Err(text) => tool_reply(id, &text, true),
+            }
+        }
+        _ => error_reply(id, INVALID_PARAMS, "Unknown tool"),
+    }
+}
+
+/// The request a tool's arguments stand for. Each argument is checked before it is used.
+fn request_for(name: &str, args: &Map<String, Value>) -> Result<Request, String> {
+    match name {
+        "open" => {
+            let path = str_arg(args, "path")?.ok_or("open needs a string path")?;
+            Ok(Request::Open(PathBuf::from(path)))
+        }
+        "select" => match (args.get("start").and_then(Value::as_u64), args.get("end").and_then(Value::as_u64)) {
+            (Some(start), Some(end)) => Ok(Request::Select { start, end }),
+            _ => Err("select needs integer start and end".to_string()),
+        },
+        "action" => {
+            let name = str_arg(args, "name")?.ok_or("action needs a string name")?;
+            Ok(Request::Action(name.to_string()))
+        }
+        "effect" => {
+            let name = str_arg(args, "name")?.ok_or("effect needs a string name")?;
+            let name = name.strip_prefix("effect.").unwrap_or(name);
+            let args = str_arg(args, "args")?.unwrap_or("");
+            Ok(Request::Effect { name: name.to_string(), args: args.to_string() })
+        }
+        "state" => Ok(Request::State),
+        "save" => save_request(args),
+        _ => Err("Unknown tool".to_string()),
+    }
+}
+
+/// `save`: every argument is optional. They become the same trailing options a `SAVE` line has,
+/// then [`SaveArgs::parse`] reads them, so the checks are the window's.
+fn save_request(args: &Map<String, Value>) -> Result<Request, String> {
+    let mut rest = String::new();
+    if let Some(path) = str_arg(args, "path")? {
+        rest.push_str(path);
+    }
+    if let Some(bits) = args.get("bits") {
+        let bits = bits.as_i64().ok_or("save bits must be an integer")?;
+        rest.push_str(&format!(" bits={bits}"));
+    }
+    if let Some(float) = bool_arg(args, "float")? {
+        rest.push_str(&format!(" float={}", u8::from(float)));
+    }
+    if let Some(aiff) = str_arg(args, "aiff")? {
+        rest.push_str(&format!(" aiff={aiff}"));
+    }
+    if let Some(quality) = args.get("quality") {
+        let quality = quality.as_f64().ok_or("save quality must be a number")?;
+        rest.push_str(&format!(" quality={quality}"));
+    }
+    if let Some(meta) = bool_arg(args, "meta")? {
+        rest.push_str(&format!(" meta={}", u8::from(meta)));
+    }
+    let (path, args) = SaveArgs::parse(rest.trim())?;
+    Ok(Request::Save { path, args })
+}
+
+/// A string argument: `None` when absent or null, an error when it is not a string.
+fn str_arg<'a>(args: &'a Map<String, Value>, key: &str) -> Result<Option<&'a str>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_str().map(Some).ok_or_else(|| format!("{key} must be a string")),
+    }
+}
+
+/// A boolean argument: `None` when absent or null, an error when it is not a boolean.
+fn bool_arg(args: &Map<String, Value>, key: &str) -> Result<Option<bool>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_bool().map(Some).ok_or_else(|| format!("{key} must be true or false")),
+    }
+}
+
+/// `list_effects`: each effect's id and its settings, as the window's effect list spells them.
+fn list_effects() -> String {
+    effects::all().iter().map(|e| format!("{} [{}]", e.id(), effects::describe(*e))).collect::<Vec<_>>().join("; ")
+}
+
+/// A tool's answer: its text, and whether it is a failure.
+fn tool_reply(id: Value, text: &str, is_error: bool) -> String {
+    result_reply(id, json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }))
 }
 
 /// The seven tools, with input schemas that follow the request spellings in [`crate::Request`]
