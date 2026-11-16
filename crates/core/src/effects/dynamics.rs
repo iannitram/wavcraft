@@ -20,10 +20,12 @@
 //! With a lookahead, a final per-sample ceiling keeps every output sample at or below
 //! `limit_db`, whatever the attack time; with none, the limiter is only as fast
 //! as the attack.
+//!
+//! The same processor also serves the Effects Rack, through `Effect::stream`.
 
 use std::io;
 
-use super::{Effect, ParamDesc, Run, RunContext};
+use super::{Effect, EffectStream, ParamDesc, Run, RunContext};
 
 const GATE: usize = 0;
 const EXPAND: usize = 1;
@@ -95,24 +97,13 @@ impl Effect for Dynamics {
         P
     }
     fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
-        let rate = ctx.sample_rate as f64;
-        let n = ctx.channels.len();
-        let delay = (params[LOOKAHEAD] * rate / 1000.0).round() as usize;
-        let linked = params[LINK] == 0.0;
-        Ok(Some(Box::new(DynamicsRun {
-            p: params.to_vec(),
-            attack: (-1.0 / (params[ATTACK] * rate / 1000.0)).exp(),
-            release: (-1.0 / (params[RELEASE] * rate / 1000.0)).exp(),
-            linked,
-            det: vec![Detector::default(); if linked { 1 } else { n }],
-            ring: vec![vec![0.0; delay]; n],
-            pos: 0,
-            gains: vec![0.0; n],
-            heard: vec![0.0; n],
-        })))
+        Ok(Some(Box::new(DynamicsRun::new(params, ctx.sample_rate, ctx.channels.len()))))
     }
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::other("Dynamics needs its run"))
+    }
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
+        Some(Box::new(DynamicsRun::new(params, rate, channels)))
     }
 }
 
@@ -161,6 +152,25 @@ fn level_db(x: f32) -> f64 {
 }
 
 impl DynamicsRun {
+    /// A run for `channels` channels at `rate` Hz. All memory is made here.
+    fn new(p: &[f64], rate: u32, channels: usize) -> DynamicsRun {
+        let rate = rate as f64;
+        let n = channels;
+        let delay = (p[LOOKAHEAD] * rate / 1000.0).round() as usize;
+        let linked = p[LINK] == 0.0;
+        DynamicsRun {
+            p: p.to_vec(),
+            attack: (-1.0 / (p[ATTACK] * rate / 1000.0)).exp(),
+            release: (-1.0 / (p[RELEASE] * rate / 1000.0)).exp(),
+            linked,
+            det: vec![Detector::default(); if linked { 1 } else { n }],
+            ring: vec![vec![0.0; delay]; n],
+            pos: 0,
+            gains: vec![0.0; n],
+            heard: vec![0.0; n],
+        }
+    }
+
     /// The gain in dB for a detector level, with the ceiling for `delayed_peak` when there is a
     /// lookahead.
     fn gain_db(&self, level: f64, delayed_peak: Option<f32>) -> f64 {
@@ -209,5 +219,23 @@ impl Run for DynamicsRun {
             }
         }
         Ok(())
+    }
+}
+
+impl EffectStream for DynamicsRun {
+    fn process_block(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
+        if Run::process(self, 0, input, output).is_err() {
+            for (i, o) in input.iter().zip(output.iter_mut()) {
+                o.copy_from_slice(i);
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.det.iter_mut().for_each(|d| *d = Detector::default());
+        self.ring.iter_mut().for_each(|r| r.fill(0.0));
+        self.pos = 0;
+        self.gains.fill(0.0);
+        self.heard.fill(0.0);
     }
 }
