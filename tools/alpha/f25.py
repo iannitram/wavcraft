@@ -6,7 +6,7 @@
 No real input device is opened: WAVCRAFT_FAKE_INPUT=sine:440 replaces it. Run 1 records about
 3 s (default format: 48 kHz, mono, 24-bit), stops, and checks STATE and the file's length,
 format and frequency. Run 2 records and is killed mid-take (proc.kill()): the take on disk must be
-readable and hold nearly what was recorded; a third run opens it. Every run's log must hold no ERROR line.
+readable and hold nearly what was recorded; a third run opens it. Run 4 unsets WAVCRAFT_RECORD_DIR, sets the recordings folder with PREF set recordings_folder, records with RECORD quick, restarts and records again; both takes must land in that folder. Every run's log must hold no ERROR line.
 """
 import argparse, json, os, shutil, subprocess, sys, tempfile, time, wave
 
@@ -42,6 +42,10 @@ def launch(exe, env, args=()):
             break
         time.sleep(0.25)
     return proc, Control(PORT, open(token).read().strip())
+
+
+def in_dir(path, folder):
+    return os.path.normcase(os.path.realpath(os.path.dirname(path))) == os.path.normcase(os.path.realpath(folder))
 
 
 def main():
@@ -123,6 +127,40 @@ def main():
     try:
         st = c.state(timeout=30)
         check("the app opens the killed take with its length", int(st["frames"]) == t["frames"] and st["channels"] == "2", st)
+        c.ask("QUIT discard")
+        proc.wait(timeout=20)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    # Run 4: WAVCRAFT_RECORD_DIR unset; the recordings folder comes from the preference and survives a restart.
+    pref_takes = os.path.join(work, "pref_takes")  # not created here: the app makes it
+    env4 = {k: v for k, v in env.items() if k != "WAVCRAFT_RECORD_DIR"}
+    proc, c = launch(a.exe, env4)
+    try:
+        r = c.ask(f"PREF set recordings_folder {pref_takes}")
+        q1 = c.ask("RECORD quick")
+        p1 = q1.partition("path=")[2]
+        check("PREF set recordings_folder answers OK and RECORD quick records into it",
+              r == "OK" and q1.startswith("OK path=") and in_dir(p1, pref_takes) and os.path.basename(p1).startswith("Take ") and p1.endswith(".wav"),
+              {"pref": r, "quick": q1})
+        time.sleep(1.5)
+        c.ask("RECORD stop")
+        c.ask("QUIT discard")
+        proc.wait(timeout=20)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    # Run 4, again after a restart: no PREF set this time; the saved preference is read back.
+    proc, c = launch(a.exe, env4)
+    try:
+        q2 = c.ask("RECORD quick")
+        p2 = q2.partition("path=")[2]
+        check("after a restart RECORD quick still records into the preference's folder",
+              q2.startswith("OK path=") and in_dir(p2, pref_takes) and p2 != p1, q2)
+        time.sleep(1.5)
+        c.ask("RECORD stop")
         c.ask("QUIT discard")
         proc.wait(timeout=20)
     finally:
