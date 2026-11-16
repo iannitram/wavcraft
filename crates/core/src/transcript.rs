@@ -202,6 +202,25 @@ impl Transcript {
     }
 }
 
+/// The pixel boxes of the words a transcript lane `width_px` wide shows for the frames
+/// `view_start..view_end`: one `(x0, x1, index)` per word that overlaps the view, in word
+/// order, with the clipped edge at the lane edge. A word wholly outside the view, an empty
+/// view and a zero width give no box.
+pub fn lane_boxes(words: &[Word], view_start: u64, view_end: u64, width_px: u32) -> Vec<(u32, u32, usize)> {
+    if view_end <= view_start || width_px == 0 {
+        return Vec::new();
+    }
+    let span = u128::from(view_end - view_start);
+    let width = u128::from(width_px);
+    let x = |frame: u64| ((u128::from(frame - view_start) * width) / span) as u32;
+    words
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.end > view_start && w.start < view_end)
+        .map(|(index, w)| (x(w.start.max(view_start)), x(w.end.min(view_end)), index))
+        .collect()
+}
+
 /// The largest sidecar [`load_beside`] reads: 64 MiB, hundreds of hours of words.
 pub const MAX_SIDECAR_BYTES: u64 = 64 << 20;
 
