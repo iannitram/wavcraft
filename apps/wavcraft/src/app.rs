@@ -7364,12 +7364,14 @@ impl WaveApp {
             return;
         }
         let changed = !done.result.edit.is_noop();
+        let (before, after) = (done.result.before, done.result.after);
         editor.history.push_edit(done.result.edit);
-        self.matcher.say(true, done.result.message.clone());
         self.notice = Some(done.result.message);
         if changed {
             self.rebuild(ctx);
         }
+        // After rebuild, which clears the result table (audio_changed).
+        self.matcher.show_result(before, after);
     }
 
     /// The Match Loudness panel's body (f33).

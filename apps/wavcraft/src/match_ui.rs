@@ -37,18 +37,42 @@ pub struct MatchUi {
     scan: Option<(String, Loudness)>,
     job: Option<Job>,
     status: Option<(bool, String)>,
+    /// The Before and After measures of the last Run, drawn as a table after Run.
+    result: Option<(Loudness, Loudness)>,
     finished: Option<Finished>,
+}
+
+/// One row of the Before and After table: a measure and its two values, as drawn.
+#[derive(Debug, PartialEq)]
+pub struct ResultRow {
+    pub label: &'static str,
+    pub before: String,
+    pub after: String,
+}
+
+/// The three rows of the result table, in order: integrated loudness, loudness range, true peak.
+/// A value that is not finite (silence) reads "n/a".
+pub fn result_rows(before: &Loudness, after: &Loudness) -> Vec<ResultRow> {
+    fn shown(x: f64, unit: &str) -> String {
+        if x.is_finite() { format!("{x:.1}{unit}") } else { "n/a".to_string() }
+    }
+    vec![
+        ResultRow { label: "Integrated loudness", before: shown(before.integrated_lufs, " LUFS"), after: shown(after.integrated_lufs, " LUFS") },
+        ResultRow { label: "Loudness range", before: shown(before.range_lu, " LU"), after: shown(after.range_lu, " LU") },
+        ResultRow { label: "True peak", before: shown(before.true_peak_dbtp, " dBTP"), after: shown(after.true_peak_dbtp, " dBTP") },
+    ]
 }
 
 impl MatchUi {
     pub fn new() -> MatchUi {
-        MatchUi { target: Target::default(), preset: Some(0), scan: None, job: None, status: None, finished: None }
+        MatchUi { target: Target::default(), preset: Some(0), scan: None, job: None, status: None, result: None, finished: None }
     }
 
     /// A new file, or the audio changed: the old scan means nothing now.
     pub fn new_file(&mut self) {
         self.scan = None;
         self.status = None;
+        self.result = None;
         if let Some(j) = self.job.take() {
             j.cancel.store(true, Ordering::Relaxed);
         }
@@ -57,6 +81,7 @@ impl MatchUi {
     /// The audio changed under the scan (an edit, undo or redo).
     pub fn audio_changed(&mut self) {
         self.scan = None;
+        self.result = None;
     }
 
     pub fn take_finished(&mut self) -> Option<Finished> {
@@ -68,6 +93,12 @@ impl MatchUi {
         self.status = Some((ok, text));
     }
 
+    /// After a Run: show its Before and After measures as the table, in place of the status line.
+    pub fn show_result(&mut self, before: Loudness, after: Loudness) {
+        self.status = None;
+        self.result = Some((before, after));
+    }
+
     /// Scan `state` on a worker.
     pub fn start_scan(&mut self, state: Arc<DocState>, name: String) {
         let (tx, rx) = channel();
@@ -75,6 +106,7 @@ impl MatchUi {
         let (c, p) = (cancel.clone(), progress.clone());
         let n = name.clone();
         self.status = None;
+        self.result = None;
         if std::thread::Builder::new()
             .name("match-scan".into())
             .spawn(move || {
@@ -95,6 +127,7 @@ impl MatchUi {
         let (c, p, target, base) = (cancel.clone(), progress.clone(), self.target, state.clone());
         let before = self.scan.as_ref().map(|(_, m)| *m).filter(|m| m.frames == state.len_frames());
         self.status = None;
+        self.result = None;
         if std::thread::Builder::new()
             .name("match-run".into())
             .spawn(move || {
@@ -239,6 +272,19 @@ impl MatchUi {
                         j.cancel.store(true, Ordering::Relaxed);
                     }
                 });
+            } else if let Some((before, after)) = &self.result {
+                egui::Grid::new("match-result").num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
+                    ui.label("");
+                    ui.label("Before");
+                    ui.label("After");
+                    ui.end_row();
+                    for row in result_rows(before, after) {
+                        ui.label(row.label);
+                        ui.monospace(row.before);
+                        ui.monospace(row.after);
+                        ui.end_row();
+                    }
+                });
             } else if let Some((ok, text)) = &self.status {
                 if *ok {
                     ui.label(text);
@@ -277,6 +323,34 @@ const EMPTY: Loudness = Loudness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loud(integrated_lufs: f64, range_lu: f64, true_peak_dbtp: f64) -> Loudness {
+        Loudness { frames: 48000, integrated_lufs, range_lu, true_peak_dbtp, ..EMPTY }
+    }
+
+    #[test]
+    fn g3_result_rows_show_before_and_after() {
+        let before = loud(-23.0, 6.0, -5.0);
+        let after = loud(-16.0, 6.0, -1.0);
+        let rows = result_rows(&before, &after);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].label, "Integrated loudness");
+        assert_eq!(rows[0].before, "-23.0 LUFS");
+        assert_eq!(rows[0].after, "-16.0 LUFS");
+        assert_eq!(rows[1].before, "6.0 LU");
+        assert_eq!(rows[1].after, "6.0 LU");
+        assert_eq!(rows[2].before, "-5.0 dBTP");
+        assert_eq!(rows[2].after, "-1.0 dBTP");
+    }
+
+    #[test]
+    fn g3_result_rows_show_na_for_silence() {
+        let after = loud(-16.0, 6.0, -1.0);
+        let rows = result_rows(&EMPTY, &after);
+        assert_eq!(rows[0].before, "n/a");
+        assert_eq!(rows[2].before, "n/a");
+        assert_eq!(rows[0].after, "-16.0 LUFS");
+    }
 
     #[test]
     fn g3_panel_offers_three_match_to_choices() {
