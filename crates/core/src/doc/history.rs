@@ -369,6 +369,27 @@ impl History {
         Some(gone)
     }
 
+    /// Replace every step after step `cursor` (redo steps included) with one step that holds the
+    /// current state under `label`, so a run of edits undoes in one step (N4.3). Returns how many
+    /// steps it replaced, or `None` and no change when there is nothing after `cursor`: a `cursor`
+    /// at or past the current step, or past the end of `steps`.
+    pub fn squash_since(&mut self, cursor: usize, label: impl Into<String>) -> Option<usize> {
+        if cursor >= self.cursor {
+            return None;
+        }
+        let state = self.current().clone();
+        let gone = self.steps.len() - (cursor + 1);
+        for step in self.steps.split_off(cursor + 1) {
+            self.remove_counts(&step.state);
+        }
+        let made = self.add_counts(&state);
+        let current_bytes = state.disk_bytes_referenced();
+        self.steps.push(Step { label: label.into(), state, made_bytes: made, change: Change::LengthFrom { frame: 0 } });
+        self.cursor = self.steps.len() - 1;
+        self.current_bytes = current_bytes;
+        Some(gone)
+    }
+
     /// Whether a job that writes `bytes` may start: it must leave at least [`FREE_RESERVE`] free
     /// on the session folder's disk. Allowed when the free space is unknown.
     pub fn can_afford(&self, bytes: u64) -> Result<(), NoSpace> {
