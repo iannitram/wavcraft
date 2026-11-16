@@ -6518,6 +6518,24 @@ impl WaveApp {
         }
     }
 
+    /// File › Run Script…: pick a text file, then [`run_script`](Self::run_script). A failure goes
+    /// to the status line error.
+    fn pick_run_script(&mut self, ctx: &egui::Context) {
+        self.error = None;
+        if self.editor.is_none() {
+            self.error = Some("no file is open".to_string());
+            return;
+        }
+        let picked = match self.scripted_pick.take() {
+            Some(answer) => answer,
+            None => rfd::FileDialog::new().add_filter("Text", &["txt"]).pick_file(),
+        };
+        let Some(path) = picked else { return };
+        if let Err(e) = self.run_script(&path, ctx) {
+            self.error = Some(e);
+        }
+    }
+
     /// The current step changed: keep the selection inside it and redraw.
     fn history_changed(&mut self, ctx: &egui::Context) {
         let Some(editor) = self.editor.as_ref() else { return };
@@ -10961,6 +10979,10 @@ impl WaveApp {
                     && let Err(e) = self.close_all_docs(true)
                 {
                     self.error = Some(e);
+                }
+                if ui.add_enabled(self.editor.is_some() && !busy, egui::Button::new("Run Script…")).clicked() {
+                    ui.close();
+                    self.pick_run_script(ui.ctx());
                 }
                 ui.separator();
                 if v1::offered(Feature::Batch) && ui.button(Feature::Batch.menu_text()).clicked() {

@@ -139,6 +139,46 @@ fn script(scratch: &Scratch, name: &str, lines: &[&str]) -> PathBuf {
 }
 
 #[test]
+fn the_menu_entry_runs_the_picked_script() {
+    let scratch = Scratch::new("menu-entry");
+    let mut app = a_window(&scratch);
+    open(&mut app, &scratch);
+    let five = script(&scratch, "five.txt", &["SELECT 1000 2000", "ACTION edit.delete", "SELECT 0 500", "EFFECT invert", "SELECT 0 10"]);
+    let bad3 = script(&scratch, "bad3.txt", &["SELECT 1000 2000", "ACTION edit.delete", "ACTION edit.nope"]);
+    let ctx = app.ctx.clone();
+    assert_eq!(steps(&mut app), 1);
+
+    app.scripted_pick = Some(None);
+    app.pick_run_script(&ctx);
+    assert!(app.error.is_none(), "a cancelled pick sets no error");
+    assert_eq!(steps(&mut app), 1);
+    assert_eq!(field(&ask(&mut app, "STATE"), "frames"), "10000");
+    assert!(app.scripted_pick.is_none(), "the pick was taken");
+
+    app.scripted_pick = Some(Some(bad3.clone()));
+    app.pick_run_script(&ctx);
+    assert!(app.error.as_deref().is_some_and(|e| e.starts_with("line 3:")), "{:?}", app.error);
+    assert_eq!(steps(&mut app), 1);
+    assert_eq!(field(&ask(&mut app, "STATE"), "frames"), "10000");
+
+    app.scripted_pick = Some(Some(five.clone()));
+    app.pick_run_script(&ctx);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert_eq!(steps(&mut app), 2, "the script added exactly one step");
+    assert_eq!(field(&ask(&mut app, "STATE"), "frames"), "9000");
+}
+
+#[test]
+fn the_menu_entry_needs_an_open_file() {
+    let scratch = Scratch::new("menu-no-doc");
+    let mut app = a_window(&scratch);
+    let ctx = app.ctx.clone();
+    app.scripted_pick = Some(Some(scratch.0.join("x.txt")));
+    app.pick_run_script(&ctx);
+    assert_eq!(app.error.as_deref(), Some("no file is open"));
+}
+
+#[test]
 fn one_undo_reverts_the_script() {
     let scratch = Scratch::new("one-undo");
     let mut app = a_window(&scratch);
