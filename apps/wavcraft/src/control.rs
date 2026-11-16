@@ -31,6 +31,7 @@
 //! - `PANELMENU <panel> list` → `OK items=close,maximize,… maximized=<id|none>`; `PANELMENU <panel> run <item>` → `OK maximized=<id|none> confirm_clear_history=<0|1> <panel>=<0|1> …` (a panel's ≡ menu)
 //! - `METADATA` → `OK fields=name,duration,… dialog=<0|1>`; `METADATA set <field,…|none>`; `METADATA open` (the Metadata Display dialog)
 //! - `SELECT_TIME <start> <end>` (each in the chosen time format, no spaces inside) → `OK selection=<a>-<b>`; `STATE` also reports `time_display`, `selection_text` and `snap_frames`
+//! - `SELBOX <start|end|duration> <time>` (types the time, in the chosen time format, into that Selection box as the panel does: start keeps the end, end keeps the start, duration keeps the start; clamped to the file) → `OK selection=<a>-<b>`; `ERR` when no file is open or the time does not read
 //! - `SNAP <frame> [frames_per_px]` → `OK frame=<snapped>` (the snap step selection gestures call, with the selection's edges as targets and the ruler's ticks of the current time display)
 //! - `SNAP_FRAME <frame>` → `OK frame=<snapped>` (what a ruler click or drag calls: SMPTE display and Snap to Frames on)
 //! - `FREQ [fft=4096] [window=hann|blackman|rectangular] [start end]` → `OK range=<a>-<b> fft=<n> window=<w> ch1=<hz>Hz/<db>dB …` (the peak of each channel; `start end` in frames, else the selection, else the moment at the cursor, `at=<frame>`)
