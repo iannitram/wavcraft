@@ -41,16 +41,16 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 
 ## Where v1 stands
 
-**75 items** (v1.md's 74 plus L0, the speech-to-text choice)**:** complete 17 · built, check not recorded 18 · partial 38 · not started 2.
+**75 items** (v1.md's 74 plus L0, the speech-to-text choice)**:** complete 18 · built, check not recorded 17 · partial 38 · not started 2.
 
-**259 steps remain:** 186 easy, 68 medium, 5 hard. 187 are proved by a script, 72 by hand (43 of those only by me).
+**254 steps remain:** 181 easy, 68 medium, 5 hard. 182 are proved by a script, 72 by hand (43 of those only by me).
 
 | Stage | Items | Complete | Steps left | Done when |
 |---|---|---|---|---|
 | Stage 0: merge plan | - | done 2026-10-27 | 0 | the old branches are merged into `main` and CI exists |
-| Stage 1: Editor | 19 | 12 | 16 | a full rough-cut edit of an episode is saved, reopened and identical. |
-| Stage 1b: Automation | 4 | 0 | 18 | an AI agent completes 10 real editing tasks through the MCP server with no window. |
-| Stage 2: Recording | 7 | 0 | 22 | I record a real 10-minute take on each machine, kill the app once mid-take, and get everything back. |
+| Stage 1: Editor | 19 | 13 | 14 | a full rough-cut edit of an episode is saved, reopened and identical. |
+| Stage 1b: Automation | 4 | 0 | 17 | an AI agent completes 10 real editing tasks through the MCP server with no window. |
+| Stage 2: Recording | 7 | 0 | 20 | I record a real 10-minute take on each machine, kill the app once mid-take, and get everything back. |
 | Stage 3: Repair | 14 | 3 | 49 | I clean a real episode end to end and prefer the result to my current tool's, by ear. |
 | Stage 4: Feel | 12 | 0 | 55 | I work without hunting for things. |
 | Stage 4b: Episode Check, transcript and faces | 16 | 1 | 84 | the Podcast face's user cleans a real episode in it without help. |
@@ -77,7 +77,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | C2 | One channel of a stereo file | selection | 1 | complete | 0 | none |
 | C3 | Snapping: markers, ruler, zero crossings, key S | selection | 1 | complete | 0 | #22 |
 | C4 | Spectral selection: Marquee and Lasso | selection | 4 | partial | 8 | #23 |
-| C5 | Transport | transport | 1 | built, check not recorded | 6 | #24, #67, #69 |
+| C5 | Transport | transport | 1 | built, check not recorded | 5 | #24, #67, #69 |
 | C6 | Scrub by dragging the playhead | transport | 4 | built, check not recorded | 2 | #25 |
 | D1 | Cut, Copy, Paste, Delete | editing | 1 | complete | 0 | none |
 | D2 | Copy to New and Paste to New | editing | 1 | complete | 0 | none |
@@ -109,11 +109,11 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | I4 | Never lose work: autosave and recovery | platform | 4 | built, check not recorded | 4 | #47 |
 | I5 | Runs on Windows, Linux and macOS | platform | 5 | built, check not recorded | 6 | #48 |
 | I6 | Third-party notices under Help, About | platform | 5 | complete | 0 | none |
-| I7 | Memory fits an 8 GB Mac | platform | 1 | built, check not recorded | 1 | #50 |
+| I7 | Memory fits an 8 GB Mac | platform | 1 | complete | 0 | #50 |
 | J1 | Record a take into a new WAV | recording | 2 | partial | 5 | #51 |
-| J2 | No playback while recording | recording | 2 | partial | 3 | #52 |
+| J2 | No playback while recording | recording | 2 | partial | 2 | #52 |
 | J3 | A crash keeps the take | recording | 2 | built, check not recorded | 2 | #53 |
-| J4 | Readouts and level meter while recording | recording | 2 | partial | 4 | #54 |
+| J4 | Readouts and level meter while recording | recording | 2 | partial | 3 | #54 |
 | J5 | Input device preference and clean unplug | recording | 2 | built, check not recorded | 1 | #55 |
 | J6 | Recording works on every machine | recording | 2 | partial | 6 | #56 |
 | J7 | After Stop the take opens in the editor | recording | 2 | built, check not recorded | 1 | none (steps only) |
@@ -135,40 +135,47 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | M5 | Out-of-v1 panels hidden in release | faces | 4b | partial | 4 | #1051 |
 | N1 | Automation core: one Backend, two ways | automation | 1b | partial | 1 | #1107 |
 | N2 | Command line: run, convert, inspect | automation | 1b | partial | 3 | #845 |
-| N3 | MCP server (wavcraft mcp) | automation | 1b | partial | 6 | #1108 |
+| N3 | MCP server (wavcraft mcp) | automation | 1b | partial | 5 | #1108 |
 | N4 | Scripts: a text file of commands | automation | 1b | not started | 8 | #879 |
 
 ## Next up
 
-Worked out on 2026-11-16 from the step tables below, and updated the same evening for my rulings (Q11). AGENTS.md rule 1 takes the lowest-numbered unblocked step of the earliest unfinished stage. Stage 1 is unfinished, but every step left in it waits on me, on a named machine or on a run in the app, so the first steps an agent can take now are in Stage 1b. **Ready** means every blocker is merged, nothing waits on my ruling, and a script proves it.
+Worked out on 2026-11-16 from the step tables below, updated the same evening for my rulings (Q11), and again after the first batch of the overnight run (C5.4, I7.2, H2.8, N3.2, J4.1 and J2.1 merged). AGENTS.md rule 1 takes the lowest-numbered unblocked step of the earliest unfinished stage. Stage 1 is unfinished, but every step left in it waits on me, on a named machine or on a run in the app, so the first steps an agent can take now are in Stage 1b. **Ready** means every blocker is merged, nothing waits on my ruling, and a script proves it.
 
 ### Ready, with an issue filed
 
-Take these first, in this order. None is labelled `in-progress`.
+These steps have an issue and no pull request yet, in stage order. Take one that is not marked in progress (AGENTS.md rule 2).
 
 | Step | Stage | What | Issue |
 |---|---|---|---|
-| N2.3 | 1b | `wavcraft inspect <file>` prints the Properties rows, one `Key: value` per line. | #1300 |
-| N3.2 | 1b | MCP `tools/call` runs each tool on the Backend and returns the reply as text. | #1301 |
-| N4.1 | 1b | Pure `script::parse` in a new `crates/automation/src/script.rs`. | #1302 |
-| N4.3 | 1b | `History::squash_since(cursor, label)` in `crates/core/src/doc/history.rs`. | #1303 |
-| J2.1 | 2 | `Player::maintain` waits for the take to end before it reopens the output. | #1307 |
-| J3.2 | 2 | Delete the unused `take_repair` and `take_recover` stubs and their ignored tests (I approved this on #1304). | #1304 |
-| J4.1 | 2 | The status bar's recording texts come from `take_readout`. | #1308 |
+| N2.3 | 1b | `wavcraft inspect <file>` prints the Properties rows, one `Key: value` per line. | #1300 (in progress) |
+| E1.1 | 3 | Map a fade drag gesture to an effect call. | #1354 (in progress) |
+| E1.3 | 3 | A Favorites menu with Fade In and Fade Out. | #1360 (in progress) |
+| E5.1 | 3 | Fill in `Editor::repeat_dialog`, which is a `todo!()` today. | #1361 (in progress) |
+| E6.1 | 3 | A preview worker thread for effect dialogs. | #1364 (in progress) |
+| G4.1 | 3 | Compare STATS and LOUDNESS with ffmpeg on the kit files. | #1362 (in progress) |
+| G3.1 | 3 | The Match To choice (BS.1770-3, EBU R128, True Peak) in Match Loudness. | #1368 (in progress) |
+| G3.3 | 3 | The Match Loudness result table, Before and After. | #1367 |
+| G3.4 | 3 | Alt+5 toggles the Match Loudness panel (my ruling of 2026-11-16). | #1370 |
+| A3.10 | mp3 | The MP3 size estimate (CBR) in `estimate_size` and the Save As size line. | #1352 (in progress) |
+| K5.2 | 4b | A test that the Ready to publish summary agrees with `loudness::measure`. Its work waits on the branch `sat/1262-k5-2-summary-test`, which needs a rebase now that #1277 is fixed. | #1262 |
+| L2.5 | 4b | Pure `transcript::lane_boxes(words, view_start, view_end, width_px)`. | #1265 |
 
-In later stages, also filed and ready: L2.5 (#1265); L4.9 (#1190) and #1286, the transcript follow-ups under "Issues outside the step tables"; and K5.2 (#1262), whose work waits on the branch `sat/1262-k5-2-summary-test` and needs a rebase now that #1277 is fixed.
+Also filed and ready, with no step row: L4.9 (#1190) and #1286, the transcript follow-ups under "Issues outside the step tables". Filed but waiting on me or a hand run: K1.9 (#1256, the 64 GB Linux tablet) and A3.12 (#1359, a page for the ABX run).
+
+With a pull request open, so not to be taken again: A3.4 (#1375), J1.2 (#1371), J1.5 (#1374), J3.2 (#1365), J4.3 (#1372), J6.9 (#1377), N1.7 (#1373), N4.1 (#1358) and N4.3 (#1356).
 
 ### Ready once its issue is filed
 
 The Project Manager files these, in stage order, before an agent takes them (AGENTS.md rule 2).
 
-- **Stage 1:** I7.2 and C5.4 (my yes of 2026-11-16). D5.1 (on the Windows build machine, with the 3-hour kit file). H2.8 is code an agent can write now; its check is a run in the app.
-- **Stage 1b:** N1.7 (on a Linux handheld with a display).
-- **Stage 2:** J1.2, J1.5, J4.3. J6.9 also needs Git Bash on the Windows build machine.
-- **Stage 3:** E1.1, E1.3, E5.1, E6.1, G4.1, G3.1, G3.3, G3.5, G1.1, G2.1, G2.4, G2.5, F1.1, F1.2, F1.5, F2.1, F3.2, A4.1, A4.2, A4.5, G3.4. F1.1 to F1.3 fix the live rack defect under "Tracker clean-up" (F1.3 waits on F1.1 and F1.2).
+- **Stage 1:** D5.1 (on the Windows build machine, with the 3-hour kit file).
+- **Stage 1b:** N3.3 and N3.5, unblocked by N3.2.
+- **Stage 2:** J2.3, unblocked by J2.1.
+- **Stage 3:** G3.5, G1.1, G2.1, G2.4, G2.5, F1.1, F1.2, F1.5, F2.1, F3.2, A4.1, A4.2, A4.5. F1.1 to F1.3 fix the live rack defect under "Tracker clean-up" (F1.3 waits on F1.1 and F1.2).
 - **Stage 4:** B1.1, B1.2, B2.2, B2.5, B3.3, B4.1, B4.2, B4.3, B4.4, B4.8, B5.1, C4.1, C4.5, I1.1, I2.1, I2.3, I3.1, I4.1, A5.1, B2.1, C4.6.
 - **Stage 4b:** M3.2, M3.3, M5.3, M5.4, K1.7, K3.3, K4.4, L1.7, L1.11 (its release-build run of `tools/alpha/l1.py`; #1263 is closed), L1.12, L2.2, L2.3, L3.3, L5.3, L5.4. M2.5, M1.1, M1.2, M4.3 and M4.5 are ready too, but by my ruling of 2026-11-01 M2, M1 and M4 come after M3 and M5.
-- **Alongside:** A3.4, A3.10.
+- **Alongside:** none; A3.4 and A3.10 have their issues.
 - **Stage 5:** I5.1.
 
 ### Waits on me
@@ -249,7 +256,7 @@ The old branches went into `main` as 44 merge commits; the unmerged ones are kep
 
 ### Stage 1: Editor
 
-The store, the edit model, selection, transport and markers. I7's Mac measurement is recorded (I7.1); only its v1.md wording is left. D2 and D6 are not in v1.md's order of work; I place them here with the rest of section D.
+The store, the edit model, selection, transport and markers. I7's Mac measurement and its v1.md wording are recorded (I7.1, I7.2). D2 and D6 are not in v1.md's order of work; I place them here with the rest of section D.
 
 **Done when** a full rough-cut edit of an episode is saved, reopened and identical.
 
@@ -267,6 +274,7 @@ The store, the edit model, selection, transport and markers. I7's Mac measuremen
 - **D6 Zero-crossing adjust of selection edges.** crates/core/src/actions.rs has zero_crossing, a 10 ms reach and six actions (inward, outward and four single-edge moves). Keys Shift+I, O, H, J, K, L are in shortcuts.rs. Tests: crates/core/tests/actions.rs, crates/core/tests/snap.rs. Done check: Edges land on the nearest sign change within 10 ms. Recorded: crates/core/tests/actions.rs t6_zero_crossing_adjusts_land_on_sign_changes_of_the_1khz_tone and zero_crossing_finds_none_beyond_10_ms_and_never_turns_the_selection_inside_out (480 frames at 48 kHz). Item issue #61 closed 2026-11-12.
 - **D7 Edit crossfades (2 ms and 5 ms).** Crossfades (cut_join, edge) are in crates/core/src/doc/edit.rs with defaults 2 and 5 ms in settings.rs. Preferences > Data in apps/wavcraft/src/app.rs sets both; 0 turns one off. Tests: crates/core/tests/edits.rs (default_crossfades_leave_no_click_and_have_their_lengths, crossfaded_delete_join_has_no_click). Done check: A cut, paste, silence and effect inside a full-scale 1 kHz sine leave no jump bigger than the sine's own (measured). With both at 0, splices are exact. Recorded: crates/core/tests/edits.rs default_crossfades_leave_no_click_and_have_their_lengths (fades of 96 and 240 frames, worst step at most 1.035 times the sine's own) and the bit-exact model tests with crossfades at 0.
 - **H4 Markers move with edits.** crates/core/src/markers.rs (Shift, Markers::moved_by) applied by the edit and history code. Tests: markers.rs moved_by_covers_each_kind_of_edit; crates/core/tests/actions.rs m3 to m8; crates/core/tests/save.rs; crates/core/tests/990_autosave_markers.rs. Done check: Tests on each case: a cut before a marker moves it left; a marker inside a cut is deleted and returns on undo. Recorded: crates/core/tests/actions.rs m3_a_marker_inside_a_deleted_range_goes_and_undo_brings_it_back and m4_delete_and_cut_shift_trim_and_remove_markers; they run on Linux, Windows and macOS in .github/workflows/check.yml. Item issue #43 closed 2026-11-12.
+- **I7 Memory fits an 8 GB Mac.** All audio lives in the on-disk store with a bounded block cache (crates/core/src/store.rs). Undo steps cost disk and are capped (crates/core/src/doc/history.rs). Views read from the store. Tests: crates/core/tests/edits.rs, store_and_doc.rs, incremental_overviews.rs, crates/testkit/tests/space.rs. Script: tools/alpha/f05-mem.py. Merged 2026-11-12: I7.1 (#1163). Merged 2026-11-16: I7.2 (#1346), the v1.md Done text, which now names the physical footprint for the Mac and the working set for Windows. Done check: 3-hour stereo file, 20 edits, history kept: memory under 1.5 GB, measured on the Windows build machine then the M1 Mac mini. History capped by disk; old steps drop with a notice. Recorded: Windows: docs/baseline.md, Task 04 (0.633 GB working set after 200 edits, block cache 512 MB). Mac: the "I7 on the 8 GB Mac" section of docs/baseline.md, measured on the M1 Mac mini, which has 8 GB (I7.1, #1163): vmmap physical footprint peak 982 MB at 20 edits and 1,126 MB at most, after 200 undos. The "old steps drop with a notice" part is recorded under D5 (D5.2, D5.3). The v1.md wording is done (I7.2, #1346). Item issue #50 is still open and can close.
 
 **Remains:**
 
@@ -294,29 +302,16 @@ The store, the edit model, selection, transport and markers. I7's Mac measuremen
 |---|---|---|---|---|---|---|---|
 | D5.1 | Run the ignored 200-edit test on current main on the Windows build machine with the 3-hour kit file and append the dated result to docs/baseline.md, Task 04. | Make the kit with wavcraft-testkit <kit> --long (about 2 GB). With WAVCRAFT_KIT set to that folder: cargo test --release -p wavcraft-testkit --test edits -- --ignored --nocapture. long_file_200_random_edits_then_undo_all passes and prints "dropped by the cap: 0". I append the date, the commit, the undo-all time and the slowest undo to Task 04 in docs/baseline.md. | easy | docs | script, windows | none |  |
 
-#### I7: Memory fits an 8 GB Mac (built, check not recorded)
-
-- **On main:** All audio lives in the on-disk store with a bounded block cache (crates/core/src/store.rs). Undo steps cost disk and are capped (crates/core/src/doc/history.rs). Views read from the store. Tests: crates/core/tests/edits.rs, store_and_doc.rs, incremental_overviews.rs, crates/testkit/tests/space.rs. Script: tools/alpha/f05-mem.py. Merged 2026-11-12: I7.1 (#1163).
-- **Done check:** 3-hour stereo file, 20 edits, history kept: memory under 1.5 GB, measured on the Windows build machine then the M1 Mac mini. History capped by disk; old steps drop with a notice.
-- **Recorded so far:** Windows: docs/baseline.md, Task 04 (0.633 GB working set after 200 edits, block cache 512 MB). Mac: the "I7 on the 8 GB Mac" section of docs/baseline.md, measured on the M1 Mac mini, which has 8 GB (I7.1, #1163): vmmap physical footprint peak 982 MB at 20 edits and 1,126 MB at most, after 200 undos. The "old steps drop with a notice" part is recorded under D5 (D5.2, D5.3). Only the v1.md wording (I7.2) is left.
-- **Item issue:** #50
-- **Start in:** I7.2 is the only step: the I7 row of docs/v1/v1.md, with a link to the "I7 on the 8 GB Mac" section of docs/baseline.md (the footprint figure comes from tools/alpha/f05-mem.py). It waits on my yes to change the wording of that row. The row names machines by host name; the new wording should use the roadmap's machine names (AGENTS.md rule 8).
-
-| Step | What | Verify | Size | Kind | By | Blocked by | Issue |
-|---|---|---|---|---|---|---|---|
-| I7.2 | Change the Done text of the I7 row in docs/v1/v1.md to say which number is judged on the Mac (physical footprint from vmmap, as tools/alpha/f05-mem.py reports) and which on Windows (working set), and link the baseline section. | The I7 row in docs/v1/v1.md names physical footprint for the Mac and working set for Windows, keeps the 1.5 GB limit, and links to the "I7 on the 8 GB Mac" section of docs/baseline.md. git diff shows only that row changed. | easy | docs | script | I7.1 (yes given 2026-11-16, Q11 in docs/v1/questions-and-answers.md) |  |
-
 #### C5: Transport (built, check not recorded)
 
-- **On main:** Space play/stop, play from cursor or selection, Loop Playback, Home/End, marker jumps, Return on Stop (Shift+X) and J/K/L shuttle are on main: crates/core/src/transport.rs, apps/wavcraft/src/app.rs, player.rs. Move Playhead to Previous / Next (Alt+Left / Alt+Right) go to the nearest marker start or selection edge on that side: they seek while playing or paused, and when stopped they move the drawn playhead and keep the selection (WaveApp::move_playhead). A focused button no longer eats Space: it plays and stops (C5.6), in a floated panel too (C5.6b), and Space then Space honours Return on Stop (C5.5). Tests: transport.rs and player.rs unit tests; apps/wavcraft/src/c5_space_return_tests.rs, c5_6_space_button_tests.rs, issue1219_tests.rs, c5_playhead_move_tests.rs, f48_device_change_tests.rs; crates/core/tests/shortcuts.rs playhead_prev_alt_left and playhead_next_alt_right. The real-app check of C5.6b in an OS-window float is still owed (PR #1318 says so) and has no row. Merged 2026-11-12: C5.1, the pure playhead_stop rule in transport.rs (#1199); C5.5 (#1223), C5.6 (#1217), C5.6b (#1318). Merged 2026-11-13: C5.2, the actions on Alt+Left and Alt+Right (#1329); C5.3, the actions run in the window (#1330).
+- **On main:** Space play/stop, play from cursor or selection, Loop Playback, Home/End, marker jumps, Return on Stop (Shift+X) and J/K/L shuttle are on main: crates/core/src/transport.rs, apps/wavcraft/src/app.rs, player.rs. Move Playhead to Previous / Next (Alt+Left / Alt+Right) go to the nearest marker start or selection edge on that side: they seek while playing or paused, and when stopped they move the drawn playhead and keep the selection (WaveApp::move_playhead). A focused button no longer eats Space: it plays and stops (C5.6), in a floated panel too (C5.6b), and Space then Space honours Return on Stop (C5.5). Tests: transport.rs and player.rs unit tests; apps/wavcraft/src/c5_space_return_tests.rs, c5_6_space_button_tests.rs, issue1219_tests.rs, c5_playhead_move_tests.rs, f48_device_change_tests.rs; crates/core/tests/shortcuts.rs playhead_prev_alt_left and playhead_next_alt_right. The real-app check of C5.6b in an OS-window float is still owed (PR #1318 says so) and has no row. Merged 2026-11-12: C5.1, the pure playhead_stop rule in transport.rs (#1199); C5.5 (#1223), C5.6 (#1217), C5.6b (#1318). Merged 2026-11-13: C5.2, the actions on Alt+Left and Alt+Right (#1329); C5.3, the actions run in the window (#1330). Merged 2026-11-16: C5.4, the C5 row of docs/v1/v1.md now says Alt+Left/Right (#1345).
 - **Done check:** With Shift+X on, Space twice returns to where I started. Loop plays the selection with no gap at the seam, by ear.
-- **Recorded so far:** Shift+X half: apps/wavcraft/src/c5_space_return_tests.rs space_then_space_with_return_on_stop_on_puts_the_playhead_back_at_the_start and space_then_space_with_return_on_stop_off_leaves_the_playhead_where_it_stopped (C5.5, #1223), over the pure rule in transport.rs stop_returns_the_cursor_to_the_start_unless_turned_off. Loop half: no by-ear result is written anywhere (C5.7 to C5.9).
+- **Recorded so far:** Shift+X half: apps/wavcraft/src/c5_space_return_tests.rs space_then_space_with_return_on_stop_on_puts_the_playhead_back_at_the_start and space_then_space_with_return_on_stop_off_leaves_the_playhead_where_it_stopped (C5.5, #1223), over the pure rule in transport.rs stop_returns_the_cursor_to_the_start_unless_turned_off. Loop half: no by-ear result is written anywhere (C5.7 to C5.9). C5.4 (#1345) changed only the C5 row of docs/v1/v1.md and added no test.
 - **Item issue:** #24, #67, #69
-- **Start in:** Only C5.4 and my hand checks are left. C5.4 changes the C5 row of docs/v1/v1.md from Ctrl+Left/Right to Alt+Left/Right, the key that docs/v1/audition-behaviour.md (line 20) and crates/core/src/shortcuts.rs already use; it waits on my approval. C5.7 to C5.11 write into a new docs/checklists/C5.md. The loop plan is Plan in crates/core/src/transport.rs, played by apps/wavcraft/src/player.rs; the device follow is Player::maintain and watch_default_device in player.rs, tested in apps/wavcraft/src/f48_device_change_tests.rs.
+- **Start in:** Only my hand checks are left. C5.7 to C5.11 write into a new docs/checklists/C5.md. The loop plan is Plan in crates/core/src/transport.rs, played by apps/wavcraft/src/player.rs; the device follow is Player::maintain and watch_default_device in player.rs, tested in apps/wavcraft/src/f48_device_change_tests.rs.
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| C5.4 | Correct the key in the v1.md C5 row from Ctrl+Left/Right to Alt+Left/Right, citing the Audition check already recorded in audition-behaviour.md. Needs my approval, since v1.md is the approved scope. | grep -n "Alt+Left" docs/v1/v1.md prints the C5 row, and the row no longer contains "Ctrl+Left/Right". It matches docs/v1/audition-behaviour.md line 20. | easy | docs | script | C5.2 (approved 2026-11-16, Q11 in docs/v1/questions-and-answers.md) |  |
 | C5.7 | By-ear loop check on the Windows build machine: loop a 2 s selection of a 1 kHz tone (0.5 s to 2.5 s) and of speech, 20 passes each. | Hand check, Windows: Loop on, Space. I must hear no click and no gap at the seam on either selection. I write the date, commit, output device and what I heard into docs/checklists/C5.md under "Windows". | easy | docs | hand, me, windows | none |  |
 | C5.8 | The same by-ear loop check on a Linux handheld. | Hand check, Linux: Loop on, Space, 20 passes of the 1 kHz selection (0.5 s to 2.5 s) and of speech. No click and no gap at the seam. Result, date, commit and output device written into docs/checklists/C5.md under "Linux". | easy | docs | hand, me, linux | none |  |
 | C5.9 | The same by-ear loop check on the 8 GB Mac. | Hand check, macOS: Loop on, Space, 20 passes of the 1 kHz selection (0.5 s to 2.5 s) and of speech. No click and no gap at the seam. Result, date, commit and output device written into docs/checklists/C5.md under "macOS". | easy | docs | hand, me, mac | none |  |
@@ -337,16 +332,16 @@ The store, the edit model, selection, transport and markers. I7's Mac measuremen
 
 #### H2: Markers panel (partial)
 
-- **On main:** apps/wavcraft/src/markers_panel.rs (MarkersUi::panel): table with name, start, end, duration; rename by double-click; a single click picks the row and a double-click goes to the marker's span (H2.6). Delete, Merge, To Range and To Point buttons follow `buttons_for` (H2.3): To Range makes a 1 second range clamped to the file (point_range) and To Point keeps the start (H2.4). Core: Editor::rename_marker, merge_markers, move_marker, delete_markers and set_marker_extent in crates/core/src/actions.rs. Tests: markers.rs and markers_panel.rs unit tests, crates/core/tests/actions.rs m6, m9, m10, h2_delete_markers_by_id_is_one_undo_step and h2_set_marker_extent_is_one_move_marker_step. `typed_extent` turns typed Start or End text into a new extent (H2.5), but the panel does not call it yet: the typed Start/End cells are missing (H2.8). Merged 2026-11-12: H2.7 the double-click and MARKER select (#1281); H2.1 Editor::delete_markers (#1193); H2.2 Editor::set_marker_extent (#1196); H2.6 the panel click rule (#1202); H2.3 (#1206), H2.5 (#1214). Merged 2026-11-13: H2.4 the Delete, To Range and To Point buttons (#1335).
+- **On main:** apps/wavcraft/src/markers_panel.rs (MarkersUi::panel): table with name, start, end, duration; rename by double-click; a single click picks the row and a double-click goes to the marker's span (H2.6). Delete, Merge, To Range and To Point buttons follow `buttons_for` (H2.3): To Range makes a 1 second range clamped to the file (point_range) and To Point keeps the start (H2.4). Core: Editor::rename_marker, merge_markers, move_marker, delete_markers and set_marker_extent in crates/core/src/actions.rs. Tests: markers.rs and markers_panel.rs unit tests, crates/core/tests/actions.rs m6, m9, m10, h2_delete_markers_by_id_is_one_undo_step and h2_set_marker_extent_is_one_move_marker_step. The picked row's Start and End cells are editable: `commit_typed_extent` reads the typed text with `typed_extent` (H2.5) and commits through `set_marker_extent`, one Move Marker step (H2.8). Merged 2026-11-12: H2.7 the double-click and MARKER select (#1281); H2.1 Editor::delete_markers (#1193); H2.2 Editor::set_marker_extent (#1196); H2.6 the panel click rule (#1202); H2.3 (#1206), H2.5 (#1214). Merged 2026-11-13: H2.4 the Delete, To Range and To Point buttons (#1335). Merged 2026-11-16: H2.8 the typed Start and End cells (#1353); its run in the app is owed.
 - **Done check:** Edits made in the panel move the marker on the ruler.
-- **Recorded so far:** not recorded. The core steps have tests (crates/core/tests/actions.rs h2_delete_markers_by_id_is_one_undo_step, h2_set_marker_extent_is_one_move_marker_step), and so do the To Range length (markers_panel.rs to_range_makes_one_second_and_clamps_at_file_end) and the double-click (apps/wavcraft/src/h2_7_double_click_tests.rs double_click_goes_to_the_marker_span). Nobody has yet watched a panel edit move the flag on the ruler (H2.4's run, H2.9).
+- **Recorded so far:** not recorded. The core steps have tests (crates/core/tests/actions.rs h2_delete_markers_by_id_is_one_undo_step, h2_set_marker_extent_is_one_move_marker_step), so do the To Range length (markers_panel.rs to_range_makes_one_second_and_clamps_at_file_end) the double-click (apps/wavcraft/src/h2_7_double_click_tests.rs double_click_goes_to_the_marker_span) and the typed Start (apps/wavcraft/src/markers_panel.rs typing_a_start_commits_one_move_marker_step, H2.8, #1353). Nobody has yet watched a panel edit move the flag on the ruler (the runs of H2.4 and H2.8, H2.9).
 - **Item issue:** #41
-- **Start in:** H2.8 is next, and an agent can take it now: H2.2, H2.5 and H2.6 are merged, and it needs its issue filed. It adds editable Start and End cells to the picked row in MarkersUi::panel (apps/wavcraft/src/markers_panel.rs, beside the rename TextEdit), reads them with parse_time and typed_extent, and commits with Editor::set_marker_extent (crates/core/src/actions.rs); the unit test beside it is typed_start_and_end_give_the_new_extent. H2.4's run can be done on any machine now. H2.9 waits on H2.8.
+- **Start in:** Only runs are left. H2.8's code is merged (#1353, issue #1342 closed): the picked row's Start and End cells are in MarkersUi::panel (apps/wavcraft/src/markers_panel.rs), read with typed_extent through commit_typed_extent and committed with Editor::set_marker_extent (crates/core/src/actions.rs). The runs of H2.4 and H2.8 can be done on any machine now. H2.9 waits on them.
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
 | H2.4 | Code merged (#1335). Left: the run of the app in Verify, on any platform; PR #1335 says it was not done. Add Delete, To Range and To Point buttons beside Merge. To Range makes a 1 second range from the point (clamped to the file); To Point keeps the start. | Run the app, any platform, file with two markers: pick a point row, To Range: Type reads Range, Duration 0:01.000. To Point: Type reads Point. Delete: the count reads "1 markers" and the flag leaves the ruler. Ctrl+Z brings it back. | easy | ui | hand | H2.1, H2.2, H2.3 | #1297 |
-| H2.8 | Make the Start and End cells editable for the picked row; Enter commits through set_marker_extent, Escape cancels. | Run the app, any platform, 48 kHz file with a point marker at 0:01.000: click its row, click Start, type 0:02.000, Enter. The flag on the ruler moves to 2 s, History lists "Move Marker", and Ctrl+Z moves it back. | medium | ui | hand | H2.2, H2.5, H2.6 |  |
+| H2.8 | Code merged (#1353). Left: the run in the app in Verify, on any platform. Make the Start and End cells editable for the picked row; Enter commits through set_marker_extent, Escape cancels. | Run the app, any platform, 48 kHz file with a point marker at 0:01.000: click its row, click Start, type 0:02.000, Enter. The flag on the ruler moves to 2 s, History lists "Move Marker", and Ctrl+Z moves it back. | medium | ui | hand | H2.2, H2.5, H2.6 | #1342 |
 | H2.9 | Hand check of the Done line on a Linux handheld: rename, typed Start, Delete, Merge, To Range and To Point, each watched on the ruler. | Hand check, Linux: after each of the six edits the flag on the ruler changes to match the panel row (name, position, gone, one range, range, point). Each result is written into docs/checklists/H2.md with the date and commit. | easy | docs | hand, linux | H2.4, H2.7, H2.8 |  |
 
 #### H3: Next and previous marker (built, check not recorded)
@@ -399,15 +394,14 @@ My ruling, 2026-11-03: "In v1, after Editor (Recommended)". Order: N1, then N2.1
 
 #### N3: MCP server (wavcraft mcp) (partial)
 
-- **On main:** The handler, core only: crates/automation/src/mcp.rs `handle(line, backend)` answers initialize and tools/list (N3.1); it does not answer tools/call yet, and there is no mcp subcommand in apps/wavcraft/src/cli.rs or main.rs. The Backend it sits on is in crates/automation/src/lib.rs, and effects::all with effects::describe already give the effect list. Tests: crates/automation/tests/mcp.rs. Merged 2026-11-12: N3.1 (#1248).
+- **On main:** The handler, core only: crates/automation/src/mcp.rs `handle(line, backend)` answers initialize, tools/list (N3.1) and tools/call (N3.2): each tool's arguments become a Request run on the Backend and the reply is the text, a Backend error is an isError result and an unknown tool is -32602. There is no mcp subcommand in apps/wavcraft/src/cli.rs or main.rs. The Backend it sits on is in crates/automation/src/lib.rs, and effects::all with effects::describe already give the effect list. Tests: crates/automation/tests/mcp.rs. Merged 2026-11-12: N3.1 (#1248). Merged 2026-11-16: N3.2 (#1357).
 - **Done check:** An agent completes 10 real editing tasks through it, each checked, both ways (no window, and attached to a running one).
-- **Recorded so far:** not recorded
+- **Recorded so far:** The Done check is not recorded. The handler's tools/call has tests in crates/automation/tests/mcp.rs: a_call_returns_the_backend_reply, a_backend_error_is_an_is_error_result, list_effects_names_gain and an_unknown_tool_is_error_minus_32602 (N3.2, #1357).
 - **Item issue:** #1108
-- **Start in:** crates/automation/src/mcp.rs: handle answers initialize and tools/list, tools() lists the seven tools, and tools/call gets -32601 with the backend argument unused. Its tests are crates/automation/tests/mcp.rs. list_effects uses crates/core/src/effects.rs effects::all and effects::describe. N3.3 and N3.7 add crates/automation/tests/mcp_tasks.rs and the example crates/automation/examples/ten_tasks.rs (there is no examples folder yet). N3.4 adds apps/wavcraft/src/n3_mcp_window_tests.rs, hooked from app.rs as n1_parity_tests.rs is. N3.5 adds an mcp subcommand to Command in apps/wavcraft/src/cli.rs and its arm in main.rs, with Remote::from_env (crates/automation/src/remote.rs) for --attach. Next: N3.2 (#1301). No step blocks it, but my ruling's order puts N1 and N2.3 first.
+- **Start in:** crates/automation/src/mcp.rs: handle answers initialize, tools/list and tools/call (call, request_for and list_effects run the tool on the Backend), and tools() lists the seven tools. Its tests are crates/automation/tests/mcp.rs. list_effects uses crates/core/src/effects.rs effects::all and effects::describe. N3.3 and N3.7 add crates/automation/tests/mcp_tasks.rs and the example crates/automation/examples/ten_tasks.rs (there is no examples folder yet). N3.4 adds apps/wavcraft/src/n3_mcp_window_tests.rs, hooked from app.rs as n1_parity_tests.rs is. N3.5 adds an mcp subcommand to Command in apps/wavcraft/src/cli.rs and its arm in main.rs, with Remote::from_env (crates/automation/src/remote.rs) for --attach. Next: N3.3 and N3.5, which need their issues filed. No step blocks them, but my ruling's order puts N1 and N2.3 first.
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| N3.2 | tools/call: turn each tool's arguments into a Request, run it on the Backend, return the reply as text; a Backend error is an isError result; list_effects returns effects::describe for every effect. | crates/automation/tests/mcp.rs over Headless: a_call_returns_the_backend_reply (select start=10 end=20 gives text 'selection=10-20'); a_backend_error_is_an_is_error_result (action 'edit.nope': isError true, text contains 'no action named'); list_effects_names_gain (text contains 'gain [gain_db='). | easy | wiring | script | N3.1 | #1301 |
 | N3.3 | Ten editing tasks through the handler with no window, each checked: open, select, delete, silence, gain, normalize, fade in, invert, add marker, save. | New crates/automation/tests/mcp_tasks.rs, test ten_tasks_headless, Crossfades::NONE, one assertion per task read from Headless::document() or the saved file: (1) open: state text has 'frames=20000 channels=2 rate=48000'; (2) select 1000 2000 answers 'selection=1000-2000'; (3) action edit.delete leaves 19000 frames; (4) action edit.silence on 0..500 gives all 0 there; (5) effect gain gain_db=-6.0206 on 500..1000 halves samples within 1 LSB; (6) effect normalize 'unit=dB db=-2' gives a peak of -2 dBFS within 0.01 dB; (7) action effect.fadeIn.linear on 0..1000 gives 0 at frame 0 and half the old value within 1 LSB at frame 500; (8) effect invert negates 2000..3000; (9) action marker.add at 5000 gives one marker at frame 5000; (10) save: the file reads back equal to the document. | medium | wiring | script | N3.2 |  |
 | N3.4 | The same ten tasks through the handler against the real window code: a test Backend over WaveApp.control_request (N1.5's harness) that waits for saves. | New apps/wavcraft/src/n3_mcp_window_tests.rs, test ten_tasks_through_the_window: the same ten tools/call lines and the same ten assertions as N3.3 pass, with the app's edit crossfades set to none. | medium | wiring | script | N3.3, N1.5 |  |
 | N3.5 | wavcraft mcp and wavcraft mcp --attach: a loop reading standard input lines into mcp::handle, over Headless, or over Remote::from_env with --attach. | apps/wavcraft/tests/cli.rs, test mcp_answers_tools_list_on_stdio: start the binary with 'mcp', write an initialize line and a tools/list line, read two JSON lines; the second lists seven tools; closing standard input ends the process with code 0. 'mcp --attach' with no port set exits 2 naming WAVCRAFT_CONTROL_PORT. | easy | wiring | script | N2.2, N3.2 |  |
@@ -457,15 +451,14 @@ My ruling, 2026-11-03: "In v1, after Editor (Recommended)". Order: N1, then N2.1
 
 #### J2: No playback while recording (partial)
 
-- **On main:** App::begin_recording in apps/wavcraft/src/app.rs halts play and mutes the player. apps/wavcraft/src/player.rs refuses a play while muted and renders zeros (test muted_is_silence). Play button is disabled during a take. The output stream opened at start stays open during a take and plays silence. Two paths reopen it mid-take: Player::maintain after a device change, and Player::set_output when I change the output device or buffer in Preferences.
+- **On main:** App::begin_recording in apps/wavcraft/src/app.rs halts play and mutes the player. apps/wavcraft/src/player.rs refuses a play while muted and renders zeros (test muted_is_silence). Play button is disabled during a take. The output stream opened at start stays open during a take and plays silence. Player::maintain does nothing while muted, so a device change reopens the output only after the take (J2.1). One path still reopens it mid-take: Player::set_output when I change the output device or buffer in Preferences (J2.3). Merged 2026-11-16: J2.1 (#1366).
 - **Done check:** Checked in code and by ear: nothing comes out of the computer's speakers while recording.
-- **Recorded so far:** not recorded
+- **Recorded so far:** The Done check is not recorded. J2.1 has a test: apps/wavcraft/src/j2_no_output_tests.rs a_device_change_during_a_take_waits_for_the_take_to_end (#1366).
 - **Item issue:** #52
-- **Start in:** J2.1 (#1307) is next and an agent can take it now. Player::maintain and Player::set_output are in apps/wavcraft/src/player.rs, beside set_muted, reopens and simulate_device_change. The new apps/wavcraft/src/j2_no_output_tests.rs is declared from player.rs with #[path], as f48_device_change_tests.rs is; that file's silent_child and silent_player show how to get the silent sink. J2.3 adds its test to the same file once J2.1 is in. J2.2 is mine, by ear, and writes a new docs/checklists/J2.md.
+- **Start in:** J2.3 is next; J2.1 (#1366) is merged, and J2.3 needs its issue filed. Player::maintain and Player::set_output are in apps/wavcraft/src/player.rs, beside set_muted, reopens and simulate_device_change. apps/wavcraft/src/j2_no_output_tests.rs is declared from player.rs with #[path], as f48_device_change_tests.rs is; its silent_child and silent_player give the silent sink. J2.3 adds its test to the same file. J2.2 is mine, by ear, and writes a new docs/checklists/J2.md.
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| J2.1 | Make Player::maintain do nothing while muted and leave the device-change flag set, so the output reopens only after the take ends. | New apps/wavcraft/src/j2_no_output_tests.rs (declared from player.rs, with its own silent-player helper that sets WAVCRAFT_NO_AUDIO=1 once), test a_device_change_during_a_take_waits_for_the_take_to_end: set_muted(true), simulate_device_change(), maintain() is false, reopens() is 0 and the device name is still 'test sink (no audio)'; after set_muted(false), maintain() is true, reopens() is 1 and the name is 'test sink (no audio) 1'. | easy | state | script | none | #1307 |
 | J2.2 | By-ear check on the 64 GB Linux tablet: speakers at full volume, a file playing, then press Shift+Space and record one minute with the USB mic. During the take, plug headphones into the computer's own jack and pull them out again. | Must see and hear: playback stops at once; nothing from the speakers or the headphones for the whole take; the take keeps running through the headphone plug and unplug; Play button greyed; status bar has no '(monitoring)'. After Stop, Space plays again. Write date, commit and result into docs/checklists/J2.md. | easy | docs | hand, me, linux | J2.1, J2.3 |  |
 | J2.3 | Make Player::set_output keep the new choice but not reopen the output while muted. It sets the device-change flag, so the output reopens on the new choice after the take. | In apps/wavcraft/src/j2_no_output_tests.rs, test an_output_change_during_a_take_waits_for_the_take_to_end: silent player, set_muted(true), set_output(OutputChoice::default()), maintain() is false and reopens() is 0; after set_muted(false), maintain() is true and reopens() is 1. The test is red on main, where set_output reopens at once and clears the flag. | easy | state | script | J2.1 |  |
 
@@ -484,15 +477,14 @@ My ruling, 2026-11-03: "In v1, after Editor (Recommended)". Order: N1, then N2.1
 
 #### J4: Readouts and level meter while recording (partial)
 
-- **On main:** Recording::status_text in apps/wavcraft/src/recording.rs shows elapsed, size, time left on disk, peak dB, the word CLIP and the dropped count in the status bar. crates/core/src/take_readout.rs with crates/core/tests/j4_take_readout.rs exists but has no caller. Merged 2026-11-12: J4.2, Recording::meter gives the take's newest peak and a clip flag that stays on until the take ends; status_text reads it, the Levels bars do not yet (#1324).
+- **On main:** Recording::status_text in apps/wavcraft/src/recording.rs shows elapsed, size, time left on disk, peak dB, the word CLIP and the dropped count in the status bar. The status bar's elapsed, size, left and dropped texts come from crates/core/src/take_readout.rs through status_numbers (J4.1, #1363); the core tests are crates/core/tests/j4_take_readout.rs. Merged 2026-11-12: J4.2, Recording::meter gives the take's newest peak and a clip flag that stays on until the take ends; status_text reads it, the Levels bars do not yet (#1324). Merged 2026-11-16: J4.1 (#1363).
 - **Done check:** Visible and right.
-- **Recorded so far:** not recorded
+- **Recorded so far:** The Done check is not recorded. J4.1 has a test: apps/wavcraft/src/recording.rs the_status_numbers_come_from_the_take_readout (#1363).
 - **Item issue:** #54
-- **Start in:** J4.1 (#1308) is next and an agent can take it now: Recording::status_text and left_secs in apps/wavcraft/src/recording.rs, and take_readout with TakeStats and TakeReadout in crates/core/src/take_readout.rs (tests in crates/core/tests/j4_take_readout.rs). J4.3 can be taken once its issue is filed: it changes meter_peaks and sync_input in apps/wavcraft/src/app.rs to use Recording::meter, with a new apps/wavcraft/src/j4_meter_tests.rs declared from app.rs with #[path]. J4.4 clears the clip lights in WaveApp::begin_recording (Levels::reset_clip in crates/core/src/levels.rs, as the METERS RESET control verb does) and adds its checks to tools/alpha/f25.py; it waits on J4.3 and J6.9. J4.5 is mine and writes a new docs/checklists/J4.md.
+- **Start in:** J4.1 (#1363) is merged: Recording::status_text in apps/wavcraft/src/recording.rs now builds its numbers through status_numbers and take_readout (TakeStats, TakeReadout in crates/core/src/take_readout.rs); left_secs stays for STATE. J4.3 (#1350, PR #1372 open) is next: it changes meter_peaks and sync_input in apps/wavcraft/src/app.rs to use Recording::meter, with a new apps/wavcraft/src/j4_meter_tests.rs declared from app.rs with #[path]. J4.4 clears the clip lights in WaveApp::begin_recording (Levels::reset_clip in crates/core/src/levels.rs, as the METERS RESET control verb does) and adds its checks to tools/alpha/f25.py; it waits on J4.3 and J6.9. J4.5 is mine and writes a new docs/checklists/J4.md.
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|
-| J4.1 | Build the status bar's elapsed, size, left and dropped texts through wavcraft_core::take_readout::take_readout, in a small pure helper. Keep left_secs: STATE still needs the number for rec_left_s. | New test in apps/wavcraft/src/recording.rs, the_status_numbers_come_from_the_take_readout: 3_120_000 frames at 48000 Hz mono 24-bit with 86_400_000 free bytes gives text containing '1:05', '10:00 left on disk' and no 'DROPPED'; with 480 dropped frames it contains 'DROPPED 480 frames (10 ms)'. | easy | pure-fn | script | none | #1308 |
 | J4.3 | Add pure bars_source(take_peak, input_open, playing, input, output) in app.rs returning the peaks and whether they are the input. Use it in meter_peaks for the peaks and in sync_input for meters.input_view, so the Levels bars, clip light and the input label show the take while recording. | New apps/wavcraft/src/j4_meter_tests.rs, test the_bars_show_the_take_while_recording: (Some(0.5), true, false, [0.1,0.1], [0.0,0.0]) gives ([0.5,0.5], input view true); (None, true, false) gives the input; (None, true, true) and (None, false, false) give the output, view false. | easy | wiring | script | J4.2 |  |
 | J4.4 | Clear the Levels clip lights when a take starts, and add a scripted check that the meter shows the take: record the fake sine and read METERS on the control channel. | tools/alpha/f25.sh prints status pass with two new checks. 'a new take clears the clip lights': before recording 'METERS PUSH 1.0 1.0' answers l_clip=1; right after RECORD start METERS answers l_clip=0. 'the Levels meter shows the take': one second into the take METERS answers l between -7.0 and -5.0, l_clip=0 and view=input. | easy | wiring | script | J4.3, J6.9 |  |
 | J4.5 | Hand check on the 64 GB Linux tablet during a 5-minute USB mic take, with a phone stopwatch and a terminal beside the app. | Must see: Levels bars move with my voice; a clap lights the clip light and it stays lit; at 5:00 elapsed reads 5:00 within 1 s; size matches ls -l within 150 kB; 'left on disk' within 5% of df free bytes / 144000 per channel; dropped absent. Write into docs/checklists/J4.md. | easy | docs | hand, me, linux | J4.1, J4.3 |  |
