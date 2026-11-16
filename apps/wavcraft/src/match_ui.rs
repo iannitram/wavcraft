@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use wavcraft_core::DocState;
 use wavcraft_core::loudness::{self, Loudness};
-use wavcraft_core::match_loudness::{self, MATCH_TO, MatchResult, PRESETS, Target};
+use wavcraft_core::match_loudness::{self, MATCH_TO, MatchResult, MatchTo, PRESETS, Target};
 
 /// A finished Run, for the app to push on the history if the document is still the one it ran on.
 pub struct Finished {
@@ -171,9 +171,10 @@ impl MatchUi {
             egui::Grid::new("match-target").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                 let mut changed = false;
                 ui.label("Match to");
-                let selected = MATCH_TO.iter().find(|(_, m)| *m == self.target.match_to).map_or(MATCH_TO[0].0, |(n, _)| *n);
+                let names = match_to_choices();
+                let selected = match_to_name(self.target.match_to);
                 egui::ComboBox::from_id_salt("match-to").selected_text(selected).show_ui(ui, |ui| {
-                    for (name, m) in MATCH_TO.iter() {
+                    for (name, (_, m)) in names.iter().zip(MATCH_TO.iter()) {
                         if ui.selectable_label(self.target.match_to == *m, *name).clicked() {
                             self.target.match_to = *m;
                             changed = true;
@@ -254,10 +255,14 @@ impl MatchUi {
     }
 }
 
-/// The names of the Match To choices in panel order; the panel draws them from `MATCH_TO` itself.
-#[cfg(test)]
+/// The Match To choices' names in panel order (the first is the default). The Match To combo lists these.
 fn match_to_choices() -> Vec<&'static str> {
     MATCH_TO.iter().map(|(n, _)| *n).collect()
+}
+
+/// The text the Match To combo shows for `t`: that choice's name from `MATCH_TO`.
+fn match_to_name(t: MatchTo) -> &'static str {
+    MATCH_TO.iter().find(|(_, m)| *m == t).map_or("", |(n, _)| *n)
 }
 
 const EMPTY: Loudness = Loudness {
@@ -272,12 +277,15 @@ const EMPTY: Loudness = Loudness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wavcraft_core::match_loudness::MatchTo;
 
     #[test]
     fn g3_panel_offers_three_match_to_choices() {
         assert_eq!(match_to_choices(), vec!["ITU-R BS.1770-3 Loudness", "EBU R128 Loudness", "True Peak Amplitude"]);
         assert_eq!(MatchUi::new().target.match_to, MatchTo::Bs1770);
         assert_eq!(MATCH_TO[0].1, MatchTo::Bs1770);
+        // The combo's shown text is each choice's own name, so it changes with the choice (a fixed label would fail here).
+        for (name, m) in MATCH_TO.iter() {
+            assert_eq!(match_to_name(*m), *name);
+        }
     }
 }
