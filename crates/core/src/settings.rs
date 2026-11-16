@@ -22,6 +22,7 @@
 
 use crate::appearance::{self, Colors, Preset};
 use crate::chanmap::ChannelMap;
+use crate::dither::{DitherType, Shaping};
 use crate::snap::SnapSettings;
 use std::ffi::OsString;
 use std::io;
@@ -55,6 +56,8 @@ const KEY_SNAP_MARKERS: &str = "snap_markers";
 const KEY_RIGHT_CLICK: &str = "right_click";
 const KEY_HIDDEN_PANELS: &str = "hidden_panels";
 const KEY_DITHER: &str = "dither";
+const KEY_DITHER_TYPE: &str = "dither_type";
+const KEY_DITHER_SHAPING: &str = "dither_shaping";
 const KEY_SYNC_SELECTION: &str = "sync_selection";
 const KEY_SYNC_ZOOM: &str = "sync_zoom";
 const KEY_SYNC_PLAYHEAD: &str = "sync_playhead";
@@ -171,6 +174,8 @@ pub const KEYS: [&str; 46] = [
 const FILE_ONLY_KEYS: &[&str] = &[
     KEY_LANGUAGE,
     KEY_DITHER,
+    KEY_DITHER_TYPE,
+    KEY_DITHER_SHAPING,
     KEY_RIGHT_CLICK,
     KEY_CUSTOM_FPS,
     KEY_AMP_SCALE,
@@ -489,6 +494,12 @@ pub struct Settings {
     /// Dither when a save reduces bit depth (item A4; off by default, as in Audition). Kept as
     /// `dither = on`, written only when on, last in the file.
     pub dither: bool,
+    /// The dither type the Convert Sample Type dialog remembers: triangular (the default) or
+    /// rectangular. Written only when it is not triangular. Used while `dither` is on.
+    pub dither_type: DitherType,
+    /// The noise shaping the Convert Sample Type dialog remembers (none, the default, light or
+    /// strong). Written only when it is not none.
+    pub dither_shaping: Shaping,
     /// Crossfade where Delete or Cut closes a gap, in ms (0: none).
     pub cut_join_ms: u32,
     /// Crossfade at every other edit boundary, in ms (0: none).
@@ -603,6 +614,8 @@ impl Default for Settings {
             right_click_menu: false,
             hidden_panels: Vec::new(),
             dither: false,
+            dither_type: DitherType::Triangular,
+            dither_shaping: Shaping::None,
             cut_join_ms: DEFAULT_CUT_JOIN_MS,
             edge_ms: DEFAULT_EDGE_MS,
             output_device: None,
@@ -919,6 +932,15 @@ impl Settings {
             KEY_LANGUAGE => self.language = (!value.is_empty()).then(|| value.to_string()),
             // Only exactly `on` turns it on; the last line in the file wins.
             KEY_DITHER => self.dither = value == "on",
+            KEY_DITHER_TYPE => {
+                self.dither_type = match DitherType::parse(value) {
+                    Some(t @ (DitherType::Triangular | DitherType::Rectangular)) => t,
+                    _ => return Err(format!("{key} is triangular or rectangular")),
+                };
+            }
+            KEY_DITHER_SHAPING => {
+                self.dither_shaping = Shaping::parse(value).ok_or_else(|| format!("{key} is none, light or strong"))?;
+            }
             KEY_CUT_JOIN => self.cut_join_ms = ms(value)?,
             KEY_EDGE => self.edge_ms = ms(value)?,
             KEY_OUTPUT => self.output_device = device(value),
@@ -1245,6 +1267,15 @@ impl Settings {
             out.push_str("# dither: dither when reducing bit depth, on or off (off by default, as in Audition).\n");
             out.push_str("dither = on\n");
         }
+        if self.dither_type != DitherType::Triangular || self.dither_shaping != Shaping::None {
+            out.push_str("# dither_type, dither_shaping: the Convert Sample Type dither type (triangular or rectangular; default triangular) and noise shaping (none, light or strong; default none), written only when not the default.\n");
+            if self.dither_type != DitherType::Triangular {
+                out.push_str(&format!("{KEY_DITHER_TYPE} = {}\n", self.dither_type.name()));
+            }
+            if self.dither_shaping != Shaping::None {
+                out.push_str(&format!("{KEY_DITHER_SHAPING} = {}\n", self.dither_shaping.name()));
+            }
+        }
         out
     }
 
@@ -1311,7 +1342,7 @@ impl Settings {
 
 /// The start of every comment line `Settings::to_text` can write. `merge_into` drops the old
 /// file's copies of these, so each save leaves one copy; other modules' comments are kept.
-const OWN_COMMENTS: [&str; 22] = [
+const OWN_COMMENTS: [&str; 23] = [
     "# WavCraft settings.",
     "# session_folder:",
     "# session_folder_hex:",
@@ -1334,6 +1365,7 @@ const OWN_COMMENTS: [&str; 22] = [
     "# metadata_fields:",
     "# Preferences pages (",
     "# dither:",
+    "# dither_type, dither_shaping:",
 ];
 
 fn parse_bool(key: &str, v: &str) -> Result<bool, String> {

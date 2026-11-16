@@ -5,6 +5,7 @@ use egui::vec2;
 use wavcraft_core::convert::{ConvertSettings, PresetFile, Quality};
 use wavcraft_core::dither::{DEFAULT_SEED, DitherSettings, DitherType, Shaping};
 use wavcraft_core::save::SampleType;
+use wavcraft_core::settings::Settings;
 
 /// Rates offered in the list; any other whole number can be typed.
 const RATES: [u32; 11] = [8_000, 11_025, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
@@ -72,6 +73,23 @@ impl ConvertDialog {
             src_rate,
             src_channels,
         }
+    }
+
+    /// Fill the dither controls from the settings the app keeps (the dialog opens with them).
+    pub fn restore(&mut self, s: &Settings) {
+        self.dithering = s.dither;
+        self.dither_type = match s.dither_type {
+            DitherType::None => DitherType::Triangular,
+            t => t,
+        };
+        self.shaping = s.dither_shaping;
+    }
+
+    /// Write the dither controls into the settings (OK). Cancel never calls this.
+    pub fn remember(&self, s: &mut Settings) {
+        s.dither = self.dithering;
+        s.dither_type = self.dither_type;
+        s.dither_shaping = self.shaping;
     }
 
     /// Fill the controls from `s`.
@@ -323,5 +341,54 @@ mod tests {
         let Some(ds) = s.dither else { panic!("the dialog should always give dither settings") };
         assert_eq!(ds.seed, 7);
         assert_eq!(ds.dither, DitherType::None);
+    }
+
+    /// Remember `d`'s dither choice, save it to a temp file, load it back.
+    fn saved_and_loaded(d: &ConvertDialog, tag: &str) -> Settings {
+        let mut st = Settings::default();
+        d.remember(&mut st);
+        let path = std::env::temp_dir().join(format!("wavcraft-a4-{tag}-{}.txt", std::process::id()));
+        st.save(&path).expect("the test can write a temp settings file");
+        let loaded = Settings::load(&path);
+        let _ = std::fs::remove_file(&path);
+        loaded
+    }
+
+    #[test]
+    fn a4_dither_on_is_remembered() {
+        let mut d = ConvertDialog::new(44_100, 2);
+        d.dithering = true;
+        d.dither_type = DitherType::Triangular;
+        let Ok(s) = d.settings() else { panic!("the settings with dithering on should be usable") };
+        let Some(ds) = s.dither else { panic!("the dialog should always give dither settings") };
+        assert_eq!(ds.dither, DitherType::Triangular);
+
+        let loaded = saved_and_loaded(&d, "a4-on");
+        let mut again = ConvertDialog::new(44_100, 2);
+        again.restore(&loaded);
+        assert!(again.dithering);
+        assert_eq!(again.dither_type, DitherType::Triangular);
+        assert_eq!(again.shaping, Shaping::None);
+    }
+
+    #[test]
+    fn a4_rectangular_and_shaping_are_remembered() {
+        let mut d = ConvertDialog::new(44_100, 2);
+        d.dithering = true;
+        d.dither_type = DitherType::Rectangular;
+        d.shaping = Shaping::Light;
+        let loaded = saved_and_loaded(&d, "a4-rect");
+        let mut again = ConvertDialog::new(44_100, 2);
+        again.restore(&loaded);
+        assert!(again.dithering);
+        assert_eq!(again.dither_type, DitherType::Rectangular);
+        assert_eq!(again.shaping, Shaping::Light);
+
+        d.dithering = false;
+        let loaded = saved_and_loaded(&d, "a4-rect-off");
+        let mut off = ConvertDialog::new(44_100, 2);
+        off.restore(&loaded);
+        assert!(!off.dithering);
+        assert_eq!(off.dither_type, DitherType::Rectangular);
     }
 }
