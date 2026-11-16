@@ -1,4 +1,4 @@
-//! Save (task 06): WAV, AIFF, FLAC and Ogg Vorbis (f93), MP3 as a format only until its writer lands (A3.3), and Sony Wave64, Apple CAF and Sun/NeXT AU (f91). The document is streamed out 64 K frames at a time with
+//! Save (task 06): WAV, AIFF, FLAC, Ogg Vorbis (f93) and MP3 (A3.4, through [`save_mp3`]), and Sony Wave64, Apple CAF and Sun/NeXT AU (f91). The document is streamed out 64 K frames at a time with
 //! [`DocState::read`], never flattened, so a three-hour file saves on an 8 GB machine. Integer
 //! samples are `round(x · 2^(bits−1))`, clamped (dither and noise shaping, [`crate::dither`], only
 //! when the document's `SourceFormat::dither` asks for them, A163): the exact inverse of how they
@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
+use craft_mp3::{Encoder as Mp3Encoder, EncoderConfig};
 use soundcraft_audio_io::SampleFormat;
 
 use crate::dither::Ditherer;
@@ -35,6 +36,7 @@ use crate::doc::edit::ChannelMask;
 use crate::doc::{ChunkInfo, DocState, SourceFormat};
 use crate::flac_enc::{BLOCK_SIZE, Encoder};
 use crate::meta::Bext;
+use crate::mp3_options::{Mp3Options, mp3_check};
 use crate::store::BLOCK_FRAMES;
 
 /// How samples are stored in the saved file.
@@ -266,8 +268,10 @@ pub enum SaveFormat {
     Flac,
     /// Lossy, VBR by quality (-1 to 10); the sample type is ignored (f93).
     Vorbis,
-    /// Lossy MP3 (A3.3): the format is known, but its writer has not landed, so a save refuses it
-    /// with [`SaveError::Unsupported`]. The sample type is ignored, as for Vorbis.
+    /// Lossy MP3 (A3.4): written by the craft-mp3 encoder with the bitrate and mono choices of
+    /// `save_mp3` (the defaults through `save`). Only 32000, 44100 or 48000 Hz and mono or stereo
+    /// can be saved; anything else is refused with [`SaveError::Unsupported`]. The sample type is
+    /// ignored, as for Vorbis.
     Mp3,
 }
 
@@ -435,8 +439,8 @@ struct Hooks<'a> {
     /// The batch runner's per-chunk change (`None` for every other save): the samples written are
     /// the transform's `channels`, not the document's.
     transform: Option<&'a RefCell<Transform<'a>>>,
-    /// Item A4: dither for a 16 or 24-bit save; when enabled it replaces the document's own dither.
-    a4_dither: DitherOptions,
+    /// MP3 only (A3.4): the bitrate and mono choices; the defaults for every other format.
+    mp3: Mp3Options,
 }
 
 fn no_hooks<'a>() -> Hooks<'a> {
@@ -453,7 +457,7 @@ fn no_hooks<'a>() -> Hooks<'a> {
         cancel: None,
         block_delay: Duration::ZERO,
         transform: None,
-        a4_dither: DitherOptions::OFF,
+        mp3: Mp3Options::default(),
     }
 }
 
@@ -519,19 +523,6 @@ pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dy
     save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, no_hooks())
 }
 
-/// Save `doc` to `target` as a WAV file of `ty` samples, with `dither` applied when the samples
-/// are reduced to 16 or 24 bits (item A4). With `dither.enabled` false this writes exactly what
-/// [`save_wav`] writes. One [`Tpdf`] seeded with the channel number runs across the whole save.
-pub fn save_wav_dithered(
-    doc: &DocState,
-    target: &Path,
-    ty: SampleType,
-    dither: DitherOptions,
-    progress: &mut dyn FnMut(f64),
-) -> Result<(), SaveError> {
-    save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, Hooks { a4_dither: dither, ..no_hooks() })
-}
-
 /// A part of a document to write as a WAV file: some channels (in this order), a frame range,
 /// and the bytes of the `cue `/`LIST` chunks to put after the audio (empty for none).
 /// Used by Extract Channels and by exporting ranges (f79). A slice never copies the source's
@@ -595,6 +586,14 @@ pub fn save_wav_transformed(
 /// any kind removes this save's temporary file and leaves `target` as it was.
 pub fn save(doc: &DocState, target: &Path, format: SaveFormat, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
     save_inner(doc, target, format, ty, &Part::whole(doc), progress, no_hooks())
+}
+
+/// Save `doc` to `target` as MP3 (A3.4) with `options`: the bitrate, and mono (a stereo document
+/// refuses it until A3.5). It is streamed through the craft-mp3 encoder and replaced atomically
+/// like every save. A rate or channel count MP3 cannot hold is refused with
+/// [`SaveError::Unsupported`] before any file is made.
+pub fn save_mp3(doc: &DocState, target: &Path, options: Mp3Options, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
+    save_inner(doc, target, SaveFormat::Mp3, SampleType::Float32, &Part::whole(doc), progress, Hooks { mp3: options, ..no_hooks() })
 }
 
 /// [`save_wav`] for any [`Container`]: the same atomic temporary-file-and-rename, the same streaming.
@@ -692,7 +691,12 @@ fn save_inner(
         return Err(SaveError::Unsupported(format!("{} cannot hold {} samples", format.name(), ty.describe())));
     }
     if format == SaveFormat::Mp3 {
-        return Err(SaveError::Unsupported("MP3 saving is not available yet".into()));
+        // Checked before the temporary file is made, so a refused save leaves no file behind.
+        let channels = u16::try_from(part.channels.len()).unwrap_or(u16::MAX);
+        let out_channels = mp3_check(doc.sample_rate(), channels, hooks.mp3).map_err(SaveError::Unsupported)?;
+        if usize::from(out_channels) != part.channels.len() {
+            return Err(SaveError::Unsupported("MP3 mono mixdown is not available yet".into()));
+        }
     }
     remove_leftover_temps(target);
     let tmp = TempFile::create(target, false).map_err(SaveError::Io)?;
@@ -890,6 +894,9 @@ fn write_stream(
     if format == SaveFormat::Vorbis {
         return write_vorbis_stream(doc, file, part, progress, hooks).map(|file| (file, Vec::new()));
     }
+    if format == SaveFormat::Mp3 {
+        return write_mp3_stream(doc, file, part, progress, hooks).map(|file| (file, Vec::new()));
+    }
     if let Some(container) = hooks.plain {
         // Wave64, CAF and AU have no RIFF chunk table: nothing is recorded for a later copy.
         return write_plain(doc, file, container, ty, part, progress, hooks).map(|file| (file, Vec::new()));
@@ -991,7 +998,7 @@ fn write_stream(
             })?;
         }
         SaveFormat::Vorbis => return Err(invalid("Vorbis has its own writer")),
-        SaveFormat::Mp3 => return Err(invalid("MP3 has no writer yet")),
+        SaveFormat::Mp3 => return Err(invalid("MP3 has its own writer")),
     }
     let file = out.into_inner().map_err(|e| e.into_error())?;
     file.sync_all()?;
@@ -1051,6 +1058,42 @@ fn write_vorbis_stream(doc: &DocState, file: File, part: &Part, progress: &mut d
     Ok(file)
 }
 
+/// The MP3 writer (A3.4): the craft-mp3 encoder takes the document in 64 K-frame blocks, and the
+/// stream is written to the temporary file once the encoder has finished.
+///
+/// **Why the stream is held in memory:** craft-mp3 v1.1.0 computes the Info tag's CRC over the whole
+/// stream in `finish`, which reads it from the very `Vec` the frames were written into. So the `Vec`
+/// must keep every frame until the end and must not be drained between calls. Only the encoded
+/// output is held (about 86 MB per hour at 192 kbps), never the source audio. A streaming `finish`
+/// in craft-mp3 would let this write frames as they come (the decider's note on #1351).
+fn write_mp3_stream(doc: &DocState, mut file: File, part: &Part, progress: &mut dyn FnMut(f64), hooks: Hooks) -> io::Result<File> {
+    let channels = u16::try_from(part.channels.len()).map_err(|_| invalid("too many channels for MP3"))?;
+    let config = EncoderConfig::new(doc.sample_rate(), channels, hooks.mp3.bitrate_kbps);
+    let mut enc = Mp3Encoder::new(config).map_err(|e| invalid(&format!("MP3 encoder: {e}")))?;
+    // Sized up front from the bit rate times the duration, so the Vec never grows by doubling (a
+    // doubling peaks near twice the stream: about 800 MB for 3 hours at 320 kbps). The slack covers
+    // the tag frame, the encoder's delay and frame rounding. Saturating arithmetic: no overflow.
+    let frames = part.frames.end.saturating_sub(part.frames.start);
+    let stream_bytes = u64::from(hooks.mp3.bitrate_kbps).saturating_mul(125).saturating_mul(frames) / u64::from(doc.sample_rate().max(1));
+    let capacity = usize::try_from(stream_bytes.saturating_add(16 * 1024)).unwrap_or(0);
+    let mut mp3: Vec<u8> = Vec::with_capacity(capacity);
+    stream_samples(doc, part, progress, hooks, |bufs, n| {
+        let block: Vec<&[f32]> = bufs.iter().map(|b| &b[..n]).collect();
+        enc.encode_planar(&block, &mut mp3);
+        Ok(())
+    })?;
+    if let Some(tag) = enc.finish(&mut mp3) {
+        // A checked copy over the placeholder frame at the start. `InfoTag::write_to` is not used:
+        // it panics on a short stream, and this returns an error instead.
+        let head = tag.as_bytes();
+        let dst = mp3.get_mut(..head.len()).ok_or_else(|| invalid("MP3 encoder gave a short stream"))?;
+        dst.copy_from_slice(head);
+    }
+    file.write_all(&mp3)?;
+    file.sync_all()?;
+    Ok(file)
+}
+
 /// The PCM samples of `part` in `ty`, written to `out` (`big`: big-endian).
 fn write_pcm(
     out: &mut impl Write,
@@ -1067,9 +1110,7 @@ fn write_pcm(
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * out_channels * ty.bytes());
     // A163: one quantiser per written channel for the whole file, so its noise and filter state
     // carry across blocks. With the document's dither off it is plain [`quantize`].
-    let mut dithers: Vec<Dither> = (0..out_channels)
-        .map(|ch| if hooks.a4_dither.enabled { Dither::A4(Tpdf::new(ch as u64)) } else { Dither::Doc(Ditherer::new(&doc.source().dither, ch)) })
-        .collect();
+    let mut dithers: Vec<Ditherer> = (0..out_channels).map(|ch| Ditherer::new(&doc.source().dither, ch)).collect();
     stream_samples(doc, part, progress, hooks, |bufs, n| {
         let bufs: &[Vec<f32>] = match xf.as_mut() {
             Some(t) => {
@@ -1132,25 +1173,8 @@ fn cancelled(hooks: Hooks) -> bool {
     hooks.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
 }
 
-/// The quantiser of one written channel: the document's own dither (A163) or the save's A4 dither.
-enum Dither {
-    Doc(Ditherer),
-    A4(Tpdf),
-}
-
-impl Dither {
-    fn quantize(&mut self, x: f32, bits: u32) -> i32 {
-        match self {
-            Dither::Doc(d) => d.quantize(x, bits),
-            // A4 dithers 16 and 24 bits only; 32-bit integers are rounded as always.
-            Dither::A4(noise) if bits == 16 || bits == 24 => quantize_dithered(x, bits, noise),
-            Dither::A4(_) => quantize(x, bits),
-        }
-    }
-}
-
 /// One sample as bytes: little-endian unless `big`.
-fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool, dither: &mut Dither) {
+fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool, dither: &mut Ditherer) {
     let mut quantize = |x: f32, bits: u32| dither.quantize(x, bits);
     match (ty, big) {
         (SampleType::Int16, false) => bytes.extend_from_slice(&(quantize(x, 16) as i16).to_le_bytes()),
@@ -1316,7 +1340,8 @@ pub(crate) fn write_header(
 pub struct SizeEstimate {
     pub bytes: u64,
     /// True for PCM (WAV, AIFF): the size is the file's size, from the header writer itself.
-    /// False for FLAC, which depends on the audio.
+    /// False for FLAC, which depends on the audio, and for MP3, whose constant-bit-rate size
+    /// leaves out the frame headers and tags of the real file.
     pub exact: bool,
 }
 
@@ -1361,11 +1386,15 @@ fn pcm_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) 
 
 /// How big saving `doc` as `format` with `ty` samples would be: exact for WAV and AIFF, an
 /// estimate for FLAC (a few evenly spread blocks are really encoded and the rest is scaled from
-/// them). Errors are what the save would refuse (too long for AIFF, a type FLAC can't hold).
+/// them), and for MP3 the constant-bit-rate size at 192 kbps ([`estimate_mp3_size`]). Errors are
+/// what the save would refuse (too long for AIFF, a type FLAC can't hold).
 pub fn estimate_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) -> io::Result<SizeEstimate> {
     let (frames, channels, rate) = (doc.len_frames(), doc.channel_count(), doc.sample_rate());
     if !format.accepts(ty) {
         return Err(invalid(&format!("{} cannot hold {} samples", format.name(), ty.describe())));
+    }
+    if format == SaveFormat::Mp3 {
+        return estimate_mp3_size(doc, Mp3Options::default());
     }
     if format == SaveFormat::Vorbis {
         return Err(invalid("an Ogg Vorbis size is not known until it is encoded"));
@@ -1400,6 +1429,23 @@ pub fn estimate_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: A
     Ok(SizeEstimate { bytes: head.0 + (per_frame * frames as f64).round() as u64, exact: false })
 }
 
+/// The size of an MP3 save of `doc` with `options` at constant bit rate: bit rate times duration
+/// divided by 8, rounded to the nearest byte (`frames · kbps · 125 / rate`). It is an estimate
+/// (`exact` is false): the frame headers and tags of the real file are not counted, and the
+/// bit rate is not varied. Errors are what the MP3 save would refuse: the sample rate, the
+/// channel count or the bit rate. The bit rate is the same for mono and stereo, so the channel
+/// count matters only for that check.
+pub fn estimate_mp3_size(doc: &DocState, options: Mp3Options) -> io::Result<SizeEstimate> {
+    let (frames, channels, rate) = (doc.len_frames(), doc.channel_count(), doc.sample_rate());
+    let channels = u16::try_from(channels).map_err(|_| invalid("too many channels for MP3"))?;
+    mp3_check(rate, channels, options).map_err(|text| invalid(&text))?;
+    // `mp3_check` has accepted the rate, so it is never zero here.
+    // Bytes times the rate: frames · kbps · 125, before dividing by the rate.
+    let bytes_times_rate = u128::from(frames) * u128::from(options.bitrate_kbps) * 125;
+    let bytes = (bytes_times_rate + u128::from(rate) / 2) / u128::from(rate);
+    Ok(SizeEstimate { bytes: u64::try_from(bytes).unwrap_or(u64::MAX), exact: false })
+}
+
 /// Write `bytes` to `target` with the same care as a WAV save (f117, the session file): a fresh
 /// exclusive temporary file beside it (owner-only on Unix when `owner_only`), written, synced to
 /// disk, then renamed over the target; the folder is synced after. Any failure removes the
@@ -1426,78 +1472,6 @@ pub fn write_file_atomic(target: &Path, bytes: &[u8], owner_only: bool) -> io::R
         let _ = d.sync_all(); // best effort: the rename itself is done
     }
     Ok(())
-}
-
-/// The dither types offered when reducing bit depth (Audition's Convert Sample Type lists
-/// Triangular first).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DitherType {
-    /// TPDF: the sum of two independent uniform values, each half an LSB either side of zero.
-    #[default]
-    Triangular,
-}
-
-/// Noise shaping applied with dither. Only "None" for now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NoiseShaping {
-    #[default]
-    None,
-}
-
-/// The dither settings of a bit-depth reduction. Off by default, as in Audition, so a save of
-/// untouched audio stays bit for bit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DitherOptions {
-    pub enabled: bool,
-    pub kind: DitherType,
-    pub shaping: NoiseShaping,
-}
-
-impl DitherOptions {
-    const OFF: DitherOptions = DitherOptions { enabled: false, kind: DitherType::Triangular, shaping: NoiseShaping::None };
-}
-
-/// Triangular (TPDF) dither noise in LSBs, from a SplitMix64 generator: deterministic for a seed.
-#[derive(Debug, Clone)]
-pub struct Tpdf {
-    state: u64,
-}
-
-impl Tpdf {
-    /// A generator whose state starts at `seed`.
-    pub fn new(seed: u64) -> Tpdf {
-        Tpdf { state: seed }
-    }
-
-    /// One SplitMix64 step: the next 64 random bits.
-    pub fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// The next dither value in LSBs, in (-1, 1): two uniform values in [-0.5, 0.5) added.
-    pub fn next_lsb(&mut self) -> f64 {
-        let r1 = self.next_u64();
-        let r2 = self.next_u64();
-        let divisor = 9_007_199_254_740_992.0; // 2^53
-        let val1 = (r1 >> 11) as f64 / divisor - 0.5;
-        let val2 = (r2 >> 11) as f64 / divisor - 0.5;
-        val1 + val2
-    }
-}
-
-/// `x` (full scale ±1) as a `bits`-bit integer with TPDF dither from `noise` added before
-/// rounding, then clamped; NaN is 0. Draws exactly one [`Tpdf::next_lsb`] per call.
-pub fn quantize_dithered(x: f32, bits: u32, noise: &mut Tpdf) -> i32 {
-    let d = noise.next_lsb();
-    if x.is_nan() {
-        return 0;
-    }
-    let scale = (1u64 << (bits - 1)) as f64;
-    (f64::from(x) * scale + d).round().clamp(-scale, scale - 1.0) as i32
 }
 
 /// `x` (full scale ±1) as a `bits`-bit integer, rounded and clamped; NaN is 0.

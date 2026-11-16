@@ -1,5 +1,6 @@
-//! F1: the Effects Rack runs real effects (F1.1 filters; F1.2 and F1.3 add more).
+//! F1: the Effects Rack runs real effects (F1.1 filters, F1.2 Dynamics; F1.3 adds more).
 
+use std::f64::consts::TAU;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -156,4 +157,52 @@ fn f1_rack_filters_keep_channels_apart() {
         let d = max_diff(&got[0], &want[0]);
         assert!(d <= 1e-6, "{id}: left channel differs from the mono result by {d}");
     }
+}
+
+/// A 440 Hz sine of amplitude `amp`.
+fn sine(amp: f64, frames: usize) -> Vec<f32> {
+    (0..frames).map(|n| (amp * (TAU * 440.0 * n as f64 / f64::from(RATE)).sin()) as f32).collect()
+}
+
+/// 1 s at -6 dBFS, then 1 s at -40 dBFS.
+fn burst() -> Vec<f32> {
+    let mut x = sine(10f64.powf(-6.0 / 20.0), 48_000);
+    x.extend(sine(10f64.powf(-40.0 / 20.0), 48_000));
+    x
+}
+
+#[test]
+fn f1_rack_dynamics_matches_offline_apply() {
+    let input = vec![burst()];
+    for args in ["lookahead_ms=0", "lookahead_ms=3 attack_ms=2 release_ms=30 makeup_db=3"] {
+        let want = offline("dynamics", args, &input);
+        for block in [64, 1024] {
+            let got = through_rack("dynamics", args, &input, block);
+            assert!(got[0].iter().all(|v| v.is_finite()), "{args}, block {block}: the rack gave a non-finite sample");
+            let d = max_diff(&got[0], &want[0]);
+            assert!(d <= 1e-6, "{args}, block {block}: worst difference from effects::apply {d}");
+            let peak = got[0][24_000..48_000].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            assert!(peak < 0.45, "{args}, block {block}: the rack passed the audio through (peak {peak})");
+        }
+    }
+}
+
+#[test]
+fn f1_rack_dynamics_reset_matches_a_new_rack() {
+    let cfg = rack_for("dynamics", "lookahead_ms=3");
+    let quiet = vec![sine(10f64.powf(-40.0 / 20.0), 2_048)];
+    let mut used = RackProcessor::new(&cfg, 1, RATE).unwrap();
+    let mut loud = vec![sine(10f64.powf(-6.0 / 20.0), 48_000)];
+    run_blocks(&mut used, &mut loud, 1024);
+    used.reset();
+    let mut after = quiet.clone();
+    run_blocks(&mut used, &mut after, 1024);
+    assert_ne!(after, quiet, "the rack passed the audio through");
+    // 3 ms at 48 kHz is 144 frames of delay line, which reset must have cleared.
+    assert!(after[0][..144].iter().all(|v| *v == 0.0), "the delay line was not cleared");
+
+    let mut fresh = RackProcessor::new(&cfg, 1, RATE).unwrap();
+    let mut expected = quiet.clone();
+    run_blocks(&mut fresh, &mut expected, 1024);
+    assert_eq!(after, expected, "reset state differs from a new rack");
 }

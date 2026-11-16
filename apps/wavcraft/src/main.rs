@@ -19,6 +19,7 @@ mod diagnostics_panel;
 mod display;
 mod doclist;
 mod effect_dialog;
+mod effect_preview;
 // Not called yet: E1.2 will call it when a fade handle is released.
 #[allow(dead_code)]
 mod fade_drag;
@@ -82,6 +83,12 @@ fn main() -> eframe::Result {
             Err(reason) => exit_error(reason),
         }
     }
+    if let cli::Command::Mcp { attach } = &command {
+        match serve_mcp(*attach) {
+            Ok(()) => std::process::exit(0),
+            Err(reason) => exit_error(reason),
+        }
+    }
     if let cli::Command::Inspect { file, session_dir } = &command {
         match inspect(file, session_dir.clone().unwrap_or_else(conversion_sessions_dir)) {
             Ok(text) => {
@@ -137,6 +144,35 @@ fn inspect(file: &std::path::Path, sessions: PathBuf) -> Result<String, String> 
         let _ = writeln!(text, "{key}: {value}");
     }
     Ok(text)
+}
+
+/// `wavcraft mcp`: answer MCP lines on standard input over a headless engine; `mcp --attach`: over the
+/// running app's control port (`WAVCRAFT_CONTROL_PORT`). The connection is made before any line is read,
+/// so a missing port fails at once.
+fn serve_mcp(attach: bool) -> Result<(), String> {
+    if attach {
+        let mut backend = wavcraft_automation::remote::Remote::from_env().map_err(|e| e.to_string())?;
+        serve(&mut backend)
+    } else {
+        let mut backend = wavcraft_automation::headless::Headless::new(conversion_sessions_dir());
+        serve(&mut backend)
+    }
+}
+
+/// One MCP reply per input line, flushed as it is written; the end of standard input ends the loop.
+fn serve(backend: &mut impl wavcraft_automation::Backend) -> Result<(), String> {
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    for line in stdin.lock().lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        if let Some(reply) = wavcraft_automation::mcp::handle(&line, backend) {
+            writeln!(out, "{reply}").map_err(|e| e.to_string())?;
+            out.flush().map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 /// On Windows, start wgpu with DirectX 12 only unless `WGPU_BACKEND` says otherwise. SoundCraft

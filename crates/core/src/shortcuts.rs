@@ -260,6 +260,8 @@ pub enum Command {
     /// Window › Workspace: switch to the `n`th workspace, 1 to 9, in the order the menu lists
     /// them (f96).
     Workspace(u8),
+    /// Process › Noise Reduction…: open its dialog; it does not run the effect.
+    NoiseReductionDialog,
 }
 
 /// Names and menu text of `Command::Workspace(1..=9)`.
@@ -297,6 +299,7 @@ impl Command {
             Command::Close => "file.close",
             Command::PlayStop => "transport.playStop",
             Command::Workspace(n) => WORKSPACE_NAMES[usize::from(n.clamp(1, 9)) - 1],
+            Command::NoiseReductionDialog => "nr.open_dialog",
         }
     }
 
@@ -304,6 +307,7 @@ impl Command {
     pub fn all() -> Vec<Command> {
         let mut v = vec![Command::Open, Command::Save, Command::SaveAs, Command::Close, Command::PlayStop];
         v.extend((1..=9).map(Command::Workspace));
+        v.push(Command::NoiseReductionDialog);
         v.extend(actions::TABLE.iter().map(|a| Command::Action(a.id)));
         v
     }
@@ -323,6 +327,7 @@ impl Command {
             Command::Close => "Close",
             Command::PlayStop => "Play/Stop",
             Command::Workspace(n) => WORKSPACE_LABELS[usize::from(n.clamp(1, 9)) - 1],
+            Command::NoiseReductionDialog => "Noise Reduction…",
         }
     }
 }
@@ -368,6 +373,7 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::Clipboard4, cmd("4")),
     act(ActionId::Clipboard5, cmd("5")),
     act(ActionId::CaptureNoisePrint, shift("P")),
+    bind(Command::NoiseReductionDialog, cmd_shift("P")),
     act(ActionId::ConvertSampleType, shift("T")),
     act(ActionId::Delete, key("Delete")),
     act(ActionId::Delete, key("Backspace")),
@@ -413,6 +419,8 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::ToolZoom, key("Z")),
     // The Marquee tool (B135); E is free in the table.
     act(ActionId::ToolMarquee, key("E")),
+    // Match Loudness panel (G3.4, Q11): Alt+5.
+    act(ActionId::ToggleMatchPanel, alt("5")),
     // Findings navigation (K3.2): F8 moves to the next finding, Shift+F8 to the previous.
     act(ActionId::CheckNext, key("F8")),
     act(ActionId::CheckPrev, shift("F8")),

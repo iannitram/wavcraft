@@ -3771,6 +3771,11 @@ impl WaveApp {
             "transport" => self.transport_panel(ui),
             "match" => self.match_panel(ui),
             "files" => self.files_panel(ui),
+            "rack" => {
+                let can_apply = self.editor.is_some() && self.saving.is_none() && self.running.is_none();
+                let playing = self.player.is_playing();
+                self.rack.show(ui, playing, can_apply);
+            }
             _ => {}
         }
     }
@@ -5140,7 +5145,32 @@ impl WaveApp {
                 let name = self.workspaces.nth(usize::from(n)).ok_or_else(|| format!("there is no workspace {n}"))?;
                 self.workspace_command(&format!("switch {name}")).map(|()| false)
             }
+            // Process › Noise Reduction…: the dialog only; OK in it runs the effect.
+            Command::NoiseReductionDialog => {
+                let i = wavcraft_core::effects::all()
+                    .iter()
+                    .position(|e| e.id() == "noise_reduction")
+                    .ok_or_else(|| "Noise Reduction is not available".to_string())?;
+                let i = u16::try_from(i).map_err(|_| "Noise Reduction is not available".to_string())?;
+                let sel = self.selection_range();
+                let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
+                if !editor.enabled(ActionId::Effect(i), &sel) || self.saving.is_some() || self.running.is_some() {
+                    return Err("Noise Reduction is not available now".to_string());
+                }
+                self.open_effect_dialog(i);
+                Ok(false)
+            }
         }
+    }
+
+    /// Open the dialog for the effect at `i` in `effects::all()`, from the settings it last ran
+    /// with when it was the last command, else from the defaults.
+    fn open_effect_dialog(&mut self, i: u16) {
+        let last = self.editor.as_ref().and_then(|e| match &e.last {
+            Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
+            _ => None,
+        });
+        self.effect_dialog = EffectDialog::new(i, last);
     }
 
     /// The open file's name without its folder and extension, for the names of files made from it.
@@ -5235,6 +5265,11 @@ impl WaveApp {
         if id == ActionId::EpisodeCheck {
             let Some(state) = self.editor.as_ref().map(|e| e.history.current().clone()) else { return Err("no file is open".to_string()) };
             self.check_run.start(state, ctx);
+            return Ok(false);
+        }
+        if id == ActionId::ToggleMatchPanel {
+            let shown = !self.panels.is_shown("match");
+            self.set_panel("match", shown);
             return Ok(false);
         }
         // The snapping switches are settings: they flip with no file open too.
@@ -6500,7 +6535,7 @@ impl WaveApp {
     /// Draw the effect dialog, if up, and carry out its answer.
     fn effect_dialog_ui(&mut self, ctx: &egui::Context) {
         let Some(dialog) = self.effect_dialog.as_mut() else { return };
-        match dialog.show(ctx) {
+        match dialog.show(ctx, self.rack.preset_store()) {
             Some(Answer::Preview) => {
                 if let Err(why) = self.start_preview() {
                     self.error = Some(why);
@@ -6676,11 +6711,10 @@ impl WaveApp {
         }
     }
 
-    /// Draw the Effects Rack window, carry out what it asked for, and keep the player's copy of
-    /// the rack current.
+    /// Poll the rack's VST3 scan, carry out what the docked Effects Rack panel asked for, and keep
+    /// the player's copy of the rack current.
     fn rack_ui(&mut self, ctx: &egui::Context) {
-        let can_apply = self.editor.is_some() && self.saving.is_none() && self.running.is_none();
-        self.rack.show(ctx, self.player.is_playing(), can_apply);
+        self.rack.poll_scan();
         for request in std::mem::take(&mut self.rack.requests) {
             match request {
                 Request::EditSlot(i) => self.effect_dialog = self.rack.dialog_for(i),
@@ -7684,7 +7718,7 @@ impl WaveApp {
                     }
                 }
                 match &est {
-                    Some(Ok(e)) => ui.label(format_size_label(e)),
+                    Some(Ok(e)) => ui.label(format_size_label(e, self.export_choice.format)),
                     Some(Err(why)) => ui.colored_label(theme::pal().alert, why),
                     None => ui.label(""),
                 };
@@ -10222,7 +10256,9 @@ impl WaveApp {
         }
         ui.separator();
         if ui.button("Effects Rack…").clicked() {
-            self.rack.open = !self.rack.open;
+            self.set_panel("rack", true);
+            self.layout.activate("rack");
+            self.layout_dirty = true;
             ui.close();
         }
         if v1::offered(Feature::Diagnostics) && ui.button(Feature::Diagnostics.menu_text()).clicked() {
@@ -10245,18 +10281,36 @@ impl WaveApp {
         }
         match chosen {
             Some((ActionId::Effect(i), true)) => {
-                // Start from the settings this effect last ran with, if it was the last command.
-                let last = self.editor.as_ref().and_then(|e| match &e.last {
-                    Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
-                    _ => None,
-                });
-                self.effect_dialog = EffectDialog::new(i, last);
+                self.open_effect_dialog(i);
                 ui.close();
             }
             Some((id, _)) => {
                 let _ = self.run_action(id, ui.ctx());
             }
             None => {}
+        }
+    }
+
+    /// The Favorites menu: the favorite effects (`menus::FAVORITES`), each drawn with "…". A click
+    /// opens the effect dialog for any `ActionId::Effect`, starting from the settings it last ran
+    /// with; any other action runs at once.
+    fn favorites_menu(&mut self, ui: &mut egui::Ui) {
+        let sel = self.selection_range();
+        let mut chosen = None;
+        for f in menus::FAVORITES {
+            let Some(a) = menus::favorite_action(f) else { continue };
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none() && self.running.is_none();
+            if ui.add_enabled(enabled, egui::Button::new(format!("{}…", f.label))).clicked() {
+                chosen = Some(a.id);
+            }
+        }
+        if let Some(id) = chosen {
+            if let ActionId::Effect(i) = id {
+                self.open_effect_dialog(i);
+                ui.close();
+            } else {
+                let _ = self.run_action(id, ui.ctx());
+            }
         }
     }
 
@@ -10558,6 +10612,7 @@ impl WaveApp {
                 }
             });
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
+            ui.menu_button("Favorites", |ui| self.favorites_menu(ui));
             ui.menu_button("Generate", |ui| self.generate_menu(ui));
             ui.menu_button(tr("menu.view"), |ui| {
                 let mut switched = ui.radio_value(&mut self.mtv.show, false, "Waveform editor").clicked();
@@ -12639,14 +12694,13 @@ fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_fo
         .collect();
     rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
-        // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
+        // Alt+1 to Alt+4 and Alt+6 to Alt+8 enable or disable channels 1 to 4 and 6 to 8 (A132). Alt+5 is the Match Loudness panel (G3.4, Q11).
         let mut pressed: Vec<Command> = if typing || other_focus || float_space_only {
             Vec::new()
         } else {
-            [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
+            [(0u8, Key::Num1), (1, Key::Num2), (2, Key::Num3), (3, Key::Num4), (5, Key::Num6), (6, Key::Num7), (7, Key::Num8)]
                 .into_iter()
-                .enumerate()
-                .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(n as u8))))
+                .filter_map(|(ch, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(ch))))
                 .collect()
         };
         pressed.extend(rows.iter().filter_map(|(command, k)| {
@@ -12976,11 +13030,14 @@ fn format_label(format: SaveFormat, aiff: AiffKind) -> &'static str {
     if format == SaveFormat::Aiff { aiff.describe() } else { format.name() }
 }
 
-/// The estimated size line of the export dialog.
-fn format_size_label(e: &SizeEstimate) -> String {
+/// The estimated size line of the export dialog. An MP3 estimate is the constant-bit-rate size
+/// (A3.10); the FLAC estimate depends on the audio.
+fn format_size_label(e: &SizeEstimate, format: SaveFormat) -> String {
     let human = wavcraft_core::space::format_bytes(e.bytes);
     if e.exact {
         format!("File size: {human} ({} bytes)", e.bytes)
+    } else if format == SaveFormat::Mp3 {
+        format!("File size: about {human} (estimate: constant bit rate)")
     } else {
         format!("File size: about {human} (estimate: FLAC depends on the audio)")
     }
@@ -13351,6 +13408,10 @@ mod tests {
 mod issue1219_tests;
 
 #[cfg(test)]
+#[path = "g3_alt5_tests.rs"]
+mod g3_alt5_tests;
+
+#[cfg(test)]
 #[path = "c5_6_space_button_tests.rs"]
 mod c5_6_space_button_tests;
 
@@ -13385,6 +13446,10 @@ mod m2_map_tests;
 #[cfg(test)]
 #[path = "n1_parity_tests.rs"]
 mod n1_parity_tests;
+
+#[cfg(test)]
+#[path = "a3_mp3_tests.rs"]
+mod a3_mp3_tests;
 
 #[cfg(test)]
 mod reset_tests {
@@ -13508,6 +13573,10 @@ mod issue369_tests;
 mod issue377_tests;
 
 #[cfg(test)]
+#[path = "f3_2_effect_preset_tests.rs"]
+mod f3_2_effect_preset_tests;
+
+#[cfg(test)]
 #[path = "a2_title_star_tests.rs"]
 mod a2_title_star_tests;
 
@@ -13530,6 +13599,10 @@ mod j6_9_state_tests;
 #[cfg(test)]
 #[path = "c5_playhead_move_tests.rs"]
 mod c5_playhead_move_tests;
+
+#[cfg(test)]
+#[path = "g2_4_noise_dialog_tests.rs"]
+mod g2_4_noise_dialog_tests;
 
 #[cfg(test)]
 #[path = "d5_drop_notice_tests.rs"]
