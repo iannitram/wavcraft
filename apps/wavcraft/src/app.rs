@@ -4570,7 +4570,7 @@ impl WaveApp {
 
     /// Record now with the last format used (the default the first time): no dialog (C031).
     fn quick_record(&mut self) -> Result<PathBuf, String> {
-        let fmt = self.rec.last_format();
+        let fmt = self.rec.start_format(self.rec.device_channels());
         self.start_recording(fmt)
     }
 
@@ -10461,7 +10461,7 @@ impl WaveApp {
                 ui.separator();
                 let idle = !self.rec.is_active() && self.opening.is_none() && self.saving.is_none();
                 if ui.add_enabled(idle, egui::Button::new("New Recording…")).clicked() {
-                    self.rec.dialog = Some(self.rec.last_format());
+                    self.rec.dialog = Some(self.rec.start_format(self.rec.device_channels()));
                 }
                 if ui.add_enabled(idle, egui::Button::new("Record Now").shortcut_text("Shift+Space")).clicked() {
                     let _ = self.quick_record();
@@ -10741,7 +10741,7 @@ impl WaveApp {
                 .on_hover_text("New Recording (Shift+Space records at once with the last settings)")
                 .clicked()
             {
-                self.rec.dialog = Some(self.rec.last_format());
+                self.rec.dialog = Some(self.rec.start_format(self.rec.device_channels()));
             }
         });
     }
