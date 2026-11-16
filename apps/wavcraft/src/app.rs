@@ -929,7 +929,7 @@ impl WaveApp {
         let roots = recovery::roots(&sessions.path, &default_sessions_root());
         let recovery = {
             let ctx = cc.egui_ctx.clone();
-            Recovery::new(roots, crate::recording::record_dir().ok(), move || ctx.request_repaint())
+            Recovery::new(roots, crate::recording::record_dir(settings.recordings_folder.as_deref()).ok(), move || ctx.request_repaint())
         };
         // f46: the defaults with the user's key file applied; f60: the active shortcut set, when
         // there is one, is what the app starts with.
@@ -4375,6 +4375,7 @@ impl WaveApp {
         self.player.set_muted(true);
         self.rec.monitor_default = self.settings.monitor_input;
         self.rec.input_device = self.settings.input_device.clone();
+        self.rec.recordings_folder = self.settings.recordings_folder.clone();
         match self.rec.start(fmt, max_secs) {
             Ok(path) => {
                 self.error = None;
@@ -4441,6 +4442,7 @@ impl WaveApp {
         self.player.set_muted(!punch);
         self.rec.monitor_default = self.settings.monitor_input;
         self.rec.input_device = self.settings.input_device.clone();
+        self.rec.recordings_folder = self.settings.recordings_folder.clone();
         match self.rec.start_with(fmt, limit, punch) {
             Ok(path) => {
                 self.rec.set_into(plan, base, self.doc_id, punch.then_some(from), fmt.rate);
@@ -8258,7 +8260,7 @@ impl WaveApp {
                         )
                     }
                     None => format!(
-                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0 {win} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} snapmarkers={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
+                        "OK frames=0 channels=0 rate=0 selection=0-0 selch=- steps=0 cursor=0 busy={} meta={} progress={progress} unsaved=0{rec_state} {win} playing={} position={} device={} reopens={} {view} vzoom={vzoom:.2} ampscale={ampscale} zfactor={zfactor:.2} layout={layout} {tstate} {spectral} time_display={} tempo={} meter={} selection_text=- metronome={} countin={} snap_frames={} snap={} snapzero={} snaprc={} snaprf={} snapedges={} snapmarkers={} enabled={} custom_fps={} cursor_frame=0 cursor_text=- clipboard=1 clip_frames=0 msel=- labels=- active=- undo=- redo=- band={} path=",
                         u8::from(busy),
                         u8::from(self.include_meta),
                         u8::from(self.player.is_playing()),
@@ -12150,6 +12152,7 @@ impl eframe::App for WaveApp {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
+        self.rec.recordings_folder = self.settings.recordings_folder.clone();
         if let Some(fmt) = self.rec.dialog(&ctx, self.editor.is_some()) {
             // Errors show in the status bar.
             match self.rec.dialog_mode {
@@ -13519,6 +13522,10 @@ mod a2_close_prompt_tests;
 #[cfg(test)]
 #[path = "c5_space_return_tests.rs"]
 mod c5_space_return_tests;
+
+#[cfg(test)]
+#[path = "j6_9_state_tests.rs"]
+mod j6_9_state_tests;
 
 #[cfg(test)]
 #[path = "c5_playhead_move_tests.rs"]

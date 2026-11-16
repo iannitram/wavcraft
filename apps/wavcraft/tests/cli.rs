@@ -31,6 +31,27 @@ fn write_wav(path: &Path) -> Vec<i16> {
     samples
 }
 
+/// A 16-bit PCM WAV of silence with the given rate, channel count and frame count.
+fn write_silent_wav(path: &Path, rate: u32, channels: u16, frames: u32) {
+    let block = channels * 2;
+    let size = frames * u32::from(block);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + size).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&channels.to_le_bytes());
+    bytes.extend_from_slice(&rate.to_le_bytes());
+    bytes.extend_from_slice(&(rate * u32::from(block)).to_le_bytes());
+    bytes.extend_from_slice(&block.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&size.to_le_bytes());
+    bytes.resize(bytes.len() + size as usize, 0);
+    std::fs::write(path, bytes).expect("source WAV");
+}
+
 fn run(args: &[&str], sessions: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_wavcraft"))
         .args(args)
@@ -104,6 +125,39 @@ fn a_missing_input_exits_2_with_a_message_and_leaves_no_session() {
     let out = run(&["convert", dir.join("no-such.wav").to_str().unwrap(), dir.join("out.flac").to_str().unwrap()], &sessions);
     assert_eq!(out.status.code(), Some(2));
     assert!(!String::from_utf8_lossy(&out.stderr).trim().is_empty());
+    assert!(std::fs::read_dir(&sessions).unwrap().next().is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn inspect_prints_the_properties_rows() {
+    let dir = scratch("inspect");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    let src = dir.join("one-second.wav");
+    write_silent_wav(&src, 48_000, 2, 48_000);
+    let out = run(&["inspect", src.to_str().unwrap()], &sessions);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stderr.is_empty());
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    for wanted in ["Sample rate: 48000 Hz", "Channels: 2", "Bit depth: 16-bit integer", "Format: WAV", "Duration: 0:01.000 (48000 frames)"] {
+        assert!(lines.contains(&wanted), "missing line {wanted:?} in {text:?}");
+    }
+    assert!(lines.iter().any(|l| l.starts_with("Path: ")), "no Path line in {text:?}");
+    assert!(std::fs::read_dir(&sessions).unwrap().next().is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn inspect_of_a_missing_file_exits_2_with_its_name() {
+    let dir = scratch("inspect-missing");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    let out = run(&["inspect", dir.join("no-such.wav").to_str().unwrap()], &sessions);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no-such.wav"));
+    assert!(out.stdout.is_empty());
     assert!(std::fs::read_dir(&sessions).unwrap().next().is_none());
     let _ = std::fs::remove_dir_all(dir);
 }
