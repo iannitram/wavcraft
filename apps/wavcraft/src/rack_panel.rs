@@ -69,6 +69,17 @@ impl RackPanel {
         }
     }
 
+    /// The presets folder the Presets menus read and write (None when there is no config folder).
+    pub fn preset_store(&self) -> Option<&Presets> {
+        self.presets.as_ref()
+    }
+
+    /// Replace the presets folder; the tests use this to keep presets out of the config folder.
+    #[cfg(test)]
+    pub fn set_preset_store(&mut self, store: Option<Presets>) {
+        self.presets = store;
+    }
+
     /// The folders to scan for VST3 plugins: `WAVCRAFT_VST3_PATH` (a list, for tests) or the
     /// standard ones.
     fn vst3_dirs() -> Vec<std::path::PathBuf> {

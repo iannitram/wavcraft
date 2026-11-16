@@ -4,6 +4,7 @@
 use egui::{Align2, Key, vec2};
 use wavcraft_core::effects::{self, Effect, ParamDesc, ParamKind};
 use wavcraft_core::generate;
+use wavcraft_core::presets::Presets;
 
 /// What the user did with the dialog this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +26,20 @@ pub struct EffectDialog {
     /// Opened from the Effects Rack for this slot: OK stores the settings there instead of
     /// running the effect (f31).
     pub rack_slot: Option<usize>,
+    /// The name typed in the Presets menu for saving.
+    preset_name: String,
+    /// What the last preset action said.
+    note: String,
 }
+
+/// A click in the Presets menu, run after the window is drawn.
+enum PresetAction {
+    Save,
+    Load(String),
+    Delete(String),
+}
+
+const NO_PRESET_FOLDER: &str = "there is no config folder for presets on this machine";
 
 impl EffectDialog {
     /// Open for the effect at `index`, starting from `values` when they suit it, else the
@@ -33,14 +47,14 @@ impl EffectDialog {
     pub fn new(index: u16, values: Option<Vec<f64>>) -> Option<EffectDialog> {
         let effect = effects::all().get(usize::from(index))?;
         let values = values.filter(|v| effects::validate(*effect, v).is_ok()).unwrap_or_else(|| effects::Params::defaults(*effect));
-        Some(EffectDialog { index, values, generator: false, rack_slot: None })
+        Some(EffectDialog { index, values, generator: false, rack_slot: None, preset_name: String::new(), note: String::new() })
     }
 
     /// Open for the generator at `index` of [`generate::all`] (f21).
     pub fn new_generator(index: u16, values: Option<Vec<f64>>) -> Option<EffectDialog> {
         let g = generate::all().get(usize::from(index))?;
         let values = values.filter(|v| generate::validate(*g, v).is_ok()).unwrap_or_else(|| generate::defaults(*g));
-        Some(EffectDialog { index, values, generator: true, rack_slot: None })
+        Some(EffectDialog { index, values, generator: true, rack_slot: None, preset_name: String::new(), note: String::new() })
     }
 
     /// The effect being edited. Panics for a generator dialog; see [`EffectDialog::id`].
@@ -66,10 +80,78 @@ impl EffectDialog {
         self.values = self.descs().iter().map(|p| p.default).collect();
     }
 
-    /// Draw the dialog; `Some` when OK / Enter or Cancel / Escape was chosen.
-    pub fn show(&mut self, ctx: &egui::Context) -> Option<Answer> {
+    /// Set the name the Presets menu saves under (what the user types there); the tests use it.
+    #[cfg(test)]
+    pub fn set_preset_name(&mut self, name: &str) {
+        self.preset_name = name.to_string();
+    }
+
+    /// What the last preset action said; empty when there has been none.
+    #[cfg(test)]
+    pub fn note(&self) -> &str {
+        &self.note
+    }
+
+    /// Save the current values as the preset named in the menu's text box.
+    pub fn save_preset(&mut self, presets: Option<&Presets>) {
+        if self.generator {
+            self.note = "presets are for effects, not generators".to_string();
+            return;
+        }
+        let Some(presets) = presets else {
+            self.note = NO_PRESET_FOLDER.to_string();
+            return;
+        };
+        self.note = match presets.save_effect(self.id(), &self.preset_name, &self.values) {
+            Ok(()) => format!("saved {} preset {:?}", self.name(), self.preset_name),
+            Err(why) => why,
+        };
+    }
+
+    /// Load the preset `name` into the dialog. A preset that does not check out leaves the
+    /// values as they were and says why in the note.
+    pub fn load_preset(&mut self, presets: Option<&Presets>, name: &str) {
+        if self.generator {
+            self.note = "presets are for effects, not generators".to_string();
+            return;
+        }
+        let Some(presets) = presets else {
+            self.note = NO_PRESET_FOLDER.to_string();
+            return;
+        };
+        let loaded = presets.load_effect(self.id(), name).and_then(|values| effects::validate(self.effect(), &values).map(|()| values));
+        self.note = match loaded {
+            Ok(values) => {
+                self.values = values;
+                format!("loaded {} preset {name:?}", self.name())
+            }
+            Err(why) => why,
+        };
+    }
+
+    /// Delete the preset `name` for this effect.
+    pub fn delete_preset(&mut self, presets: Option<&Presets>, name: &str) {
+        if self.generator {
+            self.note = "presets are for effects, not generators".to_string();
+            return;
+        }
+        let Some(presets) = presets else {
+            self.note = NO_PRESET_FOLDER.to_string();
+            return;
+        };
+        self.note = match presets.delete(self.id(), name) {
+            Ok(()) => format!("deleted preset {name:?}"),
+            Err(why) => why,
+        };
+    }
+
+    /// Draw the dialog; `Some` when OK / Enter or Cancel / Escape was chosen. `presets` is the
+    /// folder the Presets menu reads and writes (None when there is no config folder).
+    pub fn show(&mut self, ctx: &egui::Context, presets: Option<&Presets>) -> Option<Answer> {
         let (title, descs) = (self.name(), self.descs());
+        let id = self.id();
         let mut answer = None;
+        let mut preset_action = None;
         egui::Window::new(title).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
             egui::Grid::new("effect_params").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                 for (desc, value) in descs.iter().zip(self.values.iter_mut()) {
@@ -92,10 +174,42 @@ impl EffectDialog {
                 if self.generator && ui.button("Preview").clicked() {
                     answer = Some(Answer::Preview);
                 }
+                if !self.generator {
+                    ui.menu_button("Presets", |ui| {
+                        ui.text_edit_singleline(&mut self.preset_name);
+                        if ui.button("Save as the name above").clicked() {
+                            preset_action = Some(PresetAction::Save);
+                            ui.close();
+                        }
+                        ui.separator();
+                        for name in presets.and_then(|p| p.list(id).ok()).unwrap_or_default() {
+                            ui.horizontal(|ui| {
+                                if ui.button(&name).clicked() {
+                                    preset_action = Some(PresetAction::Load(name.clone()));
+                                    ui.close();
+                                }
+                                if ui.small_button("Delete").clicked() {
+                                    preset_action = Some(PresetAction::Delete(name.clone()));
+                                    ui.close();
+                                }
+                            });
+                        }
+                    });
+                }
             });
+            if !self.note.is_empty() {
+                ui.label(&self.note);
+            }
         });
+        match preset_action {
+            Some(PresetAction::Save) => self.save_preset(presets),
+            Some(PresetAction::Load(name)) => self.load_preset(presets, &name),
+            Some(PresetAction::Delete(name)) => self.delete_preset(presets, &name),
+            None => {}
+        }
         if answer.is_none() {
-            if ctx.input(|i| i.key_pressed(Key::Enter)) {
+            // Enter while the name box has the keyboard types into it, not OK.
+            if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Enter)) {
                 answer = Some(Answer::Ok);
             } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
                 answer = Some(Answer::Cancel);

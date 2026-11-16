@@ -6500,7 +6500,7 @@ impl WaveApp {
     /// Draw the effect dialog, if up, and carry out its answer.
     fn effect_dialog_ui(&mut self, ctx: &egui::Context) {
         let Some(dialog) = self.effect_dialog.as_mut() else { return };
-        match dialog.show(ctx) {
+        match dialog.show(ctx, self.rack.preset_store()) {
             Some(Answer::Preview) => {
                 if let Err(why) = self.start_preview() {
                     self.error = Some(why);
@@ -13506,6 +13506,10 @@ mod issue369_tests;
 #[cfg(test)]
 #[path = "issue377_tests.rs"]
 mod issue377_tests;
+
+#[cfg(test)]
+#[path = "f3_2_effect_preset_tests.rs"]
+mod f3_2_effect_preset_tests;
 
 #[cfg(test)]
 #[path = "a2_title_star_tests.rs"]
