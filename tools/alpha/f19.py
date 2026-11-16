@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""f19 scripted run: zoom navigator path (NAV), zoom buttons' actions, vertical zoom, ruler scale.
+"""f19 scripted run: zoom navigator path (NAV), zoom buttons' actions, zoom keys (KEY), vertical zoom, ruler scale.
 
     python3 tools/alpha/f19.py --exe <path to the release wavcraft binary>
 
@@ -63,6 +63,13 @@ class Control:
 def span(st):
     a, b = (float(x) for x in st["view"].split("-"))
     return a, b
+
+
+def hover(c):
+    ans = c.ask("HOVER")
+    if not ans.startswith("OK"):
+        return {}
+    return dict(kv.split("=", 1) for kv in ans.split()[1:] if "=" in kv)
 
 
 def main():
@@ -134,6 +141,42 @@ def main():
             c.ask("ACTION view.zoom.ampIn")
         check("vertical zoom stops at its limit", c.state()["vzoom"] == "1024.00", c.state()["vzoom"])
         c.ask("ACTION view.zoom.ampReset")
+
+        c.ask("SELECT 0 0")
+        c.ask("ACTION view.zoom.full")
+        time.sleep(0.5)
+        a0, b0 = span(c.state())
+        w0 = b0 - a0
+        ans = c.ask("KEY =")
+        a, b = span(c.state())
+        check("KEY = zooms in: the view is half as wide", ans.startswith("OK") and abs((b - a) - w0 / 2) < w0 * 0.01, f"{ans} {a}-{b}")
+        ans = c.ask("KEY -")
+        a, b = span(c.state())
+        check("KEY - zooms out: the view is as wide as before", ans.startswith("OK") and abs((b - a) - w0) < w0 * 0.01, f"{ans} {a}-{b}")
+        c.ask(f"SELECT {5 * RATE} {7 * RATE}")
+        ans = c.ask("KEY Shift+S")
+        a, b = span(c.state())
+        check("KEY Shift+S shows the selection", ans.startswith("OK") and abs(a - 5 * RATE) <= 1 and abs(b - 7 * RATE) <= 2, f"{ans} {a}-{b}")
+        ans = c.ask("KEY Ctrl+\\")
+        time.sleep(0.5)
+        a, b = span(c.state())
+        check("KEY Ctrl+\\ shows the whole file", ans.startswith("OK") and a == 0 and abs(b - frames) <= 1, f"{ans} {a}-{b}")
+        ans = c.ask("KEY Alt+=")
+        v1 = c.state()["vzoom"]
+        ans2 = c.ask("KEY Alt+-")
+        v2 = c.state()["vzoom"]
+        check("KEY Alt+= doubles the vertical zoom and Alt+- halves it", ans.startswith("OK") and ans2.startswith("OK") and (v1, v2) == ("2.00", "1.00"), (v1, v2))
+        c.ask("SELECT 0 0")
+        for _ in range(40):
+            c.ask("KEY =")
+        fpp = hover(c).get("frames_per_px")
+        st1 = c.state()["view"]
+        check("after 40 presses of KEY = the zoom stops at 16 pixels per sample", fpp is not None and float(fpp) == 0.0625, fpp)
+        c.ask("KEY =")
+        st2 = c.state()["view"]
+        check("one more KEY = leaves the view unchanged", st1 == st2, f"{st1} then {st2}")
+        c.ask("KEY Ctrl+\\")
+        time.sleep(0.5)
 
         for scale in ("db", "samples", "normalized", "percent", "db"):
             ans = c.ask(f"AMPSCALE {scale}")
