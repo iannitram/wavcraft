@@ -19,6 +19,9 @@ mod diagnostics_panel;
 mod display;
 mod doclist;
 mod effect_dialog;
+// Not called yet: E1.2 will call it when a fade handle is released.
+#[allow(dead_code)]
+mod fade_drag;
 mod files;
 mod freq_panel;
 mod input_monitor;
