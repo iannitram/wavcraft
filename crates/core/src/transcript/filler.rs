@@ -22,22 +22,26 @@ fn collapse(text: &str) -> String {
     out
 }
 
-/// The letters and digits of `text`, lower-cased and with a trailing run of one repeated letter
-/// collapsed (see [`collapse`]): the form two words are compared in. "Ummm," gives "um".
-fn key(text: &str) -> String {
-    let lowered: String = text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect();
-    collapse(&lowered)
+/// The letters and digits of `text`, lower-cased: the form words are compared in.
+fn word_key(text: &str) -> String {
+    text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
-/// The index of every word in `t` whose key (see [`key`]) equals the key of one entry in
+/// The filler form of a word: its key with a trailing run of one repeated letter collapsed.
+/// "Ummm," gives "um".
+fn filler_key(text: &str) -> String {
+    collapse(&word_key(text))
+}
+
+/// The index of every word in `t` whose filler key (see [`filler_key`]) equals the key of one entry in
 /// `list`, in order. A word that is only punctuation has an empty key and matches nothing.
 pub fn fillers(t: &Transcript, list: &[&str]) -> Vec<usize> {
-    let keys: Vec<String> = list.iter().map(|f| key(f)).filter(|k| !k.is_empty()).collect();
+    let keys: Vec<String> = list.iter().map(|f| filler_key(f)).filter(|k| !k.is_empty()).collect();
     t.words
         .iter()
         .enumerate()
         .filter(|(_, w)| {
-            let k = key(&w.text);
+            let k = filler_key(&w.text);
             !k.is_empty() && keys.contains(&k)
         })
         .map(|(i, _)| i)
@@ -45,15 +49,15 @@ pub fn fillers(t: &Transcript, list: &[&str]) -> Vec<usize> {
 }
 
 /// The index of every word in `t` that repeats the word before it: the second word of each
-/// adjacent pair whose keys (see [`key`]) are equal, in order. Case and punctuation are ignored,
+/// adjacent pair whose keys (see [`word_key`]) are equal, in order. Case and punctuation are ignored,
 /// so "The" followed by "the," is a repeat; a word that is only punctuation is not.
 pub fn repeats(t: &Transcript) -> Vec<usize> {
     t.words
         .windows(2)
         .enumerate()
         .filter(|(_, pair)| {
-            let k = key(&pair[0].text);
-            !k.is_empty() && k == key(&pair[1].text)
+            let k = word_key(&pair[0].text);
+            !k.is_empty() && k == word_key(&pair[1].text)
         })
         .map(|(i, _)| i + 1)
         .collect()
@@ -121,6 +125,12 @@ mod tests {
     fn immediate_repeats_are_found_at_the_second_word() {
         let t = transcript(&["the", "the", "best", "best", "part"]);
         assert_eq!(repeats(&t), vec![1, 3]);
+    }
+
+    #[test]
+    fn repeats_do_not_collapse_stretched_words() {
+        let t = transcript(&["well", "wel"]);
+        assert!(repeats(&t).is_empty());
     }
 
     #[test]
