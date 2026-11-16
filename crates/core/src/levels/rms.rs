@@ -70,6 +70,25 @@ impl RmsMeter {
         }
     }
 
+    /// Feed a block by its energy: the sum of its squares over `frames` frames (B4.4). A bad
+    /// sum (NaN, infinite or negative) counts as silence; no frames does nothing.
+    pub fn feed_energy(&mut self, sum_of_squares: f64, frames: usize) {
+        if frames == 0 {
+            return;
+        }
+        let total = if sum_of_squares.is_finite() && sum_of_squares >= 0.0 { sum_of_squares } else { 0.0 };
+        let per_frame = total / frames as f64;
+        let sq = if per_frame.is_finite() { per_frame } else { 0.0 };
+        for _ in 0..frames.min(self.window) {
+            self.sum += sq - self.squares[self.pos];
+            self.squares[self.pos] = sq;
+            self.pos = (self.pos + 1) % self.window;
+        }
+        if self.sum < 0.0 {
+            self.sum = 0.0;
+        }
+    }
+
     /// The RMS of the window, dBFS, never below [`FLOOR_DB`].
     pub fn rms_db(&self) -> f32 {
         mean_square_to_db(self.sum / self.window as f64)
@@ -123,6 +142,11 @@ impl RmsLevels {
     /// Feed channel `ch` (0 or 1; a larger number means 1) its next samples.
     pub fn feed(&mut self, ch: usize, samples: &[f32]) {
         self.meters[ch.min(1)].feed(samples);
+    }
+
+    /// Feed channel `ch` (a larger number means 1) a block by its sum of squares over `frames` frames (B4.4).
+    pub fn feed_energy(&mut self, ch: usize, sum_of_squares: f64, frames: usize) {
+        self.meters[ch.min(1)].feed_energy(sum_of_squares, frames);
     }
 
     /// Channel `ch`'s reading (a larger number means 1).
