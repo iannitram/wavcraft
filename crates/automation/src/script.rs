@@ -1,7 +1,7 @@
-//! The script reader: turns a script text into the requests it holds, one per line, each with
-//! its 1-based line number. It runs nothing; running a script is N4.2.
+//! The script reader and runner. `parse` turns a script text into the requests it holds, one per
+//! line, each with its 1-based line number. `run` executes them in order on any [`Backend`].
 
-use crate::Request;
+use crate::{Backend, Request};
 
 /// Read a script text into its requests, each with its 1-based line number.
 ///
@@ -26,4 +26,16 @@ pub fn parse(text: &str) -> Result<Vec<(usize, Request)>, String> {
         }
     }
     Ok(requests)
+}
+
+/// Run a script text on a backend: parse it, then execute each line in order.
+///
+/// A script that does not parse runs nothing. Otherwise the first line the backend refuses stops
+/// the run, and the error is reported as `line N: reason`; no later line runs. The replies of
+/// the lines that pass are discarded.
+pub fn run(backend: &mut dyn Backend, script: &str) -> Result<(), String> {
+    for (n, request) in parse(script)? {
+        backend.execute(&request).map_err(|why| format!("line {n}: {why}"))?;
+    }
+    Ok(())
 }
