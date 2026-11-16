@@ -93,14 +93,8 @@ use crate::video::{VideoPanel, Waiters};
 use wavcraft_core::doc::rec_edit::{self, RecMode, RecPlan, RecTarget};
 use wavcraft_core::multitrack::soundcraft_model::{SourceId, TrackId};
 
-const RULER_HEIGHT: f32 = 22.0;
-/// Width of the frequency ruler on the left of the spectral display.
-const FREQ_RULER_WIDTH: f32 = 54.0;
 /// How long the free-space figure in the status bar is kept before it is read again.
 const FREE_SPACE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
-/// The amplitude ruler's column, left of the editor.
-const AMP_RULER_WIDTH: f32 = 46.0;
-const NAV_HEIGHT: f32 = 34.0;
 
 /// A Marquee drag in progress: drawing a new rectangle, or moving the one the drag began inside.
 #[derive(Clone, Copy)]
@@ -11639,7 +11633,7 @@ impl WaveApp {
     /// The whole file in a thin strip with the visible range as a handle: drag it to scroll,
     /// drag its edges to zoom, click outside it to jump there.
     fn navigator(&mut self, ui: &mut egui::Ui) {
-        let (resp, painter) = ui.allocate_painter(vec2(ui.available_width(), NAV_HEIGHT), Sense::click_and_drag());
+        let (resp, painter) = ui.allocate_painter(vec2(ui.available_width(), theme::metrics().nav_height), Sense::click_and_drag());
         let rect = resp.rect;
         painter.rect_filled(rect, 2.0, theme::pal().well);
         self.map_classes.clear();
@@ -11738,7 +11732,7 @@ impl WaveApp {
         );
         let Some((frames, rate, channels)) = self.doc.as_ref().map(|d| (d.frames(), d.sample_rate(), d.channels().max(1))) else { return };
         // The amplitude ruler takes a column on the left; the time axis starts right of it.
-        let amp_col = Rect::from_min_max(full.min, pos2(full.left() + AMP_RULER_WIDTH, full.bottom()));
+        let amp_col = Rect::from_min_max(full.min, pos2(full.left() + theme::metrics().amp_ruler_width, full.bottom()));
         let rect = Rect::from_min_max(pos2(amp_col.right(), full.top()), full.max);
         let ruler_resp = ui.interact(amp_col, ui.id().with("amp-ruler"), Sense::click());
         let mut chosen_scale = None;
@@ -11752,7 +11746,7 @@ impl WaveApp {
         }
         // The frequency ruler: a strip down the left of the spectral display, if it has room.
         let spectrum_zone = {
-            let top = rect.top() + RULER_HEIGHT;
+            let top = rect.top() + theme::metrics().ruler_height;
             let height = rect.bottom() - top;
             match (self.editor_shows("waveform"), self.editor_shows("spectral")) {
                 (true, true) => Some(Rect::from_min_max(pos2(rect.left(), top + height * self.settings.spec_split_pct as f32 / 100.0), rect.max)),
@@ -11760,8 +11754,9 @@ impl WaveApp {
                 _ => None,
             }
         };
-        let freq_ruler =
-            spectrum_zone.filter(|a| a.width() > 3.0 * FREQ_RULER_WIDTH).map(|a| Rect::from_min_size(a.min, vec2(FREQ_RULER_WIDTH, a.height())));
+        let freq_ruler = spectrum_zone
+            .filter(|a| a.width() > 3.0 * theme::metrics().freq_ruler_width)
+            .map(|a| Rect::from_min_size(a.min, vec2(theme::metrics().freq_ruler_width, a.height())));
         let over_freq_ruler = |pos: Pos2| freq_ruler.is_some_and(|r| r.contains(pos));
         // Where in the lane under `y` (0 bottom, 1 top) and how tall that lane is.
         let lane_at = |y: f32| {
@@ -11848,7 +11843,7 @@ impl WaveApp {
         {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
-        let ruler_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
+        let ruler_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + theme::metrics().ruler_height));
         if response.drag_started() {
             self.drag_origin = ui.input(|i| i.pointer.press_origin()).or_else(|| response.interact_pointer_pos());
         }
@@ -12037,7 +12032,7 @@ impl WaveApp {
                     && let Some(editor) = self.editor.as_mut()
                 {
                     let channels = editor.history.current().channel_count();
-                    let top = rect.top() + RULER_HEIGHT;
+                    let top = rect.top() + theme::metrics().ruler_height;
                     let y = (origin.y - top) / (rect.bottom() - top).max(1.0);
                     editor.channels = view::mask_after_drag(y, channels, true, editor.channels);
                 }
@@ -12147,7 +12142,7 @@ impl WaveApp {
 
         let Some(doc) = &self.doc else { return };
         let (start, end) = (self.view.start, self.view.end(width));
-        let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
+        let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + theme::metrics().ruler_height));
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate, self.time_format, &self.tempo);
         if let Some(e) = &self.editor {
@@ -12186,7 +12181,7 @@ impl WaveApp {
         self.editor_layout = Some(EditorLayout {
             width,
             height: rect.height(),
-            ruler_height: RULER_HEIGHT,
+            ruler_height: theme::metrics().ruler_height,
             show_waveform: self.editor_shows("waveform"),
             show_spectrum: self.editor_shows("spectral"),
             channels,
@@ -12327,7 +12322,11 @@ impl WaveApp {
                 draw_fade_handles(&painter, area, &self.view, range, self.fade_drag, fade_preview.as_ref());
             }
         }
-        painter.rect_filled(Rect::from_min_max(amp_col.min, pos2(amp_col.right(), amp_col.top() + RULER_HEIGHT)), 0.0, theme::pal().ruler);
+        painter.rect_filled(
+            Rect::from_min_max(amp_col.min, pos2(amp_col.right(), amp_col.top() + theme::metrics().ruler_height)),
+            0.0,
+            theme::pal().ruler,
+        );
         let current_scale = self.settings.amp_scale;
         ruler_resp.context_menu(|ui| {
             for s in AmpScale::ALL {
@@ -12376,8 +12375,8 @@ impl WaveApp {
                     }
                 }
             }
-            if Some(area).is_some_and(|a| a.width() > 3.0 * FREQ_RULER_WIDTH) {
-                let strip = Rect::from_min_size(area.min, vec2(FREQ_RULER_WIDTH, area.height()));
+            if Some(area).is_some_and(|a| a.width() > 3.0 * theme::metrics().freq_ruler_width) {
+                let strip = Rect::from_min_size(area.min, vec2(theme::metrics().freq_ruler_width, area.height()));
                 let axis = self.freq_axis();
                 for ch in 0..channels {
                     let lane = lane(strip, ch, channels).shrink2(vec2(0.0, 1.0));
