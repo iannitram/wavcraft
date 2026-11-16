@@ -222,3 +222,70 @@ fn a_failed_script_keeps_the_redo_steps() {
     assert!(ask(&mut app, "ACTION edit.redo").starts_with("OK"));
     assert_eq!(field(&ask(&mut app, "STATE"), "frames"), "9000");
 }
+
+#[test]
+fn five_steps_give_the_same_file_both_ways() {
+    use wavcraft_core::doc::edit::Crossfades;
+
+    let scratch = Scratch::new("both-ways");
+    const LINES: [&str; 5] = ["SELECT 1000 2000", "ACTION edit.delete", "SELECT 0 500", "EFFECT invert", "EFFECT gain gain_db=-6.0206"];
+    let n = 20_000usize;
+    let l: Vec<i32> = (0..n).map(|i| ((i * 7919) % 20_001) as i32 - 10_000).collect();
+    let r: Vec<i32> = (0..n).map(|i| ((i * 104_729) % 20_011) as i32 - 10_005).collect();
+    let source = vec![l, r];
+    let win_file = scratch.0.join("window.wav");
+    let head_file = scratch.0.join("headless.wav");
+    write_wav(&win_file, &source);
+    write_wav(&head_file, &source);
+
+    // The window, with the same crossfades as Crossfades::default() (2 ms and 5 ms).
+    let mut app = a_window(&scratch);
+    for pref in ["PREF set crossfade_cut_join_ms 2", "PREF set crossfade_edge_ms 5"] {
+        let reply = ask(&mut app, pref);
+        assert!(reply.starts_with("OK") || reply.contains("lasts until WavCraft closes"), "{pref}: {reply}");
+    }
+    let (cut_join, edge) = app.settings.crossfades();
+    assert_eq!((cut_join.as_millis(), edge.as_millis()), (2, 5), "the window's crossfades are set");
+    assert_eq!(ask(&mut app, &format!("OPEN {}", win_file.display())), "OK");
+    settle(&mut app);
+    let file = script(&scratch, "five.txt", &LINES);
+    assert_eq!(ask(&mut app, &format!("RUN_SCRIPT {}", file.display())), "OK replaced=3");
+    let win_out = scratch.0.join("window-out.wav");
+    assert_eq!(ask(&mut app, &format!("SAVE {}", win_out.display())), "OK");
+    settle(&mut app);
+    assert_eq!(ask(&mut app, "LASTERROR"), "OK -", "the window's save ended well");
+
+    // Headless, with Crossfades::default().
+    let sessions = scratch.0.join("headless-sessions");
+    std::fs::create_dir_all(&sessions).expect("a sessions folder");
+    let mut head = Headless::with_crossfades(&sessions, Crossfades::default());
+    assert_eq!(head.answer_line(&format!("OPEN {}", head_file.display())), "OK");
+    assert_eq!(head.run_script(&LINES.join("\n")), Ok(()));
+    let head_out = scratch.0.join("headless-out.wav");
+    assert_eq!(head.answer_line(&format!("SAVE {}", head_out.display())), "OK");
+
+    // Compare the two saved files.
+    let from_window = read_file(&sessions, &win_out);
+    let from_headless = read_file(&sessions, &head_out);
+    assert_eq!(from_window.len(), 2, "both channels");
+    for c in 0..2 {
+        assert_eq!(from_window[c].len(), 19_000, "channel {c}: the window's file is 19000 frames");
+        assert_eq!(from_headless[c].len(), 19_000, "channel {c}: the headless file is 19000 frames");
+        assert_ne!(from_window[c][..500], source[c][..500], "channel {c}: frames 0 to 499 were changed");
+    }
+    let first_diff = (0..2).find_map(|c| from_window[c].iter().zip(&from_headless[c]).position(|(a, b)| a != b).map(|f| (c, f)));
+    assert!(from_window == from_headless, "the window and headless saved different samples; first difference (channel, frame): {first_diff:?}");
+
+    // A script one line shorter must give a different file, so removing a line on one side fails.
+    let sessions4 = scratch.0.join("headless-sessions-4");
+    std::fs::create_dir_all(&sessions4).expect("a sessions folder");
+    let head4_file = scratch.0.join("headless4.wav");
+    write_wav(&head4_file, &source);
+    let mut head4 = Headless::with_crossfades(&sessions4, Crossfades::default());
+    assert_eq!(head4.answer_line(&format!("OPEN {}", head4_file.display())), "OK");
+    assert_eq!(head4.run_script(&LINES[..4].join("\n")), Ok(()));
+    let head4_out = scratch.0.join("headless4-out.wav");
+    assert_eq!(head4.answer_line(&format!("SAVE {}", head4_out.display())), "OK");
+    let four = read_file(&sessions4, &head4_out);
+    assert!(four != from_window, "a script one line shorter must give a different file");
+}
