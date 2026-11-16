@@ -31,6 +31,7 @@ mod meters_ui;
 mod mixer;
 mod mixpaste;
 mod multitrack_ui;
+mod noise_reduction_ui;
 mod notices;
 mod oscb;
 mod player;
