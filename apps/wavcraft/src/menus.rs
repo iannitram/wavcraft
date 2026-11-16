@@ -160,6 +160,8 @@ pub fn toolbar() -> Vec<Entry> {
         act(ActionId::ZoomToSelection),
         act(ActionId::ZoomOutFull),
         Entry::Sep,
+        act(ActionId::EpisodeCheck),
+        Entry::Sep,
         act(ActionId::SnapToggle),
         act(ActionId::ViewSpectralToggle),
         Entry::Sep,
@@ -180,6 +182,7 @@ pub fn glyph(item: &Item) -> &'static str {
         "view.zoomOut" => "Zoom -",
         "view.zoomToSelection" => "To Sel.",
         "view.zoomOutFull" => "Fit",
+        "check.run" => "Check",
         "view.snap.toggle" => "Snap",
         "view.spectral.toggle" => "Spectral",
         "tool.timeSelection" => "Time",
@@ -187,6 +190,12 @@ pub fn glyph(item: &Item) -> &'static str {
         "tool.zoom" => "Zoom",
         _ => item.label,
     }
+}
+
+/// The extra entries the Effects menu draws after its effects and noise-print rows. Plain data,
+/// like `toolbar()`: Run Episode Check (`check.run`).
+pub fn effects_extra() -> Vec<Entry> {
+    vec![act(ActionId::EpisodeCheck)]
 }
 
 /// Find a toolbar entry by its control name.
@@ -305,5 +314,41 @@ mod tests {
             assert_eq!(a.menu, f.label);
             assert!(matches!(a.id, ActionId::Effect(_)));
         }
+    }
+
+    #[test]
+    fn toolbar_has_episode_check() {
+        let item = toolbar_item("check.run").expect("Run Episode Check is on the toolbar");
+        assert_eq!(item.label, "Run Episode Check");
+        assert_eq!(item.cmd, Cmd::Action(ActionId::EpisodeCheck));
+        assert_eq!(glyph(&item), "Check");
+        let n = names(&toolbar());
+        let check = n.iter().position(|x| *x == "check.run").expect("Check is on the toolbar");
+        let zoom_out_full = n.iter().position(|x| *x == "view.zoomOutFull").expect("Fit is on the toolbar");
+        assert!(check > zoom_out_full);
+        let mut sorted = n.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), n.len());
+    }
+
+    #[test]
+    fn effects_menu_has_episode_check() {
+        let n = names(&effects_extra());
+        assert_eq!(n, ["check.run"]);
+        let item = effects_extra()
+            .into_iter()
+            .find_map(|e| {
+                if let Entry::Item(i) = e
+                    && i.name == "check.run"
+                {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .expect("Run Episode Check is in the extra Effects entries");
+        assert_eq!(item.label, "Run Episode Check");
+        assert_eq!(item.cmd, Cmd::Action(ActionId::EpisodeCheck));
     }
 }
