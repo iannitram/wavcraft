@@ -82,6 +82,18 @@ fn main() -> eframe::Result {
             Err(reason) => exit_error(reason),
         }
     }
+    if let cli::Command::Inspect { file, session_dir } = &command {
+        match inspect(file, session_dir.clone().unwrap_or_else(conversion_sessions_dir)) {
+            Ok(text) => {
+                use std::io::Write;
+                let mut out = std::io::stdout();
+                let _ = out.write_all(text.as_bytes());
+                let _ = out.flush();
+                std::process::exit(0)
+            }
+            Err(reason) => exit_error(reason),
+        }
+    }
     let cli::Command::Window(Args { file, session_dir, reset_preferences }) = command else {
         exit_error("command is not implemented yet".to_owned());
     };
@@ -110,6 +122,21 @@ fn convert(input: &std::path::Path, output: &std::path::Path, sessions: PathBuf)
     backend.execute(&Request::Open(input.to_path_buf()))?;
     backend.execute(&Request::Save { path: Some(output.to_path_buf()), args: SaveArgs::default() })?;
     Ok(())
+}
+
+/// `wavcraft inspect <file>`: the file's Properties rows, one `Key: value` line each. The document is
+/// dropped when this returns, which removes its session folder.
+fn inspect(file: &std::path::Path, sessions: PathBuf) -> Result<String, String> {
+    use std::fmt::Write as _;
+    use wavcraft_core::{Document, io::OpenOptions};
+    let opts = OpenOptions { sessions_root: Some(sessions), ..Default::default() };
+    let doc =
+        Document::open_in(file, &opts, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false)).map_err(|e| format!("{}: {e}", file.display()))?;
+    let mut text = String::new();
+    for (key, value) in doc.properties() {
+        let _ = writeln!(text, "{key}: {value}");
+    }
+    Ok(text)
 }
 
 /// On Windows, start wgpu with DirectX 12 only unless `WGPU_BACKEND` says otherwise. SoundCraft

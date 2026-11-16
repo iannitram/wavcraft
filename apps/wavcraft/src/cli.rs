@@ -12,11 +12,11 @@ pub enum Command {
     /// No subcommand: the window, with today's arguments.
     Window(Args),
     /// `run <script> [FILE] [-o OUT]`.
-    Run { script: PathBuf, file: Option<PathBuf>, out: Option<PathBuf> },
+    Run { script: PathBuf, file: Option<PathBuf>, out: Option<PathBuf>, session_dir: Option<PathBuf> },
     /// `convert <in> <out>`.
     Convert { input: PathBuf, output: PathBuf, session_dir: Option<PathBuf> },
     /// `inspect <file>`.
-    Inspect { file: PathBuf },
+    Inspect { file: PathBuf, session_dir: Option<PathBuf> },
 }
 
 const WINDOW_USAGE: &str = "usage: wavcraft [--session-dir DIR] [--reset-preferences] [FILE]";
@@ -29,10 +29,16 @@ const INSPECT_USAGE: &str = "usage: wavcraft inspect <file>";
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
     let mut args: Vec<OsString> = args.into_iter().collect();
     let mut session_dir = None;
-    let is_convert = args.first().is_some_and(|a| a == "convert")
-        || (args.first().is_some_and(|a| a == "--session-dir") && args.get(2).is_some_and(|a| a == "convert"))
-        || (args.first().is_some_and(|a| a.to_string_lossy().starts_with("--session-dir=")) && args.get(1).is_some_and(|a| a == "convert"));
-    if is_convert {
+    // The subcommand word is first, or after a `--session-dir DIR` or `--session-dir=DIR` at the front.
+    let word_index = if args.first().is_some_and(|a| a == "--session-dir") {
+        2
+    } else if args.first().is_some_and(|a| a.to_string_lossy().starts_with("--session-dir=")) {
+        1
+    } else {
+        0
+    };
+    let is_subcommand = args.get(word_index).is_some_and(|a| a == "convert" || a == "inspect" || a == "run");
+    if is_subcommand {
         let mut i = 0;
         while i < args.len() {
             if args[i] == "--session-dir" {
@@ -53,9 +59,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, String
         return window(&args);
     };
     match first.to_str() {
-        Some("run") => run(rest),
+        Some("run") => run(rest, session_dir),
         Some("convert") => convert(rest, session_dir),
-        Some("inspect") => inspect(rest),
+        Some("inspect") => inspect(rest, session_dir),
         _ => window(&args),
     }
 }
@@ -75,11 +81,11 @@ fn window(args: &[OsString]) -> Result<Command, String> {
     Ok(Command::Window(crate::parse_args(args.iter().cloned())))
 }
 
-fn run(args: &[OsString]) -> Result<Command, String> {
+fn run(args: &[OsString], session_dir: Option<PathBuf>) -> Result<Command, String> {
     let parsed = scan(args, RUN_USAGE, true)?;
     match parsed.operands.as_slice() {
-        [script] => Ok(Command::Run { script: script.clone(), file: None, out: parsed.out }),
-        [script, file] => Ok(Command::Run { script: script.clone(), file: Some(file.clone()), out: parsed.out }),
+        [script] => Ok(Command::Run { script: script.clone(), file: None, out: parsed.out, session_dir }),
+        [script, file] => Ok(Command::Run { script: script.clone(), file: Some(file.clone()), out: parsed.out, session_dir }),
         _ => Err(operand_error(&parsed.operands, 2, RUN_USAGE)),
     }
 }
@@ -92,10 +98,10 @@ fn convert(args: &[OsString], session_dir: Option<PathBuf>) -> Result<Command, S
     }
 }
 
-fn inspect(args: &[OsString]) -> Result<Command, String> {
+fn inspect(args: &[OsString], session_dir: Option<PathBuf>) -> Result<Command, String> {
     let parsed = scan(args, INSPECT_USAGE, false)?;
     match parsed.operands.as_slice() {
-        [file] => Ok(Command::Inspect { file: file.clone() }),
+        [file] => Ok(Command::Inspect { file: file.clone(), session_dir }),
         _ => Err(operand_error(&parsed.operands, 1, INSPECT_USAGE)),
     }
 }
@@ -193,7 +199,33 @@ mod tests {
     fn run_takes_o() {
         assert_eq!(
             parse(argv(&["run", "s.txt", "a.wav", "-o", "b.wav"])),
-            Ok(Command::Run { script: "s.txt".into(), file: Some("a.wav".into()), out: Some("b.wav".into()) })
+            Ok(Command::Run { script: "s.txt".into(), file: Some("a.wav".into()), out: Some("b.wav".into()), session_dir: None })
         );
+    }
+
+    #[test]
+    fn inspect_takes_a_file() {
+        assert_eq!(parse(argv(&["inspect", "a.wav"])), Ok(Command::Inspect { file: "a.wav".into(), session_dir: None }));
+    }
+
+    #[test]
+    fn inspect_takes_session_dir_after_the_file() {
+        assert_eq!(
+            parse(argv(&["inspect", "a.wav", "--session-dir", "D"])),
+            Ok(Command::Inspect { file: "a.wav".into(), session_dir: Some("D".into()) })
+        );
+    }
+
+    #[test]
+    fn inspect_takes_session_dir_before_the_subcommand() {
+        assert_eq!(
+            parse(argv(&["--session-dir=D", "inspect", "a.wav"])),
+            Ok(Command::Inspect { file: "a.wav".into(), session_dir: Some("D".into()) })
+        );
+    }
+
+    #[test]
+    fn inspect_with_no_file_is_an_error() {
+        assert!(err(&["inspect"]).contains("inspect <file>"));
     }
 }
