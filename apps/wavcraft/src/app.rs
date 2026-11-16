@@ -771,6 +771,8 @@ pub struct WaveApp {
     diag_wait: bool,
     /// A Generate dialog's Preview is playing (f21): the player holds the preview, not the file.
     previewing: bool,
+    /// The live preview of the open effect dialog (E6.2): the worker feeding the player's monitor.
+    effect_preview: Option<crate::effect_preview::EffectPreview>,
     /// The keyboard shortcuts in use (the defaults; the user's key file will override them).
     keymap: Keymap,
     /// Where the user's key file is (f46; `None`: the system has no config folder).
@@ -1105,6 +1107,7 @@ impl WaveApp {
             diag: DiagPanel::new(),
             diag_wait: false,
             previewing: false,
+            effect_preview: None,
             keymap,
             shortcuts_path,
             shortcut_sets,
@@ -2582,6 +2585,7 @@ impl WaveApp {
         // The per-file panels and pictures of the document left are not carried to this one.
         self.stats.forget();
         self.drop_video();
+        self.stop_effect_preview();
         self.effect_dialog = None;
         self.previewing = false;
         self.freq.reset();
@@ -2630,6 +2634,7 @@ impl WaveApp {
                 }
             }
             None => {
+                self.stop_effect_preview();
                 self.set_audio(None);
                 self.generation += 1;
                 self.spectrum = None;
@@ -2648,6 +2653,7 @@ impl WaveApp {
     fn add_document(&mut self, state: DocState, ctx: &egui::Context) {
         let clips = self.editor.as_mut().map(|e| std::mem::take(&mut e.clipboards));
         let old = self.editor.is_some().then(|| self.take_slot());
+        self.stop_effect_preview();
         self.docs.add(old);
         self.player.stop();
         self.player.set_audio(None);
@@ -5221,6 +5227,7 @@ impl WaveApp {
             Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
             _ => None,
         });
+        self.stop_effect_preview();
         self.effect_dialog = EffectDialog::new(i, last);
     }
 
@@ -5624,7 +5631,10 @@ impl WaveApp {
                 let answer = editor.repeat_dialog(&self.selection_range());
                 match answer {
                     RepeatDialog::Unavailable => return Err(format!("{} is not available now", actions::action(id).menu)),
-                    RepeatDialog::Effect(i, params) => self.effect_dialog = EffectDialog::new(i, Some(params)),
+                    RepeatDialog::Effect(i, params) => {
+                        self.stop_effect_preview();
+                        self.effect_dialog = EffectDialog::new(i, Some(params));
+                    }
                     RepeatDialog::InsertSilence(frames) => {
                         let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
                         self.insert_silence = Some(self.time_format.format_with(frames as usize, rate, &self.tempo));
@@ -6630,6 +6640,40 @@ impl WaveApp {
         Ok(frames)
     }
 
+    /// Stop the effect dialog's live preview, if one runs, and take the monitor off the player.
+    fn stop_effect_preview(&mut self) {
+        // Only a running preview clears the monitor: the slot also holds a recording's input monitor.
+        if let Some(p) = self.effect_preview.take() {
+            p.stop();
+            let _ = self.player.set_monitor(None);
+        }
+    }
+
+    /// Start the open effect dialog's live preview, or stop it when one runs. Returns whether a
+    /// preview is now running. The document and its undo list are not touched.
+    fn toggle_effect_preview(&mut self) -> Result<bool, String> {
+        if self.effect_preview.is_some() {
+            self.stop_effect_preview();
+            return Ok(false);
+        }
+        let Some(dialog) = self.effect_dialog.as_ref().filter(|d| !d.generator) else { return Err("no effect dialog is open".to_string()) };
+        let Some(doc) = self.doc.as_ref() else { return Err("no file is open".to_string()) };
+        if self.rec.is_active() {
+            return Err("stop recording to preview".to_string());
+        }
+        let effect = dialog.effect();
+        wavcraft_core::effects::validate(effect, &dialog.values)?;
+        let channels = self.editor.as_ref().map_or(wavcraft_core::ChannelMask::ALL, |e| e.channels);
+        let preview = crate::effect_preview::EffectPreview::start(doc.state.clone(), effect, dialog.values.clone(), self.selection_range(), channels)
+            .map_err(|e| e.to_string())?;
+        if let Err(why) = self.player.set_monitor(Some((preview.ring(), doc.sample_rate()))) {
+            preview.stop();
+            return Err(why);
+        }
+        self.effect_preview = Some(preview);
+        Ok(true)
+    }
+
     /// Stop a preview and give the player the open file back.
     fn end_preview(&mut self) {
         if self.previewing {
@@ -6673,6 +6717,7 @@ impl WaveApp {
         let enabled = self.editor.is_some() && self.saving.is_none() && self.running.is_none();
         for (i, g) in wavcraft_core::generate::all().iter().enumerate() {
             if ui.add_enabled(enabled, egui::Button::new(format!("{}…", g.name().trim_start_matches("Generate ")))).clicked() {
+                self.stop_effect_preview();
                 self.effect_dialog = EffectDialog::new_generator(i as u16, None);
                 ui.close();
             }
@@ -6683,6 +6728,7 @@ impl WaveApp {
     /// the document changed.
     fn finish_effect_dialog(&mut self, ok: bool, ctx: &egui::Context) -> Result<bool, String> {
         let Some(dialog) = self.effect_dialog.take() else { return Err("no effect dialog is open".to_string()) };
+        self.stop_effect_preview();
         self.end_preview();
         if let Some(slot) = dialog.rack_slot {
             // Opened from the rack: keep the settings in the slot, run nothing.
@@ -6772,7 +6818,10 @@ impl WaveApp {
         self.rack.poll_scan();
         for request in std::mem::take(&mut self.rack.requests) {
             match request {
-                Request::EditSlot(i) => self.effect_dialog = self.rack.dialog_for(i),
+                Request::EditSlot(i) => {
+                    self.stop_effect_preview();
+                    self.effect_dialog = self.rack.dialog_for(i);
+                }
                 Request::TogglePlay => self.toggle_play(),
                 Request::Apply => {
                     let _ = self.apply_rack(ctx);
@@ -8961,7 +9010,8 @@ impl WaveApp {
                 },
             },
             // The effect dialog: `EFFECT_DIALOG <name> [key=value ...]` opens it on those values,
-            // `EFFECT_DIALOG` says what is open, `EFFECT_DIALOG OK|CANCEL` presses the button.
+            // `EFFECT_DIALOG` says what is open, `EFFECT_DIALOG PREVIEW` starts or stops its preview
+            // (`OK preview=<0|1>`), `EFFECT_DIALOG OK|CANCEL` presses the button.
             "EFFECT_DIALOG" => match rest.trim() {
                 "" => match &self.effect_dialog {
                     Some(d) => format!("OK open={} values={:?}", d.id(), d.values),
@@ -8971,6 +9021,10 @@ impl WaveApp {
                     Ok(changed) => format!("OK selection={} changed={}", sel(self), u8::from(changed)),
                     Err(e) => format!("ERR {e}"),
                 },
+                "PREVIEW" => match self.toggle_effect_preview() {
+                    Ok(on) => format!("OK preview={}", u8::from(on)),
+                    Err(e) => format!("ERR {e}"),
+                },
                 _ => {
                     let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
                     let name = name.strip_prefix("effect.").unwrap_or(name);
@@ -8978,6 +9032,7 @@ impl WaveApp {
                         Some(i) if self.editor.is_some() => match wavcraft_core::effects::parse_params(wavcraft_core::effects::all()[i], args) {
                             Err(e) => format!("ERR {e}"),
                             Ok(v) => {
+                                self.stop_effect_preview();
                                 self.effect_dialog = EffectDialog::new(i as u16, Some(v));
                                 "OK".to_string()
                             }
@@ -9036,6 +9091,7 @@ impl WaveApp {
                         Some(i) if self.editor.is_some() => match wavcraft_core::generate::parse_params(wavcraft_core::generate::all()[i], args) {
                             Err(e) => format!("ERR {e}"),
                             Ok(v) => {
+                                self.stop_effect_preview();
                                 self.effect_dialog = EffectDialog::new_generator(i as u16, Some(v));
                                 "OK".to_string()
                             }
@@ -13768,3 +13824,7 @@ mod d2_new_from_clip_tests;
 #[cfg(test)]
 #[path = "e5_repeat_dialog_tests.rs"]
 mod e5_repeat_dialog_tests;
+
+#[cfg(test)]
+#[path = "e6_effect_preview_tests.rs"]
+mod e6_effect_preview_tests;

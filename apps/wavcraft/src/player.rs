@@ -628,6 +628,12 @@ impl Player {
         let _ = self.commands.send(Command::Rebuild);
     }
 
+    /// Whether a monitor ring (a recording's input or an effect preview) is set (tests).
+    #[cfg(test)]
+    pub fn has_monitor(&self) -> bool {
+        self.shared.monitor.lock().is_ok_and(|slot| slot.is_some())
+    }
+
     /// The conversion state, for the status bar and the control channel's `PLAYBACK`.
     pub fn info(&self) -> PlaybackInfo {
         let doc_rate = self.shared.rate.load(Ordering::Acquire);
