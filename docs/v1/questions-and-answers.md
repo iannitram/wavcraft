@@ -87,3 +87,20 @@ The check finds clipped runs and true-peak overs, but [fix.rs](../../crates/core
 
 - **Clipping: DeClipper** (`diagnostics/declip.rs`, label "DeClipper") on the finding's range and channels, with its default settings: `threshold_db=-0.1 min_run=3`. My words: "DeClipper (Recommended)".
 - **True peak: the Dynamics limiter** (`effects/dynamics.rs`) on the finding's range and channels, with the compressor and expander off: `comp_ratio=1 expand_ratio=1`. `limit_db` is the `true_peak_ceiling_dbtp` setting (default −1.0), and `lookahead_ms=5` (range 0–10), because with no lookahead the limiter is only as fast as its 5 ms attack and overs get through; with one, the per-sample ceiling holds. The range is padded by the lookahead at both edges, so the silent first frames and the lost last frames of the delay line fall in padding that is not written back, and no frame of the audio is silenced or lost. The other Dynamics settings stay at their defaults. My words: "Limiter only, lookahead (Recommended)" (2026-11-12, replacing the earlier "Dynamics limiter (Recommended)", which left the compressor and expander on at their defaults).
+
+## Q11. Rulings before the overnight run (2026-11-16, roadmap Next up)
+
+Asked the evening of 2026-11-16, before an unattended run of the Dev Loop, so that no step waits on me overnight.
+
+**Answer (2026-11-16):**
+
+- **Alt+5 (G3.4):** Alt+5 opens the Match Loudness panel, as v1.md G3 and Audition have it. Channel 5 loses its Alt key: `command_key_pass` in `apps/wavcraft/src/app.rs` stops taking Alt+5 for ToggleChannel.
+- **F8 (I3.3):** F8 is Add Marker, as in Audition. Next Finding and Previous Finding leave F8 and Shift+F8 for keys that are free in the default key map and are not Audition defaults; I3.3 moves them (K3.2's rows in `BINDINGS`, K3.4's checks) and the roadmap says which keys.
+- **Noise Reduction floor (G2.9):** measured at 50 %, the default.
+- **I7.2:** yes. The v1.md I7 row says physical footprint on the Mac and working set on Windows, links the baseline section, and names no machine by host name.
+- **C5.4:** yes. The v1.md C5 row's keys become Alt+Left and Alt+Right.
+- **F2.2:** yes. Gate, compressor and limiter are my own code, checked by `crates/core/tests/dynamics.rs`, in place of SoundCraft's test vectors.
+- **K4.6:** yes. Episode Check may offer and run DeClipper as the Clipping fix in a release build, though DeClipper is otherwise hidden as out of v1.
+- **The locked Help-list test** (`apps/wavcraft/src/i3_shortcut_help_tests.rs`): a step may add or change only the rows for its own keys, and never loosen a check. This covers A4.1, B2.1, B2.3, C4.6, I3.4, I3.5, L5.4 and G3.4.
+- **Hand checks:** a step whose code an agent can finish but whose Verify also needs my hand check is merged. Its row says "Code merged (#PR). Left: …" and the check joins my queue in Next up.
+- **The overnight run may:** file step issues; open one branch and PR per step; merge each once CI is green on all three systems and an agent review finds nothing blocking; close the issues listed under Tracker clean-up; delete the stale branches listed there; relabel and retitle as listed there.
