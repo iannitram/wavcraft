@@ -7684,7 +7684,7 @@ impl WaveApp {
                     }
                 }
                 match &est {
-                    Some(Ok(e)) => ui.label(format_size_label(e)),
+                    Some(Ok(e)) => ui.label(format_size_label(e, self.export_choice.format)),
                     Some(Err(why)) => ui.colored_label(theme::pal().alert, why),
                     None => ui.label(""),
                 };
@@ -12975,11 +12975,14 @@ fn format_label(format: SaveFormat, aiff: AiffKind) -> &'static str {
     if format == SaveFormat::Aiff { aiff.describe() } else { format.name() }
 }
 
-/// The estimated size line of the export dialog.
-fn format_size_label(e: &SizeEstimate) -> String {
+/// The estimated size line of the export dialog. An MP3 estimate is the constant-bit-rate size
+/// (A3.10); the FLAC estimate depends on the audio.
+fn format_size_label(e: &SizeEstimate, format: SaveFormat) -> String {
     let human = wavcraft_core::space::format_bytes(e.bytes);
     if e.exact {
         format!("File size: {human} ({} bytes)", e.bytes)
+    } else if format == SaveFormat::Mp3 {
+        format!("File size: about {human} (estimate: constant bit rate)")
     } else {
         format!("File size: about {human} (estimate: FLAC depends on the audio)")
     }
@@ -13368,6 +13371,10 @@ mod m2_map_tests;
 #[cfg(test)]
 #[path = "n1_parity_tests.rs"]
 mod n1_parity_tests;
+
+#[cfg(test)]
+#[path = "a3_mp3_tests.rs"]
+mod a3_mp3_tests;
 
 #[cfg(test)]
 mod reset_tests {
