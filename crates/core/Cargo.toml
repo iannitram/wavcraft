@@ -16,6 +16,7 @@ soundcraft-mix.workspace = true
 soundcraft-vst3-host.workspace = true
 craft-mp3.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 rustfft.workspace = true
 rayon.workspace = true
 symphonia.workspace = true

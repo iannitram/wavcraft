@@ -21,6 +21,7 @@ use crate::markers::Shift;
 pub mod export;
 pub mod filler;
 pub mod mel;
+pub mod models;
 mod run;
 pub mod search;
 
