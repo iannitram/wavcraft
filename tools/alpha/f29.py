@@ -8,7 +8,7 @@ whole way, plus a 1 kHz tone (amplitude 0.25) from 5 s. Checked, via the control
 saved copy read back:
   1. a too-short selection answers ERR and leaves no print; NOISE_PRINT says none;
   2. ACTION nr.capture_print on 0 to 2 s (noise only) answers OK; NOISE_PRINT reports both channels;
-  3. EFFECT noise_reduction reduce_db=12 on the whole file adds one "Noise Reduction" step;
+  3. EFFECT noise_reduction reduce_db=12 reduction=100 on the whole file adds one "Noise Reduction" step;
   4. in the saved file the RMS in the noise-only region (0.25 s to 4.75 s) fell by at least 12 dB
      (and not by wildly more), and the tone's amplitude (6 s to 11 s) moved by less than 1 dB;
   5. the app's log holds no ERROR line.
@@ -104,7 +104,7 @@ def main():
         check("the print has both channels at 48 kHz", p.startswith("OK") and "channels=2" in p and f"rate={RATE}" in p, p)
         c.ask("SELECT 0 0")
         t0 = time.time()
-        a = c.ask("EFFECT noise_reduction reduce_db=12")
+        a = c.ask("EFFECT noise_reduction reduce_db=12 reduction=100")
         took = time.time() - t0
         st = c.state()
         check("EFFECT noise_reduction adds one named step", a.endswith("changed=1") and st["undo"] == "Noise Reduction" and st["steps"] == "2", f"{a}; {st}")
