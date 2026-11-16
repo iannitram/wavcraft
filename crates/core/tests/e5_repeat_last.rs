@@ -1,10 +1,9 @@
 //! E5 (#31): Repeat Last Command (`Shift+R` / `F3`) and Repeat Last Command… (`Ctrl+R` / `F2`).
 
-use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use wavcraft_core::actions::{self, ActionId, Editor, Repeat, RepeatDialog};
+use wavcraft_core::actions::{self, ActionId, Editor, RepeatDialog};
 use wavcraft_core::doc::history::History;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::effects;
@@ -39,23 +38,6 @@ fn editor(samples: &[f32]) -> (TempDir, Editor) {
     let mut editor = Editor::new(History::new(state, u64::MAX));
     editor.crossfades = wavcraft_core::doc::edit::Crossfades::NONE;
     (dir, editor)
-}
-
-/// What the Repeat Last Command dialog would offer, from the editor's public state.
-/// `Editor::repeat_dialog` is a stub on main, so the test uses this helper.
-fn repeat_dialog(e: &Editor, selection: &Range<u64>) -> RepeatDialog {
-    if !e.enabled(ActionId::RepeatLast, selection) {
-        return RepeatDialog::Unavailable;
-    }
-    match e.last.clone() {
-        Some(Repeat::Effect(i, params)) => {
-            let has_dialog = effects::all().get(usize::from(i)).is_some_and(|effect| !effect.parameters().is_empty());
-            if has_dialog { RepeatDialog::Effect(i, params) } else { RepeatDialog::RunNow }
-        }
-        Some(Repeat::InsertSilence(frames)) => RepeatDialog::InsertSilence(frames),
-        Some(_) => RepeatDialog::RunNow,
-        None => RepeatDialog::Unavailable,
-    }
 }
 
 fn read(e: &Editor) -> Vec<f32> {
@@ -93,7 +75,7 @@ fn e5_shortcuts_bind_f3_shift_r_and_f2_ctrl_r() {
     assert!(!e.enabled(ActionId::RepeatLastDialog, &(0..4)));
     assert_eq!(e.label(ActionId::RepeatLast), "Repeat Last Command");
     assert_eq!(e.label(ActionId::RepeatLastDialog), "Repeat Last Command…");
-    assert_eq!(repeat_dialog(&e, &(0..4)), RepeatDialog::Unavailable);
+    assert_eq!(e.repeat_dialog(&(0..4)), RepeatDialog::Unavailable);
 }
 
 #[test]
@@ -102,14 +84,14 @@ fn e5_repeat_last_and_dialog_remember_parameterised_effect_settings() {
     e.run_effect(1, vec![-6.0206], 0..2).unwrap();
     assert_eq!(e.label(ActionId::RepeatLast), "Repeat Gain");
     assert_eq!(e.label(ActionId::RepeatLastDialog), "Repeat Gain…");
-    assert_eq!(repeat_dialog(&e, &(2..4)), RepeatDialog::Effect(1, vec![-6.0206]));
+    assert_eq!(e.repeat_dialog(&(2..4)), RepeatDialog::Effect(1, vec![-6.0206]));
 
     e.run(ActionId::RepeatLast, 2..4).unwrap();
     let got = read(&e);
     for (a, b) in got.iter().zip([0.4f32, -0.2, 0.4, -0.2]) {
         assert!((a - b).abs() < 1e-4, "{got:?}");
     }
-    assert_eq!(repeat_dialog(&e, &(0..4)), RepeatDialog::Effect(1, vec![-6.0206]));
+    assert_eq!(e.repeat_dialog(&(0..4)), RepeatDialog::Effect(1, vec![-6.0206]));
 }
 
 #[test]
@@ -118,7 +100,7 @@ fn e5_repeat_dialog_runs_parameterless_effects_and_repeatable_edits_immediately(
     e.run(ActionId::Effect(0), 0..2).unwrap();
     assert_eq!(e.label(ActionId::RepeatLast), "Repeat Invert");
     assert_eq!(e.label(ActionId::RepeatLastDialog), "Repeat Invert");
-    assert_eq!(repeat_dialog(&e, &(2..4)), RepeatDialog::RunNow);
+    assert_eq!(e.repeat_dialog(&(2..4)), RepeatDialog::RunNow);
 
     e.run(ActionId::RepeatLast, 2..4).unwrap();
     assert_eq!(read(&e), vec![-0.25, 0.75, -0.5, 0.5]);
@@ -126,13 +108,13 @@ fn e5_repeat_dialog_runs_parameterless_effects_and_repeatable_edits_immediately(
     e.run_effect(6, vec![], 0..4).unwrap();
     assert_eq!(e.label(ActionId::RepeatLast), "Repeat Remove DC Offset");
     assert_eq!(e.label(ActionId::RepeatLastDialog), "Repeat Remove DC Offset");
-    assert_eq!(repeat_dialog(&e, &(0..4)), RepeatDialog::RunNow);
+    assert_eq!(e.repeat_dialog(&(0..4)), RepeatDialog::RunNow);
 
     e.run(ActionId::Silence, 0..2).unwrap();
     assert_eq!(e.label(ActionId::RepeatLast), "Repeat Silence");
     assert_eq!(e.label(ActionId::RepeatLastDialog), "Repeat Silence");
-    assert_eq!(repeat_dialog(&e, &(2..4)), RepeatDialog::RunNow);
-    assert_eq!(repeat_dialog(&e, &(2..2)), RepeatDialog::Unavailable);
+    assert_eq!(e.repeat_dialog(&(2..4)), RepeatDialog::RunNow);
+    assert_eq!(e.repeat_dialog(&(2..2)), RepeatDialog::Unavailable);
 }
 
 #[test]
@@ -142,13 +124,13 @@ fn e5_delete_is_not_repeatable_and_never_replaces_a_remembered_effect() {
     assert_eq!(read(&e), vec![0.5, 0.5, 0.5, 0.5]);
     assert!(!e.enabled(ActionId::RepeatLast, &(0..2)));
     assert!(!e.enabled(ActionId::RepeatLastDialog, &(0..2)));
-    assert_eq!(repeat_dialog(&e, &(0..2)), RepeatDialog::Unavailable);
+    assert_eq!(e.repeat_dialog(&(0..2)), RepeatDialog::Unavailable);
 
     e.run_effect(1, vec![6.0206], 0..2).unwrap();
     e.run(ActionId::Delete, 0..1).unwrap();
     assert_eq!(e.label(ActionId::RepeatLast), "Repeat Gain");
     assert_eq!(e.label(ActionId::RepeatLastDialog), "Repeat Gain…");
-    assert_eq!(repeat_dialog(&e, &(1..3)), RepeatDialog::Effect(1, vec![6.0206]));
+    assert_eq!(e.repeat_dialog(&(1..3)), RepeatDialog::Effect(1, vec![6.0206]));
 
     e.run(ActionId::RepeatLast, 1..3).unwrap();
     let got = read(&e);
@@ -181,7 +163,7 @@ fn e5_repeat_last_reuses_the_non_default_settings_of_the_original_effects() {
         let i = effects::all().iter().position(|effect| effect.id() == id).expect("effect is registered");
         let (_s, mut repeated) = editor(&input);
         repeated.run_effect(i as u16, params.clone(), 0..32).unwrap();
-        assert_eq!(repeat_dialog(&repeated, &(32..64)), expected_dialog);
+        assert_eq!(repeated.repeat_dialog(&(32..64)), expected_dialog);
         repeated.run(ActionId::RepeatLast, 32..64).unwrap();
 
         // What a second direct run of the same effect would produce. Some effects read the
@@ -208,7 +190,7 @@ fn e5_repeat_last_matches_a_direct_run_for_every_registered_effect_with_defaults
         let expected_dialog = if params.is_empty() { RepeatDialog::RunNow } else { RepeatDialog::Effect(i as u16, params.clone()) };
         let (_s, mut repeated) = editor(&input);
         repeated.run_effect(i as u16, params.clone(), 0..32).unwrap();
-        assert_eq!(repeat_dialog(&repeated, &(32..64)), expected_dialog);
+        assert_eq!(repeated.repeat_dialog(&(32..64)), expected_dialog);
         repeated.run(ActionId::RepeatLast, 32..64).unwrap();
 
         // What a second direct run of the same effect would produce. Some effects read the
@@ -227,9 +209,24 @@ fn e5_repeat_dialog_reopens_insert_silence_and_disables_on_empty_doc() {
     e.insert_silence(2, 3).unwrap();
     assert_eq!(e.label(ActionId::RepeatLast), "Repeat Insert Silence");
     assert_eq!(e.label(ActionId::RepeatLastDialog), "Repeat Insert Silence…");
-    assert_eq!(repeat_dialog(&e, &(0..0)), RepeatDialog::InsertSilence(3));
+    assert_eq!(e.repeat_dialog(&(0..0)), RepeatDialog::InsertSilence(3));
 
     e.run(ActionId::Delete, 0..7).unwrap();
     assert!(!e.enabled(ActionId::RepeatLastDialog, &(0..0)));
-    assert_eq!(repeat_dialog(&e, &(0..0)), RepeatDialog::Unavailable);
+    assert_eq!(e.repeat_dialog(&(0..0)), RepeatDialog::Unavailable);
+}
+
+#[test]
+fn e5_repeat_dialog_after_amplify_3_db_returns_effect_with_its_settings() {
+    let (_s, mut e) = editor(&[0.5, 0.5, 0.5, 0.5]);
+    let i = effects::all().iter().position(|effect| effect.id() == "amplify").expect("amplify is registered");
+    e.run_effect(i as u16, vec![3.0, 0.0, 1.0], 0..2).unwrap();
+    assert_eq!(e.repeat_dialog(&(0..4)), RepeatDialog::Effect(i as u16, vec![3.0, 0.0, 1.0]));
+}
+
+#[test]
+fn e5_repeat_dialog_is_unavailable_after_delete_alone() {
+    let (_s, mut e) = editor(&[0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    e.run(ActionId::Delete, 0..2).unwrap();
+    assert_eq!(e.repeat_dialog(&(0..2)), RepeatDialog::Unavailable);
 }
