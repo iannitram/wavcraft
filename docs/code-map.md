@@ -24,13 +24,13 @@ Describes `main` at `92d0f13` (2026-11-13). The file tables, Tests, the `app.rs`
 
 Where each v1 item lives, built from the Items column of the file and test tables below: the code first, then the test files. Rows marked *present, out of v1* and the crate roots are left out. Status and stage are the ones in [ROADMAP.md](../ROADMAP.md). Start a step here, then read the file's row below.
 
-- **A1 Open WAV, AIFF, MP3, FLAC into the store** (stage 1, partial).
+- **A1 Open WAV, AIFF, MP3, FLAC into the store** (stage 1, complete).
   Code: `crates/core/src/channels.rs`, `crates/core/src/doc.rs`, `crates/core/src/document.rs`, `crates/core/src/io.rs`, `crates/core/src/meta.rs`, `crates/core/src/peakcache.rs`, `crates/core/src/probe.rs`, `crates/core/src/space.rs`, `crates/core/src/store.rs`, `crates/core/src/recent.rs`, `apps/wavcraft/src/app.rs`, `apps/wavcraft/src/main.rs`, `crates/testkit/Cargo.toml`, `crates/testkit/src/bin/wavcraft-bench/main.rs`, `crates/testkit/src/bin/wavcraft-store-bench/main.rs`, `crates/testkit/src/lib.rs`, `crates/testkit/src/main.rs`, `crates/testkit/tests/data/chained-two-streams-8k-mono.ogg`, `crates/testkit/tests/hostile.rs`, `crates/testkit/tests/kit.rs`, `crates/testkit/tests/open.rs`, `crates/testkit/tests/space.rs`, `tools/golden.py`.
   Tests: `apps/wavcraft/src/a1_open_cancel_tests.rs`, `apps/wavcraft/src/issue366_tests.rs`, `crates/core/tests/append.rs`, `crates/core/tests/encodings.rs`, `crates/core/tests/fixtures/q367-full.flac`, `crates/core/tests/fixtures/q367-truncated.flac`, `crates/core/tests/issue1009_open_into_rate.rs`, `crates/core/tests/store_and_doc.rs`.
 - **A2 Save and Save As (WAV, AIFF, FLAC)** (stage 1, complete).
   Code: `crates/core/src/meta.rs`, `crates/core/src/random.rs`, `crates/core/src/dither.rs`, `crates/core/src/export_presets.rs`, `crates/core/src/flac_enc.rs`, `crates/core/src/save.rs`, `tools/golden.py`.
   Tests: `apps/wavcraft/src/a2_close_prompt_tests.rs`, `apps/wavcraft/src/a2_title_star_tests.rs`, `apps/wavcraft/src/issue369_tests.rs`, `crates/core/tests/987_save_format_parse.rs`, `crates/core/tests/atomic.rs`, `crates/core/tests/chunks.rs`, `crates/core/tests/export_options.rs`, `crates/core/tests/save.rs`, `crates/core/tests/save_part.rs`, `crates/core/tests/xmp.rs`.
-- **A3 Save As MP3 with the craft-mp3 encoder** (stage mp3, not started).
+- **A3 Save As MP3 with the craft-mp3 encoder** (stage Alongside, the MP3 encoder, partial).
   Code: `crates/core/Cargo.toml`, `crates/core/src/mp3_options.rs`, `crates/core/src/save.rs`, `Cargo.lock`, `Cargo.toml`.
   Tests: `crates/core/tests/987_save_format_parse.rs`, `crates/core/tests/mp3_options.rs`, `crates/core/tests/save.rs`, `crates/core/tests/save_mp3.rs`.
 - **A4 Convert Sample Type and dither** (stage 3, partial).
@@ -63,13 +63,13 @@ Where each v1 item lives, built from the Items column of the file and test table
 - **C2 One channel of a stereo file** (stage 1, complete).
   Code: `crates/core/src/doc/edit.rs`, `crates/testkit/tests/edits.rs`.
   Tests: `crates/core/tests/actions.rs`, `crates/core/tests/edits.rs`, `crates/core/tests/effects.rs`, `crates/core/tests/multichannel.rs`, `crates/core/tests/settings.rs`, `crates/core/tests/snap.rs`.
-- **C3 Snapping: markers, ruler, zero crossings, key S** (stage 1, partial).
+- **C3 Snapping: markers, ruler, zero crossings, key S** (stage 1, complete).
   Code: `crates/core/src/actions.rs`, `crates/core/src/snap.rs`, `apps/wavcraft/src/menus.rs`.
   Tests: `apps/wavcraft/src/c3_playhead_snap_tests.rs`, `apps/wavcraft/src/issue1173_tests.rs`, `crates/core/tests/snap.rs`.
 - **C4 Spectral selection: Marquee and Lasso** (stage 4, partial).
   Code: `apps/wavcraft/src/app/spectral.rs`, `crates/core/src/spectrogram.rs`, `crates/core/src/view.rs`, `crates/core/src/dsp/band_only.rs`, `apps/wavcraft/src/menus.rs`.
   Tests: `crates/core/tests/band_only.rs`, `crates/core/tests/spectral_selection.rs`.
-- **C5 Transport** (stage 1, partial).
+- **C5 Transport** (stage 1, built, check not recorded).
   Code: `crates/core/src/channels.rs`, `crates/core/src/doc/span.rs`, `crates/core/src/actions.rs`, `crates/core/src/resample.rs`, `apps/wavcraft/src/player.rs`, `crates/core/src/chanmap.rs`, `crates/core/src/transport.rs`, `crates/core/src/shortcuts.rs`.
   Tests: `apps/wavcraft/src/c5_6_space_button_tests.rs`, `apps/wavcraft/src/c5_space_return_tests.rs`, `apps/wavcraft/src/c5_playhead_move_tests.rs`, `apps/wavcraft/src/f48_device_change_tests.rs`, `apps/wavcraft/src/issue1000_tests.rs`, `apps/wavcraft/src/issue1219_tests.rs`, `apps/wavcraft/src/issue377_tests.rs`, `crates/core/tests/actions.rs`, `crates/core/tests/edit_span.rs`, `crates/core/tests/shortcuts.rs`.
 - **C6 Scrub by dragging the playhead** (stage 4, built, check not recorded).
@@ -135,13 +135,13 @@ Where each v1 item lives, built from the Items column of the file and test table
 - **G4 Loudness analysis** (stage 3, built, check not recorded).
   Code: `apps/wavcraft/src/meters_ui.rs`, `apps/wavcraft/src/statspanel.rs`, `crates/core/src/loudness.rs`, `crates/core/src/stats.rs`, `apps/wavcraft/src/app.rs`.
   Tests: `crates/core/tests/loudness.rs`, `crates/core/tests/rms_settings.rs`, `crates/core/tests/stats.rs`.
-- **H1 Add Marker with M or *** (stage 1, partial).
+- **H1 Add Marker with M or *** (stage 1, built, check not recorded).
   Code: `crates/core/src/markers.rs`, `apps/wavcraft/src/app.rs`, `apps/wavcraft/src/markers_panel.rs`.
   Tests: `apps/wavcraft/src/h1_3_marker_selection_tests.rs`, `apps/wavcraft/src/h1_star_marker_tests.rs`, `crates/core/tests/actions.rs`.
 - **H2 Markers panel** (stage 1, partial).
   Code: `crates/core/src/markers.rs`, `apps/wavcraft/src/markers_panel.rs`.
   Tests: `apps/wavcraft/src/h2_7_double_click_tests.rs`, `crates/core/tests/actions.rs`, `crates/core/tests/settings.rs`.
-- **H3 Next and previous marker** (stage 1, partial).
+- **H3 Next and previous marker** (stage 1, built, check not recorded).
   Code: `crates/core/src/markers.rs`, `crates/core/src/transport.rs`.
   Tests: `apps/wavcraft/src/h3_marker_jump_tests.rs`, `crates/core/tests/actions.rs`.
 - **H4 Markers move with edits** (stage 1, complete).
@@ -192,7 +192,7 @@ Where each v1 item lives, built from the Items column of the file and test table
 - **K1 Run Episode Check with progress and Cancel** (stage 4b, partial).
   Code: `crates/core/src/actions.rs`, `crates/core/src/check/mod.rs`, `apps/wavcraft/src/app.rs`, `apps/wavcraft/src/check_panel.rs`, `tools/alpha`.
   Tests: `crates/core/tests/episode_check.rs`, `crates/core/tests/episode_check_bench.rs`, `crates/core/tests/episode_check_doc.rs`.
-- **K2 Episode Check detectors (seven kinds)** (stage 4b, partial).
+- **K2 Episode Check detectors (seven kinds)** (stage 4b, built, check not recorded).
   Code: `crates/core/src/spectrogram.rs`, `crates/core/src/check/drift.rs`, `crates/core/src/check/hum.rs`, `crates/core/src/check/mod.rs`, `crates/core/src/check/plosive.rs`, `crates/core/src/loudness.rs`, `crates/core/src/stft.rs`.
   Tests: `crates/core/tests/episode_check.rs`.
 - **K3 Findings panel, map pins, next and previous keys** (stage 4b, partial).
@@ -240,7 +240,7 @@ Where each v1 item lives, built from the Items column of the file and test table
 - **N1 Automation core: one Backend, two ways** (stage 1b, partial).
   Code: `crates/core/src/random.rs`, `crates/core/src/actions.rs`, `crates/core/src/save.rs`, `crates/core/src/effects.rs`, `crates/automation/Cargo.toml`, `crates/automation/src/headless.rs`, `crates/automation/src/lib.rs`, `crates/automation/src/remote.rs`, `crates/automation/tests/headless.rs`, `crates/automation/tests/remote.rs`, `crates/automation/tests/request.rs`, `apps/wavcraft/Cargo.toml`, `apps/wavcraft/src/app.rs`, `apps/wavcraft/src/control.rs`, `apps/wavcraft/src/win_acl.rs`.
   Tests: `apps/wavcraft/src/n1_parity_tests.rs`.
-- **N2 Command line: run, convert, inspect** (stage 1b, not started).
+- **N2 Command line: run, convert, inspect** (stage 1b, partial).
   Code: `crates/automation/Cargo.toml`, `crates/automation/src/headless.rs`, `apps/wavcraft/Cargo.toml`, `apps/wavcraft/src/main.rs`, `apps/wavcraft/src/cli.rs`, `crates/craft-log/src/cli.rs`, `crates/craft-log/tests/process.rs`.
   Tests: `crates/core/tests/batch_cli.rs`, `apps/wavcraft/tests/cli.rs`.
 - **N3 MCP server (wavcraft mcp)** (stage 1b, partial).
