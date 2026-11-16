@@ -12,6 +12,7 @@
 //! - [`remote::Remote`] talks to a running app over the control channel (loopback, token first).
 //! - [`mcp::handle`] answers MCP clients (JSON-RPC 2.0, one message per line): `initialize` and
 //!   `tools/list` so far.
+//! - [`script::parse`] reads a script text into numbered requests.
 //!
 //! Only the verbs above are here. The window still parses the rest of the channel itself, and
 //! its own copy of these (`parse_save_args`, `take_quality`, `take_meta` in `app.rs` are the
@@ -20,6 +21,7 @@
 pub mod headless;
 pub mod mcp;
 pub mod remote;
+pub mod script;
 
 use std::path::PathBuf;
 
