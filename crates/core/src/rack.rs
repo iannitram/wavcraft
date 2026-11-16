@@ -402,6 +402,35 @@ mod tests {
     }
 
     #[test]
+    fn powered_off_slots_open_no_stream() {
+        let x: Vec<f32> = (0..3000).map(|i| (i as f32 * 0.01).sin() * 0.5).collect();
+        let mut c = rack_with(&[("invert", ""), ("gain", "gain_db=-6")]);
+        assert_eq!(RackProcessor::new(&c, 1, 48_000).unwrap().streams.len(), 2);
+
+        c.set_slot_power(1, false).unwrap();
+        let mut p = RackProcessor::new(&c, 1, 48_000).unwrap();
+        assert_eq!(p.streams.len(), 1, "the powered-off gain slot opens no stream");
+        let mut buf = x.clone();
+        p.process_block(&mut [&mut buf[..]]);
+        assert!(buf.iter().all(|v| v.is_finite()));
+        assert_eq!(buf, x.iter().map(|v| -v).collect::<Vec<f32>>(), "invert only, bit for bit");
+
+        c.set_slot_power(0, false).unwrap();
+        let mut p = RackProcessor::new(&c, 1, 48_000).unwrap();
+        assert_eq!(p.streams.len(), 0, "both slots off: no stream");
+        let mut buf = x.clone();
+        p.process_block(&mut [&mut buf[..]]);
+        assert!(buf.iter().all(|v| v.is_finite()));
+        assert_eq!(buf, x, "both slots off: bit for bit bypass");
+
+        let mut m = rack_with(&[("invert", "")]);
+        m.power = false;
+        let p = RackProcessor::new(&m, 1, 48_000).unwrap();
+        assert_eq!(p.streams.len(), 0, "master power off: no stream");
+        assert_eq!(run(&m, &x), x, "master power off: bit for bit bypass");
+    }
+
+    #[test]
     fn gains_and_mix() {
         let x = vec![0.5f32; 100];
         let mut c = rack_with(&[("invert", "")]);
