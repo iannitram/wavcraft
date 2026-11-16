@@ -89,7 +89,7 @@ def main():
         want = ["file.open", "file.save", "edit.undo", "edit.redo", "transport.playStop", "view.zoomIn", "view.zoomOut", "tool.timeSelection", "tool.hand"]
         check("toolbar lists the common commands", all(k in m for k in want), a)
         check("Undo is on and Redo is off", m["edit.undo"] and not m["edit.redo"], a)
-        check("Tools panel lists planned tools too", "tool.lasso:0" in a and "tool.hand:1" in a and "active=tool.timeSelection" in a, a)
+        check("Tools panel lists planned tools too", "tool.paintbrush:0" in a and "tool.hand:1" in a and "active=tool.timeSelection" in a, a)
         a = c.ask("TOOLBAR run edit.undo"); st = c.state()
         check("toolbar Undo runs", a.endswith("changed=1") and st["redo"] == "Paste", f"{a} {st}")
         a = c.ask("TOOLBAR run tool.hand")

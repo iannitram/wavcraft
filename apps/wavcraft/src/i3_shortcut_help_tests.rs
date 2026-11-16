@@ -1,26 +1,9 @@
 //! Locked I3 expectations. The builder must not edit this file.
-use super::pressed_commands;
+use super::{pressed_commands, shortcut_help_content, shortcut_help_rows};
 
 use egui::Key;
 use wavcraft_core::actions::{self, ActionId};
 use wavcraft_core::shortcuts::{Command, Keymap};
-
-/// The Help list's rows: the action table in menu order, one row per bound chord.
-fn shortcut_help_rows(mac: bool) -> Vec<(&'static str, &'static str, String)> {
-    let keymap = Keymap::new();
-    actions::TABLE
-        .iter()
-        .flat_map(|action| keymap.chords(Command::Action(action.id)).map(move |chord| (action.name, action.menu, chord.text(mac))))
-        .collect()
-}
-
-/// Draw the Help list's rows, each label and key as its own text.
-fn shortcut_help_content(ui: &mut egui::Ui, mac: bool) {
-    for (_, label, key) in shortcut_help_rows(mac) {
-        ui.label(label);
-        ui.label(key);
-    }
-}
 
 fn key_action(key: Key, cmd: bool, shift: bool) -> Vec<ActionId> {
     let ctx = egui::Context::default();
@@ -351,6 +334,7 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("tool.hand", "Hand Tool", "H".to_string()),
         ("tool.zoom", "Zoom Tool", "Z".to_string()),
         ("tool.marquee", "Marquee Selection Tool", "E".to_string()),
+        ("tool.lasso", "Lasso Selection Tool", "D".to_string()),
         ("check.next", "Next Finding", "F8".to_string()),
         ("check.prev", "Previous Finding", "Shift+F8".to_string()),
         ("view.gotoTime", "Go to Time…", "Ctrl+J".to_string()),

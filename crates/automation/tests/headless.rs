@@ -413,3 +413,30 @@ fn save_picks_the_window_s_format_for_a_name_without_one_or_a_container() {
     assert_eq!(current(&reread), source_samples(), "the Wave64 file holds the samples");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn save_mp3_with_options() {
+    let dir = scratch("save-mp3");
+    let src = dir.join("src.wav");
+    let frames: usize = 240_000;
+    let left = (0..frames).map(|i| ((i as f64 * 0.05).sin() * 8000.0) as i32).collect();
+    let right = (0..frames).map(|i| ((i as f64 * 0.07).sin() * 8000.0) as i32).collect();
+    write_wav(&src, &[left, right]);
+    let mut b = Headless::new(&dir);
+    assert_eq!(b.answer_line(&format!("OPEN {}", src.display())), "OK");
+    let size = |p: &Path| std::fs::metadata(p).expect("an MP3 file").len();
+    // No options first: SAVE's bit rate and channels stay for later saves, as the window keeps them.
+    let default = dir.join("default.mp3");
+    assert_eq!(b.answer_line(&format!("SAVE {}", default.display())), "OK");
+    let n = size(&default);
+    assert!((119_000..=122_500).contains(&n), "192 kbps stereo is 119000 to 122500 bytes, got {n}");
+    let mono = dir.join("mono128.mp3");
+    assert_eq!(b.answer_line(&format!("SAVE {} bitrate=128 channels=1", mono.display())), "OK");
+    let n = size(&mono);
+    assert!((78_400..=81_600).contains(&n), "128 kbps mono is 78400 to 81600 bytes, got {n}");
+    let bad = dir.join("bad.mp3");
+    let answer = b.answer_line(&format!("SAVE {} bitrate=100", bad.display()));
+    assert!(answer.starts_with("ERR") && answer.contains("bitrate="), "bitrate=100 is refused, got {answer:?}");
+    assert!(!bad.exists(), "a refused save makes no file");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -244,6 +244,7 @@ fn window_actions_are_left_to_the_window() {
         ActionId::ToolHand,
         ActionId::ToolZoom,
         ActionId::ToolMarquee,
+        ActionId::ToolLasso,
     ] {
         assert_eq!(action(id).kind, wavcraft_core::actions::Kind::Window, "{id:?}");
         let out = e.run(id, 5..9).unwrap();

@@ -193,4 +193,22 @@ mod tests {
             assert!(debug.iter().any(|l| l.contains(word)), "a debug build lists {word} (its code stays)");
         }
     }
+
+    #[test]
+    fn the_mixer_panel_is_gated_behind_multitrack() {
+        let lines: Vec<&str> = include_str!("app.rs").lines().collect();
+        let gate = "if v1::offered(Feature::Multitrack) {";
+        let checkbox: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.contains("\"Mixer panel\"")).map(|(i, _)| i).collect();
+        assert_eq!(checkbox.len(), 1, "expected exactly one Mixer panel checkbox, found lines {checkbox:?}");
+        let above = checkbox[0].checked_sub(1).and_then(|i| lines.get(i)).map(|l| l.trim()).unwrap_or("");
+        assert_eq!(above, gate, "the Mixer panel checkbox is not directly under `{gate}`");
+
+        let panel_gate = "if self.show_mixer && v1::offered(Feature::Multitrack) {";
+        assert!(lines.iter().any(|l| l.trim() == panel_gate), "app.rs lacks `{panel_gate}`");
+        let ungated = "if self.show_mixer {";
+        assert!(!lines.iter().any(|l| l.trim() == ungated), "app.rs still draws the mixer panel with `{ungated}`");
+
+        assert!(offered_in(false, Feature::Multitrack), "a debug build keeps the Mixer panel checkbox");
+        assert!(!offered_in(true, Feature::Multitrack), "a release build hides the Mixer panel checkbox");
+    }
 }

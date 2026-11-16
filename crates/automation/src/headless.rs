@@ -13,6 +13,7 @@ use wavcraft_core::doc::edit::Crossfades;
 use wavcraft_core::doc::history::History;
 use wavcraft_core::effects;
 use wavcraft_core::io::{self, OpenOptions};
+use wavcraft_core::mp3_options::{MP3_DEFAULT_BITRATE, Mp3Options};
 use wavcraft_core::save::{self, AiffKind, Container, SampleType, SaveFormat, SaveOptions, VORBIS_DEFAULT_QUALITY};
 
 use crate::{Backend, Request, SaveArgs, script};
@@ -37,6 +38,11 @@ pub struct Headless {
     /// The Ogg Vorbis quality a save uses (`SAVE quality=` sets it for later saves too, as the
     /// window's does).
     vorbis_quality: f32,
+    /// The MP3 bit rate in kbps a save uses (`SAVE bitrate=` sets it for later saves too, as the
+    /// window's does).
+    mp3_bitrate: u32,
+    /// Whether an MP3 save mixes down to mono (`SAVE channels=1` sets it for later saves too).
+    mp3_mono: bool,
 }
 
 impl Headless {
@@ -47,7 +53,14 @@ impl Headless {
 
     /// With other edit crossfades; `Crossfades::NONE` makes every splice exact.
     pub fn with_crossfades(sessions_root: impl Into<PathBuf>, crossfades: Crossfades) -> Headless {
-        Headless { sessions_root: sessions_root.into(), crossfades, session: None, vorbis_quality: VORBIS_DEFAULT_QUALITY }
+        Headless {
+            sessions_root: sessions_root.into(),
+            crossfades,
+            session: None,
+            vorbis_quality: VORBIS_DEFAULT_QUALITY,
+            mp3_bitrate: MP3_DEFAULT_BITRATE,
+            mp3_mono: false,
+        }
     }
 
     /// The open document's state, if one is open.
@@ -105,14 +118,22 @@ impl Headless {
     /// `SAVE`, as the window's `save_with` does it with no dialog: the format from the
     /// extension (Wave64, CAF and AU too; none is a WAV), the source's sample type unless `bits=`/`float=` name one (a format that cannot
     /// hold a named type refuses; otherwise the nearest it holds), the AIFF kind for this save
-    /// only, the Vorbis quality and the metadata switch kept for later saves. With no path, the
+    /// only, the Vorbis quality, the MP3 bit rate and mono choice (`bitrate=`, `channels=`) and
+    /// the metadata switch kept for later saves. MP3 is written by `save_mp3`. With no path, the
     /// file that was opened (or last saved to), when WavCraft can write its format.
     fn save(&mut self, to: Option<&Path>, args: &SaveArgs) -> Result<(), String> {
         // Kept before the save is tried, as the window keeps them.
         if let Some(q) = args.quality {
             self.vorbis_quality = q;
         }
+        if let Some(b) = args.bitrate {
+            self.mp3_bitrate = b;
+        }
+        if let Some(c) = args.channels {
+            self.mp3_mono = c == 1;
+        }
         let quality = self.vorbis_quality;
+        let mp3 = Mp3Options { bitrate_kbps: self.mp3_bitrate, mono: self.mp3_mono };
         let s = self.session.as_mut().ok_or_else(|| "no file is open".to_string())?;
         if let Some(m) = args.meta {
             s.include_meta = m;
@@ -151,7 +172,7 @@ impl Headless {
                 let opts = SaveOptions { include_metadata: s.include_meta, ..SaveOptions::default() };
                 save::save_wav_with(&doc, &path, ty, &opts, &mut |_| {})
             }
-            (None, SaveFormat::Mp3) => Err(save::SaveError::Unsupported("MP3 saving is not available yet".into())),
+            (None, SaveFormat::Mp3) => save::save_mp3(&doc, &path, mp3, &mut |_| {}),
             (None, SaveFormat::Aiff | SaveFormat::Flac) => {
                 save::save_aiff_kind(&doc, &path, format, ty, args.aiff.unwrap_or(AiffKind::Aiff), &mut |_| {})
             }

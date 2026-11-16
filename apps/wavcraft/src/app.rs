@@ -93,14 +93,8 @@ use crate::video::{VideoPanel, Waiters};
 use wavcraft_core::doc::rec_edit::{self, RecMode, RecPlan, RecTarget};
 use wavcraft_core::multitrack::soundcraft_model::{SourceId, TrackId};
 
-const RULER_HEIGHT: f32 = 22.0;
-/// Width of the frequency ruler on the left of the spectral display.
-const FREQ_RULER_WIDTH: f32 = 54.0;
 /// How long the free-space figure in the status bar is kept before it is read again.
 const FREE_SPACE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
-/// The amplitude ruler's column, left of the editor.
-const AMP_RULER_WIDTH: f32 = 46.0;
-const NAV_HEIGHT: f32 = 34.0;
 
 /// A Marquee drag in progress: drawing a new rectangle, or moving the one the drag began inside.
 #[derive(Clone, Copy)]
@@ -510,6 +504,8 @@ pub(crate) enum Tool {
     Zoom,
     /// Drag draws a time x frequency rectangle on the spectral display (B135).
     Marquee,
+    /// Drag draws a free-form outline on the spectral display (C4.6; the drag itself is C4.7).
+    Lasso,
 }
 
 #[derive(Default)]
@@ -522,12 +518,19 @@ struct HudState {
 }
 
 impl Tool {
+    /// The tools whose clicks and drags are the Time Selection tool's: the Lasso does the same
+    /// until its drag is built (C4.7).
+    fn selects_time(self) -> bool {
+        matches!(self, Tool::Select | Tool::Lasso)
+    }
+
     fn name(self) -> &'static str {
         match self {
             Tool::Select => "select",
             Tool::Hand => "hand",
             Tool::Zoom => "zoom",
             Tool::Marquee => "marquee",
+            Tool::Lasso => "lasso",
         }
     }
 }
@@ -5625,6 +5628,7 @@ impl WaveApp {
             ActionId::ToolHand => self.tool = Tool::Hand,
             ActionId::ToolZoom => self.tool = Tool::Zoom,
             ActionId::ToolMarquee => self.tool = Tool::Marquee,
+            ActionId::ToolLasso => self.tool = Tool::Lasso,
             ActionId::ZoomToSelection if !self.selection.is_empty() => {
                 let (a, b) = (self.selection.start() as f64, self.selection.end() as f64);
                 self.view.frames_per_px = ((b - a) / f64::from(width)).max(1.0 / 64.0);
@@ -10993,7 +10997,9 @@ impl WaveApp {
                     self.layout.toggle_maximize(panels::EDITOR);
                     ui.close();
                 }
-                ui.checkbox(&mut self.show_mixer, "Mixer panel");
+                if v1::offered(Feature::Multitrack) {
+                    ui.checkbox(&mut self.show_mixer, "Mixer panel");
+                }
                 ui.checkbox(&mut self.meters.show_levels, "Levels");
                 let mut on = self.meter_input;
                 if ui
@@ -11426,7 +11432,7 @@ impl WaveApp {
     /// moves there (Audition's default), so the selection grows or shrinks to the click. Returns
     /// whether the selection moved.
     fn right_click_at(&mut self, frame: usize, total: usize) -> bool {
-        if self.settings.right_click_menu || self.tool != Tool::Select {
+        if self.settings.right_click_menu || !self.tool.selects_time() {
             return false;
         }
         self.selection = self.selection.extend_nearest_to(frame, total);
@@ -11637,7 +11643,7 @@ impl WaveApp {
     /// The whole file in a thin strip with the visible range as a handle: drag it to scroll,
     /// drag its edges to zoom, click outside it to jump there.
     fn navigator(&mut self, ui: &mut egui::Ui) {
-        let (resp, painter) = ui.allocate_painter(vec2(ui.available_width(), NAV_HEIGHT), Sense::click_and_drag());
+        let (resp, painter) = ui.allocate_painter(vec2(ui.available_width(), theme::metrics().nav_height), Sense::click_and_drag());
         let rect = resp.rect;
         painter.rect_filled(rect, 2.0, theme::pal().well);
         self.map_classes.clear();
@@ -11736,7 +11742,7 @@ impl WaveApp {
         );
         let Some((frames, rate, channels)) = self.doc.as_ref().map(|d| (d.frames(), d.sample_rate(), d.channels().max(1))) else { return };
         // The amplitude ruler takes a column on the left; the time axis starts right of it.
-        let amp_col = Rect::from_min_max(full.min, pos2(full.left() + AMP_RULER_WIDTH, full.bottom()));
+        let amp_col = Rect::from_min_max(full.min, pos2(full.left() + theme::metrics().amp_ruler_width, full.bottom()));
         let rect = Rect::from_min_max(pos2(amp_col.right(), full.top()), full.max);
         let ruler_resp = ui.interact(amp_col, ui.id().with("amp-ruler"), Sense::click());
         let mut chosen_scale = None;
@@ -11750,7 +11756,7 @@ impl WaveApp {
         }
         // The frequency ruler: a strip down the left of the spectral display, if it has room.
         let spectrum_zone = {
-            let top = rect.top() + RULER_HEIGHT;
+            let top = rect.top() + theme::metrics().ruler_height;
             let height = rect.bottom() - top;
             match (self.editor_shows("waveform"), self.editor_shows("spectral")) {
                 (true, true) => Some(Rect::from_min_max(pos2(rect.left(), top + height * self.settings.spec_split_pct as f32 / 100.0), rect.max)),
@@ -11758,8 +11764,9 @@ impl WaveApp {
                 _ => None,
             }
         };
-        let freq_ruler =
-            spectrum_zone.filter(|a| a.width() > 3.0 * FREQ_RULER_WIDTH).map(|a| Rect::from_min_size(a.min, vec2(FREQ_RULER_WIDTH, a.height())));
+        let freq_ruler = spectrum_zone
+            .filter(|a| a.width() > 3.0 * theme::metrics().freq_ruler_width)
+            .map(|a| Rect::from_min_size(a.min, vec2(theme::metrics().freq_ruler_width, a.height())));
         let over_freq_ruler = |pos: Pos2| freq_ruler.is_some_and(|r| r.contains(pos));
         // Where in the lane under `y` (0 bottom, 1 top) and how tall that lane is.
         let lane_at = |y: f32| {
@@ -11846,7 +11853,7 @@ impl WaveApp {
         {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
-        let ruler_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
+        let ruler_rect = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + theme::metrics().ruler_height));
         if response.drag_started() {
             self.drag_origin = ui.input(|i| i.pointer.press_origin()).or_else(|| response.interact_pointer_pos());
         }
@@ -11931,7 +11938,7 @@ impl WaveApp {
         // The fade handles (E1.2): at the waveform's top corners, with the Select tool. A press on one
         // starts a fade drag, which wins over selecting; the release applies the fade as one step.
         let mut fade_preview: Option<wavcraft_core::fade_handles::FadeGesture> = None;
-        if self.editor_shows("waveform") && self.tool == Tool::Select && frames > 0 {
+        if self.editor_shows("waveform") && self.tool.selects_time() && frames > 0 {
             let origin = body.min;
             let hit = |view: &Viewport, sel: &Selection, p: egui::Pos2| {
                 wavcraft_core::fade_handles::handle_near(view, sel, frames, p.x - origin.x, p.y - origin.y)
@@ -11967,7 +11974,7 @@ impl WaveApp {
             }
         }
         // Selection gestures: the Select tool's, and the Marquee tool's outside a marquee drag.
-        let select = (self.tool == Tool::Select || (marquee_tool && self.marquee.is_none() && !marquee_starts))
+        let select = (self.tool.selects_time() || (marquee_tool && self.marquee.is_none() && !marquee_starts))
             && !freq_busy
             && !on_freq_click
             && self.fade_drag.is_none();
@@ -12035,7 +12042,7 @@ impl WaveApp {
                     && let Some(editor) = self.editor.as_mut()
                 {
                     let channels = editor.history.current().channel_count();
-                    let top = rect.top() + RULER_HEIGHT;
+                    let top = rect.top() + theme::metrics().ruler_height;
                     let y = (origin.y - top) / (rect.bottom() - top).max(1.0);
                     editor.channels = view::mask_after_drag(y, channels, true, editor.channels);
                 }
@@ -12119,7 +12126,7 @@ impl WaveApp {
         }
         // Right-click: with the menu setting off, the nearest edge moves to the click (the Select
         // tool, off the ruler); with it on, the context menu opens.
-        if self.tool == Tool::Select
+        if self.tool.selects_time()
             && response.secondary_clicked()
             && let Some(pos) = response.interact_pointer_pos()
             && !ruler_rect.contains(pos)
@@ -12145,7 +12152,7 @@ impl WaveApp {
 
         let Some(doc) = &self.doc else { return };
         let (start, end) = (self.view.start, self.view.end(width));
-        let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + RULER_HEIGHT));
+        let ruler = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + theme::metrics().ruler_height));
         let body = Rect::from_min_max(pos2(rect.left(), ruler.bottom()), rect.max);
         draw_ruler(&painter, ruler, &self.view, rate, self.time_format, &self.tempo);
         if let Some(e) = &self.editor {
@@ -12184,7 +12191,7 @@ impl WaveApp {
         self.editor_layout = Some(EditorLayout {
             width,
             height: rect.height(),
-            ruler_height: RULER_HEIGHT,
+            ruler_height: theme::metrics().ruler_height,
             show_waveform: self.editor_shows("waveform"),
             show_spectrum: self.editor_shows("spectral"),
             channels,
@@ -12325,7 +12332,11 @@ impl WaveApp {
                 draw_fade_handles(&painter, area, &self.view, range, self.fade_drag, fade_preview.as_ref());
             }
         }
-        painter.rect_filled(Rect::from_min_max(amp_col.min, pos2(amp_col.right(), amp_col.top() + RULER_HEIGHT)), 0.0, theme::pal().ruler);
+        painter.rect_filled(
+            Rect::from_min_max(amp_col.min, pos2(amp_col.right(), amp_col.top() + theme::metrics().ruler_height)),
+            0.0,
+            theme::pal().ruler,
+        );
         let current_scale = self.settings.amp_scale;
         ruler_resp.context_menu(|ui| {
             for s in AmpScale::ALL {
@@ -12374,8 +12385,8 @@ impl WaveApp {
                     }
                 }
             }
-            if Some(area).is_some_and(|a| a.width() > 3.0 * FREQ_RULER_WIDTH) {
-                let strip = Rect::from_min_size(area.min, vec2(FREQ_RULER_WIDTH, area.height()));
+            if Some(area).is_some_and(|a| a.width() > 3.0 * theme::metrics().freq_ruler_width) {
+                let strip = Rect::from_min_size(area.min, vec2(theme::metrics().freq_ruler_width, area.height()));
                 let axis = self.freq_axis();
                 for ch in 0..channels {
                     let lane = lane(strip, ch, channels).shrink2(vec2(0.0, 1.0));
@@ -12844,7 +12855,7 @@ impl eframe::App for WaveApp {
         if self.show_metadata {
             egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));
         }
-        if self.show_mixer {
+        if self.show_mixer && v1::offered(Feature::Multitrack) {
             egui::Panel::bottom("mixer")
                 .resizable(true)
                 .default_size(260.0)
@@ -13505,15 +13516,21 @@ fn split_seed(args: &str) -> (Result<u64, String>, String) {
     (seed, rest.join(" "))
 }
 
-// I3 card stubs: remove these temporary dead-code allowances when wiring Help.
-#[allow(dead_code, clippy::unimplemented)]
-fn shortcut_help_rows(_mac: bool) -> Vec<(&'static str, &'static str, String)> {
-    unimplemented!()
+// Used by the tests until I3.2 adds the Help window; remove the allowance then.
+/// The Help list's rows: the action table in menu order, one row per bound chord.
+#[allow(dead_code)]
+fn shortcut_help_rows(mac: bool) -> Vec<(&'static str, &'static str, String)> {
+    let keymap = Keymap::new();
+    TABLE.iter().flat_map(|action| keymap.chords(Command::Action(action.id)).map(move |chord| (action.name, action.menu, chord.text(mac)))).collect()
 }
 
-#[allow(dead_code, clippy::unimplemented)]
-fn shortcut_help_content(_ui: &mut egui::Ui, _mac: bool) {
-    unimplemented!()
+/// Draw the Help list's rows, each label and key as its own text.
+#[allow(dead_code)]
+fn shortcut_help_content(ui: &mut egui::Ui, mac: bool) {
+    for (_, label, key) in shortcut_help_rows(mac) {
+        ui.label(label);
+        ui.label(key);
+    }
 }
 
 /// "AIFF-C, little-endian (sowt)" for an AIFF save, else the format's name.
@@ -13680,6 +13697,14 @@ mod tests {
                 assert_eq!(labels, expected);
             }
         }
+    }
+
+    #[test]
+    fn the_lasso_selects_time_like_the_select_tool() {
+        use super::Tool;
+        assert!(Tool::Lasso.selects_time());
+        assert!(Tool::Select.selects_time());
+        assert!(!Tool::Hand.selects_time() && !Tool::Zoom.selects_time() && !Tool::Marquee.selects_time());
     }
 
     #[test]
