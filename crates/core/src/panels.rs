@@ -77,6 +77,7 @@ pub const REGISTRY: &[PanelInfo] = &[
     PanelInfo { id: "markers", title: "Markers", default_dock: DockSide::Left },
     PanelInfo { id: "match", title: "Match Loudness", default_dock: DockSide::Right },
     PanelInfo { id: "findings", title: "Episode Check", default_dock: DockSide::Right },
+    PanelInfo { id: "transcript", title: "Transcript", default_dock: DockSide::Right },
 ];
 
 /// The Editor panel (roadmap A029): the area in the centre that holds the waveform and spectral
@@ -951,6 +952,17 @@ mod tests {
     }
 
     #[test]
+    fn the_transcript_panel_is_registered_on_the_right() {
+        assert_eq!(by_id("transcript").map(|p| (p.title, p.default_dock)), Some(("Transcript", DockSide::Right)));
+        assert!(is_closable("transcript"));
+        assert!(PanelSet::for_build(true).report().contains("transcript=1"));
+        let mut s = PanelSet::for_build(true);
+        assert_eq!(s.apply_action("window.hide.transcript"), Some(Ok(false)));
+        assert!(s.report().contains("transcript=0"));
+        assert_eq!(s.apply_action("window.show.transcript"), Some(Ok(true)));
+    }
+
+    #[test]
     fn a_release_build_lists_no_out_of_v1_panel() {
         let mut release = PanelSet::for_build(true);
         let listed: Vec<&str> = REGISTRY.iter().filter(|p| release.is_shown(p.id)).map(|p| p.id).collect();
@@ -959,7 +971,7 @@ mod tests {
         assert_eq!(release.toggle("freq"), None);
         assert_eq!(release.apply_action("window.show.freq"), Some(Err("no panel with the id \"freq\"".into())));
         assert!(release.report().contains("freq=0") && release.is_shown("history"));
-        assert!(PanelSet::for_build(true).report().ends_with("match=1 findings=1"));
+        assert!(PanelSet::for_build(true).report().ends_with("match=1 findings=1 transcript=1"));
         assert!(release.hidden_ids().is_empty(), "the settings file keeps no release-only state");
         assert!(PanelSet::for_build(false).is_shown("freq"), "a debug build offers every panel");
     }
@@ -977,12 +989,12 @@ mod tests {
         let mut s = PanelSet::default();
         assert_eq!(
             s.report(),
-            "editor=1 waveform=1 spectral=1 rack=1 history=1 selection=1 freq=1 playlist=1 properties=1 transport=1 time=1 zoom=1 tools=1 files=1 markers=1 match=1 findings=1"
+            "editor=1 waveform=1 spectral=1 rack=1 history=1 selection=1 freq=1 playlist=1 properties=1 transport=1 time=1 zoom=1 tools=1 files=1 markers=1 match=1 findings=1 transcript=1"
         );
         assert_eq!(s.apply_action("window.toggle.history"), Some(Ok(false)));
         assert_eq!(
             s.report(),
-            "editor=1 waveform=1 spectral=1 rack=1 history=0 selection=1 freq=1 playlist=1 properties=1 transport=1 time=1 zoom=1 tools=1 files=1 markers=1 match=1 findings=1"
+            "editor=1 waveform=1 spectral=1 rack=1 history=0 selection=1 freq=1 playlist=1 properties=1 transport=1 time=1 zoom=1 tools=1 files=1 markers=1 match=1 findings=1 transcript=1"
         );
         assert_eq!(s.apply_action("window.show.history"), Some(Ok(true)));
         assert_eq!(s.apply_action("window.hide.spectral"), Some(Ok(false)));
@@ -998,7 +1010,7 @@ mod tests {
     #[test]
     fn the_default_layout_follows_the_registry() {
         let (l, set) = (Layout::default(), all());
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "playlist", "match", "findings"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "playlist", "match", "findings", "transcript"]);
         assert_eq!(l.visible(DockSide::Left, &set), vec!["tools", "files", "markers"]);
         assert_eq!(l.visible(DockSide::Center, &set), vec!["editor", "waveform", "spectral"]);
         assert_eq!(l.visible(DockSide::Bottom, &set), vec!["selection", "freq", "properties", "transport", "time", "zoom"]);
@@ -1016,6 +1028,7 @@ mod tests {
         assert_eq!(by_id(EDITOR).map(|p| (p.title, p.default_dock)), Some(("Editor", DockSide::Center)));
         assert!(!is_closable(EDITOR) && is_closable("history") && !is_closable("nope"));
         assert!(by_id("findings").is_some() && is_closable("findings"));
+        assert!(by_id("transcript").is_some() && is_closable("transcript"));
         assert!(!set.set(EDITOR, false) && set.is_shown(EDITOR));
         assert_eq!(set.toggle(EDITOR), None);
         assert!(matches!(set.apply_action("window.hide.editor"), Some(Err(_))));
@@ -1036,7 +1049,7 @@ mod tests {
         l.move_to("selection", DockSide::Right, Some(1)).unwrap();
         l.move_to("history", DockSide::Left, None).unwrap();
         assert_eq!(l.visible(DockSide::Left, &set), vec!["tools", "files", "markers", "history"]);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "selection", "playlist", "match", "findings"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "selection", "playlist", "match", "findings", "transcript"]);
         l.move_to("selection", DockSide::Left, Some(0)).unwrap();
         assert_eq!(l.visible(DockSide::Left, &set), vec!["selection", "tools", "files", "markers", "history"]);
         assert_eq!(l.active_in(DockSide::Left, &set), Some("selection"));
@@ -1053,11 +1066,11 @@ mod tests {
         l.move_to("selection", DockSide::Right, None).unwrap();
         l.activate("selection");
         set.set("selection", false);
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "playlist", "match", "findings"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "playlist", "match", "findings", "transcript"]);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("rack"), "a hidden front tab gives way");
         set.set("selection", true);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
-        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "playlist", "match", "findings", "selection"]);
+        assert_eq!(l.visible(DockSide::Right, &set), vec!["rack", "history", "playlist", "match", "findings", "transcript", "selection"]);
     }
 
     #[test]
@@ -1065,13 +1078,15 @@ mod tests {
         let (mut l, set) = (Layout::default(), all());
         l.move_to("selection", DockSide::Right, None).unwrap();
         l.activate("history");
-        // `move_to` with no position puts selection last: rack, history, playlist, match, findings, selection.
+        // `move_to` with no position puts selection last: rack, history, playlist, match, findings, transcript, selection.
         l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("playlist"));
         l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("match"));
         l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("findings"));
+        l.cycle(DockSide::Right, &set, 1);
+        assert_eq!(l.active_in(DockSide::Right, &set), Some("transcript"));
         l.cycle(DockSide::Right, &set, 1);
         assert_eq!(l.active_in(DockSide::Right, &set), Some("selection"));
         l.cycle(DockSide::Right, &set, 1);
@@ -1109,7 +1124,7 @@ mod tests {
         let (tabs, sizes) = l.encode();
         assert_eq!(
             tabs,
-            "left:tools,files,markers,selection*;right:rack,playlist,match,findings;bottom:freq,properties,transport,time,zoom,history*"
+            "left:tools,files,markers,selection*;right:rack,playlist,match,findings,transcript;bottom:freq,properties,transport,time,zoom,history*"
         );
         assert_eq!(sizes, "left:220,right:240,bottom:300");
         let back = Layout::decode(&tabs, &sizes);
@@ -1124,7 +1139,7 @@ mod tests {
         assert_eq!(l.visible(DockSide::Left, &set), vec!["history", "tools", "files", "markers"]);
         assert_eq!(
             l.visible(DockSide::Right, &set),
-            vec!["rack", "playlist", "match", "findings"],
+            vec!["rack", "playlist", "match", "findings", "transcript"],
             "the missing panels return to their default zone"
         );
         assert_eq!(l.zone_of("selection"), Some(DockSide::Bottom), "the missing panel returns to its default zone");
@@ -1158,11 +1173,11 @@ mod tests {
         let (mut l, mut set) = (Layout::default(), all());
         assert_eq!(
             l.report(&set),
-            "zone.left=tools,files,markers zone.right=rack,history,playlist,match,findings zone.bottom=selection,freq,properties,transport,time,zoom zone.center=editor,waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=tools front.right=rack front.bottom=selection maximized=- floating=-"
+            "zone.left=tools,files,markers zone.right=rack,history,playlist,match,findings,transcript zone.bottom=selection,freq,properties,transport,time,zoom zone.center=editor,waveform,spectral size.left=220 size.right=240 size.bottom=180 front.left=tools front.right=rack front.bottom=selection maximized=- floating=-"
         );
         l.apply_command(&mut set, "move selection left").unwrap();
         l.apply_command(&mut set, "maximize selection").unwrap();
-        assert!(l.report(&set).starts_with("zone.left=tools,files,markers,selection zone.right=rack,history,playlist,match,findings "));
+        assert!(l.report(&set).starts_with("zone.left=tools,files,markers,selection zone.right=rack,history,playlist,match,findings,transcript "));
         assert!(l.report(&set).contains("maximized=selection"));
     }
 
@@ -1247,7 +1262,7 @@ mod tests {
     fn docked() -> Layout {
         let mut l = Layout::default();
         l.move_to("history", DockSide::Left, None).unwrap();
-        for id in ["rack", "selection", "markers", "playlist", "match", "findings"] {
+        for id in ["rack", "selection", "markers", "playlist", "match", "findings", "transcript"] {
             l.move_to(id, DockSide::Bottom, None).unwrap();
         }
         l
@@ -1291,7 +1306,7 @@ mod tests {
     #[test]
     fn a_hidden_zone_gives_its_room_to_the_other() {
         let (mut l, mut set) = (Layout::default(), all());
-        for id in ["rack", "history", "selection", "markers", "playlist", "match", "findings"] {
+        for id in ["rack", "history", "selection", "markers", "playlist", "match", "findings", "transcript"] {
             set.set(id, false);
         }
         l.drag_divider(DockSide::Left, 5000.0, 0.0, &set, win());
