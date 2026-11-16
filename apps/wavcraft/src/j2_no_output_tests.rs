@@ -1,6 +1,8 @@
 //! Locked #1307 expectations (J2.1): while the player is muted for a take, a device change does not
-//! reopen the output. The change is kept, and the output reopens after the take. Under `WAVCRAFT_NO_AUDIO=1`
-//! the silent sink stands in for the device. `player.rs` declares this file as a test-only module.
+//! reopen the output. The change is kept, and the output reopens after the take. Locked #1382
+//! expectations (J2.3): an output change made while muted is kept the same way, and the output
+//! reopens on the new choice after the take. Under `WAVCRAFT_NO_AUDIO=1` the silent sink stands in
+//! for the device. `player.rs` declares this file as a test-only module.
 use std::ffi::OsStr;
 use std::process::Command;
 
@@ -50,5 +52,23 @@ fn a_device_change_during_a_take_waits_for_the_take_to_end() {
     assert!(p.maintain(), "after the take the kept change reopens the output");
     assert_eq!(p.reopens(), 1);
     assert_eq!(p.device, "test sink (no audio) 1");
+    assert!(!p.maintain(), "the reopen cleared the flag");
+}
+
+/// J2.3 (#1382): an output change during a take keeps the choice and waits for the take to end.
+#[test]
+fn an_output_change_during_a_take_waits_for_the_take_to_end() {
+    if silent_child("player::j2_no_output_tests::an_output_change_during_a_take_waits_for_the_take_to_end") {
+        return;
+    }
+    let mut p = silent_player();
+    p.set_muted(true);
+    p.set_output(OutputChoice::default());
+    assert!(!p.maintain(), "muted: the output change waits for the take");
+    assert_eq!(p.reopens(), 0);
+    assert_eq!(p.device, "test sink (no audio)", "the name stays during the take");
+    p.set_muted(false);
+    assert!(p.maintain(), "after the take the kept output choice reopens the output");
+    assert_eq!(p.reopens(), 1);
     assert!(!p.maintain(), "the reopen cleared the flag");
 }
