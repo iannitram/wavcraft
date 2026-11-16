@@ -371,8 +371,7 @@ impl History {
 
     /// Replace every step after step `cursor` (redo steps included) with one step that holds the
     /// current state under `label`, so a run of edits undoes in one step (N4.3). Returns how many
-    /// steps it replaced, or `None` and no change when there is nothing after `cursor`: a `cursor`
-    /// at or past the current step, or past the end of `steps`.
+    /// steps it replaced, or `None` when `cursor` is not before the current step (no change).
     pub fn squash_since(&mut self, cursor: usize, label: impl Into<String>) -> Option<usize> {
         if cursor >= self.cursor {
             return None;

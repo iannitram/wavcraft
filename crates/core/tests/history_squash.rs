@@ -69,6 +69,7 @@ fn squash_makes_one_step() {
 
     assert_eq!(h.squash_since(0, "Run Script"), Some(3));
     assert_eq!(h.steps().len(), 2);
+    assert_eq!(h.cursor(), 1);
     assert_eq!(h.undo_label(), Some("Run Script"));
     assert!(h.held_bytes() <= before);
     assert_eq!(h.held_bytes(), 16);
@@ -99,6 +100,7 @@ fn squash_with_nothing_after_cursor_is_none() {
     let (_store, mut h) = four_steps(&t.0);
 
     assert!(h.squash_since(3, "x").is_none());
+    assert_eq!(h.steps().len(), 4);
     assert!(h.squash_since(9, "x").is_none());
     assert_eq!(h.steps().len(), 4);
 
