@@ -254,7 +254,7 @@ To repeat: `i7-mem.py` as above, on the 8 GB M1 Mac mini, with the test file fro
 
 *Measured on 2026-11-16 on Linux (built in a cloud container, software rendering through Xvfb), release build of commit `6b386a3` (the code the app ran; this step changes no Rust), `ffmpeg version 6.1.1-3ubuntu5`.*
 
-The input is the 3-hour kit file `long-3h-48k-stereo-16.wav` (2.07 GB), made with `wavcraft-testkit --long`. The app runs MATCH with its default podcast target (-16 LUFS, -1 dBTP, limiter on) through the control channel, saves a copy, and ffmpeg's `ebur128` filter with `peak=true` measures that copy. The MATCH reply came about 1 h 30 min after it started, on this container.
+The input is the 3-hour kit file `long-3h-48k-stereo-16.wav` (2.07 GB), made with `wavcraft-testkit --long`. The app runs MATCH with its default podcast target (-16 LUFS, -1 dBTP, limiter on) through the control channel, saves a copy, and ffmpeg's `ebur128` filter with `peak=true` measures that copy. The MATCH reply came about 1 min 30 s after it started, on this container (software rendering); the whole run, from app start to exit, took about 2 to 3 minutes. These times are estimated from the session's timestamps and `ps` elapsed time; the script does not time itself.
 
 | Measure | ffmpeg (saved copy) | Limit |
 |---|---|---|

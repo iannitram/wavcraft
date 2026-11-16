@@ -129,7 +129,13 @@ def main():
             time.sleep(0.5)
         check("the save finishes (busy=0)", st.get("busy") == "0", st)
         check("QUIT discard", c.ask("QUIT discard") == "OK")
-        proc.wait(10)
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            # The app did not exit within 10 s of QUIT: kill it and carry on to the log check.
+            proc.kill()
+            proc.wait(10)
+            check("the app exits within 10 s of QUIT", False, "killed after 10 s")
     except Exception as e:
         check("scripted run completed", False, f"{type(e).__name__}: {e}")
         if proc and proc.poll() is None:
