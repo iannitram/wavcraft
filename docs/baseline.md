@@ -249,3 +249,26 @@ I used `--edits 20` and `--edits 200` for the two runs. The first edit is a whol
 **First run, before #64 and #1036 (commit `d4d95b3`, #50).** Footprint peaked at 1,638 MB during the open and 1,843 MB during the 20 undos, so this run was over the line. Resident (`ps`) stayed under 716 MB.
 
 To repeat: `i7-mem.py` as above, on the 8 GB M1 Mac mini, with the test file from `tools/alpha/f05.py`.
+
+## G3 independent meter
+
+*Measured on 2026-11-16 on Linux (built in a cloud container, software rendering through Xvfb), release build of commit `6b386a3` (the code the app ran; this step changes no Rust), `ffmpeg version 6.1.1-3ubuntu5`.*
+
+The input is the 3-hour kit file `long-3h-48k-stereo-16.wav` (2.07 GB), made with `wavcraft-testkit --long`. The app runs MATCH with its default podcast target (-16 LUFS, -1 dBTP, limiter on) through the control channel, saves a copy, and ffmpeg's `ebur128` filter with `peak=true` measures that copy. The MATCH reply came about 1 min 30 s after it started, on this container (software rendering); the whole run, from app start to exit, took about 2 to 3 minutes. These times are estimated from the session's timestamps and `ps` elapsed time; the script does not time itself.
+
+| Measure | ffmpeg (saved copy) | Limit |
+|---|---|---|
+| Integrated loudness (LUFS) | -16.0 | -16.2 to -15.8 |
+| True peak (dBTP) | -3.1 | at or below -1.0 |
+
+MATCH answer line from the app: `OK gain=1.72 limited=0 on_target=1 before=-17.72 after=-16.00 true_peak=-3.34 changed=1`. Its own meter reads -16.00 LUFS and -3.34 dBTP; ffmpeg prints one decimal place.
+
+Recipe (the kit is made outside the repo and never committed):
+
+```
+cargo run --release -p wavcraft-testkit --bin wavcraft-testkit -- <scratch>/kit --long
+cargo build --release -p wavcraft
+G35_WAV=<scratch>/kit/long-3h-48k-stereo-16.wav xvfb-run -a -s '-screen 0 1920x1080x24' bash tools/alpha/g35.sh
+```
+
+The script `tools/alpha/g35.py` checks that MATCH answers `OK` with `changed=1`, that SAVE answers `OK` and the save finishes, that the loudness and true peak are in range, and that the app's log has no `ERROR` line. The run printed `PASS 8/8` and exit 0.
