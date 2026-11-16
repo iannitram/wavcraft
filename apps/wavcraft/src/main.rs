@@ -99,6 +99,12 @@ fn main() -> eframe::Result {
             Err(reason) => exit_error(reason),
         }
     }
+    if let cli::Command::Run { script, file, out, session_dir } = &command {
+        match run_script_file(script, file.as_deref(), out.as_deref(), session_dir.clone().unwrap_or_else(conversion_sessions_dir)) {
+            Ok(()) => std::process::exit(0),
+            Err(reason) => exit_error(reason),
+        }
+    }
     let cli::Command::Window(Args { file, session_dir, reset_preferences }) = command else {
         exit_error("command is not implemented yet".to_owned());
     };
@@ -142,6 +148,24 @@ fn inspect(file: &std::path::Path, sessions: PathBuf) -> Result<String, String> 
         let _ = writeln!(text, "{key}: {value}");
     }
     Ok(text)
+}
+
+/// `wavcraft run <script> <file> [-o <out>]`: open `file` headless, run the script text on it, and save to
+/// `out` only when every line passed. With no `out` the script is only checked and nothing is written.
+/// The document is dropped when this returns, which removes its session folder.
+fn run_script_file(script: &std::path::Path, file: Option<&std::path::Path>, out: Option<&std::path::Path>, sessions: PathBuf) -> Result<(), String> {
+    use wavcraft_automation::{Backend, Request, SaveArgs, headless::Headless};
+    let Some(file) = file else {
+        return Err("usage: wavcraft run <script> <file> [-o <out>]".to_owned());
+    };
+    let text = std::fs::read_to_string(script).map_err(|e| format!("{}: {e}", script.display()))?;
+    let mut backend = Headless::new(sessions);
+    backend.execute(&Request::Open(file.to_path_buf()))?;
+    backend.run_script(&text)?;
+    if let Some(out) = out {
+        backend.execute(&Request::Save { path: Some(out.to_path_buf()), args: SaveArgs::default() })?;
+    }
+    Ok(())
 }
 
 /// `wavcraft mcp`: answer MCP lines on standard input over a headless engine; `mcp --attach`: over the

@@ -266,3 +266,105 @@ fn mcp_refuses_a_bad_flag() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("usage: wavcraft mcp [--attach]"), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A 16-bit stereo WAV of 20000 frames at 48 kHz: channel 0 at frame `i` is `100 * ((i % 100) + 1)`,
+/// channel 1 its negative.
+fn write_stereo_tone(path: &Path) {
+    const FRAMES: u32 = 20_000;
+    let data_len = FRAMES * 2 * 2;
+    let mut out = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&48_000u32.to_le_bytes());
+    out.extend_from_slice(&(48_000u32 * 4).to_le_bytes());
+    out.extend_from_slice(&4u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for i in 0..FRAMES {
+        let v = (100 * ((i % 100) + 1)) as i16;
+        out.extend_from_slice(&v.to_le_bytes());
+        out.extend_from_slice(&(-v).to_le_bytes());
+    }
+    std::fs::write(path, out).expect("write the stereo tone");
+}
+
+#[test]
+fn run_applies_a_two_step_script() {
+    let dir = scratch("run-two-step");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    let src = dir.join("tone.wav");
+    write_stereo_tone(&src);
+    let script = dir.join("script.txt");
+    std::fs::write(&script, "SELECT 1000 2000\nACTION edit.delete\n").unwrap();
+    let out_path = dir.join("out.wav");
+    let out = run(&["run", script.to_str().unwrap(), src.to_str().unwrap(), "-o", out_path.to_str().unwrap()], &sessions);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let doc = wavcraft_core::Document::open(&out_path).expect("open result");
+    assert_eq!(doc.state.len_frames(), 19000);
+    drop(doc);
+    assert!(std::fs::read_dir(&sessions).unwrap().next().is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn run_matches_headless_run_script() {
+    use wavcraft_automation::{Backend, Request, SaveArgs, headless::Headless};
+    let dir = scratch("run-matches");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    let src = dir.join("tone.wav");
+    write_stereo_tone(&src);
+    let text = "SELECT 1000 2000\nACTION edit.delete\nSELECT 0 500\nEFFECT invert\nEFFECT gain gain_db=-6.0206\n";
+    let script = dir.join("script.txt");
+    std::fs::write(&script, text).unwrap();
+    let out_path = dir.join("out.wav");
+    let out = run(&["run", script.to_str().unwrap(), src.to_str().unwrap(), "-o", out_path.to_str().unwrap()], &sessions);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let other = scratch("run-matches-headless");
+    let mut headless = Headless::new(other.join("sessions"));
+    headless.execute(&Request::Open(src.clone())).expect("open in Headless");
+    headless.run_script(text).expect("run the script in Headless");
+    let expected = other.join("expected.wav");
+    headless.execute(&Request::Save { path: Some(expected.clone()), args: SaveArgs::default() }).expect("save");
+    drop(headless);
+
+    let got = wavcraft_core::Document::open(&out_path).expect("open the run output");
+    let want = wavcraft_core::Document::open(&expected).expect("open the Headless output");
+    assert_eq!(got.state.len_frames(), 19000);
+    assert_eq!(want.state.len_frames(), 19000);
+    for ch in 0..2 {
+        let mut a = vec![0.0f32; 19000];
+        let mut b = vec![0.0f32; 19000];
+        got.state.read(ch, 0, &mut a).expect("read run output");
+        want.state.read(ch, 0, &mut b).expect("read Headless output");
+        assert_eq!(a, b, "channel {ch} differs");
+    }
+    drop((got, want));
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(other);
+}
+
+#[test]
+fn a_bad_line_writes_nothing() {
+    let dir = scratch("run-bad-line");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    let src = dir.join("tone.wav");
+    write_stereo_tone(&src);
+    let script = dir.join("script.txt");
+    std::fs::write(&script, "SELECT 0 500\nACTION edit.nope\nSELECT 0 10\n").unwrap();
+    let out_path = dir.join("out.wav");
+    let out = run(&["run", script.to_str().unwrap(), src.to_str().unwrap(), "-o", out_path.to_str().unwrap()], &sessions);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("line 2"), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(!out_path.exists());
+    assert!(std::fs::read_dir(&sessions).unwrap().next().is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
