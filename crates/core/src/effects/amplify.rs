@@ -112,10 +112,10 @@ impl Effect for Amplify {
         Ok(())
     }
 
-    fn stream(&self, params: &[f64], channels: usize, _rate: u32) -> Option<Box<dyn EffectStream>> {
+    fn stream(&self, params: &[f64], channels: usize, _rate: u32) -> Result<Option<Box<dyn EffectStream>>, String> {
         let (left, right, link) = settings(params);
         let channels: Vec<usize> = (0..channels).collect();
-        Some(Box::new(Gains(amplify_gains(left, right, link, &channels))))
+        Ok(Some(Box::new(Gains(amplify_gains(left, right, link, &channels)))))
     }
 }
 

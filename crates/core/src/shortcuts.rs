@@ -375,6 +375,7 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::CaptureNoisePrint, shift("P")),
     bind(Command::NoiseReductionDialog, cmd_shift("P")),
     act(ActionId::ConvertSampleType, shift("T")),
+    act(ActionId::ConvertSampleType, key("F11")),
     act(ActionId::Delete, key("Delete")),
     act(ActionId::Delete, key("Backspace")),
     act(ActionId::Crop, cmd("T")),

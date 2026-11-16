@@ -161,6 +161,7 @@ pub fn toolbar() -> Vec<Entry> {
         act(ActionId::ZoomOutFull),
         Entry::Sep,
         act(ActionId::SnapToggle),
+        act(ActionId::ViewSpectralToggle),
         Entry::Sep,
     ];
     v.extend(TOOLS.iter().filter_map(|t| t.tool.map(|tool| app(t.name, t.label, Cmd::Tool(tool)))));
@@ -180,6 +181,7 @@ pub fn glyph(item: &Item) -> &'static str {
         "view.zoomToSelection" => "To Sel.",
         "view.zoomOutFull" => "Fit",
         "view.snap.toggle" => "Snap",
+        "view.spectral.toggle" => "Spectral",
         "tool.timeSelection" => "Time",
         "tool.hand" => "Hand",
         "tool.zoom" => "Zoom",
@@ -258,6 +260,16 @@ mod tests {
         let item = toolbar_item("view.snap.toggle").expect("Snapping toggle is on the toolbar");
         assert_eq!(item.cmd, Cmd::Action(ActionId::SnapToggle));
         assert_eq!(glyph(&item), "Snap");
+    }
+
+    #[test]
+    fn the_toolbar_has_the_spectral_toggle() {
+        let item = toolbar_item("view.spectral.toggle").expect("Spectral toggle is on the toolbar");
+        assert_eq!(item.cmd, Cmd::Action(ActionId::ViewSpectralToggle));
+        assert_eq!(glyph(&item), "Spectral");
+        let n = names(&toolbar());
+        let snap = n.iter().position(|x| *x == "view.snap.toggle").expect("Snap is on the toolbar");
+        assert_eq!(n.get(snap + 1), Some(&"view.spectral.toggle"));
     }
 
     #[test]

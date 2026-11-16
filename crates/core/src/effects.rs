@@ -225,11 +225,12 @@ pub trait Effect: Sync {
     /// and `output` hold one slice per active channel, all the same length. The output has the
     /// same length as the input (the effect seam is length-preserving).
     fn process(&self, params: &[f64], first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()>;
-    /// A stateful block processor for live use and the rack (f31), or `None` (the default) for an
-    /// effect that needs no memory between blocks. Must allocate everything it needs here, not
+    /// A stateful block processor for live use and the rack (f31), or `Ok(None)` (the default) for
+    /// an effect that needs no memory between blocks. `Err` says why this effect cannot stream
+    /// with these settings, and the rack refuses it. Must allocate everything it needs here, not
     /// in `process_block`.
-    fn stream(&self, _params: &[f64], _channels: usize, _rate: u32) -> Option<Box<dyn EffectStream>> {
-        None
+    fn stream(&self, _params: &[f64], _channels: usize, _rate: u32) -> Result<Option<Box<dyn EffectStream>>, String> {
+        Ok(None)
     }
 }
 
@@ -246,8 +247,9 @@ pub trait EffectStream: Send {
 }
 
 /// The stream of an effect that keeps no state between blocks: each block goes through
-/// [`Effect::process`]. Only an effect that can stream reaches it (see [`can_stream`]): Invert,
-/// Gain and Channel Mixer.
+/// [`Effect::process`]. Only an effect that can stream and has no [`Effect::stream`] of its own
+/// reaches it (see [`can_stream`]): Invert, Gain and Channel Mixer. Its `process` must succeed for
+/// every block, or the copy below would pass audio through silently.
 struct Stateless {
     effect: &'static dyn Effect,
     params: Vec<f64>,
@@ -278,7 +280,10 @@ pub fn open_stream(effect: &'static dyn Effect, params: &[f64], channels: usize,
     if !can_stream(effect) {
         return Err(format!("{} cannot run in the Effects Rack", effect.name()));
     }
-    Ok(effect.stream(params, channels, rate).unwrap_or_else(|| Box::new(Stateless { effect, params: params.to_vec(), frame: 0 })))
+    Ok(match effect.stream(params, channels, rate)? {
+        Some(stream) => stream,
+        None => Box::new(Stateless { effect, params: params.to_vec(), frame: 0 }),
+    })
 }
 
 /// Effects that cannot run block by block in the Effects Rack: each needs a measurement of the

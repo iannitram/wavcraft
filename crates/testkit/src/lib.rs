@@ -836,3 +836,79 @@ mod nr_tests {
         assert!(m.print_frames >= 96_000);
     }
 }
+
+// The rack bench (F1.6): times a rack of three effects that keep state, over generated audio.
+
+/// The sample rate of the rack bench's audio.
+pub const RACK_BENCH_RATE: u32 = 48_000;
+
+/// One hour in seconds: the rack bench scales its timing to this.
+pub const RACK_BENCH_HOUR: f64 = 3600.0;
+
+/// The rack the bench times: Parametric EQ, Dynamics and De-esser in slots 1 to 3, at their defaults.
+pub fn rack_bench_config() -> Result<wavcraft_core::rack::RackConfig, String> {
+    let mut config = wavcraft_core::rack::RackConfig::new();
+    config.set_slot(0, "parametric_eq", None)?;
+    config.set_slot(1, "dynamics", None)?;
+    config.set_slot(2, "deesser", None)?;
+    Ok(config)
+}
+
+/// The time one hour of stereo audio would take through the bench rack, measured over
+/// `audio_seconds` seconds of generated audio (one second of it, processed again and again).
+pub fn rack_bench_seconds(audio_seconds: u64) -> Result<f64, String> {
+    if audio_seconds == 0 {
+        return Err("the rack bench needs at least one second of audio".into());
+    }
+    let config = rack_bench_config()?;
+    let mut rack = wavcraft_core::rack::RackProcessor::new(&config, 2, RACK_BENCH_RATE)?;
+    let len = RACK_BENCH_RATE as usize;
+    let mut rng = Rng::new(DEFAULT_SEED, "rack-bench");
+    let input: Vec<Vec<f32>> = (0..2).map(|_| (0..len).map(|_| (rng.signed() * 0.25) as f32).collect()).collect();
+    let (mut left, mut right) = (vec![0.0f32; len], vec![0.0f32; len]);
+    let start = std::time::Instant::now();
+    for _ in 0..audio_seconds {
+        left.copy_from_slice(&input[0]);
+        right.copy_from_slice(&input[1]);
+        let mut io: [&mut [f32]; 2] = [left.as_mut_slice(), right.as_mut_slice()];
+        rack.process_block(&mut io);
+    }
+    let elapsed = start.elapsed();
+    std::hint::black_box((&left, &right));
+    Ok(elapsed.as_secs_f64() * RACK_BENCH_HOUR / audio_seconds as f64)
+}
+
+/// The bench's one output line: `rack_3fx_1h_seconds=<n>`.
+pub fn rack_bench_line(audio_seconds: u64) -> Result<String, String> {
+    Ok(format!("rack_3fx_1h_seconds={:.3}", rack_bench_seconds(audio_seconds)?))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod rack_bench_tests {
+    use super::*;
+
+    #[test]
+    fn f1_bench_rack_reports_seconds() {
+        let line = rack_bench_line(1).unwrap();
+        let value = line.strip_prefix("rack_3fx_1h_seconds=").expect("the line starts with the key");
+        let n: f64 = value.parse().unwrap();
+        assert!(n.is_finite() && n > 0.0, "{line}");
+        assert_eq!(line.lines().count(), 1);
+    }
+
+    #[test]
+    fn f1_bench_rack_config_has_three_streaming_slots() {
+        let config = rack_bench_config().unwrap();
+        let expect = ["parametric_eq", "dynamics", "deesser"];
+        for (i, id) in expect.iter().enumerate() {
+            assert_eq!(config.slots[i].effect.as_deref(), Some(*id));
+            assert!(config.slots[i].enabled, "slot {} is off", i + 1);
+        }
+    }
+
+    #[test]
+    fn f1_bench_rack_refuses_zero_seconds() {
+        assert!(rack_bench_seconds(0).is_err());
+    }
+}

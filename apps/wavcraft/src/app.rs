@@ -35,6 +35,7 @@ use wavcraft_core::keyboard::Mods;
 use wavcraft_core::match_loudness::Target;
 use wavcraft_core::meta;
 use wavcraft_core::monitors::{self, Monitor};
+use wavcraft_core::mp3_options::{MP3_DEFAULT_BITRATE, Mp3Options};
 use wavcraft_core::panels::{self, DockSide, Layout, MetadataDisplay, MetadataField, PanelSet};
 use wavcraft_core::probe::{self, FileInfo};
 use wavcraft_core::readout::{self, EditorLayout, Readout};
@@ -42,7 +43,7 @@ use wavcraft_core::recent::{self, Recent};
 use wavcraft_core::resample::Quality;
 use wavcraft_core::save::{
     AiffKind, Container, ExtraChunk, FileKind, Part, SampleType, SaveError, SaveFormat, SaveOptions, SizeEstimate, VORBIS_DEFAULT_QUALITY,
-    estimate_size, save_aiff_kind, save_as as save_container, save_dithered, save_vorbis, save_wav_with, write_file,
+    estimate_size, save_aiff_kind, save_as as save_container, save_dithered, save_mp3, save_vorbis, save_wav_with, write_file,
 };
 use wavcraft_core::settings::{self, FolderSource, SessionFolder, Settings};
 use wavcraft_core::shortcut_sets::{DEFAULT_SET, SetStore};
@@ -214,6 +215,9 @@ const HW_KEYS: [&str; 6] = ["audio_host", "output_device", "input_device", "buff
 
 /// Frames at the start in which a held Shift means "reset the preferences".
 const SHIFT_RESET_FRAMES: u32 = 30;
+
+/// How many frame times the FRAMETIMES verb keeps (the newest ones).
+const FRAME_TIMES_CAP: usize = 20_000;
 
 /// Dragging the playhead along the ruler (task f36): the drag asks for grains, the window plays them.
 #[derive(Default)]
@@ -566,6 +570,10 @@ pub struct WaveApp {
     head_scrub: ScrubState,
     hold: Hold,
     clock: Instant,
+    /// The start of the current frame's work (set at the start of `logic`, read at the end of `ui`).
+    frame_start: Option<Instant>,
+    /// The work time in milliseconds of the last frames, newest last (the FRAMETIMES verb).
+    frame_times: VecDeque<f64>,
     params: SpectrogramParams,
     /// Which registered panels are shown (Window menu; kept in the settings file).
     panels: PanelSet,
@@ -670,6 +678,10 @@ pub struct WaveApp {
     vorbis_quality: f32,
     /// How AIFF files are written (the export dialog, an export preset, or `SAVE … aiff=`).
     aiff_kind: AiffKind,
+    /// MP3 export bit rate in kbps (`SAVE ... bitrate=`; sticky once given).
+    mp3_bitrate: u32,
+    /// MP3 export mixes a stereo document down to mono (`SAVE ... channels=1`; sticky once given).
+    mp3_mono: bool,
     /// The Save As / Export dialog is up.
     export_open: bool,
     /// The control channel's answer to the next file dialog (`None` inside: the dialog was cancelled).
@@ -988,6 +1000,8 @@ impl WaveApp {
             head_scrub: ScrubState::default(),
             hold: Hold::default(),
             clock: Instant::now(),
+            frame_start: None,
+            frame_times: VecDeque::with_capacity(FRAME_TIMES_CAP),
             params: {
                 let mut p = SpectrogramParams::default();
                 settings.apply_to_spectrogram(&mut p);
@@ -1058,6 +1072,8 @@ impl WaveApp {
             save_type: None,
             vorbis_quality: VORBIS_DEFAULT_QUALITY,
             aiff_kind: AiffKind::Aiff,
+            mp3_bitrate: MP3_DEFAULT_BITRATE,
+            mp3_mono: false,
             export_open: false,
             scripted_pick: None,
             export_choice: ExportChoice::default(),
@@ -1250,6 +1266,24 @@ impl WaveApp {
     }
 
     /// Write the settings file (the message says why not, in words).
+    /// Starts timing the work of one frame (called first in `logic`).
+    fn frame_timer_begin(&mut self) {
+        self.frame_start = Some(Instant::now());
+    }
+
+    /// Ends the timing of one frame and keeps its work time in ms (called last in `ui`). Does
+    /// nothing when no frame was started, as when the window is hidden.
+    fn frame_timer_end(&mut self) {
+        let Some(start) = self.frame_start.take() else {
+            return;
+        };
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        if self.frame_times.len() >= FRAME_TIMES_CAP {
+            self.frame_times.pop_front();
+        }
+        self.frame_times.push_back(ms);
+    }
+
     /// The visible range as `<first>-<last>` frames, for NAV.
     fn view_text(&self) -> String {
         let frames = self.doc.as_ref().map_or(0, Document::frames) as f64;
@@ -6395,6 +6429,57 @@ impl WaveApp {
         Some(gone)
     }
 
+    /// Run the script file at `path` on the open document as one History step, "Run Script" (N4.5).
+    /// The steps the squash replaced, or the reason (`line N: reason` for a bad line, after the
+    /// document and selection are put back as they were).
+    fn run_script(&mut self, path: &Path, ctx: &egui::Context) -> Result<usize, String> {
+        let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
+        let size = std::fs::metadata(path).map_err(|e| format!("cannot read the script: {e}"))?.len();
+        if size > 1_048_576 {
+            return Err("the script is larger than 1 MiB".to_string());
+        }
+        let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read the script: {e}"))?;
+        let start = editor.history.cursor();
+        let len = editor.history.steps().len();
+        let last = editor.history.steps().last().map(|s| s.state().clone());
+        let selection = self.selection;
+        let result = wavcraft_automation::script::run(&mut ScriptBackend { app: self, ctx }, &text);
+        match result {
+            Err(why) => {
+                // Put back only what the script itself changed: a step it made, or a cursor it moved. Redo
+                // steps that were there before the run stay.
+                let (moved, made) = match self.editor.as_ref() {
+                    Some(e) => {
+                        let same_last = match (e.history.steps().last(), last.as_ref()) {
+                            (Some(now), Some(then)) => Arc::ptr_eq(now.state(), then),
+                            _ => false,
+                        };
+                        (e.history.cursor() != start, e.history.steps().len() != len || !same_last)
+                    }
+                    None => (false, false),
+                };
+                if moved || made {
+                    self.history_go(start, ctx);
+                }
+                if made {
+                    let _ = self.history_delete(start + 1, ctx);
+                }
+                self.selection = selection;
+                Err(why)
+            }
+            Ok(()) => {
+                let Some(editor) = self.editor.as_mut() else { return Ok(0) };
+                Ok(editor.history.squash_since(start, "Run Script").unwrap_or(0))
+            }
+        }
+    }
+
     /// The current step changed: keep the selection inside it and redraw.
     fn history_changed(&mut self, ctx: &egui::Context) {
         let Some(editor) = self.editor.as_ref() else { return };
@@ -6628,10 +6713,25 @@ impl WaveApp {
                     self.error = Some(why);
                 }
             }
+            Some(Answer::TogglePreview) => {
+                if let Err(why) = self.toggle_effect_preview() {
+                    self.error = Some(why);
+                }
+            }
             Some(answer) => {
                 let _ = self.finish_effect_dialog(answer == Answer::Ok, ctx);
             }
             None => {}
+        }
+        // The live preview follows the dialog: the button says whether one runs, and each changed
+        // setting goes to the worker once. Values are taken every frame, so a start sends only later changes.
+        let running = self.effect_preview.is_some();
+        if let Some(dialog) = self.effect_dialog.as_mut() {
+            dialog.preview_on = running;
+            let changed = dialog.take_changed_values();
+            if let (Some(values), Some(preview)) = (changed, self.effect_preview.as_ref()) {
+                preview.set_params(values);
+            }
         }
         // The preview loops while the dialog is up.
         if self.previewing && !self.player.is_playing() {
@@ -7570,7 +7670,7 @@ impl WaveApp {
         } else if path.extension().is_none() {
             (path.with_extension("wav"), SaveFormat::Wav, None)
         } else {
-            return Err(format!("{} is not a format WavCraft saves: use .wav, .w64, .caf, .au, .aiff, .flac or .ogg", path.display()));
+            return Err(format!("{} is not a format WavCraft saves: use .wav, .w64, .caf, .au, .aiff, .flac, .mp3 or .ogg", path.display()));
         };
         let wanted = ty.unwrap_or_else(|| SampleType::for_source(state.source()));
         if !format.accepts(wanted) && (explicit || ty.is_some()) {
@@ -7582,6 +7682,7 @@ impl WaveApp {
         let aiff = self.aiff_kind;
         let dither = self.save_dither;
         let quality = self.vorbis_quality;
+        let mp3 = Mp3Options { bitrate_kbps: self.mp3_bitrate, mono: self.mp3_mono };
         // Cancel and the metadata switch (A262, A263) are for a WAV save of the whole file.
         let cancel = (format == SaveFormat::Wav && container.is_none()).then(|| Arc::new(AtomicBool::new(false)));
         let job_cancel = cancel.clone();
@@ -7599,6 +7700,7 @@ impl WaveApp {
                     let opts = SaveOptions { include_metadata, extra_chunks, cancel: job_cancel.as_deref(), block_delay, dither };
                     save_wav_with(&job_state, &job_path, ty, &opts, &mut report)
                 }
+                None if format == SaveFormat::Mp3 => save_mp3(&job_state, &job_path, mp3, &mut report),
                 None => match dither {
                     Some(d) => save_dithered(&job_state, &job_path, format, ty, aiff, d, &mut report),
                     None => save_aiff_kind(&job_state, &job_path, format, ty, aiff, &mut report),
@@ -8375,6 +8477,16 @@ impl WaveApp {
                 }
                 _ => "ERR CHECK run|cancel|state".to_string(),
             },
+            "RUN_SCRIPT" => {
+                let path = rest.trim();
+                if path.is_empty() {
+                    return "ERR RUN_SCRIPT <path>".to_string();
+                }
+                match self.run_script(Path::new(path), ctx) {
+                    Ok(n) => format!("OK replaced={n}"),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
             "EPISODEMAP" => {
                 // The Episode Map as the navigator last painted it: its columns, and how many are each class.
                 let count = |class: Class| self.map_classes.iter().filter(|&&c| c == class).count();
@@ -8537,6 +8649,19 @@ impl WaveApp {
             "MARKER" => self.control_marker(rest),
             // `PLAYLIST add <marker> [loops=<n>] | move <i> <j> | remove <i> | loops <i> <n> | play | stop | clear | state | sequence`.
             "PLAYLIST" => self.control_playlist(rest),
+            // `FRAMETIMES` → `OK n=<n> median_ms=<x> p95_ms=<x> worst_ms=<x> over=<n>` (B1.3); `FRAMETIMES reset` → `OK n=0`.
+            "FRAMETIMES" => match rest.trim() {
+                "reset" => {
+                    self.frame_times.clear();
+                    "OK n=0".to_string()
+                }
+                "" => {
+                    let times: Vec<f64> = self.frame_times.iter().copied().collect();
+                    let s = wavcraft_core::frame_stats::summarize_frames(&times);
+                    format!("OK n={} median_ms={:.2} p95_ms={:.2} worst_ms={:.2} over={}", s.count, s.median_ms, s.p95_ms, s.worst_ms, s.over_budget)
+                }
+                _ => "ERR FRAMETIMES [reset]".to_string(),
+            },
             "PEAKCACHE" => match rest.trim() {
                 "info" => {
                     let (files, bytes) = wavcraft_core::peakcache::info(&self.peak_dir);
@@ -9991,7 +10116,7 @@ impl WaveApp {
                 }
             }
             "SAVE" => {
-                // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10] [meta=0|1]`: the options end the line.
+                // `SAVE <path> [bits=16|24|32] [float=0|1] [aiff=..] [quality=-1..10] [meta=0|1] [bitrate=32..320] [channels=1|2]`: the options end the line.
                 match wavcraft_automation::Request::parse(line) {
                     Err(e) => format!("ERR {e}"),
                     Ok(wavcraft_automation::Request::Save { path, args }) => {
@@ -10001,6 +10126,12 @@ impl WaveApp {
                         }
                         if let Some(m) = meta {
                             self.set_include_meta(m);
+                        }
+                        if let Some(b) = args.bitrate {
+                            self.mp3_bitrate = b;
+                        }
+                        if let Some(c) = args.channels {
+                            self.mp3_mono = c == 1;
                         }
                         let to = path;
                         // `aiff=` is for this save only.
@@ -12325,6 +12456,7 @@ impl eframe::App for WaveApp {
     /// control channel must not wait for the window to be shown (the 2026-10-19 by-eye check
     /// found the channel silent behind another window).
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.frame_timer_begin();
         self.keeper.tick(ctx, frame);
         self.finish_opening();
         self.pump_open_queue(ctx);
@@ -12797,6 +12929,7 @@ impl eframe::App for WaveApp {
         if self.layout_dirty && !ctx.input(|i| i.pointer.any_down()) {
             self.save_panels();
         }
+        self.frame_timer_end();
     }
 }
 
@@ -13765,6 +13898,23 @@ mod tests {
     }
 }
 
+/// Runs a script's lines on the window through `control_request`, mapping its `OK ...` / `ERR ...` answers
+/// to the `Backend` result (N4.5).
+struct ScriptBackend<'a> {
+    app: &'a mut WaveApp,
+    ctx: &'a egui::Context,
+}
+
+impl wavcraft_automation::Backend for ScriptBackend<'_> {
+    fn execute(&mut self, req: &wavcraft_automation::Request) -> Result<String, String> {
+        let answer = self.app.control_request(&req.line(), self.ctx);
+        match answer.strip_prefix("OK") {
+            Some(rest) => Ok(rest.trim_start().to_string()),
+            None => Err(answer.strip_prefix("ERR ").unwrap_or(&answer).to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "issue1219_tests.rs"]
 mod issue1219_tests;
@@ -13818,8 +13968,15 @@ mod n1_parity_tests;
 mod n3_mcp_window_tests;
 
 #[cfg(test)]
+#[path = "n4_run_script_tests.rs"]
+mod n4_run_script_tests;
+
+#[cfg(test)]
 #[path = "a3_mp3_tests.rs"]
 mod a3_mp3_tests;
+#[cfg(test)]
+#[path = "b1_frametimes_tests.rs"]
+mod b1_frametimes_tests;
 
 #[cfg(test)]
 mod reset_tests {

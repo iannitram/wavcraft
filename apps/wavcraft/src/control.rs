@@ -39,6 +39,8 @@
 //! - `EXPORT_RANGES <folder> [pattern=<p>]` → `OK` (every range marker as its own WAV in `folder`, named by the pattern: `{name}` `{index}` `{base}`; poll `STATE` until `busy=0`). `ACTION edit.extract_channels` writes each channel of the file as `<name>_L.wav`, `<name>_R.wav` beside it the same way
 //! - `MIXPASTE mode=insert|overlap|overwrite|modulate [copied=<pct>[,<pct>]] [existing=<pct>[,<pct>]] [invert=0|1] [fade=<ms>] [loops=<n>] [file=<path>]` → `OK selection=<a>-<b>` (Edit › Mix Paste at the cursor; the clipboard unless `file=`)
 //! - `PREF set custom_fps <n>` (2 to 1000; the generic `PREF`, so it answers plain `OK`, `ERR` when out of range); `ACTION view.time_display.custom` / `.cd75` pick the formats; `STATE` reports `custom_fps`
+//! - `FRAMETIMES` → `OK n=<n> median_ms=<x> p95_ms=<x> worst_ms=<x> over=<n>` (the work time of the last 20000 frames, from the start of `logic` to the end of `ui`; `over` counts frames above 16.7 ms); `FRAMETIMES reset` → `OK n=0` (B1.3)
+//! - `NAV <start> <end>` (frames) → `OK view=<a>-<b>` (set the visible range as the zoom navigator does)
 //! - `PEAKCACHE info` → `OK files=<n> bytes=<n> cap=<n> last=<hit|miss|stale|corrupt|off|none> last_ms=<ms>` (the cache folder, and how the open file's overviews were made); `PEAKCACHE clear` → `OK removed=<n>`
 //! - `PROPERTIES` → `OK path=… | format=… | sample_rate=… | channels=… | bit_depth=… | duration=… | size=…` (the Properties panel's rows; BWF fields and warnings follow when present)
 //! - `KEYJKL l|j|k|k+l|k+j|up` (task f36) → `OK speed=<n>x level=<n>`: the JKL shuttle (`k+l`/`k+j` crawl until `up`)

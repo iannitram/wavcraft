@@ -92,6 +92,7 @@ shortcuts! {
     check_next_f8: "F8" => A(ActionId::CheckNext);
     check_prev_shift_f8: "Shift+F8" => A(ActionId::CheckPrev);
     convert_sample_type_shift_t: "Shift+T" => A(ActionId::ConvertSampleType);
+    convert_sample_type_f11: "F11" => A(ActionId::ConvertSampleType);
     workspace_1_alt_shift_1: "Alt+Shift+1" => Command::Workspace(1);
     workspace_2_alt_shift_2: "Alt+Shift+2" => Command::Workspace(2);
     workspace_3_alt_shift_3: "Alt+Shift+3" => Command::Workspace(3);
@@ -116,6 +117,17 @@ fn findings_shortcuts_resolve_next_and_previous() {
     assert_eq!(map.check(), Ok(()));
     assert_eq!(map.resolve_text("F8"), Ok(A(ActionId::CheckNext)));
     assert_eq!(map.resolve_text("Shift+F8"), Ok(A(ActionId::CheckPrev)));
+}
+
+#[test]
+fn f11_opens_convert_sample_type() {
+    let map = Keymap::new();
+    assert_eq!(map.resolve_text("F11"), Ok(A(ActionId::ConvertSampleType)));
+    assert_eq!(map.resolve_text("Shift+T"), Ok(A(ActionId::ConvertSampleType)));
+    let f11 = Shortcut::parse("F11");
+    let on_f11: Vec<_> = BINDINGS.iter().filter(|b| Ok(b.chord) == f11).collect();
+    assert_eq!(on_f11.len(), 1, "exactly one binding on F11");
+    assert!(on_f11.iter().all(|b| b.command == A(ActionId::ConvertSampleType)));
 }
 
 #[test]
