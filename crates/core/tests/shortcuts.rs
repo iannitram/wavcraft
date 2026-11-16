@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use wavcraft_core::actions::{ActionId, TABLE};
+use wavcraft_core::actions::{self, ActionId, TABLE};
 use wavcraft_core::shortcuts::{BINDINGS, Command, Keymap, Shortcut, conflicts};
 
 fn resolves(chord: &str, expected: Command) {
@@ -85,6 +85,7 @@ shortcuts! {
     tool_hand_h: "H" => A(ActionId::ToolHand);
     tool_zoom_z: "Z" => A(ActionId::ToolZoom);
     tool_marquee_e: "E" => A(ActionId::ToolMarquee);
+    match_panel_alt_5: "Alt+5" => A(ActionId::ToggleMatchPanel);
     check_next_f8: "F8" => A(ActionId::CheckNext);
     check_prev_shift_f8: "Shift+F8" => A(ActionId::CheckPrev);
     convert_sample_type_shift_t: "Shift+T" => A(ActionId::ConvertSampleType);
@@ -194,4 +195,15 @@ fn an_override_replaces_a_command_s_chords_and_frees_the_old_ones() {
     assert_eq!(map.resolve(taken), Some(A(ActionId::Paste)));
     assert!(map.chords(A(ActionId::Cut)).next().is_none());
     assert!(Keymap::with_overrides(&[(new, A(ActionId::Undo)), (new, A(ActionId::Redo))]).is_err());
+}
+
+#[test]
+fn alt_5_toggles_match_loudness_panel() {
+    let map = Keymap::new();
+    assert_eq!(map.resolve_text("Alt+5"), Ok(A(ActionId::ToggleMatchPanel)));
+    assert_eq!(actions::by_name("panel.match.toggle").map(|a| a.id), Some(ActionId::ToggleMatchPanel));
+    let chord = Shortcut::parse("Alt+5");
+    let rows: Vec<_> = BINDINGS.iter().filter(|b| Ok(b.chord) == chord).collect();
+    assert_eq!(rows.len(), 1, "Alt+5 must be bound exactly once");
+    assert_eq!(rows[0].command, A(ActionId::ToggleMatchPanel));
 }

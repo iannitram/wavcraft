@@ -188,6 +188,8 @@ pub enum ActionId {
     Rewind,
     FastForward,
     ToggleRoll,
+    /// Window > Match Loudness: show or hide the panel (Alt+5).
+    ToggleMatchPanel,
 }
 
 /// Which part of the program carries an action out.
@@ -366,6 +368,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::Rewind, "transport.rewind", "Rewind"),
     window(ActionId::FastForward, "transport.fastForward", "Fast Forward"),
     window(ActionId::ToggleRoll, "transport.roll", "Pre/Post-Roll"),
+    window(ActionId::ToggleMatchPanel, "panel.match.toggle", "Match Loudness"),
 ];
 
 /// The Zoom to Time actions, slot 1 first (f69).
@@ -735,7 +738,7 @@ impl Editor {
             }
             ActionId::ZoomInAtIn | ActionId::ZoomInAtOut => self.len() > 0,
             ActionId::ZoomPreset1 | ActionId::ZoomPreset2 | ActionId::ZoomPreset3 | ActionId::ZoomPreset4 | ActionId::ZoomPreset5 => self.len() > 0,
-            ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom | ActionId::ToolMarquee => true,
+            ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom | ActionId::ToolMarquee | ActionId::ToggleMatchPanel => true,
             ActionId::SpectralResolutionUp | ActionId::SpectralResolutionDown => true,
             ActionId::ZoomToSelection => has_sel,
             ActionId::Play
@@ -1476,6 +1479,7 @@ impl Editor {
             | ActionId::CheckNext
             | ActionId::CheckPrev
             | ActionId::TranscriptRun
+            | ActionId::ToggleMatchPanel
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
