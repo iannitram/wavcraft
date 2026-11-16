@@ -75,8 +75,10 @@ fn f1_rack_dynamics_matches_offline_apply() {
         for bs in [64usize, 1024] {
             let mut rack = RackProcessor::new(&dynamics_rack(args), 1, RATE).unwrap();
             let out = through(&mut rack, &x, bs);
+            assert!(out.iter().all(|v| v.is_finite()), "the rack gave a non-finite sample");
             let worst = out.iter().zip(&offline).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
             assert!(worst <= 1e-6, "{args}, block {bs}: worst difference {worst}");
+            assert!(out.iter().all(|v| v.is_finite()), "the rack gave a non-finite sample");
             let peak = out[24_000..48_000].iter().fold(0.0f32, |m, v| m.max(v.abs()));
             assert!(peak < 0.45, "{args}, block {bs}: the rack passed the audio through (peak {peak})");
         }
@@ -91,6 +93,9 @@ fn f1_rack_dynamics_reset_matches_a_new_rack() {
     through(&mut used, &sine(10f64.powf(-6.0 / 20.0), 48_000), 1024);
     used.reset();
     let after = through(&mut used, &quiet, 1024);
+    assert_ne!(after, quiet, "the rack passed the audio through");
+    // 3 ms at 48 kHz is 144 frames of delay line, which reset must have cleared.
+    assert!(after[..144].iter().all(|v| *v == 0.0), "the delay line was not cleared");
     let mut fresh = RackProcessor::new(&cfg, 1, RATE).unwrap();
     assert_eq!(after, through(&mut fresh, &quiet, 1024));
 }
