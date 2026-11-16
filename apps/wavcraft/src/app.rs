@@ -5542,6 +5542,13 @@ impl WaveApp {
             }
             ActionId::SpectralResolutionUp => self.step_resolution(1),
             ActionId::SpectralResolutionDown => self.step_resolution(-1),
+            ActionId::SpectralScaleMoreLog
+            | ActionId::SpectralScaleMoreLinear
+            | ActionId::SpectralScaleFullLog
+            | ActionId::SpectralScaleFullLinear => {
+                self.step_freq_scale(id);
+                return Ok(false);
+            }
             ActionId::ViewSpectralToggle => {
                 let shown = self.panels.is_shown("spectral");
                 self.set_panel("spectral", !shown);
@@ -13918,6 +13925,10 @@ impl wavcraft_automation::Backend for ScriptBackend<'_> {
 #[cfg(test)]
 #[path = "issue1219_tests.rs"]
 mod issue1219_tests;
+
+#[cfg(test)]
+#[path = "b2_3_freq_scale_tests.rs"]
+mod b2_3_freq_scale_tests;
 
 #[cfg(test)]
 #[path = "g3_alt5_tests.rs"]

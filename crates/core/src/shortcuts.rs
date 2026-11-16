@@ -397,6 +397,10 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::RightChannel, key("ArrowDown")),
     act(ActionId::SpectralResolutionUp, cmd_shift("ArrowUp")),
     act(ActionId::SpectralResolutionDown, cmd_shift("ArrowDown")),
+    act(ActionId::SpectralScaleMoreLog, cmd_alt("ArrowUp")),
+    act(ActionId::SpectralScaleMoreLinear, cmd_alt("ArrowDown")),
+    act(ActionId::SpectralScaleFullLog, cmd_alt("PageUp")),
+    act(ActionId::SpectralScaleFullLinear, cmd_alt("PageDown")),
     act(ActionId::ViewSpectralToggle, shift("D")),
     act(ActionId::ViewSpectralToggle, key("F9")),
     // View and the mouse tools.
