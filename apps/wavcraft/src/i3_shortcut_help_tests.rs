@@ -340,6 +340,8 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("view.zoom.ampOut", "Zoom Out Vertically", "Alt+−".to_string()),
         ("view.spectral.resolutionUp", "Spectral Resolution Up", "Ctrl+Shift+↑".to_string()),
         ("view.spectral.resolutionDown", "Spectral Resolution Down", "Ctrl+Shift+↓".to_string()),
+        ("view.spectral.toggle", "Spectral Frequency Display", "Shift+D".to_string()),
+        ("view.spectral.toggle", "Spectral Frequency Display", "F9".to_string()),
         ("tool.select", "Time Selection Tool", "T".to_string()),
         ("tool.hand", "Hand Tool", "H".to_string()),
         ("tool.zoom", "Zoom Tool", "Z".to_string()),

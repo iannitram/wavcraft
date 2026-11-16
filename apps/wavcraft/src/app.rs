@@ -5432,6 +5432,11 @@ impl WaveApp {
             }
             ActionId::SpectralResolutionUp => self.step_resolution(1),
             ActionId::SpectralResolutionDown => self.step_resolution(-1),
+            ActionId::ViewSpectralToggle => {
+                let shown = self.panels.is_shown("spectral");
+                self.set_panel("spectral", !shown);
+                return Ok(false);
+            }
             _ => {}
         }
         let frames = self.doc.as_ref().map_or(0, Document::frames);
@@ -13418,6 +13423,10 @@ mod c5_6_space_button_tests;
 #[cfg(test)]
 #[path = "h2_7_double_click_tests.rs"]
 mod h2_7_double_click_tests;
+
+#[cfg(test)]
+#[path = "b2_1_spectral_toggle_tests.rs"]
+mod b2_1_spectral_toggle_tests;
 
 #[cfg(test)]
 #[path = "h3_marker_jump_tests.rs"]
