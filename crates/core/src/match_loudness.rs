@@ -36,10 +36,31 @@ pub const SETTLE_LU: f64 = 0.1;
 /// How far under the asked-for ceiling the limiter aims, dB (its detector is approximate).
 pub const LIMITER_MARGIN_DB: f64 = 0.3;
 
+/// What Match Loudness matches the file to (the "Match To" choice in the panel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MatchTo {
+    /// Integrated loudness by ITU-R BS.1770-3, to the target's `lufs`.
+    #[default]
+    Bs1770,
+    /// Integrated loudness by EBU R128; Audition fixes the target at [`EBU_R128_LUFS`].
+    EbuR128,
+    /// The gain puts the true peak on `max_true_peak_dbtp`; the loudness is not aimed at.
+    TruePeak,
+}
+
+/// The panel names of the Match To choices, in panel order (the first is the default).
+pub const MATCH_TO: [(&str, MatchTo); 3] =
+    [("ITU-R BS.1770-3 Loudness", MatchTo::Bs1770), ("EBU R128 Loudness", MatchTo::EbuR128), ("True Peak Amplitude", MatchTo::TruePeak)];
+
+/// The loudness EBU R128 matches to, LUFS.
+pub const EBU_R128_LUFS: f64 = -23.0;
+
 /// The settings of Match Loudness.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Target {
-    /// Integrated loudness to reach, LUFS.
+    /// What to match: loudness (BS.1770 or R128) or the true peak. Default Bs1770.
+    pub match_to: MatchTo,
+    /// Integrated loudness to reach, LUFS (ignored in True Peak mode).
     pub lufs: f64,
     /// A file already within this many LU of `lufs` is left alone.
     pub tolerance_lu: f64,
@@ -53,10 +74,25 @@ pub struct Target {
 
 impl Target {
     /// "Podcast (-16 LUFS, -1 dBTP)", the default.
-    pub const PODCAST: Target =
-        Target { lufs: -16.0, tolerance_lu: 0.5, max_true_peak_dbtp: -1.0, limit: true, look_ahead_ms: 12.0, release_ms: 200.0 };
+    pub const PODCAST: Target = Target {
+        match_to: MatchTo::Bs1770,
+        lufs: -16.0,
+        tolerance_lu: 0.5,
+        max_true_peak_dbtp: -1.0,
+        limit: true,
+        look_ahead_ms: 12.0,
+        release_ms: 200.0,
+    };
     /// "Broadcast (-23 LUFS, -1 dBTP)".
     pub const BROADCAST: Target = Target { lufs: -23.0, ..Target::PODCAST };
+
+    /// The loudness this target aims at, LUFS: [`EBU_R128_LUFS`] in EBU R128 mode, else `lufs`.
+    pub fn goal_lufs(&self) -> f64 {
+        match self.match_to {
+            MatchTo::EbuR128 => EBU_R128_LUFS,
+            MatchTo::Bs1770 | MatchTo::TruePeak => self.lufs,
+        }
+    }
 }
 
 impl Default for Target {
@@ -83,15 +119,23 @@ pub struct Plan {
 
 /// The gain for `m` to reach `t`. `None` when `m` has no loudness (silent, or under 400 ms).
 pub fn plan(m: &Loudness, t: &Target) -> Option<Plan> {
+    if t.match_to == MatchTo::TruePeak {
+        if !m.true_peak_dbtp.is_finite() {
+            return None;
+        }
+        let gain_db = t.max_true_peak_dbtp - m.true_peak_dbtp;
+        return Some(Plan { gain_db, limiter: false, capped: false, expected_lufs: m.integrated_lufs + gain_db });
+    }
     if !m.integrated_lufs.is_finite() {
         return None;
     }
-    let wanted = t.lufs - m.integrated_lufs;
+    let goal = t.goal_lufs();
+    let wanted = goal - m.integrated_lufs;
     let room = if m.true_peak_dbtp.is_finite() { t.max_true_peak_dbtp - m.true_peak_dbtp } else { f64::INFINITY };
     let over = wanted > room;
     Some(match (over, t.limit) {
-        (false, _) => Plan { gain_db: wanted, limiter: false, capped: false, expected_lufs: t.lufs },
-        (true, true) => Plan { gain_db: wanted, limiter: true, capped: false, expected_lufs: t.lufs },
+        (false, _) => Plan { gain_db: wanted, limiter: false, capped: false, expected_lufs: goal },
+        (true, true) => Plan { gain_db: wanted, limiter: true, capped: false, expected_lufs: goal },
         (true, false) => Plan { gain_db: room, limiter: false, capped: true, expected_lufs: m.integrated_lufs + room },
     })
 }
@@ -158,25 +202,26 @@ pub fn run(
         None => loudness::measure(doc, 0..len, cancel, progress)?,
     };
     let Some(p) = plan(&before, target) else { return Err(MatchError::NoLoudness) };
-    let within = (before.integrated_lufs - target.lufs).abs() <= target.tolerance_lu;
-    let tp_ok = !before.true_peak_dbtp.is_finite() || before.true_peak_dbtp <= target.max_true_peak_dbtp;
-    if within && tp_ok {
-        return Ok(MatchResult {
-            edit: Edit { state: doc.clone(), label: LABEL.to_string(), change: crate::doc::edit::Change::None },
-            before,
-            after: before,
-            gain_db: 0.0,
-            limited: false,
-            on_target: true,
-            message: format!("Already within {:.1} LU of {:.1} LUFS: nothing changed", target.tolerance_lu, target.lufs),
-        });
+    let goal = target.goal_lufs();
+    if target.match_to == MatchTo::TruePeak {
+        if (before.true_peak_dbtp - target.max_true_peak_dbtp).abs() <= 0.05 {
+            let message = format!("True peak already at {:.1} dBTP: nothing changed", target.max_true_peak_dbtp);
+            return Ok(unchanged(doc, before, message));
+        }
+    } else {
+        let within = (before.integrated_lufs - goal).abs() <= target.tolerance_lu;
+        let tp_ok = !before.true_peak_dbtp.is_finite() || before.true_peak_dbtp <= target.max_true_peak_dbtp;
+        if within && tp_ok {
+            let message = format!("Already within {:.1} LU of {:.1} LUFS: nothing changed", target.tolerance_lu, goal);
+            return Ok(unchanged(doc, before, message));
+        }
     }
     let mut gain_db = p.gain_db;
     let mut done: Option<(Edit, Loudness, f64)> = None;
     for pass in 0..MAX_PASSES {
         let edit = apply(doc, gain_db, p.limiter.then_some(target), cancel, progress)?;
         let after = loudness::measure(&edit.state, 0..len, cancel, &mut |_| {})?;
-        let short = target.lufs - after.integrated_lufs;
+        let short = goal - after.integrated_lufs;
         let settled = !p.limiter || short.abs() <= SETTLE_LU || !after.integrated_lufs.is_finite();
         done = Some((edit, after, gain_db));
         if settled || pass + 1 == MAX_PASSES {
@@ -185,7 +230,12 @@ pub fn run(
         gain_db += short;
     }
     let Some((edit, after, gain_db)) = done else { return Err(MatchError::NoLoudness) };
-    let on_target = (after.integrated_lufs - target.lufs).abs() <= target.tolerance_lu;
+    if target.match_to == MatchTo::TruePeak {
+        let on_target = (after.true_peak_dbtp - target.max_true_peak_dbtp).abs() <= 0.1;
+        let message = format!("Match Loudness: {:+.2} dB; true peak {:.1} dBTP -> {:.1} dBTP", gain_db, before.true_peak_dbtp, after.true_peak_dbtp);
+        return Ok(MatchResult { edit, before, after, gain_db, limited: false, on_target, message });
+    }
+    let on_target = (after.integrated_lufs - goal).abs() <= target.tolerance_lu;
     let message = format!(
         "Match Loudness: {:+.2} dB{}; {:.1} LUFS -> {:.1} LUFS, true peak {:.1} dBTP{}",
         gain_db,
@@ -196,6 +246,19 @@ pub fn run(
         if p.capped { format!(" (limited by the {:.1} dBTP ceiling; limiting is off)", target.max_true_peak_dbtp) } else { String::new() }
     );
     Ok(MatchResult { edit, before, after, gain_db, limited: p.limiter, on_target, message })
+}
+
+/// The no-op result: the file is left as it is, and `before` is what it measured.
+fn unchanged(doc: &DocState, before: Loudness, message: String) -> MatchResult {
+    MatchResult {
+        edit: Edit { state: doc.clone(), label: LABEL.to_string(), change: crate::doc::edit::Change::None },
+        before,
+        after: before,
+        gain_db: 0.0,
+        limited: false,
+        on_target: true,
+        message,
+    }
 }
 
 const LABEL: &str = "Match Loudness";
@@ -404,5 +467,14 @@ mod card38_arithmetic_tests {
     fn no_loudness_means_no_plan() {
         assert!(plan(&lo(f64::NAN, -6.0), &OWNER).is_none());
         assert!(plan(&lo(f64::NEG_INFINITY, -6.0), &OWNER).is_none());
+    }
+
+    #[test]
+    fn true_peak_mode_gain_is_ceiling_minus_peak() {
+        let tp = Target { match_to: MatchTo::TruePeak, max_true_peak_dbtp: -3.0, ..Target::PODCAST };
+        let p = plan(&lo(-20.0, -12.0), &tp).unwrap();
+        near(p.gain_db, 9.0);
+        assert!(!p.limiter && !p.capped);
+        assert!(plan(&lo(-20.0, f64::NEG_INFINITY), &tp).is_none());
     }
 }

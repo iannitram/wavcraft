@@ -69,14 +69,12 @@ pub fn open(want: RecFormat, monitor: bool, wanted: Option<&str>) -> Result<Open
 
 /// The format of a take with no format chosen yet: the default rate and bits, with the channel
 /// count of the microphone (kept within 1 to 8; no device means mono).
-#[allow(dead_code)] // J1.5 calls it from Recording::start_format
 pub fn first_format(device_channels: Option<u16>) -> RecFormat {
     RecFormat { channels: device_channels.unwrap_or(1).clamp(1, 8), ..RecFormat::default() }
 }
 
 /// The channel count of the input device `wanted` names (else the system default), from its
 /// default config. `None` when there is no input device or it has no usable config.
-#[allow(dead_code)] // J1.5 calls it through first_format
 pub fn default_channels(wanted: Option<&str>) -> Option<u16> {
     let device = crate::input_monitor::find_input(&cpal::default_host(), wanted)?;
     device.default_input_config().ok().map(|c| c.channels())

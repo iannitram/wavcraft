@@ -89,6 +89,11 @@ impl EffectPreview {
     pub fn is_running(&self) -> bool {
         self.handle.as_ref().is_some_and(|h| !h.is_finished())
     }
+
+    /// Stop the worker and wait for it to end; the same as dropping the preview.
+    pub fn stop(self) {
+        drop(self);
+    }
 }
 
 impl Drop for EffectPreview {
@@ -213,10 +218,11 @@ mod tests {
         let doc = doc_of(vec![vec![0.5f32; 100]]);
         let worker = EffectPreview::start(doc, &Amplify, vec![0.0, 0.0, 1.0], 0..1_000_000, ChannelMask::ALL).unwrap();
         let start = Instant::now();
-        while worker.error().is_none() {
-            assert!(start.elapsed() < Duration::from_secs(2), "no error reported within 2 s");
+        while worker.error().is_none() || worker.is_running() {
+            assert!(start.elapsed() < Duration::from_secs(2), "no error reported and worker ended within 2 s");
             thread::sleep(Duration::from_millis(10));
         }
+        assert!(worker.error().is_some());
         assert!(!worker.is_running());
     }
 
@@ -227,8 +233,9 @@ mod tests {
         let ring = worker.ring();
         thread::sleep(Duration::from_millis(50));
         drop(worker);
-        let waiting = ring.waiting_frames();
+        let pending = ring.waiting_frames();
+        read_frames(&ring, pending);
         thread::sleep(Duration::from_millis(50));
-        assert_eq!(ring.waiting_frames(), waiting);
+        assert_eq!(ring.waiting_frames(), 0);
     }
 }
