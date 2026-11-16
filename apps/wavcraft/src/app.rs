@@ -6373,6 +6373,42 @@ impl WaveApp {
         Some(gone)
     }
 
+    /// Run the script file at `path` on the open document as one History step, "Run Script" (N4.5).
+    /// The steps the squash replaced, or the reason (`line N: reason` for a bad line, after the
+    /// document and selection are put back as they were).
+    fn run_script(&mut self, path: &Path, ctx: &egui::Context) -> Result<usize, String> {
+        let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
+        if self.saving.is_some() {
+            return Err("wait for the save to finish".to_string());
+        }
+        if self.running.is_some() {
+            return Err("wait for the background job to finish, or cancel it".to_string());
+        }
+        let size = std::fs::metadata(path).map_err(|e| format!("cannot read the script: {e}"))?.len();
+        if size > 1_048_576 {
+            return Err("the script is larger than 1 MiB".to_string());
+        }
+        let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read the script: {e}"))?;
+        let start = editor.history.cursor();
+        let selection = self.selection;
+        let result = wavcraft_automation::script::run(&mut ScriptBackend { app: self, ctx }, &text);
+        match result {
+            Err(why) => {
+                let dirty = self.editor.as_ref().is_some_and(|e| e.history.steps().len() > start + 1 || e.history.cursor() != start);
+                if dirty {
+                    self.history_go(start, ctx);
+                    let _ = self.history_delete(start + 1, ctx);
+                }
+                self.selection = selection;
+                Err(why)
+            }
+            Ok(()) => {
+                let Some(editor) = self.editor.as_mut() else { return Ok(0) };
+                Ok(editor.history.squash_since(start, "Run Script").unwrap_or(0))
+            }
+        }
+    }
+
     /// The current step changed: keep the selection inside it and redraw.
     fn history_changed(&mut self, ctx: &egui::Context) {
         let Some(editor) = self.editor.as_ref() else { return };
@@ -8285,6 +8321,16 @@ impl WaveApp {
                 }
                 _ => "ERR CHECK run|cancel|state".to_string(),
             },
+            "RUN_SCRIPT" => {
+                let path = rest.trim();
+                if path.is_empty() {
+                    return "ERR RUN_SCRIPT <path>".to_string();
+                }
+                match self.run_script(Path::new(path), ctx) {
+                    Ok(n) => format!("OK replaced={n}"),
+                    Err(e) => format!("ERR {e}"),
+                }
+            }
             "EPISODEMAP" => {
                 // The Episode Map as the navigator last painted it: its columns, and how many are each class.
                 let count = |class: Class| self.map_classes.iter().filter(|&&c| c == class).count();
@@ -13592,6 +13638,23 @@ mod tests {
     }
 }
 
+/// Runs a script's lines on the window through `control_request`, mapping its `OK ...` / `ERR ...` answers
+/// to the `Backend` result (N4.5).
+struct ScriptBackend<'a> {
+    app: &'a mut WaveApp,
+    ctx: &'a egui::Context,
+}
+
+impl wavcraft_automation::Backend for ScriptBackend<'_> {
+    fn execute(&mut self, req: &wavcraft_automation::Request) -> Result<String, String> {
+        let answer = self.app.control_request(&req.line(), self.ctx);
+        match answer.strip_prefix("OK") {
+            Some(rest) => Ok(rest.trim_start().to_string()),
+            None => Err(answer.strip_prefix("ERR ").unwrap_or(&answer).to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "issue1219_tests.rs"]
 mod issue1219_tests;
@@ -13643,6 +13706,10 @@ mod n1_parity_tests;
 #[cfg(test)]
 #[path = "n3_mcp_window_tests.rs"]
 mod n3_mcp_window_tests;
+
+#[cfg(test)]
+#[path = "n4_run_script_tests.rs"]
+mod n4_run_script_tests;
 
 #[cfg(test)]
 #[path = "a3_mp3_tests.rs"]
