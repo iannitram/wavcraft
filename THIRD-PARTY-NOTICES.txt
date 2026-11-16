@@ -33,7 +33,7 @@ confirms, and check against a pinned SHA-256)
   tokenizer published at https://huggingface.co/openai/whisper-base are labelled Apache-2.0 on
   that model card. WavCraft uses the files as published, without modification.
 
-Libraries (450)
+Libraries (460)
 ============
 
 accesskit 0.24.1
@@ -1130,7 +1130,7 @@ Source: https://github.com/ComunidadAylas/vorbis-rs
 (the package ships no licence file; the licence above is from its Cargo.toml)
 
 
-arboard 3.7.0
+arboard 3.6.1
 -------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/1Password/arboard
@@ -1925,7 +1925,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-bit-vec 0.10.2
+bit-vec 0.10.1
 --------------
 Licence: Apache-2.0 OR MIT
 Source: https://github.com/contain-rs/bit-vec
@@ -2633,7 +2633,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-bumpalo 3.20.4
+bumpalo 3.20.3
 --------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/fitzgen/bumpalo
@@ -2991,8 +2991,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-cc 1.11.2
----------
+cc 1.8.0
+--------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/rust-lang/cc-rs
 
@@ -3221,7 +3221,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-clipboard-win 5.4.3
+clipboard-win 5.4.1
 -------------------
 Licence: BSL-1.0
 Source: https://github.com/DoumanAsh/clipboard-win
@@ -3552,7 +3552,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-combine 4.6.9
+combine 4.6.8
 -------------
 Licence: MIT
 Source: https://github.com/Marwes/combine
@@ -3981,7 +3981,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-crc32fast 1.5.5
+crc32fast 1.5.2
 ---------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/srijs/rust-crc32fast
@@ -5539,7 +5539,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-encoding_rs 0.8.44
+encoding_rs 0.8.42
 ------------------
 Licence: (Apache-2.0 OR MIT) AND BSD-3-Clause
 Source: https://github.com/hsivonen/encoding_rs
@@ -5894,7 +5894,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
-equivalent 1.0.3
+equivalent 1.0.2
 ----------------
 Licence: Apache-2.0 OR MIT
 Source: https://github.com/indexmap-rs/equivalent
@@ -5930,7 +5930,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-errno 0.3.15
+errno 0.3.14
 ------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/lambda-fairy/rust-errno
@@ -6188,7 +6188,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-find-msvc-tools 0.1.15
+find-msvc-tools 0.1.14
 ----------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/rust-lang/cc-rs
@@ -6224,7 +6224,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-flate2 1.1.11
+flate2 1.1.10
 -------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/rust-lang/flate2-rs
@@ -6323,7 +6323,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 
 
-font-types 0.12.7
+font-types 0.12.6
 -----------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/googlefonts/fontations
@@ -8071,7 +8071,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-itoa 1.0.19
+itoa 1.0.18
 -----------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/dtolnay/itoa
@@ -8291,7 +8291,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-js-sys 0.3.107
+js-sys 0.3.106
 --------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys
@@ -8441,7 +8441,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-libc 0.2.191
+libc 0.2.190
 ------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/rust-lang/libc
@@ -8497,7 +8497,7 @@ NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE US
 THIS SOFTWARE.
 
 
-libloading 0.9.1
+libloading 0.9.0
 ----------------
 Licence: ISC
 Source: https://github.com/nagisa/rust_libloading/
@@ -9195,7 +9195,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-litrs 1.0.1
+litrs 1.0.0
 -----------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/LukasKalbertodt/litrs
@@ -9267,7 +9267,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-log 0.4.35
+log 0.4.34
 ----------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/rust-lang/log
@@ -9424,7 +9424,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 
 
-memmap2 0.9.12
+memmap2 0.9.11
 --------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/RazrFalcon/memmap2-rs
@@ -10107,7 +10107,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-naga 30.0.2
+naga 30.0.1
 -----------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -10139,7 +10139,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-naga-types 30.0.2
+naga-types 30.0.1
 -----------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -12170,7 +12170,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-ordered-float 5.5.1
+ordered-float 5.5.0
 -------------------
 Licence: MIT
 Source: https://github.com/reem/rust-ordered-float
@@ -13231,7 +13231,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-rand 0.10.4
+rand 0.10.3
 -----------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/rust-random/rand
@@ -13710,7 +13710,7 @@ The Rand project includes code from the Rust project
 published under these same licenses.
 
 [LICENSE-APACHE]
-(the same text as rand 0.10.4, LICENSE-APACHE, above)
+(the same text as rand 0.10.3, LICENSE-APACHE, above)
 
 [LICENSE-MIT]
 Copyright 2018 Developers of the Rand project
@@ -13924,7 +13924,7 @@ Licence: MIT OR Apache-2.0
 Source: https://github.com/googlefonts/fontations
 
 [LICENSE-APACHE]
-(the same text as font-types 0.12.7, LICENSE-APACHE, above)
+(the same text as font-types 0.12.6, LICENSE-APACHE, above)
 
 [LICENSE-MIT]
 Copyright (c) 2019 Fontations Developers
@@ -14014,7 +14014,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
-redox_syscall 0.9.5
+redox_syscall 0.9.4
 -------------------
 Licence: MIT
 Source: https://gitlab.redox-os.org/redox-os/kernel
@@ -14446,7 +14446,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-rustix 1.1.6
+rustix 1.1.5
 ------------
 Licence: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
 Source: https://github.com/bytecodealliance/rustix
@@ -15417,7 +15417,7 @@ Licence: MIT OR Apache-2.0
 Source: https://github.com/googlefonts/fontations
 
 [LICENSE-APACHE]
-(the same text as font-types 0.12.7, LICENSE-APACHE, above)
+(the same text as font-types 0.12.6, LICENSE-APACHE, above)
 
 [LICENSE-MIT]
 Copyright (c) 2019 Fontations Developers
@@ -15507,7 +15507,7 @@ the following restrictions:
  3. This notice may not be removed or altered from any source distribution.
 
 
-smallvec 1.16.5
+smallvec 1.16.3
 ---------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/servo/rust-smallvec
@@ -16770,8 +16770,8 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-syn 3.0.10
-----------
+syn 3.0.8
+---------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/dtolnay/syn
 
@@ -17123,7 +17123,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 
 
-tokio 1.54.1
+tokio 1.53.2
 ------------
 Licence: MIT
 Source: https://github.com/tokio-rs/tokio
@@ -17152,7 +17152,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-toml_datetime 1.1.3+spec-1.1.0
+toml_datetime 1.1.2+spec-1.1.0
 ------------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/toml-rs/toml
@@ -17382,13 +17382,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-toml_edit 0.25.19+spec-1.1.0
+toml_edit 0.25.17+spec-1.1.0
 ----------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/toml-rs/toml
 
 [LICENSE-APACHE]
-(the same text as toml_datetime 1.1.3+spec-1.1.0, LICENSE-APACHE, above)
+(the same text as toml_datetime 1.1.2+spec-1.1.0, LICENSE-APACHE, above)
 
 [LICENSE-MIT]
 Copyright (c) Individual contributors
@@ -17418,7 +17418,7 @@ Licence: MIT OR Apache-2.0
 Source: https://github.com/toml-rs/toml
 
 [LICENSE-APACHE]
-(the same text as toml_datetime 1.1.3+spec-1.1.0, LICENSE-APACHE, above)
+(the same text as toml_datetime 1.1.2+spec-1.1.0, LICENSE-APACHE, above)
 
 [LICENSE-MIT]
 Copyright (c) Individual contributors
@@ -18634,7 +18634,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-unicode-width 0.2.3
+unicode-width 0.2.2
 -------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/unicode-rs/unicode-width
@@ -18679,7 +18679,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-uuid 1.29.2
+uuid 1.28.0
 -----------
 Licence: Apache-2.0 OR MIT
 Source: https://github.com/uuid-rs/uuid
@@ -18992,7 +18992,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-wasm-bindgen 0.2.130
+wasm-bindgen 0.2.129
 --------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/wasm-bindgen/wasm-bindgen
@@ -19028,7 +19028,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-wasm-bindgen-futures 0.4.80
+wasm-bindgen-futures 0.4.79
 ---------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures
@@ -19064,7 +19064,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-wasm-bindgen-macro 0.2.130
+wasm-bindgen-macro 0.2.129
 --------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
@@ -19100,7 +19100,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-wasm-bindgen-macro-support 0.2.130
+wasm-bindgen-macro-support 0.2.129
 ----------------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support
@@ -19136,7 +19136,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-wasm-bindgen-shared 0.2.130
+wasm-bindgen-shared 0.2.129
 ---------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
@@ -19469,7 +19469,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-web-sys 0.3.107
+web-sys 0.3.106
 ---------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
@@ -19769,7 +19769,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-wgpu 30.0.2
+wgpu 30.0.1
 -----------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -19801,7 +19801,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-wgpu-core 30.0.2
+wgpu-core 30.0.1
 ----------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -19833,7 +19833,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-wgpu-core-deps-apple 30.0.2
+wgpu-core-deps-apple 30.0.1
 ---------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -19865,7 +19865,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-wgpu-core-deps-emscripten 30.0.2
+wgpu-core-deps-emscripten 30.0.1
 --------------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -19897,7 +19897,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-wgpu-core-deps-wasm 30.0.2
+wgpu-core-deps-wasm 30.0.1
 --------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -19929,7 +19929,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-wgpu-core-deps-windows-linux-android 30.0.2
+wgpu-core-deps-windows-linux-android 30.0.1
 -------------------------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -19961,7 +19961,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-wgpu-hal 30.0.2
+wgpu-hal 30.0.1
 ---------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -19993,7 +19993,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-wgpu-naga-bridge 30.0.2
+wgpu-naga-bridge 30.0.1
 -----------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -20025,7 +20025,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-wgpu-types 30.0.2
+wgpu-types 30.0.1
 -----------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/gfx-rs/wgpu
@@ -21047,6 +21047,38 @@ Source: https://github.com/microsoft/windows-rs
     SOFTWARE
 
 
+windows-sys 0.60.2
+------------------
+Licence: MIT OR Apache-2.0
+Source: https://github.com/microsoft/windows-rs
+
+[license-apache-2.0]
+(the same text as windows 0.61.3, license-apache-2.0, above)
+
+[license-mit]
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
 windows-sys 0.61.2
 ------------------
 Licence: MIT OR Apache-2.0
@@ -21080,6 +21112,38 @@ Source: https://github.com/microsoft/windows-rs
 
 
 windows-targets 0.52.6
+----------------------
+Licence: MIT OR Apache-2.0
+Source: https://github.com/microsoft/windows-rs
+
+[license-apache-2.0]
+(the same text as windows 0.61.3, license-apache-2.0, above)
+
+[license-mit]
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
+windows-targets 0.53.5
 ----------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
@@ -21207,7 +21271,71 @@ Source: https://github.com/microsoft/windows-rs
     SOFTWARE
 
 
+windows_aarch64_gnullvm 0.53.1
+------------------------------
+Licence: MIT OR Apache-2.0
+Source: https://github.com/microsoft/windows-rs
+
+[license-apache-2.0]
+(the same text as windows 0.61.3, license-apache-2.0, above)
+
+[license-mit]
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
 windows_aarch64_msvc 0.52.6
+---------------------------
+Licence: MIT OR Apache-2.0
+Source: https://github.com/microsoft/windows-rs
+
+[license-apache-2.0]
+(the same text as windows 0.61.3, license-apache-2.0, above)
+
+[license-mit]
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
+windows_aarch64_msvc 0.53.1
 ---------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
@@ -21271,7 +21399,71 @@ Source: https://github.com/microsoft/windows-rs
     SOFTWARE
 
 
+windows_i686_gnu 0.53.1
+-----------------------
+Licence: MIT OR Apache-2.0
+Source: https://github.com/microsoft/windows-rs
+
+[license-apache-2.0]
+(the same text as windows 0.61.3, license-apache-2.0, above)
+
+[license-mit]
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
 windows_i686_gnullvm 0.52.6
+---------------------------
+Licence: MIT OR Apache-2.0
+Source: https://github.com/microsoft/windows-rs
+
+[license-apache-2.0]
+(the same text as windows 0.61.3, license-apache-2.0, above)
+
+[license-mit]
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
+windows_i686_gnullvm 0.53.1
 ---------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
@@ -21335,7 +21527,71 @@ Source: https://github.com/microsoft/windows-rs
     SOFTWARE
 
 
+windows_i686_msvc 0.53.1
+------------------------
+Licence: MIT OR Apache-2.0
+Source: https://github.com/microsoft/windows-rs
+
+[license-apache-2.0]
+(the same text as windows 0.61.3, license-apache-2.0, above)
+
+[license-mit]
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
 windows_x86_64_gnu 0.52.6
+-------------------------
+Licence: MIT OR Apache-2.0
+Source: https://github.com/microsoft/windows-rs
+
+[license-apache-2.0]
+(the same text as windows 0.61.3, license-apache-2.0, above)
+
+[license-mit]
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
+windows_x86_64_gnu 0.53.1
 -------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
@@ -21399,7 +21655,71 @@ Source: https://github.com/microsoft/windows-rs
     SOFTWARE
 
 
+windows_x86_64_gnullvm 0.53.1
+-----------------------------
+Licence: MIT OR Apache-2.0
+Source: https://github.com/microsoft/windows-rs
+
+[license-apache-2.0]
+(the same text as windows 0.61.3, license-apache-2.0, above)
+
+[license-mit]
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
 windows_x86_64_msvc 0.52.6
+--------------------------
+Licence: MIT OR Apache-2.0
+Source: https://github.com/microsoft/windows-rs
+
+[license-apache-2.0]
+(the same text as windows 0.61.3, license-apache-2.0, above)
+
+[license-mit]
+    MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+
+
+windows_x86_64_msvc 0.53.1
 --------------------------
 Licence: MIT OR Apache-2.0
 Source: https://github.com/microsoft/windows-rs
@@ -21440,7 +21760,7 @@ Source: https://github.com/rust-windowing/winit
 (the same text as dpi 0.1.2, LICENSE, above)
 
 
-winnow 1.0.5
+winnow 1.0.4
 ------------
 Licence: MIT
 Source: https://github.com/winnow-rs/winnow
@@ -21936,7 +22256,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-zerocopy 0.8.63
+zerocopy 0.8.62
 ---------------
 Licence: BSD-2-Clause OR Apache-2.0 OR MIT
 Source: https://github.com/google/zerocopy
@@ -22198,13 +22518,13 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
-zerocopy-derive 0.8.63
+zerocopy-derive 0.8.62
 ----------------------
 Licence: BSD-2-Clause OR Apache-2.0 OR MIT
 Source: https://github.com/google/zerocopy
 
 [LICENSE-APACHE]
-(the same text as zerocopy 0.8.63, LICENSE-APACHE, above)
+(the same text as zerocopy 0.8.62, LICENSE-APACHE, above)
 
 [LICENSE-BSD]
 Copyright 2019 The Fuchsia Authors.
