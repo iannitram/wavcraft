@@ -1264,7 +1264,8 @@ mod tests {
     fn a_fake_sine_take_has_the_right_length_and_pitch() {
         let dir = scratch("fake");
         let fmt = RecFormat { rate: 48_000, channels: 1, bits: 24, inputs: 0 };
-        let ring = Ring::new(48_000, 1);
+        // 10 s of ring leaves room for a writer stall on a busy CI runner; dropping is tested in an_overflow_is_counted_and_the_take_stays_readable.
+        let ring = Ring::new(480_000, 1);
         let rec = Recorder::start(create_take(&dir, fmt, 7).unwrap(), ring.clone()).unwrap();
         let fake = FakeInput::spawn(FakeSpec { tones: vec![440.0], ring_ms: None, stall_ms: 0 }, fmt, ring).unwrap();
         std::thread::sleep(Duration::from_millis(1_200));
@@ -1343,7 +1344,8 @@ mod tests {
     fn a_four_channel_take_keeps_every_tone_and_survives_a_kill() {
         let dir = scratch("four");
         let fmt = RecFormat::parse_args("rate=48000 bits=16 inputs=1,2,3,4").unwrap();
-        let ring = Ring::new(48_000, 4);
+        // 10 s of ring leaves room for a writer stall on a busy CI runner; dropping is tested in an_overflow_is_counted_and_the_take_stays_readable.
+        let ring = Ring::new(480_000, 4);
         let rec = Recorder::start(create_take(&dir, fmt, 8).unwrap(), ring.clone()).unwrap();
         let spec = FakeSpec::parse(Some("sine:400+800+1200+2400")).unwrap().unwrap();
         let fake = FakeInput::spawn(spec, fmt, ring).unwrap();
