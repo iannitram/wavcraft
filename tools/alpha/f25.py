@@ -34,18 +34,6 @@ def read_take(path):
     return {"frames": n, "channels": ch, "width": width, "rate": rate, "hz": hz, "peak": max((abs(s) for s in samples), default=0)}
 
 
-def seed(work):
-    # STATE reports the take's recording fields only while a document is open, so runs 1 and 2
-    # open this one-second silent file first and record beside it.
-    path = os.path.join(work, "seed.wav")
-    with wave.open(path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(48000)
-        w.writeframes(b"\x00\x00" * 48000)
-    return path
-
-
 def launch(exe, env, args=()):
     proc = subprocess.Popen([exe, *args], env=env, stdout=subprocess.DEVNULL, stderr=open(env["STDERR"], "a"))
     token = env["WAVCRAFT_CONTROL_TOKEN_FILE"]
@@ -76,7 +64,7 @@ def main():
 
     t0 = time.time()
     # Run 1: record, stop, check the file and what the editor opened.
-    proc, c = launch(a.exe, env, [seed(work)])
+    proc, c = launch(a.exe, env)
     try:
         st = c.state()
         check("STATE before recording says recording=0", st.get("recording") == "0", st)
@@ -109,7 +97,7 @@ def main():
             proc.kill()
 
     # Run 2: stereo 16-bit through the dialog's arguments, killed mid-take.
-    proc, c = launch(a.exe, env, [seed(work)])
+    proc, c = launch(a.exe, env)
     try:
         r = c.ask("RECORD start rate=44100 ch=2 bits=16")
         killed = r.partition("path=")[2]
