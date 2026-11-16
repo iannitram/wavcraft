@@ -321,6 +321,7 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("edit.zeroCrossings.rightToLeft", "Zero Crossings: Right Side to Left", "Shift+K".to_string()),
         ("edit.zeroCrossings.rightToRight", "Zero Crossings: Right Side to Right", "Shift+L".to_string()),
         ("edit.convertSampleType", "Convert Sample Type…", "Shift+T".to_string()),
+        ("edit.convertSampleType", "Convert Sample Type…", "F11".to_string()),
         ("edit.setIn", "Set In Point to Playhead", "I".to_string()),
         ("edit.setOut", "Set Out Point to Playhead", "O".to_string()),
         ("edit.leftChannel", "Left Channel Only", "↑".to_string()),
