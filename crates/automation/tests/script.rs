@@ -153,3 +153,49 @@ fn a_parse_error_runs_nothing() {
     let first = read(&head, 0, 0, 1)[0];
     assert!((first - (100.0 / 32768.0)).abs() <= LSB, "frame 0 is {first}");
 }
+
+#[test]
+fn a_failing_line_changes_nothing() {
+    let mut head = open_tone("nochange");
+    head.execute(&Request::Select { start: 5, end: 15 }).unwrap();
+    let before_state = head.execute(&Request::State).unwrap();
+    let before_steps = head.step_count();
+    let before_first = read(&head, 0, 0, 100);
+    let text = "SELECT 0 500\nEFFECT invert\nACTION edit.nope\nEFFECT invert";
+    assert_eq!(head.run_script(text), Err("line 3: no action named \"edit.nope\"".to_string()));
+    assert_eq!(head.execute(&Request::State).unwrap(), before_state);
+    assert_eq!(head.step_count(), before_steps);
+    assert_eq!(read(&head, 0, 0, 100), before_first);
+}
+
+#[test]
+fn a_good_script_is_one_step() {
+    let mut head = open_tone("onestep");
+    let before_steps = head.step_count();
+    let text = "SELECT 1000 2000\nACTION edit.delete\nSELECT 0 500\nEFFECT invert\nEFFECT gain gain_db=-6.0206";
+    assert_eq!(head.run_script(text), Ok(()));
+    assert_eq!(head.step_count(), before_steps + 1);
+    assert_eq!(head.document().unwrap().len_frames(), 19_000);
+    head.execute(&Request::Action("edit.undo".to_string())).unwrap();
+    assert_eq!(head.document().unwrap().len_frames(), 20_000);
+    for ch in 0..2 {
+        let back = read(&head, ch, 0, 2000);
+        for (i, got) in back.iter().enumerate() {
+            let want = source(ch, i as u64);
+            assert!((got - want).abs() <= LSB, "ch {ch} frame {i}: {got} vs {want}");
+        }
+    }
+}
+
+#[test]
+fn a_script_that_changes_nothing_adds_no_step() {
+    let mut head = open_tone("nostep");
+    assert_eq!(head.run_script("SELECT 0 10"), Ok(()));
+    assert_eq!(head.step_count(), 1);
+}
+
+#[test]
+fn run_script_needs_an_open_file() {
+    let mut head = Headless::new(std::env::temp_dir().join("wavcraft-script-none"));
+    assert_eq!(head.run_script("STATE"), Err("no file is open".to_string()));
+}

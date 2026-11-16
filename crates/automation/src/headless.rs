@@ -4,6 +4,7 @@
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use wavcraft_core::DocState;
@@ -14,7 +15,7 @@ use wavcraft_core::effects;
 use wavcraft_core::io::{self, OpenOptions};
 use wavcraft_core::save::{self, AiffKind, Container, SampleType, SaveFormat, SaveOptions, VORBIS_DEFAULT_QUALITY};
 
-use crate::{Backend, Request, SaveArgs};
+use crate::{Backend, Request, SaveArgs, script};
 
 /// The open document and its editing state.
 struct Session {
@@ -52,6 +53,43 @@ impl Headless {
     /// The open document's state, if one is open.
     pub fn document(&self) -> Option<&DocState> {
         self.session.as_ref().map(|s| &**s.editor.history.current())
+    }
+
+    /// How many history steps the open document has (the Open step counts), 0 with no file.
+    pub fn step_count(&self) -> usize {
+        self.session.as_ref().map_or(0, |s| s.editor.history.steps().len())
+    }
+
+    /// Run a script text (`script::run`) as one undo step labelled "Run Script". On success the
+    /// steps it made are squashed into that one step, and the selection it left stays. On a
+    /// refused line nothing is kept: the starting step and selection come back, and the steps
+    /// the script made go. The error is `line N: reason`.
+    pub fn run_script(&mut self, text: &str) -> Result<(), String> {
+        let s = self.session()?;
+        let start_cursor = s.editor.history.cursor();
+        let start_len = s.editor.history.steps().len();
+        let start_doc = s.editor.history.current().clone();
+        let start_selection = s.selection.clone();
+        let result = script::run(self, text);
+        let s = self.session()?;
+        match result {
+            Ok(()) => {
+                // None means the script made no step; nothing to squash.
+                let _ = s.editor.history.squash_since(start_cursor, "Run Script");
+                Ok(())
+            }
+            Err(why) => {
+                let changed = s.editor.history.cursor() != start_cursor
+                    || s.editor.history.steps().len() != start_len
+                    || !Arc::ptr_eq(s.editor.history.current(), &start_doc);
+                if changed {
+                    let _ = s.editor.history.go_to(start_cursor);
+                    let _ = s.editor.history.delete_step(start_cursor + 1);
+                }
+                s.selection = start_selection;
+                Err(why)
+            }
+        }
     }
 
     fn open(&mut self, path: &Path) -> Result<(), String> {
