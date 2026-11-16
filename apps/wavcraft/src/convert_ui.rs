@@ -3,11 +3,14 @@
 
 use egui::vec2;
 use wavcraft_core::convert::{ConvertSettings, PresetFile, Quality};
-use wavcraft_core::dither::{DitherSettings, DitherType, Shaping};
+use wavcraft_core::dither::{DEFAULT_SEED, DitherSettings, DitherType, Shaping};
 use wavcraft_core::save::SampleType;
 
 /// Rates offered in the list; any other whole number can be typed.
 const RATES: [u32; 11] = [8_000, 11_025, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
+
+/// The dither types offered when Dithering is ticked; Triangular is first and is the default.
+const DITHER_TYPES: [DitherType; 2] = [DitherType::Triangular, DitherType::Rectangular];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Chans {
@@ -38,7 +41,11 @@ pub struct ConvertDialog {
     /// Percent of each source channel in a mix to mono.
     mix: Vec<f32>,
     bits: Bits,
-    dither: DitherSettings,
+    /// The Dithering checkbox: off by default.
+    dithering: bool,
+    /// The Dither Type combo, used only while `dithering` is on.
+    dither_type: DitherType,
+    shaping: Shaping,
     quality: Quality,
     preset_name: String,
     message: Option<String>,
@@ -53,7 +60,9 @@ impl ConvertDialog {
             chans: Chans::Keep,
             mix: vec![100.0 / src_channels.max(1) as f32; src_channels],
             bits: Bits::Keep,
-            dither: DitherSettings::default(),
+            dithering: false,
+            dither_type: DitherType::Triangular,
+            shaping: Shaping::None,
             quality: Quality::default(),
             preset_name: String::new(),
             message: None,
@@ -79,7 +88,10 @@ impl ConvertDialog {
             Some(SampleType::Int24) => Bits::B24,
             Some(SampleType::Int32 | SampleType::Float32 | SampleType::Float64) => Bits::F32,
         };
-        self.dither = s.dither.unwrap_or_default();
+        let d = s.dither.unwrap_or_default();
+        self.dithering = d.dither != DitherType::None;
+        self.dither_type = if d.dither == DitherType::None { DitherType::Triangular } else { d.dither };
+        self.shaping = d.shaping;
         self.quality = s.quality;
     }
 
@@ -103,7 +115,11 @@ impl ConvertDialog {
             channels,
             mix_pct,
             bits,
-            dither: Some(self.dither),
+            dither: Some(DitherSettings {
+                dither: if self.dithering { self.dither_type } else { DitherType::None },
+                shaping: self.shaping,
+                seed: DEFAULT_SEED,
+            }),
             quality: self.quality,
         })
     }
@@ -175,16 +191,19 @@ impl ConvertDialog {
                     ui.selectable_value(&mut self.bits, Bits::F32, "32-bit float");
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Dither:");
-                    egui::ComboBox::from_id_salt("convert-dither").selected_text(self.dither.dither.name()).show_ui(ui, |ui| {
-                        for d in DitherType::ALL {
-                            ui.selectable_value(&mut self.dither.dither, d, d.name());
-                        }
+                    ui.checkbox(&mut self.dithering, "Dithering");
+                    ui.add_enabled_ui(self.dithering, |ui| {
+                        ui.label("Dither Type:");
+                        egui::ComboBox::from_id_salt("convert-dither-type").selected_text(self.dither_type.name()).show_ui(ui, |ui| {
+                            for d in DITHER_TYPES {
+                                ui.selectable_value(&mut self.dither_type, d, d.name());
+                            }
+                        });
                     });
                     ui.label("Noise shaping:");
-                    egui::ComboBox::from_id_salt("convert-shaping").selected_text(self.dither.shaping.name()).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("convert-shaping").selected_text(self.shaping.name()).show_ui(ui, |ui| {
                         for sh in Shaping::ALL {
-                            ui.selectable_value(&mut self.dither.shaping, sh, sh.name());
+                            ui.selectable_value(&mut self.shaping, sh, sh.name());
                         }
                     });
                 });
@@ -257,4 +276,28 @@ pub fn interpret_dialog(ctx: &egui::Context, text: &mut String, current: u32) ->
         },
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a4_dialog_defaults_dither_off_triangular_first() {
+        let mut d = ConvertDialog::new(44_100, 2);
+        assert!(!d.dithering);
+        assert_eq!(DITHER_TYPES, [DitherType::Triangular, DitherType::Rectangular]);
+        assert_eq!(d.shaping, Shaping::None);
+
+        let Ok(s) = d.settings() else { panic!("the default settings should be usable") };
+        let Some(ds) = s.dither else { panic!("the dialog should always give dither settings") };
+        assert_eq!(ds.dither, DitherType::None);
+        assert_eq!(ds.shaping, Shaping::None);
+
+        d.dithering = true;
+        let Ok(s) = d.settings() else { panic!("the settings with dithering on should be usable") };
+        let Some(ds) = s.dither else { panic!("the dialog should always give dither settings") };
+        assert_eq!(ds.dither, DitherType::Triangular);
+        assert_eq!(ds.shaping, Shaping::None);
+    }
 }
