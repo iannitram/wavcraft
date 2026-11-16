@@ -232,10 +232,9 @@ mod tests {
         let worker = EffectPreview::start(doc, &Amplify, vec![0.0, 0.0, 1.0], 0..4800, ChannelMask::ALL).unwrap();
         let ring = worker.ring();
         thread::sleep(Duration::from_millis(50));
+        // The worker's own clone of the ring goes away only when its thread ends, so the count
+        // is 1 once drop has joined the thread. Without the join the worker still holds it.
         drop(worker);
-        let pending = ring.waiting_frames();
-        read_frames(&ring, pending);
-        thread::sleep(Duration::from_millis(50));
-        assert_eq!(ring.waiting_frames(), 0);
+        assert_eq!(Arc::strong_count(&ring), 1, "drop returned before the worker thread ended");
     }
 }
