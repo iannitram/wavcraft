@@ -1313,9 +1313,9 @@ where
     if channels > 0 {
         for frame in out.chunks(channels) {
             let left = f32::from_sample(frame[0]);
-            let right = if channels > 1 { f32::from_sample(frame[1]) } else { 0.0 };
+            let right = if channels > 1 { f32::from_sample(frame[1]) } else { left };
             peak[0] = peak[0].max(left.abs());
-            peak[1] = peak[1].max(if channels > 1 { right.abs() } else { left.abs() });
+            peak[1] = peak[1].max(right.abs());
             sum[0] += f64::from(left) * f64::from(left);
             sum[1] += f64::from(right) * f64::from(right);
             frames = frames.saturating_add(1);
