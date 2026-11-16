@@ -24,6 +24,10 @@ name = "wavcraft-edit-bench"
 path = "src/bin/wavcraft-edit-bench/main.rs"
 
 [[bin]]
+name = "wavcraft-rack-bench"
+path = "src/bin/wavcraft-rack-bench/main.rs"
+
+[[bin]]
 name = "wavcraft-nr-bench"
 path = "src/bin/wavcraft-nr-bench/main.rs"
 
