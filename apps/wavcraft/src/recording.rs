@@ -11,7 +11,8 @@ use egui::vec2;
 use wavcraft_core::DocState;
 use wavcraft_core::doc::rec_edit::{RecMode, RecPlan, RecTarget};
 use wavcraft_core::record::{self, FakeInput, FakeSpec, MonitorRing, RecFormat, Recorder, Ring, Take};
-use wavcraft_core::space::{format_bytes, free_space};
+use wavcraft_core::space::free_space;
+use wavcraft_core::take_readout::{TakeStats, take_readout};
 
 use crate::rec_input::Lost;
 
@@ -255,6 +256,23 @@ fn clock(secs: u64) -> String {
     if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) }
 }
 
+/// The status bar's take numbers, as text: `warn` is the dropped-frames warning with its
+/// separator (empty when nothing was dropped), the others are `take_readout`'s texts.
+struct StatusNumbers {
+    warn: String,
+    elapsed: String,
+    size: String,
+    left: String,
+}
+
+/// The status bar's take numbers, from `take_readout`.
+fn status_numbers(stats: &TakeStats) -> StatusNumbers {
+    let readout = take_readout(stats);
+    let lost_ms = stats.dropped_frames.saturating_mul(1000) / u64::from(stats.rate.max(1));
+    let warn = if stats.dropped_frames > 0 { format!("⚠ DROPPED {} frames ({lost_ms} ms) · ", readout.dropped) } else { String::new() };
+    StatusNumbers { warn, elapsed: readout.elapsed, size: readout.size, left: readout.left }
+}
+
 /// What to do about a microphone that macOS blocks (the privacy setting).
 const MIC_PERMISSION: &str =
     "macOS may be blocking the microphone. Allow WavCraft in System Settings > Privacy & Security > Microphone, then record again.";
@@ -296,9 +314,19 @@ impl Recording {
         Some(hint)
     }
 
-    /// The last format used, else the default (48 kHz, mono, 24-bit).
-    pub fn last_format(&self) -> RecFormat {
-        self.last_fmt.unwrap_or_default()
+    /// The channel count of the input a take would record from: `None` with the fake input
+    /// (it has no device) or when no input device has a usable config.
+    pub fn device_channels(&self) -> Option<u16> {
+        match FakeSpec::from_env() {
+            Ok(Some(_)) | Err(_) => None,
+            Ok(None) => crate::rec_input::default_channels(self.input_device.as_deref()),
+        }
+    }
+
+    /// The format for a new take: the last format used, else the first format with the
+    /// microphone's channel count (48 kHz, 24-bit; mono with no device).
+    pub fn start_format(&self, device_channels: Option<u16>) -> RecFormat {
+        self.last_fmt.unwrap_or_else(|| crate::rec_input::first_format(device_channels))
     }
 
     /// Remember that the take now starting goes into the document (`plan`, checked by the caller).
@@ -610,11 +638,16 @@ impl Recording {
         let a = self.active.as_ref()?;
         let (peak, clipped) = self.meter()?;
         let (s, fmt) = (a.recorder.status(), a.recorder.format());
-        let elapsed = s.frames / u64::from(fmt.rate.max(1));
-        let left = Self::left_secs(a).map_or_else(|| "?".to_string(), clock);
+        let nums = status_numbers(&TakeStats {
+            frames: s.frames,
+            rate: fmt.rate,
+            channels: fmt.channels,
+            bits: fmt.bits,
+            file_bytes: s.file_bytes,
+            free_bytes: a.free,
+            dropped_frames: s.dropped_frames,
+        });
         let db = if peak > 0.0 { format!("{:.1} dB", 20.0 * peak.log10()) } else { "-inf dB".to_string() };
-        let lost_ms = s.dropped_frames * 1000 / u64::from(fmt.rate.max(1));
-        let warn = if s.dropped_frames > 0 { format!("⚠ DROPPED {} frames ({lost_ms} ms) · ", s.dropped_frames) } else { String::new() };
         let state = match self.into.as_ref() {
             Some(i) if self.punch_waiting() => {
                 format!("PUNCH-IN: playing the preroll, records from the selection's start ({})", i.plan.target.name())
@@ -626,9 +659,11 @@ impl Recording {
         let state = if a.monitor.as_ref().is_some_and(|m| m.audible) { format!("{state} (monitoring)") } else { state };
         let limit = a.max_frames.map_or(String::new(), |m| format!(" of {}", clock(m / u64::from(fmt.rate.max(1)))));
         let mut text = format!(
-            "{warn}{state} {}{limit} · {} · {left} left on disk · peak {db}{} · {} Hz {} ch {}-bit{} · {}",
-            clock(elapsed),
-            format_bytes(s.file_bytes),
+            "{}{state} {}{limit} · {} · {} left on disk · peak {db}{} · {} Hz {} ch {}-bit{} · {}",
+            nums.warn,
+            nums.elapsed,
+            nums.size,
+            nums.left,
             if clipped { " CLIP" } else { "" },
             fmt.rate,
             fmt.channels,
@@ -768,9 +803,10 @@ impl Recording {
 
 #[cfg(test)]
 mod tests {
-    use super::{Duration, Instant, NullSink, StartOpts, clock, parse_start_args};
+    use super::{Duration, Instant, NullSink, StartOpts, clock, parse_start_args, status_numbers};
     use wavcraft_core::doc::rec_edit::{RecMode, RecTarget};
     use wavcraft_core::record::{MonitorRing, RecFormat};
+    use wavcraft_core::take_readout::TakeStats;
 
     #[test]
     fn a_timed_start_reports_how_late_it_was() {
@@ -784,6 +820,15 @@ mod tests {
         assert!(late >= 15 && !busy, "{late} {busy}");
         assert!(r.state_fields().contains("rec_start_busy=0"));
         assert!(r.due().is_none(), "a due take is handed out once");
+    }
+
+    #[test]
+    fn the_first_take_follows_the_mic_and_later_takes_keep_the_last_format() {
+        let mut r = super::Recording::default();
+        assert_eq!(r.start_format(Some(2)), RecFormat { rate: 48_000, channels: 2, bits: 24, inputs: 0 });
+        assert_eq!(r.start_format(None).channels, 1, "no device: mono");
+        r.last_fmt = Some(RecFormat { rate: 44_100, channels: 1, bits: 16, inputs: 0 });
+        assert_eq!(r.start_format(Some(2)), RecFormat { rate: 44_100, channels: 1, bits: 16, inputs: 0 }, "a later take keeps the last format");
     }
 
     #[test]
@@ -964,6 +1009,32 @@ mod tests {
         assert_eq!(clock(0), "0:00");
         assert_eq!(clock(65), "1:05");
         assert_eq!(clock(3723), "1:02:03");
+    }
+
+    #[test]
+    fn the_status_numbers_come_from_the_take_readout() {
+        let stats = TakeStats {
+            frames: 3_120_000,
+            rate: 48_000,
+            channels: 1,
+            bits: 24,
+            file_bytes: 9_360_044,
+            free_bytes: Some(86_400_000),
+            dropped_frames: 0,
+        };
+        let n = status_numbers(&stats);
+        let text = format!("{}{} · {} · {} left on disk", n.warn, n.elapsed, n.size, n.left);
+        assert!(text.contains("1:05"), "{text}");
+        assert!(text.contains("10:00 left on disk"), "{text}");
+        assert!(text.contains("9.4 MB"), "{text}");
+        assert!(!text.contains("DROPPED"), "{text}");
+
+        let n = status_numbers(&TakeStats { dropped_frames: 480, ..stats });
+        let text = format!("{}{} · {} · {} left on disk", n.warn, n.elapsed, n.size, n.left);
+        assert!(text.contains("DROPPED 480 frames (10 ms)"), "{text}");
+
+        let n = status_numbers(&TakeStats { free_bytes: None, ..stats });
+        assert_eq!(n.left, "?");
     }
 
     #[test]

@@ -751,8 +751,12 @@ impl Player {
 
     /// Follow the system: reopen the output when the default device changed (while the output
     /// follows the default) or when the stream failed during a play, keeping the place. Called
-    /// every frame by the app. Returns whether it reopened.
+    /// every frame by the app. Returns whether it reopened. While muted (a take is being recorded)
+    /// it does nothing: the change is kept, and the output reopens after the take.
     pub fn maintain(&mut self) -> bool {
+        if self.is_muted() {
+            return false;
+        }
         let changed = self.shared.device_changed.load(Ordering::Acquire);
         let failed_while_playing = self.failed() && self.is_playing();
         if !changed && !failed_while_playing {
@@ -2556,6 +2560,8 @@ mod tests {
         assert!(p.start(&Plan::new(0.0, 480_000.0), 100_000.0));
         std::thread::sleep(Duration::from_millis(60));
         let before = p.position() as f64;
+        // The wall-clock time between the two reads: a busy runner can sleep far longer than 60 ms.
+        let t0 = std::time::Instant::now();
         // Cut the first 50,000 frames, all of them before the playhead: the same music, 50,000 frames earlier.
         let generation = p.shared.snapshot().generation;
         p.replace_audio(Some(ramp_state(48_000, 430_000)), &EditSpan { at: 0, removed: 50_000, inserted: 0 });
@@ -2565,8 +2571,11 @@ mod tests {
         assert!(p.is_playing(), "the play goes on");
         std::thread::sleep(Duration::from_millis(60));
         let after = p.position() as f64;
+        let elapsed = t0.elapsed().as_secs_f64() * f64::from(p.out_rate);
         let expect = before - 50_000.0;
-        assert!((after - expect).abs() < 10_000.0, "carries on from the mapped place: {after} vs {expect}");
+        // The play carries on from the mapped place, and has moved forward by no more than the time that passed.
+        assert!(after >= expect - 2_000.0, "carries on from the mapped place: after {after}, expect {expect}, elapsed {elapsed}");
+        assert!(after <= expect + elapsed + 2_000.0, "has not run ahead of the real time: after {after}, expect {expect}, elapsed {elapsed}");
         p.stop();
     }
 
@@ -2605,3 +2614,7 @@ mod tests {
 #[cfg(test)]
 #[path = "f48_device_change_tests.rs"]
 mod f48_device_change_tests;
+
+#[cfg(test)]
+#[path = "j2_no_output_tests.rs"]
+mod j2_no_output_tests;
