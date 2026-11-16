@@ -43,7 +43,7 @@ pub const TOOLS: &[ToolEntry] = &[
         tool: Some(Tool::Marquee),
         hint: "Drag a time x frequency rectangle on the spectral display",
     },
-    ToolEntry { name: "tool.lasso", label: "Lasso Selection", tool: None, hint: "Not available yet" },
+    ToolEntry { name: "tool.lasso", label: "Lasso Selection", tool: Some(Tool::Lasso), hint: "Drag a free-form outline on the spectral display" },
     ToolEntry { name: "tool.paintbrush", label: "Paintbrush Selection", tool: None, hint: "Not available yet" },
     ToolEntry { name: "tool.spotHealing", label: "Spot Healing", tool: None, hint: "Not available yet" },
 ];
@@ -287,6 +287,11 @@ mod tests {
             assert!(n.contains(&t.name));
         }
         assert!(TOOLS.iter().any(|t| t.tool.is_none()), "planned tools are listed");
+    }
+
+    #[test]
+    fn the_lasso_is_on_the_toolbar() {
+        assert_eq!(toolbar_item("tool.lasso").map(|i| i.cmd), Some(Cmd::Tool(Tool::Lasso)));
     }
 
     #[test]

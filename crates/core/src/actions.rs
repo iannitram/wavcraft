@@ -72,6 +72,8 @@ pub enum ActionId {
     ToolZoom,
     /// The Marquee tool (B135): drags a time x frequency rectangle on the spectral display.
     ToolMarquee,
+    /// The Lasso tool (C4.6): drags a free-form outline on the spectral display.
+    ToolLasso,
     ZoomAmpIn,
     ZoomAmpOut,
     ZoomAmpReset,
@@ -340,6 +342,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ToolHand, "tool.hand", "Hand Tool"),
     window(ActionId::ToolZoom, "tool.zoom", "Zoom Tool"),
     window(ActionId::ToolMarquee, "tool.marquee", "Marquee Selection Tool"),
+    window(ActionId::ToolLasso, "tool.lasso", "Lasso Selection Tool"),
     window(ActionId::StatsShow, "stats.show", "Sample Statistics"),
     window(ActionId::StatsGotoPeak, "stats.goto_peak", "Go to Peak"),
     window(ActionId::StatsNextClip, "stats.next_clip", "Next Possibly Clipped Run"),
@@ -753,7 +756,12 @@ impl Editor {
             }
             ActionId::ZoomInAtIn | ActionId::ZoomInAtOut => self.len() > 0,
             ActionId::ZoomPreset1 | ActionId::ZoomPreset2 | ActionId::ZoomPreset3 | ActionId::ZoomPreset4 | ActionId::ZoomPreset5 => self.len() > 0,
-            ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom | ActionId::ToolMarquee | ActionId::ToggleMatchPanel => true,
+            ActionId::ToolSelect
+            | ActionId::ToolHand
+            | ActionId::ToolZoom
+            | ActionId::ToolMarquee
+            | ActionId::ToolLasso
+            | ActionId::ToggleMatchPanel => true,
             ActionId::SpectralResolutionUp
             | ActionId::SpectralResolutionDown
             | ActionId::SpectralScaleMoreLog
@@ -1434,6 +1442,7 @@ impl Editor {
             | ActionId::ToolHand
             | ActionId::ToolZoom
             | ActionId::ToolMarquee
+            | ActionId::ToolLasso
             | ActionId::TimeDecimal
             | ActionId::TimeCompact
             | ActionId::TimeSamples

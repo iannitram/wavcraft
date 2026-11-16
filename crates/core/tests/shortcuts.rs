@@ -92,6 +92,7 @@ shortcuts! {
     tool_hand_h: "H" => A(ActionId::ToolHand);
     tool_zoom_z: "Z" => A(ActionId::ToolZoom);
     tool_marquee_e: "E" => A(ActionId::ToolMarquee);
+    tool_lasso_d: "D" => A(ActionId::ToolLasso);
     match_panel_alt_5: "Alt+5" => A(ActionId::ToggleMatchPanel);
     check_next_f8: "F8" => A(ActionId::CheckNext);
     check_prev_shift_f8: "Shift+F8" => A(ActionId::CheckPrev);
@@ -121,6 +122,12 @@ fn findings_shortcuts_resolve_next_and_previous() {
     assert_eq!(map.check(), Ok(()));
     assert_eq!(map.resolve_text("F8"), Ok(A(ActionId::CheckNext)));
     assert_eq!(map.resolve_text("Shift+F8"), Ok(A(ActionId::CheckPrev)));
+}
+
+#[test]
+fn tool_lasso_d_leaves_ctrl_d_alone() {
+    assert_eq!(Keymap::new().resolve_text("Ctrl+D"), Ok(A(ActionId::DeselectAll)));
+    assert_eq!(Keymap::new().resolve_text("D"), Ok(A(ActionId::ToolLasso)));
 }
 
 #[test]
