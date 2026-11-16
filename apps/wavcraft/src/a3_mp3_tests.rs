@@ -1,5 +1,6 @@
-//! A3.10 and A3.6: the MP3 size estimate through the window. `SAVEOPTS estimate mp3 16` answers the
-//! constant-bit-rate size at the default 192 kbps, and the Save As size line says so. A3.6: `SAVE <path>.mp3 [bitrate=..] [channels=..]` writes an MP3 through the window.
+//! A3.10: the MP3 size estimate through the window. `SAVEOPTS estimate mp3 16` answers the
+//! constant-bit-rate size at the default 192 kbps, and the Save As size line says so.
+//! A3.6: `SAVE <path>.mp3 [bitrate=..] [channels=..]` writes an MP3 through the window.
 //!
 //! Hook-up, in apps/wavcraft/src/app.rs: `#[cfg(test)] #[path = "a3_mp3_tests.rs"] mod a3_mp3_tests;`
 

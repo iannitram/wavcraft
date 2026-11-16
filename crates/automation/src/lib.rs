@@ -28,11 +28,15 @@ use std::path::PathBuf;
 use wavcraft_core::mp3_options::MP3_BITRATES;
 use wavcraft_core::save::{AiffKind, SampleType};
 
-/// The options a `SAVE` line may end with, as the window reads them: `bits=<16|24|32>` and
-/// `float=<0|1>` (together, the sample type), `aiff=<aiff|aifc|sowt>`, `quality=<-1..10>` (Ogg
-/// Vorbis) and `meta=<0|1>` ("Include markers and other metadata"), `bitrate=<kbps>` (MP3) and `channels=<1|2>`
-/// (MP3; 1 mixes a stereo document down). `None` is "not given": the
-/// save keeps what it would use anyway.
+/// The options a `SAVE` line may end with, as the window reads them:
+/// - `bits=<16|24|32>` and `float=<0|1>`: together, the sample type;
+/// - `aiff=<aiff|aifc|sowt>`;
+/// - `quality=<-1..10>` (Ogg Vorbis);
+/// - `meta=<0|1>` ("Include markers and other metadata");
+/// - `bitrate=<kbps>` (MP3);
+/// - `channels=<1|2>` (MP3; 1 mixes a stereo document down).
+///
+/// `None` is "not given": the save keeps what it would use anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SaveArgs {
     /// From `bits=` and `float=`.
@@ -51,8 +55,8 @@ pub struct SaveArgs {
 
 impl SaveArgs {
     /// `SAVE`'s arguments: a path (may hold spaces, may be empty) then the options in any order.
-    /// The errors and their order are the window's (`take_meta`, `take_quality`, then
-    /// `parse_save_args` in `apps/wavcraft/src/app.rs`).
+    /// The errors and their order are the window's: `take_meta`, `take_quality`, `take_bitrate`,
+    /// `take_channels`, then `parse_save_args` in `apps/wavcraft/src/app.rs`.
     pub fn parse(rest: &str) -> Result<(Option<PathBuf>, SaveArgs), String> {
         let meta = take_meta(rest)?;
         let quality = take_quality(rest)?;
