@@ -5235,6 +5235,11 @@ impl WaveApp {
             self.check_run.start(state, ctx);
             return Ok(false);
         }
+        if id == ActionId::ToggleMatchPanel {
+            let shown = !self.panels.is_shown("match");
+            self.set_panel("match", shown);
+            return Ok(false);
+        }
         // The snapping switches are settings: they flip with no file open too.
         if self.editor.is_none() && actions::snap_flag_value(&self.settings.snap, id).is_some() {
             self.toggle_snap_menu(id);
@@ -12636,14 +12641,13 @@ fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_fo
         .collect();
     rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
-        // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
+        // Alt+1 to Alt+4 and Alt+6 to Alt+8 enable or disable channels 1 to 4 and 6 to 8 (A132). Alt+5 is the Match Loudness panel (G3.4, Q11).
         let mut pressed: Vec<Command> = if typing || other_focus || float_space_only {
             Vec::new()
         } else {
-            [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
+            [(0u8, Key::Num1), (1, Key::Num2), (2, Key::Num3), (3, Key::Num4), (5, Key::Num6), (6, Key::Num7), (7, Key::Num8)]
                 .into_iter()
-                .enumerate()
-                .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(n as u8))))
+                .filter_map(|(ch, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(ch))))
                 .collect()
         };
         pressed.extend(rows.iter().filter_map(|(command, k)| {
@@ -13346,6 +13350,10 @@ mod tests {
 #[cfg(test)]
 #[path = "issue1219_tests.rs"]
 mod issue1219_tests;
+
+#[cfg(test)]
+#[path = "g3_alt5_tests.rs"]
+mod g3_alt5_tests;
 
 #[cfg(test)]
 #[path = "c5_6_space_button_tests.rs"]
