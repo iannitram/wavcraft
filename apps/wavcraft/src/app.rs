@@ -7637,13 +7637,10 @@ impl WaveApp {
             None => {
                 let stem = self.doc_path.file_stem().map_or_else(|| "Untitled".to_string(), |s| s.to_string_lossy().into_owned());
                 let first = self.dialog_format.take().or(own_format).unwrap_or(SaveFormat::Wav);
-                let mut dialog = rfd::FileDialog::new().set_file_name(format!("{stem}.{}", first.extension()));
-                for f in [first, SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac, SaveFormat::Vorbis].iter().fold(Vec::new(), |mut v, f| {
-                    if !v.contains(f) {
-                        v.push(*f);
-                    }
-                    v
-                }) {
+                let formats = v1::save_formats_in(v1::RELEASE, first);
+                let suggested = formats.first().copied().unwrap_or(SaveFormat::Wav);
+                let mut dialog = rfd::FileDialog::new().set_file_name(format!("{stem}.{}", suggested.extension()));
+                for f in formats.iter().copied() {
                     let exts: &[&str] = if f == SaveFormat::Aiff { &["aiff", "aif"] } else { &[f.extension()] };
                     dialog = dialog.add_filter(f.name(), exts);
                 }

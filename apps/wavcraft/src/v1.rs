@@ -6,6 +6,7 @@
 //! this module gates the menus, the Tools list, the Keyboard Shortcuts list and the Effects Rack's plugins.
 
 use wavcraft_core::actions::{self, Action};
+use wavcraft_core::save::SaveFormat;
 
 /// Whether this is a release build.
 pub const RELEASE: bool = !cfg!(debug_assertions);
@@ -63,6 +64,20 @@ pub fn tool_offered_in(release: bool, name: &str) -> bool {
     !(release && name == "tool.spotHealing")
 }
 
+/// The formats the Save As file dialog offers, in filter order, with `first` (the document's own
+/// format or the one picked last) at the front. Each format appears once. A release build leaves
+/// out Ogg Vorbis, so it is never offered or suggested there; a debug build offers it as before.
+/// Mp3 is not in this list yet (A3.7 adds it).
+pub fn save_formats_in(release: bool, first: SaveFormat) -> Vec<SaveFormat> {
+    let mut formats: Vec<SaveFormat> = Vec::with_capacity(5);
+    for f in [first, SaveFormat::Wav, SaveFormat::Aiff, SaveFormat::Flac, SaveFormat::Vorbis] {
+        if !formats.contains(&f) && !(release && f == SaveFormat::Vorbis) {
+            formats.push(f);
+        }
+    }
+    formats
+}
+
 /// The Diagnostics commands (Feature::Diagnostics) by their action names.
 const DIAGNOSTICS_COMMANDS: &[&str] = &["diagnostics.declip", "diagnostics.declick", "diagnostics.autoClickRemover"];
 
@@ -91,6 +106,15 @@ mod tests {
             assert!(!offered_in(true, f), "{}", f.menu_text());
             assert!(offered_in(false, f), "a debug build offers {}", f.menu_text());
         }
+    }
+
+    #[test]
+    fn a_release_build_offers_no_ogg_save() {
+        use wavcraft_core::save::SaveFormat::{Aiff, Flac, Vorbis, Wav};
+        assert_eq!(save_formats_in(true, Wav), vec![Wav, Aiff, Flac]);
+        assert_eq!(save_formats_in(true, Vorbis), vec![Wav, Aiff, Flac]);
+        assert_eq!(save_formats_in(false, Vorbis), vec![Vorbis, Wav, Aiff, Flac]);
+        assert_eq!(save_formats_in(false, Wav), vec![Wav, Aiff, Flac, Vorbis]);
     }
 
     #[test]
