@@ -246,7 +246,8 @@ pub trait EffectStream: Send {
 }
 
 /// The stream of an effect that keeps no state between blocks: each block goes through
-/// [`Effect::process`].
+/// [`Effect::process`]. Only an effect that can stream reaches it (see [`can_stream`]): Invert,
+/// Gain and Channel Mixer.
 struct Stateless {
     effect: &'static dyn Effect,
     params: Vec<f64>,
@@ -270,10 +271,42 @@ impl EffectStream for Stateless {
 
 /// Open `effect` for streaming over `channels` channels at `rate` Hz with these settings
 /// (checked first). An effect with its own state supplies it through [`Effect::stream`]; the
-/// others run block by block through [`Effect::process`].
+/// stateless ones run block by block through [`Effect::process`]. An effect that cannot stream
+/// (see [`NO_STREAM`]) gives an error, since block by block it could not match [`apply`].
 pub fn open_stream(effect: &'static dyn Effect, params: &[f64], channels: usize, rate: u32) -> Result<Box<dyn EffectStream>, String> {
     validate(effect, params)?;
+    if !can_stream(effect) {
+        return Err(format!("{} cannot run in the Effects Rack", effect.name()));
+    }
     Ok(effect.stream(params, channels, rate).unwrap_or_else(|| Box::new(Stateless { effect, params: params.to_vec(), frame: 0 })))
+}
+
+/// Effects that cannot run block by block in the Effects Rack: each needs a measurement of the
+/// whole range, the sample rate or a [`Run`] from [`Effect::begin`], so a block-by-block stream
+/// cannot give the offline result.
+pub const NO_STREAM: &[&str] = &[
+    "dc_offset",
+    "normalize",
+    "fade_in",
+    "fade_out",
+    "noise_reduction",
+    "graphic_eq",
+    "speech_leveler",
+    "reverb",
+    "delay",
+    "plate",
+    "pitch_shift",
+    "saturator",
+    "fft_filter",
+    "time_shift",
+    "dehummer",
+    "dereverb",
+    "phase_correction",
+];
+
+/// Whether `effect` can run in the Effects Rack: it is not in [`NO_STREAM`].
+pub fn can_stream(effect: &dyn Effect) -> bool {
+    !NO_STREAM.contains(&effect.id())
 }
 
 /// What a stateful effect is told when a run starts (see [`Effect::begin`]).
@@ -390,6 +423,15 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn can_stream_matches_the_list() {
+        assert!(can_stream(&Invert));
+        assert!(!can_stream(find("normalize").unwrap()));
+        for id in NO_STREAM {
+            assert!(find(id).is_some(), "{id} is not an effect");
+        }
+    }
 
     /// Writes the document frame into every sample, so the stream's frame counter shows.
     struct Frames;

@@ -10,10 +10,10 @@ use wavcraft_core::rack::{GAIN_DB, RackConfig};
 use crate::effect_dialog::EffectDialog;
 use crate::v1::{self, Feature};
 
-/// The built-in effects the slot picker lists: a release build leaves out the effects v1 rules
-/// out (`effects::OUT_OF_V1`).
+/// The built-in effects the slot picker lists: only those that can stream (`effects::can_stream`);
+/// a release build also leaves out the effects v1 rules out (`effects::OUT_OF_V1`).
 pub fn slot_effects(release: bool) -> Vec<&'static dyn effects::Effect> {
-    effects::listed(release).map(|(_, e)| e).collect()
+    effects::listed(release).map(|(_, e)| e).filter(|e| effects::can_stream(*e)).collect()
 }
 
 /// The VST3 plugins the slot picker lists, as slot effect texts (`vst3:<name>`) of the plugins
@@ -465,7 +465,9 @@ mod m5_tests {
     #[test]
     fn a_release_rack_lists_no_dehummer_or_dereverb() {
         let release: Vec<&str> = slot_effects(true).iter().map(|e| e.name()).collect();
-        assert!(release.contains(&"Noise Reduction") && !release.contains(&"DeHummer") && !release.contains(&"DeReverb"), "{release:?}");
-        assert_eq!(slot_effects(false).len(), effects::all().len());
+        assert!(release.contains(&"Dynamics") && !release.contains(&"DeHummer") && !release.contains(&"DeReverb"), "{release:?}");
+        assert!(!release.contains(&"Noise Reduction") && !release.contains(&"Normalize"), "{release:?}");
+        assert_eq!(slot_effects(false).len(), 10);
+        assert_eq!(slot_effects(true).len(), 10);
     }
 }
