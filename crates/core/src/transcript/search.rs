@@ -12,12 +12,12 @@ fn key(text: &str) -> String {
 }
 
 /// Every place `query` occurs in `t`, as word-index ranges in order. The query is split at
-/// anything that is not a letter or digit, except apostrophes and hyphens, and each part is
-/// compared with a word's key (see
-/// [`key`]); the parts must match consecutive words. An empty query, or one with no letters or
-/// digits, matches nothing. Matches may overlap ("the the" in "the the the" gives 0..2 and 1..3).
+/// anything that is not a letter or digit, except apostrophes (straight or curly) and hyphens,
+/// and each part is compared with a word's key (see [`key`]); the parts must match consecutive
+/// words. An empty query, or one with no letters or digits, matches nothing. Matches may overlap ("the the" in "the the the" gives 0..2 and 1..3).
 pub fn find(t: &Transcript, query: &str) -> Vec<Range<usize>> {
-    let want: Vec<String> = query.split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-').map(key).filter(|k| !k.is_empty()).collect();
+    let want: Vec<String> =
+        query.split(|c: char| !c.is_alphanumeric() && !matches!(c, '\'' | '\u{2019}' | '-')).map(key).filter(|k| !k.is_empty()).collect();
     if want.is_empty() || want.len() > t.words.len() {
         return Vec::new();
     }
@@ -74,6 +74,7 @@ mod tests {
         assert_eq!(find(&t, "dont"), vec![0..1]);
         assert_eq!(find(&t, "well-known"), vec![1..2]);
         assert_eq!(find(&t, "wellknown"), vec![1..2]);
+        assert_eq!(find(&t, "don\u{2019}t"), vec![0..1]);
     }
 
     #[test]
