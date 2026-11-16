@@ -5,13 +5,15 @@
 
 Run 1 opens a synthetic stereo WAV in a scratch HOME and session folder, makes five edits (Delete,
 Silence on one channel, Cut, Paste, Insert Silence) and an Undo, waits for the journal to be
-durable, then kills the app with SIGKILL. Run 2 starts with the same HOME and session folder, no
-file: it must find the session (and the stale-session sweep that runs at start must leave it),
-recover it through the control channel, and show the same length, the same History labels and
-lengths at every step, and the same cursor. It then edits on, and a clean QUIT discard removes the
-recovered session's folder. Fails on any ERROR line in the app's logs.
+durable, exports the document to a WAV, then kills the app (Popen.kill, which works on Linux and
+Windows). Run 2 starts with the same HOME and session folder, no file: it must find the session
+(and the stale-session sweep that runs at start must leave it), recover it through the control
+channel, and show the same length, the same History labels and lengths at every step, and the same
+cursor. It compares the recovered samples with that export taken before the kill. It then edits on,
+and a clean QUIT discard removes the recovered session's folder. Fails on any ERROR line in the
+app's logs.
 """
-import argparse, math, os, shutil, signal, socket, struct, subprocess, sys, tempfile, time, wave
+import argparse, math, os, shutil, socket, struct, subprocess, sys, tempfile, time, wave
 
 RATE, SECS = 48000, 20
 
@@ -93,6 +95,24 @@ def session_dirs(root):
     return [d for d in os.listdir(root) if len(d) == 16] if os.path.isdir(root) else []
 
 
+def samples(path):
+    with wave.open(path, "rb") as w:
+        assert w.getsampwidth() == 2, w.getsampwidth()
+        n, ch = w.getnframes(), w.getnchannels()
+        return ch, struct.unpack(f"<{n * ch}h", w.readframes(n))
+
+
+def export_wav(c, path):
+    """EXPORT the whole document to `path`, then wait (up to 20 s) for the file to appear."""
+    r = c.ask(f"EXPORT {path}")
+    c.state()
+    for _ in range(100):
+        if os.path.exists(path):
+            break
+        time.sleep(0.2)
+    return r
+
+
 def run(exe, port, keep):
     base = os.environ.get("WAVCRAFT_SCRATCH") or tempfile.gettempdir()
     os.makedirs(base, exist_ok=True)
@@ -156,14 +176,18 @@ def run(exe, port, keep):
         mode = os.stat(os.path.join(sdir, "journal.wcj")).st_mode & 0o777
         check("the journal is owner-only", mode & 0o077 == 0 or os.name == "nt", oct(mode))
         check("no half-written journal left beside it", not os.path.exists(os.path.join(sdir, "journal.wcj.tmp")))
+        export = os.path.join(work, "before-kill.wav")
+        r = export_wav(c, export)
+        check("run 1: EXPORT before the kill answers OK and writes the file", r == "OK" and os.path.exists(export), r)
+        before_samples = samples(export) if os.path.exists(export) else None
     except Exception as e:
         check("run 1", False, f"{type(e).__name__}: {e}")
         p1.kill()
         return finish(work, logs, checks, keep)
-    p1.send_signal(signal.SIGKILL)
+    p1.kill()
     p1.wait()
     err1.close()
-    check("run 1 was killed (SIGKILL)", p1.returncode == -signal.SIGKILL, p1.returncode)
+    check("run 1 was killed (it did not exit cleanly)", p1.returncode not in (0, None), p1.returncode)
     check("the session folder stays after the kill", os.path.isdir(sdir))
 
     err2 = open(os.path.join(work, "stderr2.log"), "w")
@@ -191,6 +215,12 @@ def run(exe, port, keep):
         check("run 2: every History step has the same length and label", h2 == hist, f"{h2} vs {hist}")
         st = c.state()
         check("run 2: the cursor is back where it was after clicking through", st["cursor"] == before["cursor"] and st["frames"] == before["frames"], st)
+        after = os.path.join(work, "after-recovery.wav")
+        export_wav(c, after)
+        got = samples(after) if os.path.exists(after) else None
+        have = None if got is None else len(got[1])
+        want = None if before_samples is None else len(before_samples[1])
+        check("run 2: the recovered samples equal the export taken before the kill", got is not None and got == before_samples, f"{have} values vs {want}")
         c.ask("ACTION edit.redo")
         st = c.state()
         check("run 2: Redo works on the recovered history", st["cursor"] == "5" and st["undo"] == "Insert Silence", st)
