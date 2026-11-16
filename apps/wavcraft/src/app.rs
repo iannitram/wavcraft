@@ -10954,7 +10954,9 @@ impl WaveApp {
                     self.layout.toggle_maximize(panels::EDITOR);
                     ui.close();
                 }
-                ui.checkbox(&mut self.show_mixer, "Mixer panel");
+                if v1::offered(Feature::Multitrack) {
+                    ui.checkbox(&mut self.show_mixer, "Mixer panel");
+                }
                 ui.checkbox(&mut self.meters.show_levels, "Levels");
                 let mut on = self.meter_input;
                 if ui
@@ -12805,7 +12807,7 @@ impl eframe::App for WaveApp {
         if self.show_metadata {
             egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));
         }
-        if self.show_mixer {
+        if self.show_mixer && v1::offered(Feature::Multitrack) {
             egui::Panel::bottom("mixer")
                 .resizable(true)
                 .default_size(260.0)
