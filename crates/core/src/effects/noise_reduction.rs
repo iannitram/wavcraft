@@ -49,7 +49,20 @@ const P: &[ParamDesc] = &[
 ];
 
 fn size(params: &[f64]) -> usize {
-    SIZES[(params[5] as usize).min(SIZES.len() - 1)]
+    SIZES[(params.get(5).copied().unwrap_or(2.0) as usize).min(SIZES.len() - 1)]
+}
+
+/// The per-bin threshold of a print for an `n`-point FFT: the print's noise magnitude times
+/// [`MARGIN`], never below 1e-12. A bin above it is signal, not noise.
+fn threshold(print: &NoisePrint, channel: usize, n: usize) -> Vec<f32> {
+    print.magnitudes(channel, n).iter().map(|m| (m * MARGIN).max(1e-12)).collect()
+}
+
+/// The threshold curve in dB, one value per FFT bin (`n / 2 + 1` values, `n` from the FFT size
+/// in `params`), for channel `channel` of `print`. It is the curve the processor compares each
+/// bin's magnitude with, and it depends only on the print, the channel and the FFT size.
+pub fn threshold_curve_db(print: &NoisePrint, channel: usize, params: &[f64]) -> Vec<f64> {
+    threshold(print, channel, size(params)).iter().map(|&t| 20.0 * f64::from(t).log10()).collect()
 }
 
 /// One run: a snapshot of the document to read each chunk's context from, and the settings.
@@ -106,7 +119,7 @@ impl Run for NrRun {
         let out_abs = first_frame as i64;
         for ((out, inp), &channel) in output.iter_mut().zip(input).zip(&self.channels) {
             let audio = read_padded(&self.doc, channel, in_abs, context + out.len() + context)?;
-            let threshold: Vec<f32> = self.print.magnitudes(channel, n).iter().map(|m| (m * MARGIN).max(1e-12)).collect();
+            let limit = threshold(&self.print, channel, n);
             let mut raw = vec![0.0f32; bins];
             let mut held = vec![0.0f32; bins];
             let mut last = vec![0.0f32; bins];
@@ -115,7 +128,7 @@ impl Run for NrRun {
             let place = Placement { input_abs: in_abs, out_abs, grid: self.range_start as i64, warmup: WARMUP };
             stft.process(&audio, out, place, |spec| {
                 for k in 0..bins {
-                    let t = (spec[k].norm() / threshold[k] - 1.0).clamp(0.0, 1.0);
+                    let t = (spec[k].norm() / limit[k] - 1.0).clamp(0.0, 1.0);
                     raw[k] = floor + (1.0 - floor) * t * t * (3.0 - 2.0 * t);
                 }
                 if width > 0 {
