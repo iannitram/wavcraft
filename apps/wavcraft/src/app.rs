@@ -10715,6 +10715,21 @@ impl WaveApp {
                 self.error = Some(e);
             }
         }
+        ui.separator();
+        for e in menus::effects_extra() {
+            match e {
+                Entry::Item(item) => {
+                    if ui.add_enabled(self.item_enabled(&item), egui::Button::new(item.label)).clicked()
+                        && let Cmd::Action(a) = item.cmd
+                    {
+                        chosen = Some((a, false));
+                    }
+                }
+                Entry::Sep => {
+                    ui.separator();
+                }
+            }
+        }
         if v1::offered(Feature::Diagnostics) && ui.button(Feature::Diagnostics.menu_text()).clicked() {
             self.diag.open = true;
             ui.close();
