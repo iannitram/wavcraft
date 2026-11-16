@@ -2607,6 +2607,7 @@ impl WaveApp {
                 }
             }
             None => {
+                self.stop_effect_preview();
                 self.set_audio(None);
                 self.generation += 1;
                 self.spectrum = None;
@@ -2625,6 +2626,7 @@ impl WaveApp {
     fn add_document(&mut self, state: DocState, ctx: &egui::Context) {
         let clips = self.editor.as_mut().map(|e| std::mem::take(&mut e.clipboards));
         let old = self.editor.is_some().then(|| self.take_slot());
+        self.stop_effect_preview();
         self.docs.add(old);
         self.player.stop();
         self.player.set_audio(None);
@@ -5174,6 +5176,7 @@ impl WaveApp {
             Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
             _ => None,
         });
+        self.stop_effect_preview();
         self.effect_dialog = EffectDialog::new(i, last);
     }
 
@@ -5576,6 +5579,7 @@ impl WaveApp {
                     self.insert_silence = Some(self.time_format.format_with(frames as usize, rate, &self.tempo));
                 } else if let Some(Repeat::Effect(i, params)) = editor.last.clone().filter(|r| matches!(r, Repeat::Effect(_, p) if !p.is_empty())) {
                     // An effect with settings reopens its dialog on the last values.
+                    self.stop_effect_preview();
                     self.effect_dialog = EffectDialog::new(i, Some(params));
                 } else {
                     return self.run_action(ActionId::RepeatLast, ctx);
@@ -6581,10 +6585,11 @@ impl WaveApp {
 
     /// Stop the effect dialog's live preview, if one runs, and take the monitor off the player.
     fn stop_effect_preview(&mut self) {
+        // Only a running preview clears the monitor: the slot also holds a recording's input monitor.
         if let Some(p) = self.effect_preview.take() {
             p.stop();
+            let _ = self.player.set_monitor(None);
         }
-        let _ = self.player.set_monitor(None);
     }
 
     /// Start the open effect dialog's live preview, or stop it when one runs. Returns whether a
@@ -6596,6 +6601,9 @@ impl WaveApp {
         }
         let Some(dialog) = self.effect_dialog.as_ref().filter(|d| !d.generator) else { return Err("no effect dialog is open".to_string()) };
         let Some(doc) = self.doc.as_ref() else { return Err("no file is open".to_string()) };
+        if self.rec.is_active() {
+            return Err("stop recording to preview".to_string());
+        }
         let effect = dialog.effect();
         wavcraft_core::effects::validate(effect, &dialog.values)?;
         let channels = self.editor.as_ref().map_or(wavcraft_core::ChannelMask::ALL, |e| e.channels);
@@ -6652,6 +6660,7 @@ impl WaveApp {
         let enabled = self.editor.is_some() && self.saving.is_none() && self.running.is_none();
         for (i, g) in wavcraft_core::generate::all().iter().enumerate() {
             if ui.add_enabled(enabled, egui::Button::new(format!("{}…", g.name().trim_start_matches("Generate ")))).clicked() {
+                self.stop_effect_preview();
                 self.effect_dialog = EffectDialog::new_generator(i as u16, None);
                 ui.close();
             }
@@ -6752,7 +6761,10 @@ impl WaveApp {
         self.rack.poll_scan();
         for request in std::mem::take(&mut self.rack.requests) {
             match request {
-                Request::EditSlot(i) => self.effect_dialog = self.rack.dialog_for(i),
+                Request::EditSlot(i) => {
+                    self.stop_effect_preview();
+                    self.effect_dialog = self.rack.dialog_for(i);
+                }
                 Request::TogglePlay => self.toggle_play(),
                 Request::Apply => {
                     let _ = self.apply_rack(ctx);
@@ -9011,6 +9023,7 @@ impl WaveApp {
                         Some(i) if self.editor.is_some() => match wavcraft_core::generate::parse_params(wavcraft_core::generate::all()[i], args) {
                             Err(e) => format!("ERR {e}"),
                             Ok(v) => {
+                                self.stop_effect_preview();
                                 self.effect_dialog = EffectDialog::new_generator(i as u16, Some(v));
                                 "OK".to_string()
                             }

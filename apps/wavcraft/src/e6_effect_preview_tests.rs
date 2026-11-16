@@ -145,3 +145,54 @@ fn e6_effect_preview_stops_when_the_dialog_closes() {
     assert!(ask(&mut app, "EFFECT_DIALOG CANCEL").starts_with("OK"));
     assert!(app.effect_preview.is_none());
 }
+
+#[test]
+fn e6_effect_preview_stops_when_another_dialog_opens() {
+    if silent_child("app::e6_effect_preview_tests::e6_effect_preview_stops_when_another_dialog_opens") {
+        return;
+    }
+    let scratch = Scratch::new("another");
+    let mut app = a_window(&scratch);
+    a_loaded_window(&mut app);
+    assert_eq!(ask(&mut app, "EFFECT_DIALOG amplify left_db=-6"), "OK");
+    assert_eq!(ask(&mut app, "EFFECT_DIALOG PREVIEW"), "OK preview=1");
+    assert_eq!(ask(&mut app, "GENERATE_DIALOG tone"), "OK");
+    assert!(app.effect_preview.is_none(), "the Amplify worker is gone");
+    assert!(!app.player.has_monitor());
+    assert_eq!(ask(&mut app, "EFFECT_DIALOG PREVIEW"), "ERR no effect dialog is open");
+}
+
+#[test]
+fn e6_effect_preview_stops_on_a_document_switch() {
+    if silent_child("app::e6_effect_preview_tests::e6_effect_preview_stops_on_a_document_switch") {
+        return;
+    }
+    let scratch = Scratch::new("switch");
+    let mut app = a_window(&scratch);
+    a_loaded_window(&mut app);
+    assert_eq!(ask(&mut app, "EFFECT_DIALOG amplify left_db=-6"), "OK");
+    assert_eq!(ask(&mut app, "EFFECT_DIALOG PREVIEW"), "OK preview=1");
+    let ctx = app.ctx.clone();
+    let state = Document::from_buffer(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 4_800]] }).expect("a document").state;
+    app.add_document(state, &ctx);
+    assert!(app.effect_preview.is_none());
+    assert!(!app.player.has_monitor());
+}
+
+#[test]
+fn e6_closing_a_dialog_keeps_a_recordings_monitor() {
+    if silent_child("app::e6_effect_preview_tests::e6_closing_a_dialog_keeps_a_recordings_monitor") {
+        return;
+    }
+    let scratch = Scratch::new("recmon");
+    let mut app = a_window(&scratch);
+    a_loaded_window(&mut app);
+    // A recording's input monitor, as `attach_monitor` sets it.
+    let ring = wavcraft_core::record::MonitorRing::new(4_800, 1);
+    app.player.set_monitor(Some((ring, 48_000))).expect("the silent output takes a monitor");
+    assert!(app.player.has_monitor());
+    assert_eq!(ask(&mut app, "EFFECT_DIALOG amplify left_db=-6"), "OK");
+    assert!(ask(&mut app, "EFFECT_DIALOG CANCEL").starts_with("OK"));
+    assert!(app.effect_preview.is_none());
+    assert!(app.player.has_monitor(), "no preview ran, so the recording's monitor stays");
+}
