@@ -209,5 +209,6 @@ fn mcp_refuses_a_bad_flag() {
     let out = mcp_session(&["mcp", "--nope"], &dir, "");
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("--nope"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: wavcraft mcp [--attach]"), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }

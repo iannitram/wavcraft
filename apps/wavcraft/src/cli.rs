@@ -226,6 +226,7 @@ mod tests {
     #[test]
     fn mcp_refuses_a_bad_flag_and_an_operand() {
         assert!(err(&["mcp", "--nope"]).contains("--nope"));
+        assert!(err(&["mcp", "--nope"]).contains("usage: wavcraft mcp [--attach]"));
         assert!(err(&["mcp", "x.wav"]).contains("unexpected argument"));
     }
 }

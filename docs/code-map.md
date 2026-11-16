@@ -257,7 +257,7 @@ The root `Cargo.toml` is one workspace (resolver 3, edition 2024, `rust-version`
 | Member | Package | Kind | What it holds |
 |---|---|---|---|
 | `crates/core` | `wavcraft-core` | library | Document, store, file reading and saving, effects, analysis, multitrack model. No UI. |
-| `crates/automation` | `wavcraft-automation` | library | `Request`, `Backend`, `Headless`, `Remote`, and the MCP handler `mcp::handle` (core only). Its dependencies are `wavcraft-core` and `serde_json` (MIT OR Apache-2.0, workspace pin). |
+| `crates/automation` | `wavcraft-automation` | library | `Request`, `Backend`, `Headless`, `Remote`, and the MCP handler `mcp::handle`, which the `mcp` subcommand in `main.rs` calls (N3.5). Its dependencies are `wavcraft-core` and `serde_json` (MIT OR Apache-2.0, workspace pin). |
 | `crates/testkit` | `wavcraft-testkit` | library and 4 binaries | Test file generator and the benches. |
 | `crates/craft-log` | `craft-log` | library | Logging and the system report. |
 | `crates/craft-stage` | `craft-stage` | library | No dependencies. Used by `craft-log`. |
@@ -307,7 +307,7 @@ wavcraft-testkit    -> wavcraft-core, soundcraft-audio-io, rayon
                     -> windows-sys   (Windows only)
 ```
 
-In the app, `control_request` (`apps/wavcraft/src/app.rs`) parses OPEN, SELECT, ACTION, EFFECT with a name and SAVE with `wavcraft_automation::Request::parse` (N1.6). It keeps its own arms for a bare EFFECT (the list), `ACTION window.*` and STATE. `convert` in `main.rs` runs `Request::Open` and then `Request::Save` on a `Headless` backend. Nothing in the app uses `Remote` or `mcp`.
+In the app, `control_request` (`apps/wavcraft/src/app.rs`) parses OPEN, SELECT, ACTION, EFFECT with a name and SAVE with `wavcraft_automation::Request::parse` (N1.6). It keeps its own arms for a bare EFFECT (the list), `ACTION window.*` and STATE. `convert` in `main.rs` runs `Request::Open` and then `Request::Save` on a `Headless` backend. The one app path that uses `Remote` is `mcp --attach` (N3.5): `serve_mcp` in `main.rs`. `mcp::handle` is answered in the same file by `serve`, for `mcp` and `mcp --attach`.
 
 ### The soundcraft pin
 
@@ -662,7 +662,7 @@ Paths are from the repo root. "Items" are v1 item ids from the roadmap; "Uses" a
 
 | File | What it owns | Key names | Uses | Status | Items | Tests |
 |---|---|---|---|---|---|---|
-| `apps/wavcraft/src/cli.rs` | The command line as a pure parser. No subcommand is the window, with today's `--session-dir`, `--reset-preferences` and FILE; any other flag is now an error, not a file name. `run <script> [FILE] [-o OUT]`, `convert <in> <out>` and `inspect <file>` take their operands; `mcp [--attach]` takes no operand, only the flag (N3.5); `convert` also takes `--session-dir DIR` or `--session-dir=DIR`, before or after the subcommand, for its temporary document store. An unknown flag, or a missing or extra operand, is an error whose message names it and gives the usage line. It opens no file and prints nothing; main.rs runs only `convert` so far. | `Command` (`Window`, `Run`, `Convert`, `Inspect`, `Mcp`), `parse` | crate `Args` and `parse_args` (main.rs) | present, wired | N2 (N2.1, N2.2), N3.5 | 9 in-file tests (`convert_takes_in_and_out`, `convert_takes_session_dir_in_equals_form_before_the_subcommand`, `a_bad_flag_is_an_error_with_a_message`, `a_bad_flag_with_no_subcommand_is_an_error`, `a_missing_operand_is_an_error`, `no_subcommand_is_the_window`, `run_takes_o`, `mcp_takes_attach`, `mcp_refuses_a_bad_flag_and_an_operand`); apps/wavcraft/tests/cli.rs through the binary |
+| `apps/wavcraft/src/cli.rs` | The command line as a pure parser. No subcommand is the window, with today's `--session-dir`, `--reset-preferences` and FILE; any other flag is now an error, not a file name. `run <script> [FILE] [-o OUT]`, `convert <in> <out>` and `inspect <file>` take their operands; `mcp [--attach]` takes no operand, only the flag (N3.5); `convert` also takes `--session-dir DIR` or `--session-dir=DIR`, before or after the subcommand, for its temporary document store. An unknown flag, or a missing or extra operand, is an error whose message names it and gives the usage line. It opens no file and prints nothing; main.rs runs `convert` and `mcp` so far. | `Command` (`Window`, `Run`, `Convert`, `Inspect`, `Mcp`), `parse` | crate `Args` and `parse_args` (main.rs) | present, wired | N2 (N2.1, N2.2), N3.5 | 9 in-file tests (`convert_takes_in_and_out`, `convert_takes_session_dir_in_equals_form_before_the_subcommand`, `a_bad_flag_is_an_error_with_a_message`, `a_bad_flag_with_no_subcommand_is_an_error`, `a_missing_operand_is_an_error`, `no_subcommand_is_the_window`, `run_takes_o`, `mcp_takes_attach`, `mcp_refuses_a_bad_flag_and_an_operand`); apps/wavcraft/tests/cli.rs through the binary |
 | `apps/wavcraft/src/control.rs` | The loopback control channel: a TCP listener on 127.0.0.1 that checks the token line, forwards each request line to the window thread and writes back the answer. Its header comment is the verb reference (it now has lines for `TRANSCRIPT` and `CHECK`, each taking run, cancel or state, and `findings=` in the `PANELS` reply). **Platform:** The token file check and creation differ: Unix uses mode 0600 and permission bits; Windows calls win_acl for an owner-only ACL. Tests are split by cfg(unix) and cfg(windows). | `Request`, `start_from_env`, `TOKEN`, `WAVCRAFT_CONTROL_PORT`, `WAVCRAFT_CONTROL_TOKEN_FILE` | std::net; wavcraft_core::random; win_acl (Windows); log | present, wired | N1 | 4 in-file tests (3 run on Unix, 2 on Windows) |
 | `crates/core/src/bundle.rs` | Export and import of the settings folder (settings, shortcut overrides, saved workspaces) as one checked text file, and the preference reset that moves the settings file aside. | `Bundle`, `export`, `import`, `read_checked`, `reset_preferences`, `is_bundle_name` | settings::Settings | present, wired | I2, I3 | preferences.rs; 12 in-file. Called from apps/wavcraft/src/app.rs (control verb SETTINGS export/import, preference reset). |
 | `crates/core/src/shortcut_sets.rs` | Stores named keyboard shortcut sets as files in the config folder, lists, loads, saves and deletes them, and remembers which set is active. The built-in default set is never stored. | `SetStore`, `DEFAULT_SET`, `valid_name`, `SetStore::startup`. The control verbs `SHORTCUTSETS` and `SHORTCUTSET` that use it are handled in apps/wavcraft/src/app.rs. | shortcuts | present, wired | I3 | crates/core/tests/shortcut_sets.rs; 0 in-file |
@@ -1270,12 +1270,16 @@ usage: wavcraft [--session-dir DIR] [--reset-preferences] [FILE]
 usage: wavcraft run <script> [FILE] [-o OUT]
 usage: wavcraft convert <in> <out>
 usage: wavcraft inspect <file>
+usage: wavcraft mcp [--attach]
 ```
 
 | Case | Standard error | Exit |
 |---|---|---|
 | Unknown flag, no subcommand | `unknown option '<flag>'`, then the window's usage line | 2 |
-| Unknown flag after `run`, `convert` or `inspect` | `unknown option '<flag>'`, then that subcommand's usage line | 2 |
+| Unknown flag after `run`, `convert`, `inspect` or `mcp` | `unknown option '<flag>'`, then that subcommand's usage line | 2 |
+| `mcp` with an operand | `unexpected argument '<operand>'`, then `usage: wavcraft mcp [--attach]` | 2 |
+| `mcp --attach` with no `WAVCRAFT_CONTROL_PORT` | `WAVCRAFT_CONTROL_PORT is not set`; nothing is read from standard input | 2 |
+| `mcp` (or `mcp --attach`) at the end of standard input | nothing; each reply is one line on standard output | 0 |
 | Too few operands | `missing operand`, then the usage line | 2 |
 | Too many operands | `unexpected argument '<first extra one>'`, then the usage line | 2 |
 | `run` with `-o` last | `-o needs a file name`, then `run`'s usage line | 2 |
@@ -1299,7 +1303,7 @@ Nothing in the workspace calls `std::env::set_var`. A test that needs a variable
 |---|---|---|---|
 | `WAVCRAFT_SESSION_DIR` | folder | Window: session store folder, over File › Session Folder… and under `--session-dir`. An empty value is skipped and the folder is checked. `convert`: taken as it is, over the temp-folder default. | `app.rs` `WaveApp::new` (`settings::ENV_SESSION_DIR` in `crates/core/src/settings.rs`); `main.rs` `conversion_sessions_dir` (the name written out, not the constant) |
 | `WAVCRAFT_LOG_DIR` | folder | Where the log (`wavcraft.log`, with the two runs before kept beside it) and crash files go. Default is `wavcraft/logs` in the config folder, or in the temp folder when there is no config folder. An empty value is ignored. If the folder cannot be made, the app prints `wavcraft: no log file in <dir>: <error>` and runs without a log. `convert` and `--vst3-scan` write no log. | `selflog.rs` `log_dir`, `install` |
-| `WAVCRAFT_CONTROL_PORT` | port number | Turns the control channel on at 127.0.0.1 on that port. Needs `WAVCRAFT_CONTROL_TOKEN_FILE` too. A value that is not a port number leaves the channel off, with nothing logged. | `control.rs` `start_from_env`; `crates/automation/src/remote.rs` `Remote::from_env` (called by the example `crates/automation/examples/headless_window_parity.rs`, N1.7) |
+| `WAVCRAFT_CONTROL_PORT` | port number | Turns the control channel on at 127.0.0.1 on that port. Needs `WAVCRAFT_CONTROL_TOKEN_FILE` too. A value that is not a port number leaves the channel off, with nothing logged. | `control.rs` `start_from_env`; `crates/automation/src/remote.rs` `Remote::from_env` (called by the example `crates/automation/examples/headless_window_parity.rs`, N1.7, and by `serve_mcp` in `apps/wavcraft/src/main.rs` for `mcp --attach`, N3.5) |
 | `WAVCRAFT_CONTROL_TOKEN_FILE` | file path | The control channel's token. A missing file is made with a new token of 64 hex digits, for the owner only. An existing file must be a plain file (not a link), closed to other users, and hold at least 64 hex digits. Otherwise the channel stays off, with a warning in the log. | `control.rs` `token`, `check_private` (on Windows through `win_acl.rs`); `remote.rs` |
 | `WAVCRAFT_RECORD_DIR` | folder | Where takes are written, and where Recovery looks for unfinished ones. Default is `WavCraft Recordings` in the audio folder, else the documents folder, else the home folder. An empty value is ignored. The `recordings_folder` setting (`crates/core/src/settings.rs`, #1305) is stored, but nothing reads it yet. | `recording.rs` `record_dir` |
 | `WAVCRAFT_PEAK_CACHE_DIR` | folder | Where saved waveform overviews live. Default is `wavcraft/peaks` in the system cache folder, or in the temp folder. An empty value is not skipped. | `app.rs` `WaveApp::new`; default in `crates/core/src/peakcache.rs` `default_dir` |
