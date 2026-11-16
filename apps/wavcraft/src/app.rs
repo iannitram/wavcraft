@@ -13466,15 +13466,21 @@ fn split_seed(args: &str) -> (Result<u64, String>, String) {
     (seed, rest.join(" "))
 }
 
-// I3 card stubs: remove these temporary dead-code allowances when wiring Help.
-#[allow(dead_code, clippy::unimplemented)]
-fn shortcut_help_rows(_mac: bool) -> Vec<(&'static str, &'static str, String)> {
-    unimplemented!()
+// Used by the tests until I3.2 adds the Help window; remove the allowance then.
+/// The Help list's rows: the action table in menu order, one row per bound chord.
+#[allow(dead_code)]
+fn shortcut_help_rows(mac: bool) -> Vec<(&'static str, &'static str, String)> {
+    let keymap = Keymap::new();
+    TABLE.iter().flat_map(|action| keymap.chords(Command::Action(action.id)).map(move |chord| (action.name, action.menu, chord.text(mac)))).collect()
 }
 
-#[allow(dead_code, clippy::unimplemented)]
-fn shortcut_help_content(_ui: &mut egui::Ui, _mac: bool) {
-    unimplemented!()
+/// Draw the Help list's rows, each label and key as its own text.
+#[allow(dead_code)]
+fn shortcut_help_content(ui: &mut egui::Ui, mac: bool) {
+    for (_, label, key) in shortcut_help_rows(mac) {
+        ui.label(label);
+        ui.label(key);
+    }
 }
 
 /// "AIFF-C, little-endian (sowt)" for an AIFF save, else the format's name.
