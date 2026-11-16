@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::Instant;
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
-use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, TABLE};
+use wavcraft_core::actions::{self, ActionId, Editor, Kind, Repeat, RepeatDialog, TABLE};
 use wavcraft_core::appearance;
 use wavcraft_core::bundle;
 use wavcraft_core::chanmap::ChannelMap;
@@ -5567,22 +5567,23 @@ impl WaveApp {
             // f79: next to the file, as <name>_L.wav, <name>_R.wav (the menu and the control channel).
             ActionId::ExtractChannels => return self.start_extract(ctx).map(|()| false),
             ActionId::ExportRanges => return Err("Export Audio of Range Markers needs a folder: use the menu, or EXPORT_RANGES <folder>".to_string()),
-            // Repeat Last Command with its dialog: Insert Silence opens its dialog with the last
-            // length; the other repeatable commands have no dialog and simply run again.
+            // Repeat Last Command with its dialog: `Editor::repeat_dialog` says what to open or run
+            // (E5.2). Insert Silence opens its dialog with the last length; an effect with
+            // settings reopens its dialog on the last values; the rest run again.
             ActionId::RepeatLastDialog => {
                 let Some(editor) = self.editor.as_ref() else { return Err("no file is open".to_string()) };
-                if !editor.enabled(id, &self.selection_range()) {
-                    return Err(format!("{} is not available now", actions::action(id).menu));
-                }
-                if let Some(Repeat::InsertSilence(frames)) = editor.last {
-                    let rate = editor.history.current().sample_rate();
-                    self.insert_silence = Some(self.time_format.format_with(frames as usize, rate, &self.tempo));
-                } else if let Some(Repeat::Effect(i, params)) = editor.last.clone().filter(|r| matches!(r, Repeat::Effect(_, p) if !p.is_empty())) {
-                    // An effect with settings reopens its dialog on the last values.
-                    self.stop_effect_preview();
-                    self.effect_dialog = EffectDialog::new(i, Some(params));
-                } else {
-                    return self.run_action(ActionId::RepeatLast, ctx);
+                let answer = editor.repeat_dialog(&self.selection_range());
+                match answer {
+                    RepeatDialog::Unavailable => return Err(format!("{} is not available now", actions::action(id).menu)),
+                    RepeatDialog::Effect(i, params) => {
+                        self.stop_effect_preview();
+                        self.effect_dialog = EffectDialog::new(i, Some(params));
+                    }
+                    RepeatDialog::InsertSilence(frames) => {
+                        let rate = self.editor.as_ref().map_or(0, |e| e.history.current().sample_rate());
+                        self.insert_silence = Some(self.time_format.format_with(frames as usize, rate, &self.tempo));
+                    }
+                    RepeatDialog::RunNow => return self.run_action(ActionId::RepeatLast, ctx),
                 }
             }
             ActionId::StatsShow => self.stats.show = true,
@@ -6543,7 +6544,7 @@ impl WaveApp {
     /// Draw the effect dialog, if up, and carry out its answer.
     fn effect_dialog_ui(&mut self, ctx: &egui::Context) {
         let Some(dialog) = self.effect_dialog.as_mut() else { return };
-        match dialog.show(ctx) {
+        match dialog.show(ctx, self.rack.preset_store()) {
             Some(Answer::Preview) => {
                 if let Err(why) = self.start_preview() {
                     self.error = Some(why);
@@ -13627,6 +13628,10 @@ mod issue369_tests;
 mod issue377_tests;
 
 #[cfg(test)]
+#[path = "f3_2_effect_preset_tests.rs"]
+mod f3_2_effect_preset_tests;
+
+#[cfg(test)]
 #[path = "a2_title_star_tests.rs"]
 mod a2_title_star_tests;
 
@@ -13669,6 +13674,10 @@ mod issue1173_tests;
 #[cfg(test)]
 #[path = "d2_new_from_clip_tests.rs"]
 mod d2_new_from_clip_tests;
+
+#[cfg(test)]
+#[path = "e5_repeat_dialog_tests.rs"]
+mod e5_repeat_dialog_tests;
 
 #[cfg(test)]
 #[path = "e6_effect_preview_tests.rs"]
