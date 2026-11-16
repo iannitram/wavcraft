@@ -6390,13 +6390,28 @@ impl WaveApp {
         }
         let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read the script: {e}"))?;
         let start = editor.history.cursor();
+        let len = editor.history.steps().len();
+        let last = editor.history.steps().last().map(|s| s.state().clone());
         let selection = self.selection;
         let result = wavcraft_automation::script::run(&mut ScriptBackend { app: self, ctx }, &text);
         match result {
             Err(why) => {
-                let dirty = self.editor.as_ref().is_some_and(|e| e.history.steps().len() > start + 1 || e.history.cursor() != start);
-                if dirty {
+                // Put back only what the script itself changed: a step it made, or a cursor it moved. Redo
+                // steps that were there before the run stay.
+                let (moved, made) = match self.editor.as_ref() {
+                    Some(e) => {
+                        let same_last = match (e.history.steps().last(), last.as_ref()) {
+                            (Some(now), Some(then)) => Arc::ptr_eq(now.state(), then),
+                            _ => false,
+                        };
+                        (e.history.cursor() != start, e.history.steps().len() != len || !same_last)
+                    }
+                    None => (false, false),
+                };
+                if moved || made {
                     self.history_go(start, ctx);
+                }
+                if made {
                     let _ = self.history_delete(start + 1, ctx);
                 }
                 self.selection = selection;

@@ -197,3 +197,28 @@ fn a_missing_file_and_no_path_are_refused() {
     assert!(answer.starts_with("ERR cannot read the script:"), "{answer}");
     assert_eq!(steps(&mut app), before);
 }
+
+#[test]
+fn a_failed_script_keeps_the_redo_steps() {
+    let scratch = Scratch::new("keeps-redo");
+    let mut app = a_window(&scratch);
+    open(&mut app, &scratch);
+    assert!(ask(&mut app, "SELECT 1000 2000").starts_with("OK"));
+    assert!(ask(&mut app, "ACTION edit.delete").starts_with("OK"));
+    assert!(ask(&mut app, "ACTION edit.undo").starts_with("OK"));
+    let before = ask(&mut app, "STATE");
+    assert_eq!((field(&before, "steps").as_str(), field(&before, "cursor").as_str()), ("2", "0"));
+    let want = (field(&before, "selection"), field(&before, "unsaved"), field(&before, "frames"));
+
+    let bad = script(&scratch, "bad2.txt", &["SELECT 0 10", "ACTION edit.nope"]);
+    let not_allowed = script(&scratch, "open2.txt", &["SELECT 0 10", "OPEN x.wav"]);
+    let cases = [(bad, "ERR line 2: no action named \"edit.nope\""), (not_allowed, "ERR line 2: OPEN is not allowed in a script")];
+    for (file, answer) in cases {
+        assert_eq!(ask(&mut app, &format!("RUN_SCRIPT {}", file.display())), answer);
+        let after = ask(&mut app, "STATE");
+        assert_eq!((field(&after, "steps").as_str(), field(&after, "cursor").as_str()), ("2", "0"), "{after}");
+        assert_eq!((field(&after, "selection"), field(&after, "unsaved"), field(&after, "frames")), want);
+    }
+    assert!(ask(&mut app, "ACTION edit.redo").starts_with("OK"));
+    assert_eq!(field(&ask(&mut app, "STATE"), "frames"), "9000");
+}
