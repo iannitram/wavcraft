@@ -7,7 +7,7 @@ use std::io;
 
 use soundcraft_dsp::biquad::{Biquad, FilterType};
 
-use super::{Effect, ParamDesc, Run, RunContext};
+use super::{Effect, EffectStream, ParamDesc, Run, RunContext};
 
 /// Butterworth Q values of the two sections of a 24 dB/oct (fourth order) filter.
 const BUTTERWORTH_4: [f32; 2] = [0.541_196_1, 1.306_563];
@@ -25,22 +25,56 @@ impl Chains {
     fn new(channels: usize, design: impl Fn() -> Vec<Biquad>) -> Chains {
         Chains { chains: (0..channels).map(|_| design()).collect() }
     }
-}
 
-impl Run for Chains {
-    fn process(&mut self, _first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()> {
+    /// Copies `input` to `output` and runs every channel's sections over it. No allocation.
+    fn run_into(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
         for ((i, o), chain) in input.iter().zip(output.iter_mut()).zip(self.chains.iter_mut()) {
             o.copy_from_slice(i);
             for section in chain.iter_mut() {
                 section.process_block(o);
             }
         }
+    }
+}
+
+impl Run for Chains {
+    fn process(&mut self, _first_frame: u64, input: &[&[f32]], output: &mut [&mut [f32]]) -> io::Result<()> {
+        self.run_into(input, output);
         Ok(())
+    }
+}
+
+impl EffectStream for Chains {
+    fn process_block(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
+        self.run_into(input, output);
+    }
+
+    fn reset(&mut self) {
+        for chain in self.chains.iter_mut() {
+            for section in chain.iter_mut() {
+                section.reset();
+            }
+        }
     }
 }
 
 fn rate(ctx: &RunContext) -> f32 {
     ctx.sample_rate as f32
+}
+
+/// The Parametric EQ's chains: a band at 0 dB is left out.
+fn parametric_chains(params: &[f64], channels: usize, sr: f32) -> Chains {
+    let p = params.to_vec();
+    let design = move || {
+        let bands = [
+            (FilterType::LowShelf, p[0], SHELF_Q, p[1]),
+            (FilterType::Peak, p[2], p[4] as f32, p[3]),
+            (FilterType::Peak, p[5], p[7] as f32, p[6]),
+            (FilterType::HighShelf, p[8], SHELF_Q, p[9]),
+        ];
+        bands.iter().filter(|b| b.3 != 0.0).map(|&(kind, f, q, g)| Biquad::design(kind, f as f32, q, g as f32, sr)).collect()
+    };
+    Chains::new(channels, design)
 }
 
 /// Parametric EQ: a low shelf, two peaking bells and a high shelf. A band at 0 dB is left out.
@@ -69,18 +103,13 @@ impl Effect for ParametricEq {
         P
     }
     fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
-        let sr = rate(ctx);
-        let p = params.to_vec();
-        let design = move || {
-            let bands = [
-                (FilterType::LowShelf, p[0], SHELF_Q, p[1]),
-                (FilterType::Peak, p[2], p[4] as f32, p[3]),
-                (FilterType::Peak, p[5], p[7] as f32, p[6]),
-                (FilterType::HighShelf, p[8], SHELF_Q, p[9]),
-            ];
-            bands.iter().filter(|b| b.3 != 0.0).map(|&(kind, f, q, g)| Biquad::design(kind, f as f32, q, g as f32, sr)).collect()
-        };
-        Ok(Some(Box::new(Chains::new(ctx.channels.len(), design))))
+        Ok(Some(Box::new(parametric_chains(params, ctx.channels.len(), rate(ctx)))))
+    }
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
+        if params.len() != 10 {
+            return None;
+        }
+        Some(Box::new(parametric_chains(params, channels, rate as f32)))
     }
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "Parametric EQ needs the sample rate: run it through effects::apply"))
@@ -92,6 +121,11 @@ const SLOPES: &[&str] = &["12", "24"];
 fn cut_chain(kind: FilterType, cutoff: f64, slope: f64, sr: f32) -> Vec<Biquad> {
     let qs: &[f32] = if slope >= 1.0 { &BUTTERWORTH_4 } else { &[BUTTERWORTH_2] };
     qs.iter().map(|&q| Biquad::design(kind, cutoff as f32, q, 0.0, sr)).collect()
+}
+
+fn cut_chains(kind: FilterType, params: &[f64], channels: usize, sr: f32) -> Chains {
+    let (cutoff, slope) = (params[0], params[1]);
+    Chains::new(channels, move || cut_chain(kind, cutoff, slope, sr))
 }
 
 /// High-pass quick filter: cuts below the cutoff at 12 or 24 dB per octave.
@@ -110,8 +144,13 @@ impl Effect for HighPass {
         P
     }
     fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
-        let (sr, cutoff, slope) = (rate(ctx), params[0], params[1]);
-        Ok(Some(Box::new(Chains::new(ctx.channels.len(), move || cut_chain(FilterType::HighPass, cutoff, slope, sr)))))
+        Ok(Some(Box::new(cut_chains(FilterType::HighPass, params, ctx.channels.len(), rate(ctx)))))
+    }
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
+        if params.len() != 2 {
+            return None;
+        }
+        Some(Box::new(cut_chains(FilterType::HighPass, params, channels, rate as f32)))
     }
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "High-Pass Filter needs the sample rate: run it through effects::apply"))
@@ -134,12 +173,26 @@ impl Effect for LowPass {
         P
     }
     fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
-        let (sr, cutoff, slope) = (rate(ctx), params[0], params[1]);
-        Ok(Some(Box::new(Chains::new(ctx.channels.len(), move || cut_chain(FilterType::LowPass, cutoff, slope, sr)))))
+        Ok(Some(Box::new(cut_chains(FilterType::LowPass, params, ctx.channels.len(), rate(ctx)))))
+    }
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
+        if params.len() != 2 {
+            return None;
+        }
+        Some(Box::new(cut_chains(FilterType::LowPass, params, channels, rate as f32)))
     }
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "Low-Pass Filter needs the sample rate: run it through effects::apply"))
     }
+}
+
+fn notch_chains(params: &[f64], channels: usize, sr: f32) -> Chains {
+    let (f, q, depth) = (params[0] as f32, params[1] as f32, params[2] as f32);
+    if depth == 0.0 {
+        return Chains::new(channels, Vec::new);
+    }
+    // A peaking filter cut by `depth` is a notch of finite depth; its Q sets the width.
+    Chains::new(channels, move || vec![Biquad::design(FilterType::Peak, f, q, -depth, sr)])
 }
 
 /// Notch filter: a narrow band-reject at one frequency; `depth` is the cut at the centre.
@@ -161,12 +214,13 @@ impl Effect for Notch {
         P
     }
     fn begin(&self, params: &[f64], ctx: &RunContext) -> io::Result<Option<Box<dyn Run>>> {
-        let (sr, f, q, depth) = (rate(ctx), params[0] as f32, params[1] as f32, params[2] as f32);
-        if depth == 0.0 {
-            return Ok(Some(Box::new(Chains::new(ctx.channels.len(), Vec::new))));
+        Ok(Some(Box::new(notch_chains(params, ctx.channels.len(), rate(ctx)))))
+    }
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
+        if params.len() != 3 {
+            return None;
         }
-        // A peaking filter cut by `depth` is a notch of finite depth; its Q sets the width.
-        Ok(Some(Box::new(Chains::new(ctx.channels.len(), move || vec![Biquad::design(FilterType::Peak, f, q, -depth, sr)]))))
+        Some(Box::new(notch_chains(params, channels, rate as f32)))
     }
     fn process(&self, _params: &[f64], _first_frame: u64, _input: &[&[f32]], _output: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "Notch Filter needs the sample rate: run it through effects::apply"))
