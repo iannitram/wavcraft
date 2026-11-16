@@ -86,6 +86,8 @@ pub enum ActionId {
     /// Spectral display resolution (FFT length) up or down, a step along the Preferences page's list.
     SpectralResolutionUp,
     SpectralResolutionDown,
+    /// Spectral Frequency Display on or off (the window flips the 'spectral' panel).
+    ViewSpectralToggle,
     ChannelsLayered,
     ChannelsStacked,
     ZeroInward,
@@ -315,6 +317,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::ZoomPreset5, "view.zoom.preset.5", "Zoom to Time: Slot 5"),
     window(ActionId::SpectralResolutionUp, "view.spectral.resolutionUp", "Spectral Resolution Up"),
     window(ActionId::SpectralResolutionDown, "view.spectral.resolutionDown", "Spectral Resolution Down"),
+    window(ActionId::ViewSpectralToggle, "view.spectral.toggle", "Spectral Frequency Display"),
     window(ActionId::ChannelsLayered, "view.channels.layered", "Layer Channels"),
     window(ActionId::ChannelsStacked, "view.channels.stacked", "Stack Channels"),
     window(ActionId::MeterInputToggle, "meter.input.toggle", "Meter Input Signal"),
@@ -739,7 +742,7 @@ impl Editor {
             ActionId::ZoomInAtIn | ActionId::ZoomInAtOut => self.len() > 0,
             ActionId::ZoomPreset1 | ActionId::ZoomPreset2 | ActionId::ZoomPreset3 | ActionId::ZoomPreset4 | ActionId::ZoomPreset5 => self.len() > 0,
             ActionId::ToolSelect | ActionId::ToolHand | ActionId::ToolZoom | ActionId::ToolMarquee | ActionId::ToggleMatchPanel => true,
-            ActionId::SpectralResolutionUp | ActionId::SpectralResolutionDown => true,
+            ActionId::SpectralResolutionUp | ActionId::SpectralResolutionDown | ActionId::ViewSpectralToggle => true,
             ActionId::ZoomToSelection => has_sel,
             ActionId::Play
             | ActionId::Pause
@@ -1463,6 +1466,7 @@ impl Editor {
             | ActionId::ZoomPreset5
             | ActionId::SpectralResolutionUp
             | ActionId::SpectralResolutionDown
+            | ActionId::ViewSpectralToggle
             | ActionId::ChannelsLayered
             | ActionId::ChannelsStacked
             // Repeat and the zero-crossing adjusts returned above.

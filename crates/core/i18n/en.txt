@@ -148,6 +148,7 @@ action.view.zoom.preset.4 = Zoom to Time: Slot 4
 action.view.zoom.preset.5 = Zoom to Time: Slot 5
 action.view.spectral.resolutionUp = Spectral Resolution Up
 action.view.spectral.resolutionDown = Spectral Resolution Down
+action.view.spectral.toggle = Spectral Frequency Display
 action.view.channels.layered = Layer Channels
 action.view.channels.stacked = Stack Channels
 action.meter.input.toggle = Meter Input Signal
