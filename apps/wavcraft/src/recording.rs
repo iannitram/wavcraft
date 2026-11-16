@@ -2,7 +2,7 @@
 //! or the fake one chosen by `WAVCRAFT_FAKE_INPUT`), and the status readout. The audio path
 //! itself is `wavcraft_core::record`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -228,6 +228,8 @@ pub struct Recording {
     pub monitor_default: bool,
     /// The preference `input_device`: the input a take records from; `None` is the system default.
     pub input_device: Option<String>,
+    /// The preference `recordings_folder`; `None` is the default folder.
+    pub recordings_folder: Option<PathBuf>,
     /// `RECORD start monitor=`: this take only; taken by the next start.
     pub monitor_override: Option<bool>,
     /// What monitoring did during the last take, and the input latency the device reported for it.
@@ -237,17 +239,20 @@ pub struct Recording {
     pub last_offset: Option<(u32, u64)>,
 }
 
-/// The folder takes go in: `WAVCRAFT_RECORD_DIR`, else `WavCraft Recordings` in the system's
-/// audio (or documents, or home) folder.
-pub fn record_dir() -> Result<PathBuf, String> {
-    if let Some(d) = std::env::var_os("WAVCRAFT_RECORD_DIR").filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(d));
-    }
-    dirs::audio_dir()
-        .or_else(dirs::document_dir)
-        .or_else(dirs::home_dir)
-        .map(|d| d.join("WavCraft Recordings"))
-        .ok_or_else(|| "no folder for recordings: set WAVCRAFT_RECORD_DIR".to_string())
+/// The folder takes go in: `WAVCRAFT_RECORD_DIR`, else the `recordings_folder` preference, else
+/// `WavCraft Recordings` in the system's audio (or documents, or home) folder.
+pub fn record_dir(preference: Option<&Path>) -> Result<PathBuf, String> {
+    let env = std::env::var_os("WAVCRAFT_RECORD_DIR").filter(|d| !d.is_empty()).map(PathBuf::from);
+    let default = dirs::audio_dir().or_else(dirs::document_dir).or_else(dirs::home_dir).map(|d| d.join("WavCraft Recordings"));
+    record_dir_from(env, preference, default)
+}
+
+/// The order of the recordings folder, as data: `env`, else `preference`, else `system_default`.
+/// Nothing is read from the file system or the environment here.
+pub fn record_dir_from(env: Option<PathBuf>, preference: Option<&Path>, system_default: Option<PathBuf>) -> Result<PathBuf, String> {
+    env.or_else(|| preference.map(Path::to_path_buf))
+        .or(system_default)
+        .ok_or_else(|| "no folder for recordings: set WAVCRAFT_RECORD_DIR or choose one in Preferences".to_string())
 }
 
 /// `1:02:03` or `4:05` for a number of seconds.
@@ -411,7 +416,7 @@ impl Recording {
         }
         self.armed = None;
         let want = want.validate()?;
-        let dir = record_dir()?;
+        let dir = record_dir(self.recordings_folder.as_deref())?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let make = |fmt: RecFormat| record::create_take(&dir, fmt, now).map_err(|e| format!("cannot make a take in {}: {e}", dir.display()));
         let want_monitor = self.monitor_override.take().unwrap_or(self.monitor_default);
@@ -644,6 +649,7 @@ impl Recording {
 
     /// The new-recording dialog. Returns the format when Start is clicked.
     pub fn dialog(&mut self, ctx: &egui::Context, doc_open: bool) -> Option<RecFormat> {
+        let folder = self.recordings_folder.clone();
         let fmt = self.dialog.as_mut()?;
         let (mode, target) = (&mut self.dialog_mode, &mut self.dialog_target);
         if !doc_open {
@@ -742,7 +748,7 @@ impl Recording {
             if mode.is_some() {
                 ui.label("The sample rate and channels follow the file; the take is saved first, then brought in as one undo step.");
             }
-            ui.label(match record_dir() {
+            ui.label(match record_dir(folder.as_deref()) {
                 Ok(d) => format!("The take is saved in {}", d.display()),
                 Err(e) => e,
             });
@@ -768,9 +774,18 @@ impl Recording {
 
 #[cfg(test)]
 mod tests {
-    use super::{Duration, Instant, NullSink, StartOpts, clock, parse_start_args};
+    use super::{Duration, Instant, NullSink, StartOpts, clock, parse_start_args, record_dir_from};
+    use std::path::{Path, PathBuf};
     use wavcraft_core::doc::rec_edit::{RecMode, RecTarget};
     use wavcraft_core::record::{MonitorRing, RecFormat};
+
+    #[test]
+    fn the_recordings_folder_is_env_then_preference_then_default() {
+        assert_eq!(record_dir_from(Some("/e".into()), Some(Path::new("/p")), Some("/d".into())), Ok(PathBuf::from("/e")));
+        assert_eq!(record_dir_from(None, Some(Path::new("/p")), Some("/d".into())), Ok(PathBuf::from("/p")));
+        assert_eq!(record_dir_from(None, None, Some("/d".into())), Ok(PathBuf::from("/d")));
+        assert!(record_dir_from(None, None, None).is_err());
+    }
 
     #[test]
     fn a_timed_start_reports_how_late_it_was() {
