@@ -23,7 +23,8 @@ const METER_RATE: f32 = 48_000.0;
 /// RMS reading beside the peak meter (A217); a separate file so the peak code stays untouched.
 pub mod rms;
 
-/// The audio thread's side: the peak since the window last looked, per channel.
+/// The audio thread's side: the peak, the energy (sum of squares) and the frame count since the
+/// window last looked, per channel.
 #[derive(Debug, Default)]
 pub struct LevelTap {
     /// Non-negative `f32` bits, which order the same as the numbers.
@@ -60,12 +61,15 @@ impl LevelTap {
             && sum_of_squares >= 0.0
             && frames > 0
         {
-            count.fetch_add(u64::from(frames), Ordering::Relaxed);
-            // A compare-and-swap loop; the sum is only written if it stays finite.
-            let _ = energy.try_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+            // A compare-and-swap loop; the sum is only written if it stays finite. The frames
+            // count only when the sum does, so a refused block adds neither.
+            let added = energy.try_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
                 let sum = f32::from_bits(bits) + sum_of_squares;
                 sum.is_finite().then(|| sum.to_bits())
             });
+            if added.is_ok() {
+                count.fetch_add(u64::from(frames), Ordering::Relaxed);
+            }
         }
     }
 

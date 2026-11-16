@@ -1,9 +1,8 @@
 //! B4.3: the level tap carries energy (sum of squares and frame count) as well as peaks.
 //! B4.4: `RmsLevels::feed_energy` feeds the 300 ms window from block totals.
 
-use wavcraft_core::levels::FLOOR_DB;
-use wavcraft_core::levels::LevelTap;
 use wavcraft_core::levels::rms::RmsLevels;
+use wavcraft_core::levels::{FLOOR_DB, LevelTap};
 
 #[test]
 fn energy_adds_up_and_take_starts_over() {
@@ -27,6 +26,15 @@ fn bad_energy_is_ignored_and_peaks_are_separate() {
     tap.record(0, 0.5);
     assert_eq!(tap.take_energy(), [(0.0, 0), (0.0, 0)]);
     assert_eq!(tap.take(), [0.5, 0.0]);
+}
+
+#[test]
+fn an_overflowing_sum_counts_no_frames() {
+    let tap = LevelTap::default();
+    tap.record_energy(0, f32::MAX, 10);
+    // The second sum would overflow to infinity, so the tap refuses it: its frames are not counted.
+    tap.record_energy(0, f32::MAX, 10);
+    assert_eq!(tap.take_energy()[0], (f32::MAX, 10));
 }
 
 #[test]
