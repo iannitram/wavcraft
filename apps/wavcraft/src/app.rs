@@ -5224,6 +5224,12 @@ impl WaveApp {
         }
     }
 
+    /// The Noise Reduction dialog's Select Entire File: select every frame; the dialog stays open.
+    fn select_entire_file(&mut self) {
+        let frames = self.doc.as_ref().map_or(0, Document::frames);
+        self.selection = crate::noise_reduction_ui::select_entire_file(frames);
+    }
+
     /// The selection as a frame range (`start == end` is just the cursor).
     fn selection_range(&self) -> Range<u64> {
         self.selection.start() as u64..self.selection.end() as u64
@@ -6725,6 +6731,7 @@ impl WaveApp {
                     self.error = Some(why);
                 }
             }
+            Some(Answer::SelectEntireFile) => self.select_entire_file(),
             Some(answer) => {
                 let _ = self.finish_effect_dialog(answer == Answer::Ok, ctx);
             }

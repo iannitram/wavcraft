@@ -15,6 +15,8 @@ pub enum Answer {
     Preview,
     /// An effect's Preview button: start or stop the live preview (E6.2, E6.3).
     TogglePreview,
+    /// The Noise Reduction dialog's Select Entire File button.
+    SelectEntireFile,
 }
 
 /// An open dialog: which effect (its index in [`effects::all`]) and the values being edited.
@@ -201,6 +203,12 @@ impl EffectDialog {
                     ui.end_row();
                 }
             });
+            if !self.generator && self.id() == "noise_reduction" {
+                let print = wavcraft_core::noise::current();
+                if crate::noise_reduction_ui::section(ui, &self.values, print.as_deref()) {
+                    answer = Some(Answer::SelectEntireFile);
+                }
+            }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui.button("OK").clicked() {
