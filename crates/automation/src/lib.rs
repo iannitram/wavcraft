@@ -25,11 +25,13 @@ pub mod script;
 
 use std::path::PathBuf;
 
+use wavcraft_core::mp3_options::MP3_BITRATES;
 use wavcraft_core::save::{AiffKind, SampleType};
 
 /// The options a `SAVE` line may end with, as the window reads them: `bits=<16|24|32>` and
 /// `float=<0|1>` (together, the sample type), `aiff=<aiff|aifc|sowt>`, `quality=<-1..10>` (Ogg
-/// Vorbis) and `meta=<0|1>` ("Include markers and other metadata"). `None` is "not given": the
+/// Vorbis) and `meta=<0|1>` ("Include markers and other metadata"), `bitrate=<kbps>` (MP3) and `channels=<1|2>`
+/// (MP3; 1 mixes a stereo document down). `None` is "not given": the
 /// save keeps what it would use anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SaveArgs {
@@ -41,6 +43,10 @@ pub struct SaveArgs {
     pub quality: Option<f32>,
     /// From `meta=`.
     pub meta: Option<bool>,
+    /// From `bitrate=` (MP3, kbps: one of `MP3_BITRATES`).
+    pub bitrate: Option<u32>,
+    /// From `channels=` (MP3, 1 or 2).
+    pub channels: Option<u16>,
 }
 
 impl SaveArgs {
@@ -50,9 +56,11 @@ impl SaveArgs {
     pub fn parse(rest: &str) -> Result<(Option<PathBuf>, SaveArgs), String> {
         let meta = take_meta(rest)?;
         let quality = take_quality(rest)?;
+        let bitrate = take_bitrate(rest)?;
+        let channels = take_channels(rest)?;
         let (path, ty, aiff) = parse_save_args(rest)?;
         let path = (!path.is_empty()).then(|| PathBuf::from(path));
-        Ok((path, SaveArgs { ty, aiff, quality, meta }))
+        Ok((path, SaveArgs { ty, aiff, quality, meta, bitrate, channels }))
     }
 
     /// The options as they end a `SAVE` line, each with a space before it; empty when none.
@@ -73,6 +81,12 @@ impl SaveArgs {
         if let Some(q) = self.quality {
             out.push_str(&format!(" quality={q}"));
         }
+        if let Some(b) = self.bitrate {
+            out.push_str(&format!(" bitrate={b}"));
+        }
+        if let Some(c) = self.channels {
+            out.push_str(&format!(" channels={c}"));
+        }
         if let Some(m) = self.meta {
             out.push_str(&format!(" meta={}", u8::from(m)));
         }
@@ -91,6 +105,38 @@ fn take_quality(rest: &str) -> Result<Option<f32>, String> {
         }
     }
     Ok(quality)
+}
+
+/// `bitrate=<kbps>` (MP3) out of `SAVE`'s arguments, if given: one of `MP3_BITRATES`.
+/// [`parse_save_args`] skips that token.
+fn take_bitrate(rest: &str) -> Result<Option<u32>, String> {
+    let mut bitrate = None;
+    for tok in rest.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("bitrate=") {
+            let b: u32 = v
+                .parse()
+                .ok()
+                .filter(|b| MP3_BITRATES.contains(b))
+                .ok_or_else(|| format!("bitrate=<32|40|48|56|64|80|96|112|128|160|192|224|256|320>, not {v}"))?;
+            bitrate = Some(b);
+        }
+    }
+    Ok(bitrate)
+}
+
+/// `channels=<1|2>` (MP3) out of `SAVE`'s arguments, if given. [`parse_save_args`] skips that token.
+fn take_channels(rest: &str) -> Result<Option<u16>, String> {
+    let mut channels = None;
+    for tok in rest.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("channels=") {
+            channels = Some(match v {
+                "1" => 1,
+                "2" => 2,
+                _ => return Err(format!("channels=<1|2>, not {v}")),
+            });
+        }
+    }
+    Ok(channels)
 }
 
 /// `meta=<0|1>` out of `SAVE`'s arguments, if given (the window's `take_meta`).
@@ -123,8 +169,8 @@ fn parse_save_args(rest: &str) -> Result<(&str, Option<SampleType>, Option<AiffK
                 "1" => true,
                 _ => return Err(format!("float=<0|1>, not {v}")),
             });
-        } else if last.starts_with("quality=") || last.starts_with("meta=") {
-            // Read by `take_quality` and `take_meta`.
+        } else if last.starts_with("quality=") || last.starts_with("meta=") || last.starts_with("bitrate=") || last.starts_with("channels=") {
+            // Read by `take_quality`, `take_meta`, `take_bitrate` and `take_channels`.
         } else {
             break;
         }
@@ -153,7 +199,7 @@ pub enum Request {
     Action(String),
     /// `EFFECT <name> key=value ...`: an effect by id, run with the settings given (none: defaults).
     Effect { name: String, args: String },
-    /// `SAVE [<path>] [bits=..] [float=..] [aiff=..] [quality=..] [meta=..]`: save the document
+    /// `SAVE [<path>] [bits=..] [float=..] [aiff=..] [quality=..] [meta=..] [bitrate=..] [channels=..]`: save the document
     /// to `path`, the format from its extension; with no path, to the file that was opened (the
     /// window saves in place).
     Save { path: Option<PathBuf>, args: SaveArgs },

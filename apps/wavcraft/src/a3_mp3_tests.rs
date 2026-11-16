@@ -1,5 +1,5 @@
-//! A3.10: the MP3 size estimate through the window. `SAVEOPTS estimate mp3 16` answers the
-//! constant-bit-rate size at the default 192 kbps, and the Save As size line says so.
+//! A3.10 and A3.6: the MP3 size estimate through the window. `SAVEOPTS estimate mp3 16` answers the
+//! constant-bit-rate size at the default 192 kbps, and the Save As size line says so. A3.6: `SAVE <path>.mp3 [bitrate=..] [channels=..]` writes an MP3 through the window.
 //!
 //! Hook-up, in apps/wavcraft/src/app.rs: `#[cfg(test)] #[path = "a3_mp3_tests.rs"] mod a3_mp3_tests;`
 
@@ -116,4 +116,72 @@ fn the_size_line_says_constant_bit_rate() {
     assert!(mp3.contains("constant bit rate") && !mp3.contains("FLAC"), "{mp3}");
     let flac = format_size_label(&estimate, SaveFormat::Flac);
     assert!(flac.contains("FLAC"), "{flac}");
+}
+
+/// Open a WAV of `channels` in a fresh window.
+fn open_wav(scratch: &Scratch, name: &str, channels: &[Vec<i32>]) -> WaveApp {
+    let path = scratch.0.join(name);
+    write_wav(&path, channels);
+    let mut app = a_window(scratch);
+    assert_eq!(ask(&mut app, &format!("OPEN {}", path.display())), "OK");
+    settle(&mut app);
+    app
+}
+
+fn size_of(path: &Path) -> u64 {
+    std::fs::metadata(path).expect("the saved file").len()
+}
+
+#[test]
+fn save_mp3_over_the_control_line() {
+    let scratch = Scratch::new("save-line");
+    let mut app = open_wav(&scratch, "five.wav", &stereo_samples(240_000));
+    let out = scratch.0.join("out.mp3");
+    assert_eq!(ask(&mut app, &format!("SAVE {} bitrate=128 channels=1", out.display())), "OK");
+    settle(&mut app);
+    assert!((78_400..=81_600).contains(&size_of(&out)), "{}", size_of(&out));
+    assert_eq!(ask(&mut app, &format!("OPEN {}", out.display())), "OK");
+    settle(&mut app);
+    let state = ask(&mut app, "STATE");
+    assert!(state.contains("channels=1") && state.contains("rate=48000"), "{state}");
+    let bad = scratch.0.join("bad.mp3");
+    let answer = ask(&mut app, &format!("SAVE {} bitrate=100", bad.display()));
+    assert!(answer.starts_with("ERR") && answer.contains("bitrate="), "{answer}");
+    assert!(!bad.exists());
+}
+
+#[test]
+fn a_plain_mp3_save_is_192_stereo() {
+    let scratch = Scratch::new("plain");
+    let mut app = open_wav(&scratch, "five.wav", &stereo_samples(240_000));
+    let out = scratch.0.join("d.mp3");
+    assert_eq!(ask(&mut app, &format!("SAVE {}", out.display())), "OK");
+    settle(&mut app);
+    assert!((119_000..=122_500).contains(&size_of(&out)), "{}", size_of(&out));
+    assert_eq!(ask(&mut app, &format!("OPEN {}", out.display())), "OK");
+    settle(&mut app);
+    let state = ask(&mut app, "STATE");
+    assert!(state.contains("channels=2") && state.contains("rate=48000"), "{state}");
+}
+
+#[test]
+fn a_mono_document_saves_as_mono_mp3() {
+    let scratch = Scratch::new("mono");
+    let mut app = open_wav(&scratch, "mono.wav", &stereo_samples(240_000)[..1]);
+    let out = scratch.0.join("m.mp3");
+    assert_eq!(ask(&mut app, &format!("SAVE {} bitrate=64", out.display())), "OK");
+    settle(&mut app);
+    assert!((39_000..=41_000).contains(&size_of(&out)), "{}", size_of(&out));
+    assert_eq!(ask(&mut app, &format!("OPEN {}", out.display())), "OK");
+    settle(&mut app);
+    let state = ask(&mut app, "STATE");
+    assert!(state.contains("channels=1"), "{state}");
+}
+
+#[test]
+fn an_unknown_extension_names_mp3() {
+    let scratch = Scratch::new("unknown");
+    let mut app = open_wav(&scratch, "five.wav", &stereo_samples(4_800));
+    let answer = ask(&mut app, &format!("SAVE {}", scratch.0.join("x.xyz").display()));
+    assert!(answer.starts_with("ERR") && answer.contains(".mp3"), "{answer}");
 }

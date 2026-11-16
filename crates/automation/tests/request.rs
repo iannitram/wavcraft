@@ -17,7 +17,14 @@ fn every_request_round_trips_through_its_line() {
         Request::Save { path: None, args: SaveArgs::default() },
         Request::Save {
             path: Some(PathBuf::from("my take.aiff")),
-            args: SaveArgs { ty: Some(SampleType::Float32), aiff: Some(AiffKind::AifcSowt), quality: Some(2.5), meta: Some(false) },
+            args: SaveArgs {
+                ty: Some(SampleType::Float32),
+                aiff: Some(AiffKind::AifcSowt),
+                quality: Some(2.5),
+                meta: Some(false),
+                bitrate: Some(128),
+                channels: Some(1),
+            },
         },
         Request::State,
     ];
@@ -88,4 +95,17 @@ fn save_option_values_are_checked_as_the_window_checked_them() {
     assert!(SaveArgs::parse("x.wav float=2").is_err());
     assert!(SaveArgs::parse("x.ogg quality=loud").is_err());
     assert!(SaveArgs::parse("x.ogg meta=2").is_err());
+}
+
+#[test]
+fn mp3_options_are_not_part_of_the_path() {
+    let want =
+        Request::Save { path: Some(PathBuf::from("my mix.mp3")), args: SaveArgs { bitrate: Some(128), channels: Some(1), ..SaveArgs::default() } };
+    assert_eq!(Request::parse("SAVE my mix.mp3 bitrate=128 channels=1"), Ok(want.clone()));
+    assert_eq!(Request::parse(&want.line()), Ok(want));
+    assert_eq!(Request::parse("SAVE bitrate=32"), Ok(Request::Save { path: None, args: SaveArgs { bitrate: Some(32), ..SaveArgs::default() } }));
+    assert_eq!(SaveArgs::parse("a.mp3 channels=2").map(|(_, a)| a.channels), Ok(Some(2)));
+    assert!(SaveArgs::parse("a.mp3 bitrate=100").is_err_and(|e| e.contains("bitrate=")));
+    assert!(SaveArgs::parse("a.mp3 bitrate=loud").is_err());
+    assert!(SaveArgs::parse("a.mp3 channels=3").is_err_and(|e| e.contains("channels=")));
 }
