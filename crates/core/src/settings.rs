@@ -103,6 +103,7 @@ const KEY_CONTRAST: &str = "ui_contrast";
 /// The settings-file key that holds one appearance preset per line.
 const KEY_PRESET: &str = "appearance_preset";
 const KEY_AUTOSAVE: &str = "autosave_enabled";
+const KEY_SHOW_LEVELS: &str = "show_levels";
 const KEY_INTERVAL: &str = "autosave_interval_secs";
 const KEY_KEEP_DAYS: &str = "autosave_keep_days";
 const KEY_CACHE_MB: &str = "cache_mb";
@@ -119,8 +120,8 @@ pub const KEEP_DAYS_RANGE: std::ops::RangeInclusive<u32> = 1..=3650;
 pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
-/// menu and is not one of them).
-pub const KEYS: [&str; 46] = [
+/// menu and is not one of them; `show_levels`, also a Window-menu switch, is kept here).
+pub const KEYS: [&str; 47] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
     KEY_EDGE,
@@ -167,6 +168,7 @@ pub const KEYS: [&str; 46] = [
     KEY_OUT_MAP,
     KEY_IN_MAP,
     KEY_LARGE_CONTROLS,
+    KEY_SHOW_LEVELS,
 ];
 
 /// The keys a settings file may carry that [`Settings::set`] does not take on its own: a list, a
@@ -565,6 +567,8 @@ pub struct Settings {
     pub ui_brightness: f32,
     /// Large controls (M4): every button and handle grab at least 44 px, for touch. Off by default.
     pub large_controls: bool,
+    /// The Levels strip along the bottom is shown (Window > Levels). On by default.
+    pub show_levels: bool,
     /// Colour overrides (`color.<item>`), the spectrogram palette, contrast, and the named presets.
     pub colors: Colors,
     pub spec_palette: SpecPalette,
@@ -651,6 +655,7 @@ impl Default for Settings {
             waveform_colour: WaveColour::Green,
             ui_brightness: DEFAULT_BRIGHTNESS,
             large_controls: false,
+            show_levels: true,
             colors: Colors::default(),
             spec_palette: SpecPalette::Ember,
             ui_contrast: DEFAULT_CONTRAST,
@@ -886,6 +891,7 @@ impl Settings {
             KEY_EXTEND_SELECTION => self.extend_selection.name().to_string(),
             KEY_CONTEXT_CHANNELS => self.context_channel_editing.to_string(),
             KEY_LARGE_CONTROLS => self.large_controls.to_string(),
+            KEY_SHOW_LEVELS => (if self.show_levels { "on" } else { "off" }).to_string(),
             KEY_THEME => self.theme.name().to_string(),
             KEY_WAVE_COLOUR => self.waveform_colour.name().to_string(),
             KEY_BRIGHTNESS => self.ui_brightness.to_string(),
@@ -1022,6 +1028,7 @@ impl Settings {
             KEY_EXTEND_SELECTION => self.extend_selection = choose(key, value, ExtendSelection::from_name, ExtendSelection::NAMES)?,
             KEY_CONTEXT_CHANNELS => self.context_channel_editing = parse_bool(key, value)?,
             KEY_LARGE_CONTROLS => self.large_controls = parse_bool(key, value)?,
+            KEY_SHOW_LEVELS => self.show_levels = parse_on_off(key, value)?,
             KEY_THEME => self.theme = choose(key, value, Theme::from_name, Theme::NAMES)?,
             KEY_WAVE_COLOUR => self.waveform_colour = choose(key, value, WaveColour::from_name, WaveColour::NAMES)?,
             KEY_BRIGHTNESS => self.ui_brightness = parse_range(key, value, MIN_BRIGHTNESS, MAX_BRIGHTNESS, "(1 is normal)")?,

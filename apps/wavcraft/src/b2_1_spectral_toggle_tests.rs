@@ -118,8 +118,10 @@ fn fft_of(app: &mut WaveApp, ctx: &egui::Context) -> u32 {
         .expect("SPECTRAL reports fft=")
 }
 
-/// With a file open, `ACTION view.spectral.resolutionDown` then `resolutionUp` each answer OK, and
-/// each changes the spectral FFT size (default 2048): down to 1024, then back to 2048.
+/// With a file open, `SPECTRAL fft 2048` sets a known starting size. Then `ACTION
+/// view.spectral.resolutionDown` answers OK and the FFT size is exactly 1024, and
+/// `ACTION view.spectral.resolutionUp` answers OK and the FFT size is exactly 2048 again. The
+/// test does not depend on the machine's saved settings.
 #[test]
 fn spectral_resolution_actions_answer_ok() {
     if std::env::var_os("WAVCRAFT_NO_AUDIO").as_deref() != Some(std::ffi::OsStr::new("1")) {
@@ -138,14 +140,15 @@ fn spectral_resolution_actions_answer_ok() {
     let ctx = app.ctx.clone();
     assert_eq!(app.control_request(&format!("OPEN {}", path.display()), &ctx), "OK");
     settle(&mut app);
-    let before = fft_of(&mut app, &ctx);
+    let set = app.control_request("SPECTRAL fft 2048", &ctx);
+    assert!(set.starts_with("OK"), "SPECTRAL fft 2048 answers OK, not {set}");
+    assert_eq!(fft_of(&mut app, &ctx), 2048, "the test starts at FFT 2048");
 
     let down = app.control_request("ACTION view.spectral.resolutionDown", &ctx);
     assert!(down.starts_with("OK"), "resolutionDown answers OK, not {down}");
-    let lower = fft_of(&mut app, &ctx);
-    assert!(lower < before, "resolutionDown shortens the FFT: {before} -> {lower}");
+    assert_eq!(fft_of(&mut app, &ctx), 1024, "resolutionDown takes the FFT from 2048 to 1024");
 
     let up = app.control_request("ACTION view.spectral.resolutionUp", &ctx);
     assert!(up.starts_with("OK"), "resolutionUp answers OK, not {up}");
-    assert_eq!(fft_of(&mut app, &ctx), before, "resolutionUp goes back to the FFT size it started at");
+    assert_eq!(fft_of(&mut app, &ctx), 2048, "resolutionUp takes the FFT from 1024 back to 2048");
 }

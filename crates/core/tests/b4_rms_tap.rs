@@ -30,7 +30,7 @@ fn bad_energy_is_ignored_and_peaks_are_separate() {
 fn an_overflowing_sum_counts_no_frames() {
     let tap = LevelTap::default();
     tap.record_energy(0, f32::MAX, 10);
-    // The second sum would overflow to infinity, so the window refuses it: its frames are not counted.
+    // The second sum would overflow to infinity, so the tap refuses it: its frames are not counted.
     tap.record_energy(0, f32::MAX, 10);
     assert_eq!(tap.take_energy()[0], (f32::MAX, 10));
 }

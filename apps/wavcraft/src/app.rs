@@ -5224,6 +5224,12 @@ impl WaveApp {
         }
     }
 
+    /// The Noise Reduction dialog's Select Entire File: select every frame; the dialog stays open.
+    fn select_entire_file(&mut self) {
+        let frames = self.doc.as_ref().map_or(0, Document::frames);
+        self.selection = crate::noise_reduction_ui::select_entire_file(frames);
+    }
+
     /// The selection as a frame range (`start == end` is just the cursor).
     fn selection_range(&self) -> Range<u64> {
         self.selection.start() as u64..self.selection.end() as u64
@@ -5546,6 +5552,13 @@ impl WaveApp {
             }
             ActionId::SpectralResolutionDown => {
                 self.step_resolution(-1);
+                return Ok(false);
+            }
+            ActionId::SpectralScaleMoreLog
+            | ActionId::SpectralScaleMoreLinear
+            | ActionId::SpectralScaleFullLog
+            | ActionId::SpectralScaleFullLinear => {
+                self.step_freq_scale(id);
                 return Ok(false);
             }
             ActionId::ViewSpectralToggle => {
@@ -6724,6 +6737,7 @@ impl WaveApp {
                     self.error = Some(why);
                 }
             }
+            Some(Answer::SelectEntireFile) => self.select_entire_file(),
             Some(answer) => {
                 let _ = self.finish_effect_dialog(answer == Answer::Ok, ctx);
             }
@@ -13924,6 +13938,10 @@ impl wavcraft_automation::Backend for ScriptBackend<'_> {
 #[cfg(test)]
 #[path = "issue1219_tests.rs"]
 mod issue1219_tests;
+
+#[cfg(test)]
+#[path = "b2_3_freq_scale_tests.rs"]
+mod b2_3_freq_scale_tests;
 
 #[cfg(test)]
 #[path = "g3_alt5_tests.rs"]
