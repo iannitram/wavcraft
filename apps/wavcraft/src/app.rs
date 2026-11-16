@@ -6616,10 +6616,25 @@ impl WaveApp {
                     self.error = Some(why);
                 }
             }
+            Some(Answer::TogglePreview) => {
+                if let Err(why) = self.toggle_effect_preview() {
+                    self.error = Some(why);
+                }
+            }
             Some(answer) => {
                 let _ = self.finish_effect_dialog(answer == Answer::Ok, ctx);
             }
             None => {}
+        }
+        // The live preview follows the dialog: the button says whether one runs, and each changed
+        // setting goes to the worker once. Values are taken every frame, so a start sends only later changes.
+        let running = self.effect_preview.is_some();
+        if let Some(dialog) = self.effect_dialog.as_mut() {
+            dialog.preview_on = running;
+            let changed = dialog.take_changed_values();
+            if let (Some(values), Some(preview)) = (changed, self.effect_preview.as_ref()) {
+                preview.set_params(values);
+            }
         }
         // The preview loops while the dialog is up.
         if self.previewing && !self.player.is_playing() {
