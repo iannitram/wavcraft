@@ -4,7 +4,7 @@ Describes `main` at `92d0f13` (2026-11-13). The file tables, Tests, the `app.rs`
 
 **Status words:** *present, wired* (on `main` and reached from the app or a binary); *present, core only* (on `main` with tests, but nothing in the app calls it yet); *present, out of v1* (on `main`, belongs to an after-1.0 feature); *stub* (the body is `todo!()` or `unimplemented!()`); *dead code* (no caller and no test).
 
-**Counts:** 491 files and folders described, 316 in the file tables and 175 in Tests (a test file counts as present, wired unless its row says otherwise): 329 present, wired, 114 present, core only, 43 present, out of v1, 4 stub, 1 dead code.
+**Counts:** 492 files and folders described, 316 in the file tables and 176 in Tests (a test file counts as present, wired unless its row says otherwise): 330 present, wired, 114 present, core only, 43 present, out of v1, 4 stub, 1 dead code.
 
 ## Contents
 
@@ -115,8 +115,8 @@ Where each v1 item lives, built from the Items column of the file and test table
   Code: `crates/core/src/effects/card129_tests.rs`, `crates/core/src/effects/preview.rs`, `apps/wavcraft/src/app.rs`, `apps/wavcraft/src/effect_dialog.rs`, `apps/wavcraft/src/player.rs`.
   Tests: `crates/core/tests/ab_compare.rs`.
 - **F1 Effects Rack panel with Apply** (stage 3, partial).
-  Code: `apps/wavcraft/src/rack_panel.rs`, `crates/core/src/effects.rs`, `crates/core/src/rack.rs`, `apps/wavcraft/src/app.rs`, `apps/wavcraft/src/player.rs`.
-  Tests: `crates/core/tests/effect_run.rs`, `crates/core/tests/rack.rs`, `crates/core/tests/rack_reset.rs`, `crates/core/tests/rack_tail.rs`.
+  Code: `apps/wavcraft/src/rack_panel.rs`, `crates/core/src/effects.rs`, `crates/core/src/rack.rs`, `apps/wavcraft/src/app.rs`, `apps/wavcraft/src/player.rs`, `crates/core/src/effects/eq.rs`.
+  Tests: `crates/core/tests/effect_run.rs`, `crates/core/tests/f1_rack_stream.rs`, `crates/core/tests/rack.rs`, `crates/core/tests/rack_reset.rs`, `crates/core/tests/rack_tail.rs`.
 - **F2 Built-in processors from SoundCraft dsp** (stage 3, partial).
   Code: `apps/wavcraft/src/rack_panel.rs`, `crates/core/src/dsp/eq_graph.rs`, `crates/core/src/effects.rs`, `crates/core/src/effects/deesser.rs`, `crates/core/src/effects/dynamics.rs`, `crates/core/src/effects/eq.rs`, `crates/core/src/effects/gain.rs`, `crates/core/src/rack.rs`, `apps/wavcraft/src/effect_dialog.rs`, `tools/checks/1010-stub-limiter.sh`.
   Tests: `crates/core/tests/deesser.rs`, `crates/core/tests/dynamics.rs`, `crates/core/tests/effect_run.rs`, `crates/core/tests/eq_graph.rs`, `crates/core/tests/filters.rs`.
@@ -515,7 +515,7 @@ Paths are from the repo root. "Items" are v1 item ids from the roadmap; "Uses" a
 | `crates/core/src/effects/dsp_run.rs` | Shared plumbing for effects that wrap a soundcraft-dsp plugin: one prepared plugin per run, fed the chunks in order so its memory carries across chunks. | `PluginRun`, `PluginRun::new` | soundcraft_dsp Plugin, effects seam; used by delay.rs, reverb.rs, plate.rs | present, wired | after 1.0 | effect_reverb_delay.rs, effect_plate.rs |
 | `crates/core/src/effects/dynamics.rs` | The Dynamics effect: a gate/expander, a soft-knee compressor and a limiter in one stateful effect, plus the static transfer curve in dB. | `Dynamics`, `static_curve` | effects seam; in the registry | present, wired | F2 | dynamics.rs |
 | `crates/core/src/effects/dynamics_graph.rs` | Sampled points for a Dynamics transfer-curve graph: the curve, the gain reduction and the unity line. No drawing, and no dialog calls it yet. | `curve_points`, `reduction_points`, `unity_line` | effects/dynamics.rs | present, core only | after 1.0 | 8 in-file tests |
-| `crates/core/src/effects/eq.rs` | Five filter effects: Parametric EQ, High-Pass, Low-Pass, Notch and DC Offset removal. Each keeps every channel's biquad memory across chunks. | `ParametricEq`, `HighPass`, `LowPass`, `Notch`, `DcOffset` | soundcraft_dsp biquad, effects seam; in the registry; also used by strip_eq.rs | present, wired | F2 | filters.rs, e5_repeat_last.rs |
+| `crates/core/src/effects/eq.rs` | Five filter effects: Parametric EQ, High-Pass, Low-Pass, Notch and DC Offset removal. Each keeps every channel's biquad memory across chunks. The first four also give the Effects Rack a live stream() (F1.1); DC Offset does not, because it needs the mean of the whole range. | `ParametricEq`, `HighPass`, `LowPass`, `Notch`, `DcOffset` | soundcraft_dsp biquad, effects seam; in the registry; also used by strip_eq.rs | present, wired | F1, F2 | filters.rs, e5_repeat_last.rs, f1_rack_stream.rs |
 | `crates/core/src/effects/fade.rs` | The Fade In and Fade Out registry effects with a curve choice (linear, logarithmic, cosine), streamed in chunks over the selection or the whole file. | `FadeIn`, `FadeOut`, `process_fade_chunk`, `curve_from_param`, `CURVE_NAMES`, `CURVE_PARAMS` | dsp::fade, effects seam; in the registry, so Effects menu and `EFFECT` | present, wired | E1 | e1_fade_effect.rs |
 | `crates/core/src/effects/fft_filter.rs` | The FFT Filter effect: a frequency response of up to eight frequency and gain points, interpolated on a log or linear scale and applied to each STFT frame. | `FftFilter` | stft, doc, effects seam; in the registry | present, wired | after 1.0 | fft_filter.rs |
 | `crates/core/src/effects/gain.rs` | The Gain effect: scale the level by a number of decibels. It is the simplest effect with a setting. | `Gain` | effects seam; in the registry | present, wired | F2 | effect_params.rs, rack.rs, ab_compare.rs, e5_repeat_last.rs |
@@ -915,6 +915,7 @@ The test files of `crates/automation`, `crates/testkit` and `crates/craft-log` h
 | `crates/core/tests/eq_graph.rs` | Locks the EQ graph maths: frequency and dB to pixels and back, nearest node, and node drag. | 17 tests, 0 ignored | F2 | dsp::eq_graph |
 | `crates/core/tests/export.rs` | Locks Extract Channels to Mono Files and Export Audio of Range Markers as sample-identical to the source, with their file names. | 6 tests, 0 ignored | feature f79, A6 | export, Markers, io |
 | `crates/core/tests/export_options.rs` | Locks the estimated file size for every format, export presets, and the AIFF kinds. | 9 tests, 0 ignored | feature f87, A2 | save, export_presets, io |
+| `crates/core/tests/f1_rack_stream.rs` | Locks that effects in a one-slot Effects Rack match effects::apply: the four filters (Parametric EQ, High-Pass, Low-Pass, Notch) at block sizes 64 and 1024, reset, and channels kept apart. F1.2 and F1.3 add their tests here. | 3 tests, 0 ignored | F1 | rack::RackProcessor, effects, doc |
 | `crates/core/tests/fade_curve.rs` | Locks the four fade curve shapes, the in-place fades and the drag-to-curve pick. Core maths only. | 22 tests, 0 ignored | E1, roadmap A077 | dsp::fade_curve |
 | `crates/core/tests/fft_filter.rs` | Locks the FFT Filter: a flat curve returns the input, a low-pass curve removes 6 kHz, chunked output equals one pass. | 3 tests, 0 ignored | roadmap B054, after 1.0 | effects, actions::Editor |
 | `crates/core/tests/filters.rs` | Locks the measured frequency response of the parametric EQ, high-pass, low-pass and notch, DC removal, and filter memory across chunks. | 9 tests, 0 ignored | F2 | effects, soundcraft_dsp::biquad, actions |
