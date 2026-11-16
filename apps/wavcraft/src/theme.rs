@@ -442,6 +442,121 @@ mod tests {
         assert!(inline_colours("#[cfg(test)]\nmod tests {\n    fn t() { Color32::from_rgb(1, 2, 3); }\n}\n").is_empty());
     }
 
+    /// The argument text of a call whose `(` is at byte `open` in `line`: from after the `(` up to
+    /// its matching `)`, or the rest of the line if the `)` is missing.
+    fn call_args(line: &str, open: usize) -> &str {
+        let rest = &line[open + 1..];
+        let mut depth = 0i32;
+        for (k, c) in rest.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' if depth == 0 => return &rest[..k],
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        rest
+    }
+
+    /// True if `args` holds a non-zero float literal: digits, `.`, digits, with an optional `f32`
+    /// suffix (which does not change the result). The first digit must not follow a letter,
+    /// digit or `_`, so `x1.5` is not a literal. `0.0` and `0.00` are zero.
+    fn has_nonzero_float(args: &str) -> bool {
+        let b = args.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            let starts_token = b[i].is_ascii_digit() && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'));
+            if !starts_token {
+                i += 1;
+                continue;
+            }
+            let int_start = i;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            let int_end = i;
+            if i < b.len() && b[i] == b'.' {
+                let frac_start = i + 1;
+                let mut j = frac_start;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j > frac_start && b[int_start..int_end].iter().chain(&b[frac_start..j]).any(|&d| d != b'0') {
+                    return true;
+                }
+                i = j;
+            }
+        }
+        false
+    }
+
+    /// Each line of `src` (outside test modules and comments) that puts a non-zero float literal
+    /// in a size or spacing call: `add_space`, `vec2`, `min_size`, `default_size`, `default_width`,
+    /// `desired_width`, `FontId::` or `.size(`. Not yet run on the UI sources (M3.4 onward do).
+    fn inline_sizes(src: &str) -> Vec<(usize, String)> {
+        const SIZE_CALLS: [&str; 8] = ["add_space(", "vec2(", "min_size(", "default_size(", "default_width(", "desired_width(", "FontId::", ".size("];
+        let mut found = Vec::new();
+        let mut skipping_test_mod: Option<i32> = None;
+        let mut pending_cfg_test = false;
+        for (i, line) in src.lines().enumerate() {
+            let t = line.trim_start();
+            if let Some(depth) = skipping_test_mod.as_mut() {
+                *depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                if *depth <= 0 {
+                    skipping_test_mod = None;
+                }
+                continue;
+            }
+            if t.starts_with("#[cfg(test)]") {
+                pending_cfg_test = true;
+                continue;
+            }
+            if pending_cfg_test && (t.starts_with("mod ") || t.starts_with("pub mod ")) && line.contains('{') {
+                let depth = line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                if depth > 0 {
+                    skipping_test_mod = Some(depth);
+                }
+                pending_cfg_test = false;
+                continue;
+            }
+            pending_cfg_test = false;
+            if t.starts_with("//") {
+                continue;
+            }
+            let flagged = SIZE_CALLS.iter().any(|pat| {
+                let mut from = 0;
+                while let Some(at) = line.get(from..).and_then(|rest| rest.find(pat)) {
+                    let start = from + at;
+                    let open = line.get(start..).and_then(|rest| rest.find('(')).map(|o| start + o);
+                    if open.is_some_and(|o| has_nonzero_float(call_args(line, o))) {
+                        return true;
+                    }
+                    from = start + pat.len();
+                }
+                false
+            });
+            if flagged {
+                found.push((i + 1, line.trim().to_string()));
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn scanner_flags_inline_sizes() {
+        assert_eq!(inline_sizes("ui.add_space(6.0);").len(), 1);
+        assert_eq!(inline_sizes("let s = egui::vec2(640.0, 480.0);").len(), 1);
+        assert!(inline_sizes("ui.add_space(theme::metrics().space_s);").is_empty());
+        assert!(inline_sizes("let s = vec2(0.0, 0.0);").is_empty());
+        assert_eq!(inline_sizes("let f = FontId::proportional(13.0);").len(), 1);
+        assert_eq!(inline_sizes("ui.set_min_size(vec2(0.0, 18.0));").len(), 1);
+        assert!(inline_sizes("// ui.add_space(6.0) in a comment").is_empty());
+        assert!(inline_sizes("#[cfg(test)]\nmod tests {\n    fn t() { ui.add_space(6.0); }\n}\n").is_empty());
+        assert_eq!(inline_sizes("a\nui.add_space(6.0);\n"), vec![(2, "ui.add_space(6.0);".to_string())]);
+        assert!(inline_sizes("let x = ui.add_space(x1.5);").is_empty());
+        assert_eq!(inline_sizes("ui.add_space(6.0f32);").len(), 1);
+    }
+
     #[test]
     fn no_inline_colour_values_in_ui_sources() {
         let sources = ui_sources();
