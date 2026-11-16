@@ -413,6 +413,8 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::ToolZoom, key("Z")),
     // The Marquee tool (B135); E is free in the table.
     act(ActionId::ToolMarquee, key("E")),
+    // Match Loudness panel (G3.4, Q11): Alt+5.
+    act(ActionId::ToggleMatchPanel, alt("5")),
     // Findings navigation (K3.2): F8 moves to the next finding, Shift+F8 to the previous.
     act(ActionId::CheckNext, key("F8")),
     act(ActionId::CheckPrev, shift("F8")),

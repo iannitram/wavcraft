@@ -5237,6 +5237,11 @@ impl WaveApp {
             self.check_run.start(state, ctx);
             return Ok(false);
         }
+        if id == ActionId::ToggleMatchPanel {
+            let shown = !self.panels.is_shown("match");
+            self.set_panel("match", shown);
+            return Ok(false);
+        }
         // The snapping switches are settings: they flip with no file open too.
         if self.editor.is_none() && actions::snap_flag_value(&self.settings.snap, id).is_some() {
             self.toggle_snap_menu(id);
@@ -7684,7 +7689,7 @@ impl WaveApp {
                     }
                 }
                 match &est {
-                    Some(Ok(e)) => ui.label(format_size_label(e)),
+                    Some(Ok(e)) => ui.label(format_size_label(e, self.export_choice.format)),
                     Some(Err(why)) => ui.colored_label(theme::pal().alert, why),
                     None => ui.label(""),
                 };
@@ -10260,6 +10265,34 @@ impl WaveApp {
         }
     }
 
+    /// The Favorites menu: the favorite effects (`menus::FAVORITES`), each drawn with "…". A click
+    /// opens the effect dialog for any `ActionId::Effect`, starting from the settings it last ran
+    /// with; any other action runs at once.
+    fn favorites_menu(&mut self, ui: &mut egui::Ui) {
+        let sel = self.selection_range();
+        let mut chosen = None;
+        for f in menus::FAVORITES {
+            let Some(a) = menus::favorite_action(f) else { continue };
+            let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(a.id, &sel)) && self.saving.is_none() && self.running.is_none();
+            if ui.add_enabled(enabled, egui::Button::new(format!("{}…", f.label))).clicked() {
+                chosen = Some(a.id);
+            }
+        }
+        if let Some(id) = chosen {
+            if let ActionId::Effect(i) = id {
+                // Start from the settings this effect last ran with, if it was the last command.
+                let last = self.editor.as_ref().and_then(|e| match &e.last {
+                    Some(Repeat::Effect(j, p)) if *j == i => Some(p.clone()),
+                    _ => None,
+                });
+                self.effect_dialog = EffectDialog::new(i, last);
+                ui.close();
+            } else {
+                let _ = self.run_action(id, ui.ctx());
+            }
+        }
+    }
+
     /// File › Open Recent: the last files opened, a missing one greyed (clicking it takes it
     /// off the list and says so), and Clear Recent.
     fn recent_menu(&mut self, ui: &mut egui::Ui) {
@@ -10558,6 +10591,7 @@ impl WaveApp {
                 }
             });
             ui.menu_button("Effects", |ui| self.effects_menu(ui));
+            ui.menu_button("Favorites", |ui| self.favorites_menu(ui));
             ui.menu_button("Generate", |ui| self.generate_menu(ui));
             ui.menu_button(tr("menu.view"), |ui| {
                 let mut switched = ui.radio_value(&mut self.mtv.show, false, "Waveform editor").clicked();
@@ -12639,14 +12673,13 @@ fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_fo
         .collect();
     rows.sort_by_key(|(_, k)| std::cmp::Reverse(u8::from(k.cmd) + u8::from(k.shift) + u8::from(k.alt)));
     ctx.input_mut(|i| {
-        // Alt+1 .. Alt+8 enable or disable channel 1 .. 8 (A132).
+        // Alt+1 to Alt+4 and Alt+6 to Alt+8 enable or disable channels 1 to 4 and 6 to 8 (A132). Alt+5 is the Match Loudness panel (G3.4, Q11).
         let mut pressed: Vec<Command> = if typing || other_focus || float_space_only {
             Vec::new()
         } else {
-            [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
+            [(0u8, Key::Num1), (1, Key::Num2), (2, Key::Num3), (3, Key::Num4), (5, Key::Num6), (6, Key::Num7), (7, Key::Num8)]
                 .into_iter()
-                .enumerate()
-                .filter_map(|(n, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(n as u8))))
+                .filter_map(|(ch, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(ch))))
                 .collect()
         };
         pressed.extend(rows.iter().filter_map(|(command, k)| {
@@ -12976,11 +13009,14 @@ fn format_label(format: SaveFormat, aiff: AiffKind) -> &'static str {
     if format == SaveFormat::Aiff { aiff.describe() } else { format.name() }
 }
 
-/// The estimated size line of the export dialog.
-fn format_size_label(e: &SizeEstimate) -> String {
+/// The estimated size line of the export dialog. An MP3 estimate is the constant-bit-rate size
+/// (A3.10); the FLAC estimate depends on the audio.
+fn format_size_label(e: &SizeEstimate, format: SaveFormat) -> String {
     let human = wavcraft_core::space::format_bytes(e.bytes);
     if e.exact {
         format!("File size: {human} ({} bytes)", e.bytes)
+    } else if format == SaveFormat::Mp3 {
+        format!("File size: about {human} (estimate: constant bit rate)")
     } else {
         format!("File size: about {human} (estimate: FLAC depends on the audio)")
     }
@@ -13351,6 +13387,10 @@ mod tests {
 mod issue1219_tests;
 
 #[cfg(test)]
+#[path = "g3_alt5_tests.rs"]
+mod g3_alt5_tests;
+
+#[cfg(test)]
 #[path = "c5_6_space_button_tests.rs"]
 mod c5_6_space_button_tests;
 
@@ -13385,6 +13425,10 @@ mod m2_map_tests;
 #[cfg(test)]
 #[path = "n1_parity_tests.rs"]
 mod n1_parity_tests;
+
+#[cfg(test)]
+#[path = "a3_mp3_tests.rs"]
+mod a3_mp3_tests;
 
 #[cfg(test)]
 mod reset_tests {
