@@ -35,6 +35,7 @@ use crate::doc::edit::ChannelMask;
 use crate::doc::{ChunkInfo, DocState, SourceFormat};
 use crate::flac_enc::{BLOCK_SIZE, Encoder};
 use crate::meta::Bext;
+use crate::mp3_options::{Mp3Options, mp3_check};
 use crate::store::BLOCK_FRAMES;
 
 /// How samples are stored in the saved file.
@@ -435,8 +436,6 @@ struct Hooks<'a> {
     /// The batch runner's per-chunk change (`None` for every other save): the samples written are
     /// the transform's `channels`, not the document's.
     transform: Option<&'a RefCell<Transform<'a>>>,
-    /// Item A4: dither for a 16 or 24-bit save; when enabled it replaces the document's own dither.
-    a4_dither: DitherOptions,
 }
 
 fn no_hooks<'a>() -> Hooks<'a> {
@@ -453,7 +452,6 @@ fn no_hooks<'a>() -> Hooks<'a> {
         cancel: None,
         block_delay: Duration::ZERO,
         transform: None,
-        a4_dither: DitherOptions::OFF,
     }
 }
 
@@ -517,19 +515,6 @@ pub fn save_wav_with(doc: &DocState, target: &Path, ty: SampleType, opts: &SaveO
 /// `progress` gets 0 to 1 as the samples go out.
 pub fn save_wav(doc: &DocState, target: &Path, ty: SampleType, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
     save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, no_hooks())
-}
-
-/// Save `doc` to `target` as a WAV file of `ty` samples, with `dither` applied when the samples
-/// are reduced to 16 or 24 bits (item A4). With `dither.enabled` false this writes exactly what
-/// [`save_wav`] writes. One [`Tpdf`] seeded with the channel number runs across the whole save.
-pub fn save_wav_dithered(
-    doc: &DocState,
-    target: &Path,
-    ty: SampleType,
-    dither: DitherOptions,
-    progress: &mut dyn FnMut(f64),
-) -> Result<(), SaveError> {
-    save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, Hooks { a4_dither: dither, ..no_hooks() })
 }
 
 /// A part of a document to write as a WAV file: some channels (in this order), a frame range,
@@ -1067,9 +1052,7 @@ fn write_pcm(
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * out_channels * ty.bytes());
     // A163: one quantiser per written channel for the whole file, so its noise and filter state
     // carry across blocks. With the document's dither off it is plain [`quantize`].
-    let mut dithers: Vec<Dither> = (0..out_channels)
-        .map(|ch| if hooks.a4_dither.enabled { Dither::A4(Tpdf::new(ch as u64)) } else { Dither::Doc(Ditherer::new(&doc.source().dither, ch)) })
-        .collect();
+    let mut dithers: Vec<Ditherer> = (0..out_channels).map(|ch| Ditherer::new(&doc.source().dither, ch)).collect();
     stream_samples(doc, part, progress, hooks, |bufs, n| {
         let bufs: &[Vec<f32>] = match xf.as_mut() {
             Some(t) => {
@@ -1132,25 +1115,8 @@ fn cancelled(hooks: Hooks) -> bool {
     hooks.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
 }
 
-/// The quantiser of one written channel: the document's own dither (A163) or the save's A4 dither.
-enum Dither {
-    Doc(Ditherer),
-    A4(Tpdf),
-}
-
-impl Dither {
-    fn quantize(&mut self, x: f32, bits: u32) -> i32 {
-        match self {
-            Dither::Doc(d) => d.quantize(x, bits),
-            // A4 dithers 16 and 24 bits only; 32-bit integers are rounded as always.
-            Dither::A4(noise) if bits == 16 || bits == 24 => quantize_dithered(x, bits, noise),
-            Dither::A4(_) => quantize(x, bits),
-        }
-    }
-}
-
 /// One sample as bytes: little-endian unless `big`.
-fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool, dither: &mut Dither) {
+fn push_sample(bytes: &mut Vec<u8>, x: f32, ty: SampleType, big: bool, dither: &mut Ditherer) {
     let mut quantize = |x: f32, bits: u32| dither.quantize(x, bits);
     match (ty, big) {
         (SampleType::Int16, false) => bytes.extend_from_slice(&(quantize(x, 16) as i16).to_le_bytes()),
@@ -1316,7 +1282,8 @@ pub(crate) fn write_header(
 pub struct SizeEstimate {
     pub bytes: u64,
     /// True for PCM (WAV, AIFF): the size is the file's size, from the header writer itself.
-    /// False for FLAC, which depends on the audio.
+    /// False for FLAC, which depends on the audio, and for MP3, whose constant-bit-rate size
+    /// leaves out the frame headers and tags of the real file.
     pub exact: bool,
 }
 
@@ -1361,11 +1328,15 @@ fn pcm_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) 
 
 /// How big saving `doc` as `format` with `ty` samples would be: exact for WAV and AIFF, an
 /// estimate for FLAC (a few evenly spread blocks are really encoded and the rest is scaled from
-/// them). Errors are what the save would refuse (too long for AIFF, a type FLAC can't hold).
+/// them), and for MP3 the constant-bit-rate size at 192 kbps ([`estimate_mp3_size`]). Errors are
+/// what the save would refuse (too long for AIFF, a type FLAC can't hold).
 pub fn estimate_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) -> io::Result<SizeEstimate> {
     let (frames, channels, rate) = (doc.len_frames(), doc.channel_count(), doc.sample_rate());
     if !format.accepts(ty) {
         return Err(invalid(&format!("{} cannot hold {} samples", format.name(), ty.describe())));
+    }
+    if format == SaveFormat::Mp3 {
+        return estimate_mp3_size(doc, Mp3Options::default());
     }
     if format == SaveFormat::Vorbis {
         return Err(invalid("an Ogg Vorbis size is not known until it is encoded"));
@@ -1400,6 +1371,23 @@ pub fn estimate_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: A
     Ok(SizeEstimate { bytes: head.0 + (per_frame * frames as f64).round() as u64, exact: false })
 }
 
+/// The size of an MP3 save of `doc` with `options` at constant bit rate: bit rate times duration
+/// divided by 8, rounded to the nearest byte (`frames · kbps · 125 / rate`). It is an estimate
+/// (`exact` is false): the frame headers and tags of the real file are not counted, and the
+/// bit rate is not varied. Errors are what the MP3 save would refuse: the sample rate, the
+/// channel count or the bit rate. The bit rate is the same for mono and stereo, so the channel
+/// count matters only for that check.
+pub fn estimate_mp3_size(doc: &DocState, options: Mp3Options) -> io::Result<SizeEstimate> {
+    let (frames, channels, rate) = (doc.len_frames(), doc.channel_count(), doc.sample_rate());
+    let channels = u16::try_from(channels).map_err(|_| invalid("too many channels for MP3"))?;
+    mp3_check(rate, channels, options).map_err(|text| invalid(&text))?;
+    // `mp3_check` has accepted the rate, so it is never zero here.
+    // Bytes times the rate: frames · kbps · 125, before dividing by the rate.
+    let bytes_times_rate = u128::from(frames) * u128::from(options.bitrate_kbps) * 125;
+    let bytes = (bytes_times_rate + u128::from(rate) / 2) / u128::from(rate);
+    Ok(SizeEstimate { bytes: u64::try_from(bytes).unwrap_or(u64::MAX), exact: false })
+}
+
 /// Write `bytes` to `target` with the same care as a WAV save (f117, the session file): a fresh
 /// exclusive temporary file beside it (owner-only on Unix when `owner_only`), written, synced to
 /// disk, then renamed over the target; the folder is synced after. Any failure removes the
@@ -1426,78 +1414,6 @@ pub fn write_file_atomic(target: &Path, bytes: &[u8], owner_only: bool) -> io::R
         let _ = d.sync_all(); // best effort: the rename itself is done
     }
     Ok(())
-}
-
-/// The dither types offered when reducing bit depth (Audition's Convert Sample Type lists
-/// Triangular first).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DitherType {
-    /// TPDF: the sum of two independent uniform values, each half an LSB either side of zero.
-    #[default]
-    Triangular,
-}
-
-/// Noise shaping applied with dither. Only "None" for now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NoiseShaping {
-    #[default]
-    None,
-}
-
-/// The dither settings of a bit-depth reduction. Off by default, as in Audition, so a save of
-/// untouched audio stays bit for bit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DitherOptions {
-    pub enabled: bool,
-    pub kind: DitherType,
-    pub shaping: NoiseShaping,
-}
-
-impl DitherOptions {
-    const OFF: DitherOptions = DitherOptions { enabled: false, kind: DitherType::Triangular, shaping: NoiseShaping::None };
-}
-
-/// Triangular (TPDF) dither noise in LSBs, from a SplitMix64 generator: deterministic for a seed.
-#[derive(Debug, Clone)]
-pub struct Tpdf {
-    state: u64,
-}
-
-impl Tpdf {
-    /// A generator whose state starts at `seed`.
-    pub fn new(seed: u64) -> Tpdf {
-        Tpdf { state: seed }
-    }
-
-    /// One SplitMix64 step: the next 64 random bits.
-    pub fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// The next dither value in LSBs, in (-1, 1): two uniform values in [-0.5, 0.5) added.
-    pub fn next_lsb(&mut self) -> f64 {
-        let r1 = self.next_u64();
-        let r2 = self.next_u64();
-        let divisor = 9_007_199_254_740_992.0; // 2^53
-        let val1 = (r1 >> 11) as f64 / divisor - 0.5;
-        let val2 = (r2 >> 11) as f64 / divisor - 0.5;
-        val1 + val2
-    }
-}
-
-/// `x` (full scale ±1) as a `bits`-bit integer with TPDF dither from `noise` added before
-/// rounding, then clamped; NaN is 0. Draws exactly one [`Tpdf::next_lsb`] per call.
-pub fn quantize_dithered(x: f32, bits: u32, noise: &mut Tpdf) -> i32 {
-    let d = noise.next_lsb();
-    if x.is_nan() {
-        return 0;
-    }
-    let scale = (1u64 << (bits - 1)) as f64;
-    (f64::from(x) * scale + d).round().clamp(-scale, scale - 1.0) as i32
 }
 
 /// `x` (full scale ±1) as a `bits`-bit integer, rounded and clamped; NaN is 0.

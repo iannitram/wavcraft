@@ -5,10 +5,10 @@
 
 No real input device is opened: WAVCRAFT_FAKE_INPUT=sine:440 replaces it. Run 1 records about
 3 s (default format: 48 kHz, mono, 24-bit), stops, and checks STATE and the file's length,
-format and frequency. Run 2 records and is killed with SIGKILL mid-take: the take on disk must be
+format and frequency. Run 2 records and is killed mid-take (proc.kill()): the take on disk must be
 readable and hold nearly what was recorded; a third run opens it. Every run's log must hold no ERROR line.
 """
-import argparse, json, os, shutil, signal, subprocess, sys, tempfile, time, wave
+import argparse, json, os, shutil, subprocess, sys, tempfile, time, wave
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from golden import Control, free_port  # noqa: E402
@@ -105,7 +105,7 @@ def main():
         time.sleep(3.5)
         st = c.state(wait=False)
         recorded = int(st["rec_frames"])
-        proc.send_signal(signal.SIGKILL)
+        proc.kill()  # SIGKILL on Linux and macOS, TerminateProcess on Windows
         proc.wait(timeout=10)
         check("the app was killed mid-take", st["recording"] == "1", st)
     finally:
@@ -130,7 +130,8 @@ def main():
             proc.kill()
 
     takes_left = sorted(os.listdir(takes))
-    check("both takes are still in the recordings folder", len(takes_left) == 2, takes_left)
+    wavs = [f for f in takes_left if f.endswith(".wav")]
+    check("both takes are still in the recordings folder", len(wavs) == 2, takes_left)
     log_files = [os.path.join(d, f) for d, _, fs in os.walk(logs) for f in fs if f == "wavcraft.log"]
     errors = [l.strip()[:200] for p in log_files for l in open(p, errors="replace") if " ERROR " in l]
     check("the app's log has no ERROR", bool(log_files) and not errors, errors[:3] or f"{len(log_files)} log file(s)")
