@@ -1340,7 +1340,8 @@ pub(crate) fn write_header(
 pub struct SizeEstimate {
     pub bytes: u64,
     /// True for PCM (WAV, AIFF): the size is the file's size, from the header writer itself.
-    /// False for FLAC, which depends on the audio.
+    /// False for FLAC, which depends on the audio, and for MP3, whose constant-bit-rate size
+    /// leaves out the frame headers and tags of the real file.
     pub exact: bool,
 }
 
@@ -1385,11 +1386,15 @@ fn pcm_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) 
 
 /// How big saving `doc` as `format` with `ty` samples would be: exact for WAV and AIFF, an
 /// estimate for FLAC (a few evenly spread blocks are really encoded and the rest is scaled from
-/// them). Errors are what the save would refuse (too long for AIFF, a type FLAC can't hold).
+/// them), and for MP3 the constant-bit-rate size at 192 kbps ([`estimate_mp3_size`]). Errors are
+/// what the save would refuse (too long for AIFF, a type FLAC can't hold).
 pub fn estimate_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: AiffKind) -> io::Result<SizeEstimate> {
     let (frames, channels, rate) = (doc.len_frames(), doc.channel_count(), doc.sample_rate());
     if !format.accepts(ty) {
         return Err(invalid(&format!("{} cannot hold {} samples", format.name(), ty.describe())));
+    }
+    if format == SaveFormat::Mp3 {
+        return estimate_mp3_size(doc, Mp3Options::default());
     }
     if format == SaveFormat::Vorbis {
         return Err(invalid("an Ogg Vorbis size is not known until it is encoded"));
@@ -1422,6 +1427,23 @@ pub fn estimate_size(doc: &DocState, format: SaveFormat, ty: SampleType, kind: A
     }
     let per_frame = sampled_bytes as f64 / sampled_frames as f64;
     Ok(SizeEstimate { bytes: head.0 + (per_frame * frames as f64).round() as u64, exact: false })
+}
+
+/// The size of an MP3 save of `doc` with `options` at constant bit rate: bit rate times duration
+/// divided by 8, rounded to the nearest byte (`frames · kbps · 125 / rate`). It is an estimate
+/// (`exact` is false): the frame headers and tags of the real file are not counted, and the
+/// bit rate is not varied. Errors are what the MP3 save would refuse: the sample rate, the
+/// channel count or the bit rate. The bit rate is the same for mono and stereo, so the channel
+/// count matters only for that check.
+pub fn estimate_mp3_size(doc: &DocState, options: Mp3Options) -> io::Result<SizeEstimate> {
+    let (frames, channels, rate) = (doc.len_frames(), doc.channel_count(), doc.sample_rate());
+    let channels = u16::try_from(channels).map_err(|_| invalid("too many channels for MP3"))?;
+    mp3_check(rate, channels, options).map_err(|text| invalid(&text))?;
+    // `mp3_check` has accepted the rate, so it is never zero here.
+    // Bytes times the rate: frames · kbps · 125, before dividing by the rate.
+    let bytes_times_rate = u128::from(frames) * u128::from(options.bitrate_kbps) * 125;
+    let bytes = (bytes_times_rate + u128::from(rate) / 2) / u128::from(rate);
+    Ok(SizeEstimate { bytes: u64::try_from(bytes).unwrap_or(u64::MAX), exact: false })
 }
 
 /// Write `bytes` to `target` with the same care as a WAV save (f117, the session file): a fresh

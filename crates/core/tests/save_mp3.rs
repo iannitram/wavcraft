@@ -1,5 +1,6 @@
-//! A3.3 and A3.4: `SaveFormat::Mp3` is known by its path and its name, and `save_mp3` writes it
-//! through the craft-mp3 encoder, atomically, refusing what MP3 cannot hold before any file is made.
+//! A3.3, A3.4 and A3.10: `SaveFormat::Mp3` is known by its path and its name; `save_mp3` writes it
+//! through the craft-mp3 encoder, atomically, refusing what MP3 cannot hold before any file is made;
+//! and its size is estimated at constant bit rate (`estimate_mp3_size`; `estimate_size` uses 192 kbps).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -7,7 +8,9 @@ use std::sync::atomic::AtomicBool;
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::io::{OpenOptions, open};
 use wavcraft_core::mp3_options::Mp3Options;
-use wavcraft_core::save::{SampleType, SaveError, SaveFormat, save, save_failing_after, save_mp3, temp_files};
+use wavcraft_core::save::{
+    AiffKind, SampleType, SaveError, SaveFormat, estimate_mp3_size, estimate_size, save, save_failing_after, save_mp3, temp_files,
+};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 struct TempDir(PathBuf);
@@ -44,6 +47,26 @@ fn tone(rate: u32, freq: f32, amp: f32, frames: usize, channels: usize) -> Vec<V
 fn reopen(path: &Path, sessions: &Path) -> DocState {
     let opts = OpenOptions { sessions_root: Some(sessions.to_path_buf()), ..OpenOptions::default() };
     open(path, &opts, &mut |_| {}, &AtomicBool::new(false)).unwrap()
+}
+
+/// A document of `frames` frames of 0.1 at `rate` Hz with `channels` channels, its store in a
+/// folder under `dir` (made by the caller and removed by it).
+fn silent_doc(dir: &Path, frames: u64, rate: u32, channels: usize) -> DocState {
+    let folder = dir.join(format!("store-{rate}-{frames}-{channels}"));
+    let store = Store::create_with(&folder, StoreOptions { cache_bytes: 64 << 20, ..StoreOptions::default() }).unwrap();
+    let mut chans = Vec::with_capacity(channels);
+    for _ in 0..channels {
+        let mut pieces = Vec::new();
+        let mut left = frames;
+        while left > 0 {
+            let n = left.min(BLOCK_FRAMES as u64);
+            let samples = vec![0.1_f32; n as usize];
+            pieces.push(Piece::whole(store.append(&samples).unwrap()).unwrap());
+            left -= n;
+        }
+        chans.push(Channel::from_pieces(pieces));
+    }
+    DocState::new(store, chans, rate, SourceFormat::synthetic(rate, channels as u16)).unwrap()
 }
 
 #[test]
@@ -130,4 +153,36 @@ fn mono_option_on_stereo_is_refused_until_a35() {
     assert!(matches!(err, SaveError::Unsupported(_)), "{err:?}");
     assert!(!target.exists());
     assert!(temp_files(&target).is_empty());
+}
+
+#[test]
+fn the_mp3_estimate_is_the_cbr_size() {
+    let dir = std::env::temp_dir().join(format!("wavcraft-mp3-cbr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // 10 s, 44.1 kHz stereo: 192 kbps is 240000 bytes (estimate_size uses the default rate).
+    let stereo = silent_doc(&dir, 441_000, 44_100, 2);
+    let est = estimate_size(&stereo, SaveFormat::Mp3, SampleType::Int16, AiffKind::Aiff).unwrap();
+    assert!((237_600..=242_400).contains(&est.bytes), "{}", est.bytes);
+    assert!(!est.exact);
+    // 5 s, 48 kHz, mono mix at 128 kbps: 80000 bytes.
+    let mono = silent_doc(&dir, 240_000, 48_000, 2);
+    let est = estimate_mp3_size(&mono, Mp3Options { bitrate_kbps: 128, mono: true }).unwrap();
+    assert!((79_200..=80_800).contains(&est.bytes), "{}", est.bytes);
+    assert!(!est.exact);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_mp3_estimate_refuses_what_the_save_would() {
+    let dir = std::env::temp_dir().join(format!("wavcraft-mp3-refuse-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let rate = silent_doc(&dir, 96_000, 96_000, 2);
+    let err = estimate_mp3_size(&rate, Mp3Options::default()).unwrap_err();
+    assert!(err.to_string().contains("96000"), "{err}");
+    let bitrate = silent_doc(&dir, 44_100, 44_100, 2);
+    let err = estimate_mp3_size(&bitrate, Mp3Options { bitrate_kbps: 100, mono: false }).unwrap_err();
+    assert!(err.to_string().contains("100 kbps"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
