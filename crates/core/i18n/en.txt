@@ -162,6 +162,7 @@ action.tool.select = Time Selection Tool
 action.tool.hand = Hand Tool
 action.tool.zoom = Zoom Tool
 action.tool.marquee = Marquee Selection Tool
+action.tool.lasso = Lasso Selection Tool
 action.stats.show = Sample Statistics
 action.stats.goto_peak = Go to Peak
 action.stats.next_clip = Next Possibly Clipped Run

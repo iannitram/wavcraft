@@ -504,6 +504,8 @@ pub(crate) enum Tool {
     Zoom,
     /// Drag draws a time x frequency rectangle on the spectral display (B135).
     Marquee,
+    /// Drag draws a free-form outline on the spectral display (C4.6; the drag itself is C4.7).
+    Lasso,
 }
 
 #[derive(Default)]
@@ -516,12 +518,19 @@ struct HudState {
 }
 
 impl Tool {
+    /// The tools whose clicks and drags are the Time Selection tool's: the Lasso does the same
+    /// until its drag is built (C4.7).
+    fn selects_time(self) -> bool {
+        matches!(self, Tool::Select | Tool::Lasso)
+    }
+
     fn name(self) -> &'static str {
         match self {
             Tool::Select => "select",
             Tool::Hand => "hand",
             Tool::Zoom => "zoom",
             Tool::Marquee => "marquee",
+            Tool::Lasso => "lasso",
         }
     }
 }
@@ -5619,6 +5628,7 @@ impl WaveApp {
             ActionId::ToolHand => self.tool = Tool::Hand,
             ActionId::ToolZoom => self.tool = Tool::Zoom,
             ActionId::ToolMarquee => self.tool = Tool::Marquee,
+            ActionId::ToolLasso => self.tool = Tool::Lasso,
             ActionId::ZoomToSelection if !self.selection.is_empty() => {
                 let (a, b) = (self.selection.start() as f64, self.selection.end() as f64);
                 self.view.frames_per_px = ((b - a) / f64::from(width)).max(1.0 / 64.0);
@@ -11422,7 +11432,7 @@ impl WaveApp {
     /// moves there (Audition's default), so the selection grows or shrinks to the click. Returns
     /// whether the selection moved.
     fn right_click_at(&mut self, frame: usize, total: usize) -> bool {
-        if self.settings.right_click_menu || self.tool != Tool::Select {
+        if self.settings.right_click_menu || !self.tool.selects_time() {
             return false;
         }
         self.selection = self.selection.extend_nearest_to(frame, total);
@@ -11928,7 +11938,7 @@ impl WaveApp {
         // The fade handles (E1.2): at the waveform's top corners, with the Select tool. A press on one
         // starts a fade drag, which wins over selecting; the release applies the fade as one step.
         let mut fade_preview: Option<wavcraft_core::fade_handles::FadeGesture> = None;
-        if self.editor_shows("waveform") && self.tool == Tool::Select && frames > 0 {
+        if self.editor_shows("waveform") && self.tool.selects_time() && frames > 0 {
             let origin = body.min;
             let hit = |view: &Viewport, sel: &Selection, p: egui::Pos2| {
                 wavcraft_core::fade_handles::handle_near(view, sel, frames, p.x - origin.x, p.y - origin.y)
@@ -11964,7 +11974,7 @@ impl WaveApp {
             }
         }
         // Selection gestures: the Select tool's, and the Marquee tool's outside a marquee drag.
-        let select = (self.tool == Tool::Select || (marquee_tool && self.marquee.is_none() && !marquee_starts))
+        let select = (self.tool.selects_time() || (marquee_tool && self.marquee.is_none() && !marquee_starts))
             && !freq_busy
             && !on_freq_click
             && self.fade_drag.is_none();
@@ -12116,7 +12126,7 @@ impl WaveApp {
         }
         // Right-click: with the menu setting off, the nearest edge moves to the click (the Select
         // tool, off the ruler); with it on, the context menu opens.
-        if self.tool == Tool::Select
+        if self.tool.selects_time()
             && response.secondary_clicked()
             && let Some(pos) = response.interact_pointer_pos()
             && !ruler_rect.contains(pos)
@@ -13687,6 +13697,14 @@ mod tests {
                 assert_eq!(labels, expected);
             }
         }
+    }
+
+    #[test]
+    fn the_lasso_selects_time_like_the_select_tool() {
+        use super::Tool;
+        assert!(Tool::Lasso.selects_time());
+        assert!(Tool::Select.selects_time());
+        assert!(!Tool::Hand.selects_time() && !Tool::Zoom.selects_time() && !Tool::Marquee.selects_time());
     }
 
     #[test]

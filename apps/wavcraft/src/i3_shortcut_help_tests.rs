@@ -334,6 +334,7 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("tool.hand", "Hand Tool", "H".to_string()),
         ("tool.zoom", "Zoom Tool", "Z".to_string()),
         ("tool.marquee", "Marquee Selection Tool", "E".to_string()),
+        ("tool.lasso", "Lasso Selection Tool", "D".to_string()),
         ("check.next", "Next Finding", "F8".to_string()),
         ("check.prev", "Previous Finding", "Shift+F8".to_string()),
         ("view.gotoTime", "Go to Time…", "Ctrl+J".to_string()),
