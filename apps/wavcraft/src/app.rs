@@ -4584,6 +4584,29 @@ impl WaveApp {
         self.settings_path.as_deref().and_then(Path::parent).ok_or_else(|| "this system has no settings folder".to_string())
     }
 
+    /// The one-line description of a noise print, shared by the bare `NOISE_PRINT` verb and the
+    /// save and load replies.
+    fn noise_print_summary(p: &wavcraft_core::noise::NoisePrint) -> String {
+        format!("frames={} channels={} rate={}", p.frames, p.density.len(), p.sample_rate)
+    }
+
+    /// Effects › Save Noise Print: write the current print to `path`.
+    fn save_noise_print(&self, path: &Path) -> Result<String, String> {
+        let Some(p) = wavcraft_core::noise::current() else {
+            return Err("There is no noise print to save: capture one first".to_string());
+        };
+        p.save(path)?;
+        Ok(Self::noise_print_summary(&p))
+    }
+
+    /// Effects › Load Noise Print: read a print from `path` and make it the current one.
+    fn load_noise_print(&self, path: &Path) -> Result<String, String> {
+        let p = wavcraft_core::noise::NoisePrint::load(path)?;
+        let summary = Self::noise_print_summary(&p);
+        wavcraft_core::noise::set_current(p);
+        Ok(summary)
+    }
+
     /// File › Export Application Settings: the settings, shortcut overrides and workspaces in
     /// one file at `path`.
     fn export_settings(&mut self, path: &Path) -> Result<String, String> {
@@ -8804,9 +8827,20 @@ impl WaveApp {
                 self.show_about = true;
                 format!("OK notices_bytes={}", crate::notices::TEXT.len())
             }
-            "NOISE_PRINT" => match wavcraft_core::noise::current() {
-                Some(p) => format!("OK frames={} channels={} rate={}", p.frames, p.density.len(), p.sample_rate),
+            "NOISE_PRINT" if rest.trim().is_empty() => match wavcraft_core::noise::current() {
+                Some(p) => format!("OK {}", Self::noise_print_summary(&p)),
                 None => "OK none".to_string(),
+            },
+            // `NOISE_PRINT SAVE <path>` / `NOISE_PRINT LOAD <path>`: the Effects menu's Save and
+            // Load Noise Print. The path is everything after the first space.
+            "NOISE_PRINT" => match rest.trim().split_once(' ') {
+                Some(("SAVE", p)) if !p.trim().is_empty() => {
+                    self.save_noise_print(Path::new(p.trim())).map_or_else(|e| format!("ERR {e}"), |m| format!("OK {m}"))
+                }
+                Some(("LOAD", p)) if !p.trim().is_empty() => {
+                    self.load_noise_print(Path::new(p.trim())).map_or_else(|e| format!("ERR {e}"), |m| format!("OK {m}"))
+                }
+                _ => "ERR NOISE_PRINT [SAVE|LOAD <path>]".to_string(),
             },
             // `EFFECT` lists the effects and their settings; `EFFECT <name> key=value ...` runs one
             // on the selection (the whole file when none), the unset keys at their defaults.
@@ -10260,6 +10294,23 @@ impl WaveApp {
             self.layout.activate("rack");
             self.layout_dirty = true;
             ui.close();
+        }
+        ui.separator();
+        if ui.add_enabled(wavcraft_core::noise::current().is_some(), egui::Button::new("Save Noise Print…")).clicked() {
+            ui.close();
+            if let Some(path) = rfd::FileDialog::new().add_filter("Noise print", &["wcnp"]).set_file_name("noise.wcnp").save_file()
+                && let Err(e) = self.save_noise_print(&path)
+            {
+                self.error = Some(e);
+            }
+        }
+        if ui.button("Load Noise Print…").clicked() {
+            ui.close();
+            if let Some(path) = rfd::FileDialog::new().add_filter("Noise print", &["wcnp"]).pick_file()
+                && let Err(e) = self.load_noise_print(&path)
+            {
+                self.error = Some(e);
+            }
         }
         if v1::offered(Feature::Diagnostics) && ui.button(Feature::Diagnostics.menu_text()).clicked() {
             self.diag.open = true;
@@ -13095,6 +13146,56 @@ fn bars_source(take_peak: Option<f32>, input_open: bool, playing: bool, input: [
 
 #[cfg(test)]
 mod tests {
+    /// G1.2: NOISE_PRINT SAVE and LOAD carry the current print through a file. The print is
+    /// process-wide, so every assertion about it lives in this one test.
+    #[test]
+    fn g1_control_save_then_load_restores_current_print() {
+        use wavcraft_core::{AudioBuffer, Document, noise};
+        let dir = std::env::temp_dir().join(format!("wavcraft-g1-2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        noise::clear();
+        {
+            let cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+            let mut app = super::WaveApp::new(&cc, None, Some(dir.join("sessions")), false);
+            app.settings_path = None;
+            app.recent_path = None;
+            let ctx = app.ctx.clone();
+            let samples: Vec<f32> = (0..24_000u64).map(|i| (((i * 7919) % 2001) as f32 / 1000.0 - 1.0) * 0.1).collect();
+            let state = Document::from_buffer(AudioBuffer { sample_rate: 48_000, channels: vec![samples] }).expect("a document").state;
+            app.add_document(state, &ctx);
+            while app.rebuilding.is_some() {
+                app.finish_rebuild();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let print = noise::capture(app.editor.as_ref().expect("open").history.current(), 0..24_000).expect("a print");
+            noise::set_current(print.clone());
+
+            let ask = |app: &mut super::WaveApp, line: &str| app.control_request(line, &ctx);
+            let file = dir.join("p.wcnp");
+            assert!(ask(&mut app, &format!("NOISE_PRINT SAVE {}", file.display())).starts_with("OK frames="));
+            assert!(file.exists());
+
+            noise::clear();
+            assert_eq!(ask(&mut app, "NOISE_PRINT"), "OK none");
+            assert!(ask(&mut app, &format!("NOISE_PRINT LOAD {}", file.display())).starts_with("OK frames="));
+            assert_eq!(*noise::current().expect("loaded"), print);
+
+            let missing = dir.join("missing.wcnp");
+            assert!(ask(&mut app, &format!("NOISE_PRINT LOAD {}", missing.display())).starts_with("ERR"));
+            assert_eq!(*noise::current().expect("still loaded"), print);
+
+            noise::clear();
+            let q = dir.join("q.wcnp");
+            assert!(ask(&mut app, &format!("NOISE_PRINT SAVE {}", q.display())).starts_with("ERR"));
+            assert!(!q.exists());
+
+            assert_eq!(ask(&mut app, "NOISE_PRINT FROB"), "ERR NOISE_PRINT [SAVE|LOAD <path>]");
+        }
+        noise::clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_snap_button_is_pressed_while_snapping_is_on() {
         let snap_item = super::menus::toolbar_item("view.snap.toggle").expect("Snap is on the toolbar");
