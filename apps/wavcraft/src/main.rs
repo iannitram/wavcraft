@@ -19,6 +19,7 @@ mod diagnostics_panel;
 mod display;
 mod doclist;
 mod effect_dialog;
+mod effect_preview;
 mod files;
 mod freq_panel;
 mod input_monitor;
