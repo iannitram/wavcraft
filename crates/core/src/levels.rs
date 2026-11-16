@@ -4,12 +4,12 @@
 //! Two halves, so the audio thread never waits for the window:
 //! - [`LevelTap`]: the audio callback records the largest sample magnitude it sent on each of the
 //!   first two channels with one lock-free `fetch_max` per channel per callback. No lock, no
-//!   allocation.
+//!   allocation. It also carries energy (a sum of squares and a frame count) for the RMS reading.
 //! - [`Levels`]: the window takes those peaks once a frame ([`LevelTap::take`]) and feeds them,
 //!   with the time since the last frame, to soundcraft-dsp's `PeakMeter` per channel (instant
 //!   attack, 20 dB/s fall, peak hold, clip latch).
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use soundcraft_dsp::meter::PeakMeter;
 
@@ -28,6 +28,10 @@ pub mod rms;
 pub struct LevelTap {
     /// Non-negative `f32` bits, which order the same as the numbers.
     peak: [AtomicU32; 2],
+    /// Running sum of squares per channel since the last take, as non-negative `f32` bits.
+    energy: [AtomicU32; 2],
+    /// Running frame count per channel since the last take.
+    frames: [AtomicU64; 2],
 }
 
 impl LevelTap {
@@ -45,6 +49,33 @@ impl LevelTap {
     /// The peaks since the last call, and start over.
     pub fn take(&self) -> [f32; 2] {
         [f32::from_bits(self.peak[0].swap(0, Ordering::Relaxed)), f32::from_bits(self.peak[1].swap(0, Ordering::Relaxed))]
+    }
+
+    /// Add a block's energy for channel `ch` (0 or 1; others ignored): the sum of squares of its
+    /// samples and how many frames it covers. Ignored unless the sum is finite and not negative
+    /// and the frame count is above zero. Lock-free; safe to call from the audio callback.
+    pub fn record_energy(&self, ch: usize, sum_of_squares: f32, frames: u32) {
+        if let (Some(energy), Some(count)) = (self.energy.get(ch), self.frames.get(ch))
+            && sum_of_squares.is_finite()
+            && sum_of_squares >= 0.0
+            && frames > 0
+        {
+            count.fetch_add(u64::from(frames), Ordering::Relaxed);
+            // A compare-and-swap loop; the sum is only written if it stays finite.
+            let _ = energy.try_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+                let sum = f32::from_bits(bits) + sum_of_squares;
+                sum.is_finite().then(|| sum.to_bits())
+            });
+        }
+    }
+
+    /// The energy since the last call, as `(sum of squares, frames)` per channel, and start over.
+    pub fn take_energy(&self) -> [(f32, u64); 2] {
+        let e0 = self.energy[0].swap(0, Ordering::Relaxed);
+        let e1 = self.energy[1].swap(0, Ordering::Relaxed);
+        let f0 = self.frames[0].swap(0, Ordering::Relaxed);
+        let f1 = self.frames[1].swap(0, Ordering::Relaxed);
+        [(f32::from_bits(e0), f0), (f32::from_bits(e1), f1)]
     }
 }
 
