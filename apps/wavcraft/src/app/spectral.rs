@@ -45,6 +45,21 @@ impl WaveApp {
         self.spectral_changed();
     }
 
+    /// The four scale keys (B2.3): one step more log or more linear, or fully log or fully linear.
+    /// Any other id leaves the scale as it is.
+    pub(super) fn step_freq_scale(&mut self, id: ActionId) {
+        let current = self.freq_axis().scale();
+        let scale = match id {
+            ActionId::SpectralScaleMoreLog => current.more_log(),
+            ActionId::SpectralScaleMoreLinear => current.more_linear(),
+            ActionId::SpectralScaleFullLog => Scale::LogFull,
+            ActionId::SpectralScaleFullLinear => Scale::Linear,
+            _ => return,
+        };
+        let axis = self.freq_axis().with_scale_kind(scale, self.rate());
+        self.set_freq_axis(axis);
+    }
+
     /// `SPECTRAL …` on the control channel.
     pub(super) fn control_spectral(&mut self, rest: &str) -> String {
         const USAGE: &str = "ERR SPECTRAL [show|hide|toggle | fft <256..8192>|up|down | window <name> | range <40..160> | split <10..90> | view <lo_hz> <hi_hz> [lin|log_partial|log] | scale lin|log_partial|log_full | scroll <hz> | reset]";
