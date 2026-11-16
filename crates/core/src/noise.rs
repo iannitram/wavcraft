@@ -26,6 +26,8 @@ pub const FILE_VERSION: u32 = 1;
 const HEADER_BYTES: usize = 8 + 4 * 5;
 /// The most channels a noise print file may hold.
 const MAX_FILE_CHANNELS: usize = 64;
+/// The largest noise print file `load` will read: the header plus 64 channels of bins.
+pub const MAX_FILE_BYTES: u64 = (HEADER_BYTES + MAX_FILE_CHANNELS * (PRINT_FFT / 2 + 1) * 4) as u64;
 
 fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
     let word: [u8; 4] = bytes.get(at..at.checked_add(4)?)?.try_into().ok()?;
@@ -105,7 +107,16 @@ impl NoisePrint {
     /// Read a print written by [`NoisePrint::save`]. Every header number is checked, and the
     /// file's length is checked, before anything is allocated from it.
     pub fn load(path: &std::path::Path) -> Result<NoisePrint, String> {
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let too_large = || "The noise print file is too large".to_string();
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        if file.metadata().map_err(|e| e.to_string())?.len() > MAX_FILE_BYTES {
+            return Err(too_large());
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(file, MAX_FILE_BYTES + 1), &mut bytes).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(too_large());
+        }
         let not_a_print = || "Not a noise print file".to_string();
         if bytes.len() < HEADER_BYTES {
             return Err("Not a noise print file: it is too short".to_string());

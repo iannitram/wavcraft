@@ -77,6 +77,29 @@ fn g1_print_from_half_second_round_trips() {
 }
 
 #[test]
+fn g1_load_refuses_an_oversized_file() {
+    let dir = TempDir::new("oversized");
+    let e = editor(&dir.0.join("doc"), &[gaussian(24_000, 0.1, 7)]);
+    let print = noise::capture(e.history.current(), 0..24_000).unwrap();
+    let file = dir.0.join("print.wcnp");
+    print.save(&file).unwrap();
+    assert!(NoisePrint::load(&file).is_ok());
+
+    let sized = |name: &str, len: u64| {
+        let path = dir.0.join(name);
+        std::fs::File::create(&path).unwrap().set_len(len).unwrap();
+        path
+    };
+    for len in [noise::MAX_FILE_BYTES + 1, 64 << 20] {
+        let err = NoisePrint::load(&sized("big.wcnp", len)).unwrap_err();
+        assert!(err.contains("too large"), "{err}");
+    }
+    // Exactly the limit is read (the limit is inclusive); all zeros, so the magic is wrong.
+    let err = NoisePrint::load(&sized("exact.wcnp", noise::MAX_FILE_BYTES)).unwrap_err();
+    assert!(!err.contains("too large"), "{err}");
+}
+
+#[test]
 fn g1_load_rejects_bad_magic_and_version() {
     let dir = TempDir::new("bad-header");
     let e = editor(&dir.0.join("doc"), &[gaussian(24_000, 0.1, 7)]);
