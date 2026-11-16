@@ -258,3 +258,29 @@ fn a4c_dither_survives_save_and_load() {
     s.save(&file).unwrap();
     assert_eq!(Settings::load(&file), s);
 }
+
+#[test]
+fn a4c_type_and_shaping_are_written_only_when_not_default() {
+    const TYPE_LINES: &str = "# dither_type, dither_shaping: the Convert Sample Type dither type (triangular or rectangular; default triangular) and noise shaping (none, light or strong; default none), written only when not the default.\ndither_type = rectangular\ndither_shaping = light\n";
+    let both = Settings { dither: true, dither_type: DitherType::Rectangular, dither_shaping: Shaping::Light, ..Settings::default() };
+    assert_eq!(both.to_text(), format!("{HEAD}{DITHER_LINES}{TYPE_LINES}"));
+    assert_eq!(Settings::default().to_text(), HEAD);
+
+    let strong = Settings { dither_shaping: Shaping::Strong, ..Settings::default() };
+    let text = strong.to_text();
+    assert!(text.lines().any(|l| l == "dither_shaping = strong"));
+    assert!(text.lines().all(|l| !l.starts_with("dither_type =")), "the default type is not written");
+}
+
+#[test]
+fn a4c_type_and_shaping_survive_save_and_load_and_bad_values_are_ignored() {
+    let dir = TempDir::new("c-type");
+    let file = dir.0.join("settings.txt");
+    let s = Settings { dither: true, dither_type: DitherType::Rectangular, dither_shaping: Shaping::Strong, ..Settings::default() };
+    s.save(&file).unwrap();
+    assert_eq!(Settings::load(&file), s);
+
+    assert_eq!(Settings::parse("dither_type = none\n").dither_type, DitherType::Triangular);
+    assert_eq!(Settings::parse("dither_shaping = loud\n").dither_shaping, Shaping::None);
+    assert_eq!(Settings::parse("dither = on\n").dither_type, DitherType::Triangular, "old files still work");
+}

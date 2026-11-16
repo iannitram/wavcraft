@@ -5615,7 +5615,11 @@ impl WaveApp {
             ActionId::InsertFile => self.pick_insert_file(ctx)?,
             ActionId::ConvertSampleType if self.editor.is_some() => {
                 let doc = self.editor.as_ref().map(|e| e.history.current().clone());
-                self.convert_dialog = doc.map(|d| ConvertDialog::new(d.sample_rate(), d.channel_count()));
+                self.convert_dialog = doc.map(|d| {
+                    let mut dialog = ConvertDialog::new(d.sample_rate(), d.channel_count());
+                    dialog.restore(&self.settings);
+                    dialog
+                });
             }
             ActionId::InterpretSampleRate if self.editor.is_some() => {
                 self.interpret = self.editor.as_ref().map(|e| e.history.current().sample_rate().to_string());
@@ -7282,7 +7286,11 @@ impl WaveApp {
                 convert_ui::Outcome::Open => {}
                 convert_ui::Outcome::Cancel => self.convert_dialog = None,
                 convert_ui::Outcome::Apply(s) => {
+                    d.remember(&mut self.settings);
                     self.convert_dialog = None;
+                    if let Err(e) = self.save_settings() {
+                        log::warn!(target: "wavcraft", "could not save the dither choice: {e}");
+                    }
                     if let Err(e) = self.start_convert(&s, ctx) {
                         self.error = Some(e);
                     }
