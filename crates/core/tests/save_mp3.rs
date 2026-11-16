@@ -145,14 +145,46 @@ fn a_96k_file_is_refused() {
 }
 
 #[test]
-fn mono_option_on_stereo_is_refused_until_a35() {
+fn mono_from_stereo_is_the_average() {
     let dir = TempDir::new("mono");
-    let doc = doc_at(&dir.0, 44_100, &tone(44_100, 1000.0, 0.5, 44_100, 2));
+    // Left: a 1 kHz sine at 0.5 peak (-6 dBFS). Right: silent. The mix is half the left.
+    let left = tone(48_000, 1000.0, 0.5, 240_000, 1).remove(0);
+    let right = vec![0.0_f32; 240_000];
+    let doc = doc_at(&dir.0, 48_000, &[left, right]);
     let target = dir.0.join("out.mp3");
-    let err = save_mp3(&doc, &target, Mp3Options { bitrate_kbps: 128, mono: true }, &mut |_| {}).unwrap_err();
-    assert!(matches!(err, SaveError::Unsupported(_)), "{err:?}");
-    assert!(!target.exists());
-    assert!(temp_files(&target).is_empty());
+    save_mp3(&doc, &target, Mp3Options { bitrate_kbps: 128, mono: true }, &mut |_| {}).unwrap();
+    let len = std::fs::metadata(&target).unwrap().len();
+    assert!((78_400..=81_600).contains(&len), "file is {len} bytes");
+
+    let sessions = dir.0.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let back = reopen(&target, &sessions);
+    assert_eq!(back.channel_count(), 1);
+    assert_eq!(back.sample_rate(), 48_000);
+    // The middle second: the left sine at half amplitude, an RMS of -15.05 dBFS. A copy of only
+    // the left channel would read -9.03 dBFS.
+    let mut middle = vec![0f32; 48_000];
+    assert_eq!(back.read(0, 120_000, &mut middle).unwrap(), middle.len());
+    let mean_square = middle.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>() / middle.len() as f64;
+    let rms_db = 10.0 * mean_square.log10();
+    assert!((rms_db - (-15.05)).abs() <= 0.5, "middle-second RMS is {rms_db} dBFS");
+}
+
+#[test]
+fn mono_on_a_mono_document_is_unchanged() {
+    let dir = TempDir::new("mono-mono");
+    let doc = doc_at(&dir.0, 48_000, &[tone(48_000, 1000.0, 0.5, 240_000, 1).remove(0)]);
+    let target = dir.0.join("out.mp3");
+    save_mp3(&doc, &target, Mp3Options { bitrate_kbps: 128, mono: true }, &mut |_| {}).unwrap();
+    let sessions = dir.0.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let back = reopen(&target, &sessions);
+    assert_eq!(back.channel_count(), 1);
+    let mut middle = vec![0f32; 48_000];
+    assert_eq!(back.read(0, 120_000, &mut middle).unwrap(), middle.len());
+    let mean_square = middle.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>() / middle.len() as f64;
+    let rms_db = 10.0 * mean_square.log10();
+    assert!((rms_db - (-9.03)).abs() <= 0.5, "middle-second RMS is {rms_db} dBFS");
 }
 
 #[test]

@@ -589,7 +589,7 @@ pub fn save(doc: &DocState, target: &Path, format: SaveFormat, ty: SampleType, p
 }
 
 /// Save `doc` to `target` as MP3 (A3.4) with `options`: the bitrate, and mono (a stereo document
-/// refuses it until A3.5). It is streamed through the craft-mp3 encoder and replaced atomically
+/// is mixed down to (L+R)/2 as one channel, A3.5). It is streamed through the craft-mp3 encoder and replaced atomically
 /// like every save. A rate or channel count MP3 cannot hold is refused with
 /// [`SaveError::Unsupported`] before any file is made.
 pub fn save_mp3(doc: &DocState, target: &Path, options: Mp3Options, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
@@ -693,10 +693,7 @@ fn save_inner(
     if format == SaveFormat::Mp3 {
         // Checked before the temporary file is made, so a refused save leaves no file behind.
         let channels = u16::try_from(part.channels.len()).unwrap_or(u16::MAX);
-        let out_channels = mp3_check(doc.sample_rate(), channels, hooks.mp3).map_err(SaveError::Unsupported)?;
-        if usize::from(out_channels) != part.channels.len() {
-            return Err(SaveError::Unsupported("MP3 mono mixdown is not available yet".into()));
-        }
+        mp3_check(doc.sample_rate(), channels, hooks.mp3).map_err(SaveError::Unsupported)?;
     }
     remove_leftover_temps(target);
     let tmp = TempFile::create(target, false).map_err(SaveError::Io)?;
@@ -1068,8 +1065,13 @@ fn write_vorbis_stream(doc: &DocState, file: File, part: &Part, progress: &mut d
 /// in craft-mp3 would let this write frames as they come (the decider's note on #1351).
 fn write_mp3_stream(doc: &DocState, mut file: File, part: &Part, progress: &mut dyn FnMut(f64), hooks: Hooks) -> io::Result<File> {
     let channels = u16::try_from(part.channels.len()).map_err(|_| invalid("too many channels for MP3"))?;
-    let config = EncoderConfig::new(doc.sample_rate(), channels, hooks.mp3.bitrate_kbps);
+    // With mono set, a stereo document is mixed down to one channel (A3.5); a mono document is
+    // encoded as it is.
+    let mix_down = hooks.mp3.mono && channels == 2;
+    let out_channels: u16 = if hooks.mp3.mono { 1 } else { channels };
+    let config = EncoderConfig::new(doc.sample_rate(), out_channels, hooks.mp3.bitrate_kbps);
     let mut enc = Mp3Encoder::new(config).map_err(|e| invalid(&format!("MP3 encoder: {e}")))?;
+    let mut mixed: Vec<f32> = if mix_down { vec![0.0; BLOCK_FRAMES] } else { Vec::new() };
     // Sized up front from the bit rate times the duration, so the Vec never grows by doubling (a
     // doubling peaks near twice the stream: about 800 MB for 3 hours at 320 kbps). The slack covers
     // the tag frame, the encoder's delay and frame rounding. Saturating arithmetic: no overflow.
@@ -1078,8 +1080,20 @@ fn write_mp3_stream(doc: &DocState, mut file: File, part: &Part, progress: &mut 
     let capacity = usize::try_from(stream_bytes.saturating_add(16 * 1024)).unwrap_or(0);
     let mut mp3: Vec<u8> = Vec::with_capacity(capacity);
     stream_samples(doc, part, progress, hooks, |bufs, n| {
-        let block: Vec<&[f32]> = bufs.iter().map(|b| &b[..n]).collect();
-        enc.encode_planar(&block, &mut mp3);
+        if mix_down {
+            let (Some(left), Some(right)) = (bufs.first(), bufs.get(1)) else {
+                return Err(invalid("MP3 mixdown needs two channels"));
+            };
+            let out = mixed.get_mut(..n).ok_or_else(|| invalid("MP3 mixdown block is too long"))?;
+            for ((m, l), r) in out.iter_mut().zip(left.iter()).zip(right.iter()) {
+                *m = (l + r) * 0.5;
+            }
+            let block: [&[f32]; 1] = [mixed.get(..n).ok_or_else(|| invalid("MP3 mixdown block is too long"))?];
+            enc.encode_planar(&block, &mut mp3);
+        } else {
+            let block: Vec<&[f32]> = bufs.iter().map(|b| &b[..n]).collect();
+            enc.encode_planar(&block, &mut mp3);
+        }
         Ok(())
     })?;
     if let Some(tag) = enc.finish(&mut mp3) {
