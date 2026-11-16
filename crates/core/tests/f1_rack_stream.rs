@@ -225,17 +225,38 @@ fn f1_open_stream_refuses_effects_that_cannot_stream() {
     assert!(RackProcessor::new(&rack_for("normalize", ""), 1, RATE).is_err());
 }
 
+/// Settings that make each slot effect change the audio. Four of them pass audio through at
+/// their defaults (Gain, Parametric EQ, Amplify and Channel Mixer), so they get a setting that
+/// changes it. Channel Mixer needs two channels: with one it passes audio through by design.
+fn slot_args(id: &str) -> &'static str {
+    match id {
+        "gain" => "gain_db=-6",
+        "parametric_eq" => "mid1_gain_db=6",
+        "amplify" => "left_db=3",
+        "channel_mixer" => "l_from_r=50",
+        _ => "",
+    }
+}
+
 #[test]
 fn f1_every_slot_menu_effect_changes_audio_like_offline() {
     let list: Vec<_> = effects::listed(false).map(|(_, e)| e).filter(|e| effects::can_stream(*e)).collect();
     assert_eq!(list.len(), 10);
-    let input = vec![pink(48_000, 1)];
+    let mono = vec![pink(48_000, 1)];
+    let stereo = vec![pink(48_000, 1), pink(48_000, 2)];
     for e in list {
         let id = e.id();
-        let want = offline(id, "", &input);
-        let got = through_rack(id, "", &input, 1024);
+        let args = slot_args(id);
+        let input = if id == "channel_mixer" { &stereo } else { &mono };
+        let want = offline(id, args, input);
+        let got = through_rack(id, args, input, 1024);
+        for (c, ch) in got.iter().enumerate() {
+            assert!(ch.iter().all(|v| v.is_finite()), "{id}: channel {c} has a non-finite sample");
+        }
         let d = max_diff(&got[0], &want[0]);
-        assert!(d <= 1e-6, "{id}: differs from effects::apply by {d}");
+        assert!(d <= 1e-6, "{id} {args:?}: differs from effects::apply by {d}");
+        let moved = max_diff(&got[0], &input[0]);
+        assert!(moved > 1e-3, "{id} {args:?}: passes audio through (max change {moved})");
         if id == "invert" {
             assert!((0..100).all(|i| got[0][i] == -input[0][i]), "invert does not negate");
         }
@@ -254,4 +275,9 @@ fn f1_rack_dynamics_does_not_allocate_on_wrong_channel_count() {
     s.process_block(&[&a, &a], &mut [&mut o1, &mut o2]);
     assert_eq!(o1, a);
     assert_eq!(o2, a);
+    // One input, two outputs: the output count is wrong too, and o1 must still be the input.
+    let mut p1 = vec![0.0f32; 256];
+    let mut p2 = vec![0.0f32; 256];
+    s.process_block(&[&a], &mut [&mut p1, &mut p2]);
+    assert_eq!(p1, a);
 }

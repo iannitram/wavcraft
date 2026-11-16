@@ -84,7 +84,7 @@ fn the_deesser_is_registered_with_settings() {
     }
     let d = effects::Params::defaults(e);
     effects::validate(e, &d).unwrap();
-    assert!(e.stream(&d, 2, RATE).is_some());
+    assert!(matches!(e.stream(&d, 2, RATE), Ok(Some(_))));
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn state_carries_across_chunk_boundaries() {
         let p = effects::parse_params(e, args).unwrap();
         let chunked = run("deesser", args, &d);
         // The reference: one stream, the whole signal in one call.
-        let mut s = e.stream(&p, 1, RATE).unwrap();
+        let mut s = e.stream(&p, 1, RATE).unwrap().unwrap();
         let mut whole = vec![0.0f32; x.len()];
         s.process_block(&[&x[..]], &mut [&mut whole[..]]);
         let worst = chunked[0].iter().zip(&whole).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);

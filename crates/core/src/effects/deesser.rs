@@ -164,7 +164,48 @@ impl Effect for DeEsser {
     fn process(&self, _: &[f64], _: u64, _: &[&[f32]], _: &mut [&mut [f32]]) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "the de-esser keeps state between chunks and runs only through begin"))
     }
-    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Option<Box<dyn EffectStream>> {
-        Some(Box::new(Proc::new(params, rate, channels)?))
+    fn stream(&self, params: &[f64], channels: usize, rate: u32) -> Result<Option<Box<dyn EffectStream>>, String> {
+        DeEsser::stream_with(params, channels, rate, |settings| Hosted::new("de_esser", rate, channels, settings))
+    }
+}
+
+/// The rack's refusal when Multiband has no plugin: the rack must not pass audio through silently.
+const NO_RACK_MULTIBAND: &str = "De-esser (Multiband) cannot run in the Effects Rack";
+
+impl DeEsser {
+    /// [`Effect::stream`] with the plugin supplied by `host` (Multiband only). Without one the
+    /// rack is told [`NO_RACK_MULTIBAND`]: falling back to a copy would pass audio through.
+    fn stream_with(
+        params: &[f64],
+        channels: usize,
+        rate: u32,
+        host: impl FnOnce(&[(&str, f64)]) -> Option<Hosted>,
+    ) -> Result<Option<Box<dyn EffectStream>>, String> {
+        if params.get(3).is_some_and(|m| *m < 0.5) {
+            let host = host(&[("freq", params[0]), ("threshold", params[1]), ("range", params[2])]).ok_or_else(|| NO_RACK_MULTIBAND.to_string())?;
+            return Ok(Some(Box::new(Proc::Multiband(host))));
+        }
+        Ok(Proc::new(params, rate, channels).map(|p| Box::new(p) as Box<dyn EffectStream>))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PARAMS_MULTIBAND: [f64; 4] = [6000.0, -30.0, 10.0, 0.0];
+    const PARAMS_BROADBAND: [f64; 4] = [6000.0, -30.0, 10.0, 1.0];
+
+    #[test]
+    fn multiband_without_the_plugin_is_refused_in_the_rack() {
+        let refused = DeEsser::stream_with(&PARAMS_MULTIBAND, 48_000, 1, |_| None);
+        assert_eq!(refused.err().as_deref(), Some(NO_RACK_MULTIBAND));
+    }
+
+    #[test]
+    fn multiband_with_the_plugin_and_broadband_stream() {
+        let plugin = |s: &[(&str, f64)]| Hosted::new("de_esser", 48_000, 1, s);
+        assert!(matches!(DeEsser::stream_with(&PARAMS_MULTIBAND, 48_000, 1, plugin), Ok(Some(_))));
+        assert!(matches!(DeEsser::stream_with(&PARAMS_BROADBAND, 48_000, 1, |_| None), Ok(Some(_))));
     }
 }
