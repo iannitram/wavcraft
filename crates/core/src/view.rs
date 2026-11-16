@@ -1073,6 +1073,88 @@ impl SpectralSelection {
     }
 }
 
+/// A closed outline drawn on the spectral display (C4.5): `points` are (frame, Hz) corners, the
+/// last joined back to the first, with the same feathers as `Band`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LassoSelection {
+    /// The corners in order, each (frame, Hz). The outline is closed.
+    pub points: Vec<(usize, f32)>,
+    /// Width of the soft edge outside the outline, in Hz (0 is a hard edge).
+    pub feather_hz: f32,
+    /// Width of the soft edge outside the outline in time, in milliseconds.
+    pub feather_ms: f32,
+    /// Sample rate, which turns the time feather from milliseconds into frames.
+    pub rate: u32,
+}
+
+impl LassoSelection {
+    /// The outline through `points`, each Hz held to `0..=nyquist` as `Band::new` does (a value
+    /// that is not a number counts as 0), and each feather held to 0 or more (not a number counts
+    /// as 0).
+    pub fn new(points: &[(usize, f32)], nyquist: f32, feather_hz: f32, feather_ms: f32, rate: u32) -> LassoSelection {
+        let nyquist = if nyquist.is_finite() { nyquist.max(0.0) } else { 0.0 };
+        let clean_hz = |x: f32| if x.is_finite() { x.clamp(0.0, nyquist) } else { 0.0 };
+        let clean_feather = |x: f32| if x.is_finite() { x.max(0.0) } else { 0.0 };
+        LassoSelection {
+            points: points.iter().map(|&(frame, hz)| (frame, clean_hz(hz))).collect(),
+            feather_hz: clean_feather(feather_hz),
+            feather_ms: clean_feather(feather_ms),
+            rate,
+        }
+    }
+
+    /// How much of the audio at `frame` and `hz` the outline takes, 0 to 1: 1 inside it or on it,
+    /// and outside it a raised cosine of the distance to the nearest edge, measured in feather
+    /// widths (so the middle of a feather is exactly 0.5). Fewer than 3 points select nothing.
+    pub fn mask(&self, frame: usize, hz: f32) -> f32 {
+        let n = self.points.len();
+        if n < 3 || !hz.is_finite() {
+            return 0.0;
+        }
+        let t_width = f64::from(self.feather_ms) * f64::from(self.rate) / 1000.0;
+        let t_width = if t_width > 0.0 { t_width } else { 1e-9 };
+        let f_width = if self.feather_hz > 0.0 { f64::from(self.feather_hz) } else { 1e-9 };
+        let (px, py) = (frame as f64, f64::from(hz));
+        let corner = |i: usize| {
+            let (f, h) = self.points[i % n];
+            (f as f64, f64::from(h))
+        };
+        let (mut on_outline, mut inside, mut best) = (false, false, f64::INFINITY);
+        for i in 0..n {
+            let (ax, ay) = corner(i);
+            let (bx, by) = corner(i + 1);
+            if on_segment((px, py), (ax, ay), (bx, by)) {
+                on_outline = true;
+            }
+            // Even-odd rule: a ray along +frame crosses an edge that straddles `py`.
+            if (ay > py) != (by > py) {
+                let x_cross = ax + (py - ay) * (bx - ax) / (by - ay);
+                if px < x_cross {
+                    inside = !inside;
+                }
+            }
+            let scale = |(x, y): (f64, f64)| (x / t_width, y / f_width);
+            best = best.min(segment_distance(scale((px, py)), scale((ax, ay)), scale((bx, by))));
+        }
+        if on_outline || inside { 1.0 } else { raised_cosine(best, 1.0) as f32 }
+    }
+}
+
+/// Whether `p` lies on the segment `a`-`b` (inclusive of its ends).
+fn on_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> bool {
+    let cross = (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
+    cross == 0.0 && p.0 >= a.0.min(b.0) && p.0 <= a.0.max(b.0) && p.1 >= a.1.min(b.1) && p.1 <= a.1.max(b.1)
+}
+
+/// The distance from `p` to the segment `a`-`b`, in the same units as its inputs.
+fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    let (cx, cy) = (a.0 + t * dx, a.1 + t * dy);
+    ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt()
+}
+
 /// Where `hz` sits on the spectral display's frequency axis `lo..hi`, 0 at `lo` (the bottom) to 1
 /// at `hi` (the top), on the log axis when `log`. Held to 0..=1.
 pub fn fraction_of_hz(lo: f32, hi: f32, log: bool, hz: f32) -> f32 {
