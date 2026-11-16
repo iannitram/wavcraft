@@ -535,6 +535,8 @@ impl Tool {
 pub struct WaveApp {
     /// The spectral divider moved or the display toggled and is not saved yet (saved once the pointer is up).
     spectral_dirty: bool,
+    /// Time from the last document change to the first spectral picture of the new state (B2.5).
+    edit_picture: spectral::EditToPicture,
     doc: Option<Document>,
     tool: Tool,
     /// Which context menu the last right-click in the editor's rectangle opened (A351).
@@ -1012,6 +1014,7 @@ impl WaveApp {
             },
             panels: PanelSet::from_hidden(&settings.hidden_panels),
             spectral_dirty: false,
+            edit_picture: Default::default(),
             layout: Layout::decode(&settings.panel_layout, &settings.zone_sizes),
             hover: None,
             hover_next: None,
@@ -2251,6 +2254,7 @@ impl WaveApp {
                 self.selection = Selection::default();
                 self.freq.reset();
                 self.spectrum = None;
+                self.edit_picture = Default::default();
                 self.fit_on_next_frame = true;
             }
             Err(e) => self.open_failures.push(format!("{}: {e}", path.display())),
@@ -2646,6 +2650,7 @@ impl WaveApp {
         self.matcher.new_file();
         self.generation += 1;
         self.spectrum = None;
+        self.edit_picture = Default::default();
     }
 
     /// Switch to open document `i` (0 is the first opened).
@@ -2690,6 +2695,7 @@ impl WaveApp {
                 self.set_audio(None);
                 self.generation += 1;
                 self.spectrum = None;
+                self.edit_picture = Default::default();
                 self.selection = Selection::default();
             }
         }
@@ -2731,6 +2737,7 @@ impl WaveApp {
         if frames > 0 {
             self.rebuild(ctx);
         }
+        self.edit_picture = Default::default();
     }
 
     /// File › New › Audio File: an empty untitled document.
@@ -3646,6 +3653,7 @@ impl WaveApp {
         self.notice = Some("Recovered the unsaved work (File › Save keeps it)".to_string());
         log::info!(target: "wavcraft", "recovery: restored the session in {}", dir.display());
         self.rebuild(ctx);
+        self.edit_picture = Default::default();
         Ok(())
     }
 
@@ -7319,6 +7327,7 @@ impl WaveApp {
                 self.doc_path = PathBuf::new();
                 self.generation += 1;
                 self.spectrum = None;
+                self.edit_picture = Default::default();
             }
         }
         Ok(format!("OK frames={} was={} trimmed={} removed={}", change.new_frames, change.old_frames, change.trimmed, change.removed))
@@ -7327,6 +7336,7 @@ impl WaveApp {
     /// Show the current step: build its peaks (reading the store a chunk at a time) on a worker
     /// thread. No samples are copied; the views and the player read the step from the store.
     fn rebuild(&mut self, ctx: &egui::Context) {
+        self.edit_picture.begin();
         self.matcher.audio_changed();
         let Some(editor) = &self.editor else { return };
         let (tx, rx) = channel();
@@ -7567,6 +7577,7 @@ impl WaveApp {
                 }
                 self.doc = Some(doc);
                 self.generation += 1;
+                self.edit_picture.document_ready(self.generation);
                 // A Play pressed during the rebuild (#377) starts now, on the edited audio.
                 if play_now && self.transport.mode == Mode::Stopped && !self.player.is_playing() {
                     self.start_play();
@@ -12304,6 +12315,7 @@ impl WaveApp {
             {
                 let texture = |(ch, image)| ui.ctx().load_texture(format!("spectrum-{ch}"), image, TextureOptions::LINEAR);
                 self.spectrum = Some(SpectrumCache { job: picture.job, textures: picture.images.into_iter().enumerate().map(texture).collect() });
+                self.edit_picture.picture(self.generation);
             }
             if let Some(cache) = &self.spectrum {
                 // A picture is drawn where its own frames are on screen. While the next one is
@@ -13977,6 +13989,10 @@ mod a3_mp3_tests;
 #[cfg(test)]
 #[path = "b1_frametimes_tests.rs"]
 mod b1_frametimes_tests;
+
+#[cfg(test)]
+#[path = "b2_5_edit_picture_tests.rs"]
+mod b2_5_edit_picture_tests;
 
 #[cfg(test)]
 mod reset_tests {

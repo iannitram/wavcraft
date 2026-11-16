@@ -19,6 +19,47 @@ const RANGES_DB: [u32; 7] = [40, 60, 80, 100, 120, 140, 160];
 /// How tall the draggable divider is, in points.
 const HANDLE: f32 = 8.0;
 
+/// The time from a document change to the first spectral picture of the new state (B2.5).
+#[derive(Debug, Default)]
+pub(super) struct EditToPicture {
+    began: Option<std::time::Instant>,
+    generation: Option<usize>,
+    ms: Option<u64>,
+}
+
+impl EditToPicture {
+    /// A document change starts the clock.
+    pub(super) fn begin(&mut self) {
+        *self = Self { began: Some(std::time::Instant::now()), generation: None, ms: None };
+    }
+
+    /// The changed document is ready as `generation`; a picture of that generation stops the clock.
+    pub(super) fn document_ready(&mut self, generation: usize) {
+        if self.began.is_some() && self.ms.is_none() {
+            self.generation = Some(generation);
+        }
+    }
+
+    /// A spectral picture of `generation` was drawn.
+    pub(super) fn picture(&mut self, generation: usize) {
+        if let Some(b) = self.began
+            && self.generation == Some(generation)
+            && self.ms.is_none()
+        {
+            self.ms = Some(u64::try_from(b.elapsed().as_millis()).unwrap_or(u64::MAX));
+        }
+    }
+
+    /// `edit_to_picture_ms=<n>`, `pending` or `none`.
+    pub(super) fn answer(&self) -> String {
+        match (self.ms, self.began) {
+            (Some(n), _) => format!("edit_to_picture_ms={n}"),
+            (None, Some(_)) => "edit_to_picture_ms=pending".to_string(),
+            (None, None) => "edit_to_picture_ms=none".to_string(),
+        }
+    }
+}
+
 impl WaveApp {
     /// The options as `STATE` reports them.
     pub(super) fn spectral_state(&self) -> String {
@@ -97,7 +138,7 @@ impl WaveApp {
         if self.spectral_dirty {
             self.save_spectral_now();
         }
-        format!("OK {}", self.spectral_state())
+        format!("OK {} {}", self.spectral_state(), self.edit_picture.answer())
     }
 
     /// Write the settings file; a failure is logged, the setting still holds for this run.
