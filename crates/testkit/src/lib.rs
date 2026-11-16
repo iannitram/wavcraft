@@ -736,7 +736,7 @@ pub struct NrMeasure {
 pub fn nr_measure(clean: &wavcraft_core::DocState, noisy: &wavcraft_core::DocState, s: &NrSettings) -> Result<NrMeasure, String> {
     use wavcraft_core::actions::Editor;
     use wavcraft_core::doc::history::History;
-    use wavcraft_core::{effects, noise};
+    use wavcraft_core::noise;
 
     if clean.sample_rate() != noisy.sample_rate() || clean.len_frames() != noisy.len_frames() || clean.channel_count() != noisy.channel_count() {
         return Err("the clean and noisy files differ in rate, length or channel count".to_string());
@@ -775,11 +775,9 @@ pub fn nr_measure(clean: &wavcraft_core::DocState, noisy: &wavcraft_core::DocSta
     let print = noise::capture(noisy, best.0 * window..best.0 * window + print_frames)?;
     noise::set_current(print);
 
-    let index = effects::all().iter().position(|e| e.id() == "noise_reduction").ok_or("no Noise Reduction effect")?;
-    let text = format!("reduce_db={} reduction={} fft_size={}", s.reduce_db, s.reduction, s.fft_size);
-    let params = effects::parse_params(effects::all()[index], &text)?;
+    let (index, params) = nr_effect(s)?;
     let mut editor = Editor::new(History::new(noisy.clone(), u64::MAX));
-    editor.run_effect(u16::try_from(index).map_err(|e| e.to_string())?, params, 0..0).map_err(|e| e.to_string())?;
+    editor.run_effect(index, params, 0..0).map_err(|e| e.to_string())?;
     let after = editor.history.current();
 
     let (mut gap_before, mut gap_after, mut speech_before, mut speech_after) = (0.0, 0.0, 0.0, 0.0);
@@ -798,6 +796,61 @@ pub fn nr_measure(clean: &wavcraft_core::DocState, noisy: &wavcraft_core::DocSta
     }
     let db = |a: f64, b: f64| 10.0 * (a.max(1e-30) / b.max(1e-30)).log10();
     Ok(NrMeasure { floor_drop_db: db(gap_before, gap_after), speech_change_db: db(speech_after, speech_before), print_frames })
+}
+
+/// The Noise Reduction effect's index and parameters for `s`, as the editor runs them.
+fn nr_effect(s: &NrSettings) -> Result<(u16, Vec<f64>), String> {
+    use wavcraft_core::effects;
+
+    let index = effects::all().iter().position(|e| e.id() == "noise_reduction").ok_or("no Noise Reduction effect")?;
+    let text = format!("reduce_db={} reduction={} fft_size={}", s.reduce_db, s.reduction, s.fft_size);
+    let params = effects::parse_params(effects::all()[index], &text)?;
+    Ok((u16::try_from(index).map_err(|e| e.to_string())?, params))
+}
+
+/// Builds a synthetic stereo 48 kHz file of 3600 s times `scale`, runs Noise Reduction at `s` on
+/// all of it, and returns the seconds the run took. Building the file is not timed. The file is
+/// written block by block (never whole in RAM) into a `nr-time` folder under `dir`, which the
+/// caller removes. `scale` must be finite, at most 100, and give at least 4 s of audio.
+pub fn nr_time(scale: f64, s: &NrSettings, dir: &Path) -> Result<f64, String> {
+    use wavcraft_core::actions::Editor;
+    use wavcraft_core::doc::history::History;
+    use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
+    use wavcraft_core::noise;
+    use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
+
+    if !scale.is_finite() || scale > 100.0 {
+        return Err("the scale must be a finite number, at most 100".to_string());
+    }
+    let frames = (3600.0 * 48_000.0 * scale).round() as u64;
+    if frames < 192_000 {
+        return Err("the scale is too small: the file must be at least 4 s".to_string());
+    }
+    let store = Store::create_with(&dir.join("nr-time"), StoreOptions::default()).map_err(|e| e.to_string())?;
+    let (mut left_rng, mut right_rng) = (Rng::new(DEFAULT_SEED, "nr-time-l"), Rng::new(DEFAULT_SEED, "nr-time-r"));
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    let mut at = 0u64;
+    while at < frames {
+        let n = (frames - at).min(BLOCK_FRAMES as u64) as usize;
+        let (mut l, mut r) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        for k in 0..n {
+            let i = at + k as u64;
+            let burst = if i >= 96_000 && ((i / 24_000) & 1) == 0 { 0.3 * (TAU * 1000.0 * i as f64 / 48_000.0).sin() } else { 0.0 };
+            l.push((0.0367 * left_rng.signed() + burst) as f32);
+            r.push((0.0367 * right_rng.signed() + burst) as f32);
+        }
+        left.push(Piece::whole(store.append(&l).map_err(|e| e.to_string())?).ok_or("empty block")?);
+        right.push(Piece::whole(store.append(&r).map_err(|e| e.to_string())?).ok_or("empty block")?);
+        at += n as u64;
+    }
+    let channels = vec![Channel::from_pieces(left), Channel::from_pieces(right)];
+    let doc = DocState::new(store, channels, 48_000, SourceFormat::synthetic(48_000, 2)).map_err(|e| e.to_string())?;
+    noise::set_current(noise::capture(&doc, 0..96_000)?);
+    let (index, params) = nr_effect(s)?;
+    let mut editor = Editor::new(History::new(doc, u64::MAX));
+    let start = std::time::Instant::now();
+    editor.run_effect(index, params, 0..0).map_err(|e| e.to_string())?;
+    Ok(start.elapsed().as_secs_f64())
 }
 
 #[cfg(test)]
@@ -834,6 +887,17 @@ mod nr_tests {
         assert!((14.0..=18.0).contains(&m.floor_drop_db), "floor drop {} dB", m.floor_drop_db);
         assert!(m.speech_change_db.abs() < 1.0, "speech change {} dB", m.speech_change_db);
         assert!(m.print_frames >= 96_000);
+    }
+
+    #[test]
+    fn g2_time_refuses_bad_scale() {
+        // Refused before any file is built, so the folder is never created.
+        let dir = std::env::temp_dir().join(format!("wavcraft-nr-time-refuse-{}", std::process::id()));
+        let s = NrSettings::default();
+        for scale in [0.0, f64::NAN, 0.0001, 101.0] {
+            assert!(nr_time(scale, &s, &dir).is_err(), "scale {scale} should be refused");
+        }
+        assert!(!dir.exists());
     }
 }
 
