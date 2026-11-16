@@ -282,9 +282,8 @@ mod tests {
         assert_eq!(FAVORITES.len(), 2);
         assert_eq!(FAVORITES.iter().map(|f| f.label).collect::<Vec<_>>(), ["Fade In", "Fade Out"]);
         assert_eq!(FAVORITES.iter().map(|f| f.effect_id).collect::<Vec<_>>(), ["fade_in", "fade_out"]);
-        for f in FAVORITES {
+        for (f, want) in FAVORITES.iter().zip(["effect.fade_in", "effect.fade_out"]) {
             let a = favorite_action(f).expect("every favorite is a registered effect");
-            let want = format!("effect.{}", f.effect_id);
             assert_eq!(a.name, want);
             assert_eq!(a.menu, f.label);
             assert!(matches!(a.id, ActionId::Effect(_)));

@@ -314,9 +314,19 @@ impl Recording {
         Some(hint)
     }
 
-    /// The last format used, else the default (48 kHz, mono, 24-bit).
-    pub fn last_format(&self) -> RecFormat {
-        self.last_fmt.unwrap_or_default()
+    /// The channel count of the input a take would record from: `None` with the fake input
+    /// (it has no device) or when no input device has a usable config.
+    pub fn device_channels(&self) -> Option<u16> {
+        match FakeSpec::from_env() {
+            Ok(Some(_)) | Err(_) => None,
+            Ok(None) => crate::rec_input::default_channels(self.input_device.as_deref()),
+        }
+    }
+
+    /// The format for a new take: the last format used, else the first format with the
+    /// microphone's channel count (48 kHz, 24-bit; mono with no device).
+    pub fn start_format(&self, device_channels: Option<u16>) -> RecFormat {
+        self.last_fmt.unwrap_or_else(|| crate::rec_input::first_format(device_channels))
     }
 
     /// Remember that the take now starting goes into the document (`plan`, checked by the caller).
@@ -810,6 +820,15 @@ mod tests {
         assert!(late >= 15 && !busy, "{late} {busy}");
         assert!(r.state_fields().contains("rec_start_busy=0"));
         assert!(r.due().is_none(), "a due take is handed out once");
+    }
+
+    #[test]
+    fn the_first_take_follows_the_mic_and_later_takes_keep_the_last_format() {
+        let mut r = super::Recording::default();
+        assert_eq!(r.start_format(Some(2)), RecFormat { rate: 48_000, channels: 2, bits: 24, inputs: 0 });
+        assert_eq!(r.start_format(None).channels, 1, "no device: mono");
+        r.last_fmt = Some(RecFormat { rate: 44_100, channels: 1, bits: 16, inputs: 0 });
+        assert_eq!(r.start_format(Some(2)), RecFormat { rate: 44_100, channels: 1, bits: 16, inputs: 0 }, "a later take keeps the last format");
     }
 
     #[test]
