@@ -5399,6 +5399,15 @@ impl WaveApp {
             self.set_panel("match", shown);
             return Ok(false);
         }
+        // Backtick: maximise the panel under the pointer, or restore the maximised one (I3.5).
+        if id == ActionId::WindowMaximizePanel {
+            if self.layout.maximized(&self.panels).is_some() {
+                self.layout.restore();
+            } else if let Some(id) = self.hover {
+                self.layout.toggle_maximize(id);
+            }
+            return Ok(false);
+        }
         // The snapping switches are settings: they flip with no file open too.
         if self.editor.is_none() && actions::snap_flag_value(&self.settings.snap, id).is_some() {
             self.toggle_snap_menu(id);
@@ -12777,17 +12786,9 @@ impl eframe::App for WaveApp {
                 self.history_refocus = Some(to);
             }
         }
-        // ` maximises the panel under the pointer (and restores); Ctrl+W closes it.
+        // Ctrl+W closes the panel under the pointer. Backtick (maximise) is a shortcut-table row.
         let typing = ctx.egui_wants_keyboard_input() || self.float_typing || self.float_other_focus;
-        let (grave, close) =
-            ctx.input_mut(|i| (!typing && i.consume_key(egui::Modifiers::NONE, Key::Backtick), i.consume_key(egui::Modifiers::COMMAND, Key::W)));
-        if grave {
-            if self.layout.maximized(&self.panels).is_some() {
-                self.layout.restore();
-            } else if let Some(id) = self.hover {
-                self.layout.toggle_maximize(id);
-            }
-        }
+        let close = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::W));
         if close && let Some(id) = self.hover {
             self.close_panel(id);
         }

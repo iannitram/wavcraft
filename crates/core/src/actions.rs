@@ -204,6 +204,8 @@ pub enum ActionId {
     ToggleRoll,
     /// Window > Match Loudness: show or hide the panel (Alt+5).
     ToggleMatchPanel,
+    /// Window > Maximize Panel Under Pointer: maximise or restore the panel under the pointer (Backtick, I3.5).
+    WindowMaximizePanel,
 }
 
 /// Which part of the program carries an action out.
@@ -389,6 +391,7 @@ pub const TABLE: &[Action] = &[
     window(ActionId::FastForward, "transport.fastForward", "Fast Forward"),
     window(ActionId::ToggleRoll, "transport.roll", "Pre/Post-Roll"),
     window(ActionId::ToggleMatchPanel, "panel.match.toggle", "Match Loudness"),
+    window(ActionId::WindowMaximizePanel, "window.maximizePanel", "Maximize Panel Under Pointer"),
 ];
 
 /// The Zoom to Time actions, slot 1 first (f69).
@@ -763,7 +766,8 @@ impl Editor {
             | ActionId::ToolZoom
             | ActionId::ToolMarquee
             | ActionId::ToolLasso
-            | ActionId::ToggleMatchPanel => true,
+            | ActionId::ToggleMatchPanel
+            | ActionId::WindowMaximizePanel => true,
             ActionId::SpectralResolutionUp
             | ActionId::SpectralResolutionDown
             | ActionId::SpectralScaleMoreLog
@@ -1563,6 +1567,7 @@ impl Editor {
             | ActionId::CheckPrev
             | ActionId::TranscriptRun
             | ActionId::ToggleMatchPanel
+            | ActionId::WindowMaximizePanel
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
