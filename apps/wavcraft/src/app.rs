@@ -13448,6 +13448,10 @@ mod m2_map_tests;
 mod n1_parity_tests;
 
 #[cfg(test)]
+#[path = "n3_mcp_window_tests.rs"]
+mod n3_mcp_window_tests;
+
+#[cfg(test)]
 #[path = "a3_mp3_tests.rs"]
 mod a3_mp3_tests;
 
