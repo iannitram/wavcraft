@@ -173,6 +173,7 @@ impl PrefPage {
 enum PrefAction {
     Set(&'static str, String),
     ChooseSessionFolder,
+    ChooseRecordingsFolder,
     Preset(&'static str, String),
     RefreshDevices,
     ResetAll,
@@ -1746,6 +1747,23 @@ impl WaveApp {
                         }
                         PrefPage::PlaybackRecording => {
                             ui.label("Stored only for now: the transport, shuttle and recording features that read these are not on this branch.");
+                            ui.label("Recordings folder: where a new take is saved.");
+                            match crate::recording::record_dir(self.settings.recordings_folder.as_deref()) {
+                                Ok(dir) => ui.monospace(dir.display().to_string()),
+                                Err(why) => ui.monospace(why),
+                            };
+                            ui.horizontal(|ui| {
+                                if ui.button("Choose…").clicked() {
+                                    action = Some(PrefAction::ChooseRecordingsFolder);
+                                }
+                                if ui.button("Default").clicked() {
+                                    action = Some(PrefAction::Set("recordings_folder", String::new()));
+                                }
+                            });
+                            if std::env::var_os("WAVCRAFT_RECORD_DIR").is_some_and(|d| !d.is_empty()) {
+                                ui.label("WAVCRAFT_RECORD_DIR is set and takes the place of this folder.");
+                            }
+                            ui.add_space(8.0);
                             ui.horizontal(|ui| {
                                 ui.label("Auto-scroll while playing");
                                 egui::ComboBox::from_id_salt("autoscroll").selected_text(self.settings.autoscroll.name()).show_ui(ui, |ui| {
@@ -2005,6 +2023,15 @@ impl WaveApp {
                 .set_directory(&self.sessions.path)
                 .pick_folder()
                 .map_or(Ok(()), |p| self.pref_set("session_folder", &p.to_string_lossy())),
+            Some(PrefAction::ChooseRecordingsFolder) => {
+                // Open the picker where the takes are kept now, if that folder exists; else the home folder.
+                let shown = crate::recording::record_dir(self.settings.recordings_folder.as_deref()).ok().filter(|d| d.is_dir());
+                let mut picker = rfd::FileDialog::new();
+                if let Some(dir) = shown.or_else(dirs::home_dir) {
+                    picker = picker.set_directory(dir);
+                }
+                picker.pick_folder().map_or(Ok(()), |p| self.pref_set("recordings_folder", &p.to_string_lossy()))
+            }
             Some(PrefAction::Preset(verb, name)) => self.preset_do(verb, &name),
             Some(PrefAction::RefreshDevices) => {
                 self.devices_rx = Some(crate::player::list_devices_in_background(self.settings.audio_host.clone()));
@@ -13583,6 +13610,10 @@ mod a2_title_star_tests;
 #[cfg(test)]
 #[path = "a1_open_cancel_tests.rs"]
 mod a1_open_cancel_tests;
+
+#[cfg(test)]
+#[path = "j1_recordings_row_tests.rs"]
+mod j1_recordings_row_tests;
 
 #[cfg(test)]
 #[path = "a2_close_prompt_tests.rs"]
