@@ -9,7 +9,7 @@ use rustfft::num_complex::Complex;
 use wavcraft_core::convert::{self, ConvertSettings};
 use wavcraft_core::dither::{DitherSettings, DitherType, Ditherer, Shaping};
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
-use wavcraft_core::save::{SampleType, quantize, save_wav};
+use wavcraft_core::save::{AiffKind, SampleType, SaveFormat, quantize, save_dithered, save_wav};
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 const RATE: f64 = 48_000.0;
@@ -267,4 +267,41 @@ fn dither_settings_text_round_trips_and_rejects_nonsense() {
     for bad in ["dither=gaussian", "shaping=extreme", "seed=x"] {
         assert!(ConvertSettings::parse(bad).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn a4_save_as_16_bit_uses_the_dither_choice() {
+    let t = TempDir::new("a44");
+    // -90 dBFS, 1 kHz at 48 kHz, in a document with a float source.
+    let x: Vec<f32> = (0..48_000).map(|i| (10f64.powf(-4.5) * (2.0 * PI * 1000.0 * i as f64 / 48_000.0).sin()) as f32).collect();
+    let doc = doc_of(&t.0.join("s"), &x);
+    let (p_off, p_on) = (t.0.join("off.wav"), t.0.join("on.wav"));
+
+    save_dithered(&doc, &p_off, SaveFormat::Wav, SampleType::Int16, AiffKind::Aiff, DitherSettings::default(), &mut |_| {}).unwrap();
+    let off = read_i16(&p_off);
+    assert_eq!(off.len(), x.len());
+    for (i, &v) in off.iter().enumerate() {
+        assert_eq!(i32::from(v), quantize(x[i], 16), "sample {i}");
+        assert!((-1..=1).contains(&v));
+    }
+
+    let tri = settings(DitherType::Triangular, Shaping::None);
+    save_dithered(&doc, &p_on, SaveFormat::Wav, SampleType::Int16, AiffKind::Aiff, tri, &mut |_| {}).unwrap();
+    let on = read_i16(&p_on);
+    assert_eq!(on.len(), off.len());
+    assert!(on.iter().zip(&off).filter(|(a, b)| a != b).count() >= 1000);
+    assert!(on.iter().any(|&v| v.unsigned_abs() >= 2));
+}
+
+#[test]
+fn a4_save_as_at_the_files_own_depth_ignores_the_dither_choice() {
+    let t = TempDir::new("a44-own");
+    let (x, _) = tone(1 << 16, 1e-5);
+    let doc = doc_of(&t.0.join("s"), &x);
+    let sixteen = converted(&doc, "bits=16");
+    let (a, b) = (t.0.join("a.wav"), t.0.join("b.wav"));
+    let tri = settings(DitherType::Triangular, Shaping::None);
+    save_dithered(&sixteen, &a, SaveFormat::Wav, SampleType::Int16, AiffKind::Aiff, tri, &mut |_| {}).unwrap();
+    save_wav(&sixteen, &b, SampleType::Int16, &mut |_| {}).unwrap();
+    assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
 }
