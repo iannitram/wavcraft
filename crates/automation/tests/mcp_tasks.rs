@@ -188,3 +188,30 @@ fn ten_tasks_headless() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[allow(dead_code)]
+#[path = "../examples/ten_tasks.rs"]
+mod ten_tasks;
+
+#[test]
+fn the_checker_accepts_its_own_files_and_refuses_a_changed_one() {
+    let dir = std::env::temp_dir().join(format!("wavcraft-ten-checker-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch folder");
+    ten_tasks::write_all(&dir).expect("write the ten files");
+    for name in ten_tasks::NAMES {
+        assert!(dir.join(name).is_file(), "{name} is missing");
+    }
+    assert_eq!(ten_tasks::report(&dir).expect("check"), (true, "same=10".to_string()));
+
+    // Change the first sample of 05-gain.wav (silent after the silence task, so 0 becomes 1).
+    let gain = dir.join("05-gain.wav");
+    let mut bytes = std::fs::read(&gain).expect("read 05-gain.wav");
+    let data = bytes.windows(4).position(|w| w == b"data").expect("a data chunk");
+    bytes[data + 8] = bytes[data + 8].wrapping_add(1);
+    std::fs::write(&gain, bytes).expect("write 05-gain.wav");
+    assert_eq!(ten_tasks::report(&dir).expect("check"), (false, "same=9 differs=05-gain.wav".to_string()));
+    assert!(ten_tasks::report(&dir.join("nope")).is_err());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
