@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn scratch(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("wavcraft-1299-{}-{name}", std::process::id()));
@@ -176,4 +177,92 @@ fn an_unwritable_output_exits_2_with_a_message_and_leaves_no_session() {
     assert!(!String::from_utf8_lossy(&out.stderr).trim().is_empty());
     assert!(std::fs::read_dir(&sessions).unwrap().next().is_none());
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `wavcraft` with `args` and `input` on standard input, the environment cleared of any window or control port.
+fn mcp_session(args: &[&str], sessions: &Path, input: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wavcraft"))
+        .args(args)
+        .env("WAVCRAFT_SESSION_DIR", sessions)
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("WAVCRAFT_CONTROL_PORT")
+        .env_remove("WAVCRAFT_CONTROL_TOKEN_FILE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run wavcraft");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    stdin.write_all(input.as_bytes()).expect("write stdin");
+    drop(stdin);
+    child.wait_with_output().expect("wait for wavcraft")
+}
+
+#[test]
+fn mcp_answers_tools_list_on_stdio() {
+    let dir = scratch("mcp-tools");
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        "\n"
+    );
+    let out = mcp_session(&["mcp"], &dir, input);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).expect("utf-8 stdout");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "stdout was: {text}");
+    let first: serde_json::Value = serde_json::from_str(lines[0]).expect("first reply is JSON");
+    let second: serde_json::Value = serde_json::from_str(lines[1]).expect("second reply is JSON");
+    assert_eq!(first["id"], 1);
+    assert_eq!(first["result"]["serverInfo"]["name"], "wavcraft");
+    assert_eq!(second["id"], 2);
+    assert_eq!(second["result"]["tools"].as_array().map(Vec::len), Some(7));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mcp_runs_a_call_on_stdio() {
+    let dir = scratch("mcp-call");
+    let wav = dir.join("source.wav");
+    write_wav(&wav);
+    let open = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "open", "arguments": {"path": wav.to_str().expect("utf-8 path")}}
+    });
+    let select = serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "select", "arguments": {"start": 10, "end": 20}}
+    });
+    let input = format!("{open}\n{select}\n");
+    let out = mcp_session(&["mcp"], &dir, &input);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).expect("utf-8 stdout");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "stdout was: {text}");
+    let reply: serde_json::Value = serde_json::from_str(lines[1]).expect("second reply is JSON");
+    assert_eq!(reply["result"]["isError"], false);
+    assert_eq!(reply["result"]["content"][0]["text"], "selection=10-20");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mcp_attach_without_a_port_exits_2() {
+    let dir = scratch("mcp-attach");
+    let out = mcp_session(&["mcp", "--attach"], &dir, "");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("WAVCRAFT_CONTROL_PORT"));
+    assert!(out.stdout.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mcp_refuses_a_bad_flag() {
+    let dir = scratch("mcp-flag");
+    let out = mcp_session(&["mcp", "--nope"], &dir, "");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--nope"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: wavcraft mcp [--attach]"), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
 }
