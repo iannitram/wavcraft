@@ -89,7 +89,7 @@ def main():
         a = c.ask("ACTION window.toggle.history")
         check("window.toggle.history hides History", "history=0" in a.split(), a)
         a = c.ask("ACTION window.hide.spectral")
-        check("window.hide.spectral hides the spectral display", "spectral=0 history=0" in a, a)
+        check("window.hide.spectral hides the spectral display", "spectral=0 rack=1 history=0" in a, a)
         a = c.ask("ACTION window.show.waveform")
         check("window.show.waveform on a shown panel changes nothing", panels(c) == {"waveform": "1", "spectral": "0", "history": "0", "properties": "1", "transport": "1", "zoom": "1", "tools": "1", "files": "1", "match": "1"}, a)
         a = c.ask("ACTION window.toggle.nothere")

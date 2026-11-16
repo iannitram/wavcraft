@@ -92,9 +92,9 @@ def main():
         print("startup PANELS:", c.ask("PANELS"))
         z = zones(c)
         check("fresh: History and Selection/View are both in front",
-              z["front.right"] == "history" and z["front.bottom"] == "selection", z)
+              z["front.right"] == "rack" and z["front.bottom"] == "selection", z)
         # Keep the original two-panel docking fixture as the registry grows.
-        for panel in ("freq", "markers", "playlist", "properties", "transport", "time", "zoom", "tools", "files", "match"):
+        for panel in ("rack", "freq", "markers", "playlist", "properties", "transport", "time", "zoom", "tools", "files", "match", "findings"):
             c.ask("PANEL close " + panel)
         z = zones(c)
         check("default: History on the right, Selection below, editor in the centre",
