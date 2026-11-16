@@ -208,8 +208,7 @@ impl EffectDialog {
             None => {}
         }
         if answer.is_none() {
-            // Enter while the name box has the keyboard types into it, not OK.
-            if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Enter)) {
+            if ctx.input(|i| i.key_pressed(Key::Enter)) {
                 answer = Some(Answer::Ok);
             } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
                 answer = Some(Answer::Cancel);

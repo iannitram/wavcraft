@@ -78,7 +78,7 @@ fn a_preset_for_the_wrong_settings_is_refused() {
     let mut dialog = EffectDialog::new(amplify_index(), None).expect("the dialog opens");
     dialog.load_preset(a.rack.preset_store(), "Bad");
     assert_eq!(dialog.values, vec![0.0, 0.0, 1.0], "the values are unchanged");
-    assert!(!dialog.note().is_empty(), "the refusal is said in the dialog");
+    assert!(dialog.note().contains("left_db"), "the refusal names the bad setting, got {:?}", dialog.note());
 }
 
 #[test]

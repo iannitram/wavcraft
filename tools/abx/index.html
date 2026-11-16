@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ABX listening test</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --fg: #1d1d1f;
+    --bg: #ffffff;
+    --muted: #5f6368;
+    --line: #c4c7c5;
+    --accent: #1a5fb4;
+    --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --fg: #ececec;
+      --bg: #1c1c1e;
+      --muted: #a8a8ad;
+      --line: #4a4a4f;
+      --accent: #7fb1ff;
+      --bad: #ff8a80;
+    }
+  }
+  :root[data-theme="dark"] {
+    --fg: #ececec;
+    --bg: #1c1c1e;
+    --muted: #a8a8ad;
+    --line: #4a4a4f;
+    --accent: #7fb1ff;
+    --bad: #ff8a80;
+  }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 640px;
+  }
+  h1 { font-size: 20px; margin: 4px 0 12px; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  fieldset {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin: 0 0 14px;
+    padding: 12px 14px;
+  }
+  legend { padding: 0 6px; color: var(--muted); }
+  label { display: block; margin: 6px 0 2px; }
+  input[type="file"] { max-width: 100%; margin-top: 4px; }
+  .info { color: var(--muted); margin: 2px 0 8px; min-height: 1.45em; overflow-wrap: anywhere; }
+  .info.error { color: var(--bad); }
+  button {
+    font: inherit;
+    padding: 6px 12px;
+    margin: 4px 6px 4px 0;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+  }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  #trial { font-size: 22px; margin: 6px 0 10px; }
+  #result { font-size: 17px; margin: 10px 0; min-height: 1.45em; }
+  #message { color: var(--bad); min-height: 1.45em; margin: 6px 0; overflow-wrap: anywhere; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; }
+  @media (max-width: 420px) {
+    body { padding: 12px; }
+    button { padding: 8px 12px; }
+  }
+</style>
+</head>
+<body>
+<h1>ABX listening test</h1>
+
+<fieldset>
+  <legend>Clips</legend>
+  <label for="fileA">Clip A</label>
+  <input type="file" id="fileA" accept="audio/*,.wav,.mp3">
+  <p class="info" id="infoA">No clip loaded.</p>
+
+  <label for="fileB">Clip B</label>
+  <input type="file" id="fileB" accept="audio/*,.wav,.mp3">
+  <p class="info" id="infoB">No clip loaded.</p>
+  <p class="info">Loading a clip starts a new run of 16 trials.</p>
+</fieldset>
+
+<fieldset>
+  <legend>Play</legend>
+  <div class="row">
+    <button type="button" id="playA">Play A</button>
+    <button type="button" id="playB">Play B</button>
+    <button type="button" id="playX">Play X</button>
+    <button type="button" id="stop">Stop</button>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>Answer</legend>
+  <p id="trial">Trial 1 of 16</p>
+  <div class="row">
+    <button type="button" id="ansA" class="primary">X is A</button>
+    <button type="button" id="ansB" class="primary">X is B</button>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>Result</legend>
+  <p id="result"></p>
+  <div class="row">
+    <button type="button" id="logBtn">Download log</button>
+    <button type="button" id="againBtn">Start again</button>
+  </div>
+</fieldset>
+
+<p id="message" role="alert"></p>
+
+<script src="abx.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  function $(id) { return document.getElementById(id); }
+
+  var ctx = null;          // one shared AudioContext
+  var gain = null;        // one gain node, the same for A, B and X
+  var current = null;     // the BufferSourceNode now playing
+  var playToken = 0;      // bumps on every start and stop, so a late start is dropped
+  var clips = { A: null, B: null };  // { buffer, name } once decoded
+  var loadToken = { A: 0, B: 0 };
+  var trials = [];        // made once when a run starts
+  var answers = [];
+
+  function say(text) {
+    try { $('message').textContent = text || ''; } catch (e) { /* page still works */ }
+  }
+
+  function getContext() {
+    try {
+      if (!ctx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        ctx = new AC();
+        gain = ctx.createGain();
+        gain.gain.value = 1;
+        gain.connect(ctx.destination);
+      }
+      return ctx;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function stopPlaying() {
+    playToken++;
+    var node = current;
+    current = null;
+    if (node) {
+      try { node.onended = null; node.stop(); } catch (e) { /* already stopped */ }
+      try { node.disconnect(); } catch (e) { /* already gone */ }
+    }
+  }
+
+  function play(buffer) {
+    var ac = getContext();
+    if (!ac || !buffer || !gain) {
+      say('Playback is not available in this browser.');
+      return;
+    }
+    stopPlaying();
+    var token = playToken;
+    function start() {
+      if (token !== playToken) return;
+      try {
+        var src = ac.createBufferSource();
+        src.buffer = buffer;
+        src.connect(gain);
+        src.onended = function () { if (current === src) current = null; };
+        current = src;
+        src.start(0);
+      } catch (e) {
+        current = null;
+        say('Playback failed in this browser.');
+      }
+    }
+    try {
+      if (ac.state === 'suspended' && typeof ac.resume === 'function') {
+        ac.resume().then(start, start);
+      } else {
+        start();
+      }
+    } catch (e) {
+      say('Playback failed in this browser.');
+    }
+  }
+
+  function decode(ac, data) {
+    return new Promise(function (resolve, reject) {
+      var p = ac.decodeAudioData(data, resolve, reject);
+      if (p && typeof p.then === 'function') { p.then(resolve, reject); }
+    });
+  }
+
+  function canAnswer() {
+    return !!(clips.A && clips.B && trials.length === TRIALS && answers.length < TRIALS);
+  }
+
+  function newRun() {
+    stopPlaying();
+    answers = [];
+    trials = makeTrials(TRIALS);
+    say('');
+    refresh();
+  }
+
+  function refresh() {
+    var ready = !!(clips.A && clips.B);
+    var n = answers.length;
+    var inRun = canAnswer();
+    var done = trials.length === TRIALS && n >= TRIALS;
+
+    $('trial').textContent = done ? 'Run complete' : 'Trial ' + (n + 1) + ' of ' + TRIALS;
+    $('playA').disabled = !clips.A;
+    $('playB').disabled = !clips.B;
+    $('playX').disabled = !inRun;
+    $('ansA').disabled = !inRun;
+    $('ansB').disabled = !inRun;
+    $('logBtn').disabled = !done;
+
+    var result = '';
+    if (done) {
+      var score = scoreOf(trials, answers);
+      result = 'Score: ' + score + ' of ' + TRIALS + ' - ' + verdict(score);
+    } else if (!ready) {
+      result = 'Load both clips to start.';
+    }
+    $('result').textContent = result;
+  }
+
+  function loadClip(which, input) {
+    var token = ++loadToken[which];
+    var info = $('info' + which);
+    var file = input.files && input.files[0];
+
+    stopPlaying();
+    clips[which] = null;
+    info.className = 'info';
+
+    if (!file) {
+      info.textContent = 'No clip loaded.';
+      newRun();
+      return;
+    }
+
+    info.textContent = 'Reading ' + file.name + '...';
+    var ac = getContext();
+    if (!ac) {
+      info.className = 'info error';
+      info.textContent = 'Could not load ' + file.name + ': this browser has no Web Audio.';
+      newRun();
+      return;
+    }
+
+    Promise.resolve()
+      .then(function () { return file.arrayBuffer(); })
+      .then(function (data) { return decode(ac, data); })
+      .then(function (buffer) {
+        if (token !== loadToken[which]) return;
+        clips[which] = { buffer: buffer, name: file.name };
+        var seconds = buffer && typeof buffer.duration === 'number' ? buffer.duration : 0;
+        info.textContent = file.name + ' - ' + seconds.toFixed(1) + ' s';
+        newRun();
+      })
+      .catch(function () {
+        if (token !== loadToken[which]) return;
+        info.className = 'info error';
+        info.textContent = 'Could not load ' + file.name + '. Use a WAV or MP3 file.';
+        newRun();
+      });
+  }
+
+  function answer(choice) {
+    if (!canAnswer()) return;
+    stopPlaying();
+    answers.push(choice);
+    refresh();
+  }
+
+  function saveLog() {
+    try {
+      var text = logCsv(trials, answers);
+      var blob = new Blob([text], { type: 'text/csv' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'abx-log.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.parentNode.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+    } catch (e) {
+      say('Could not save the log in this browser.');
+    }
+  }
+
+  $('fileA').addEventListener('change', function () { loadClip('A', this); });
+  $('fileB').addEventListener('change', function () { loadClip('B', this); });
+
+  $('playA').addEventListener('click', function () { if (clips.A) play(clips.A.buffer); });
+  $('playB').addEventListener('click', function () { if (clips.B) play(clips.B.buffer); });
+  $('playX').addEventListener('click', function () {
+    if (!canAnswer()) return;
+    var clip = trials[answers.length] === 'A' ? clips.A : clips.B;
+    play(clip && clip.buffer);
+  });
+  $('stop').addEventListener('click', stopPlaying);
+
+  $('ansA').addEventListener('click', function () { answer('A'); });
+  $('ansB').addEventListener('click', function () { answer('B'); });
+
+  $('logBtn').addEventListener('click', saveLog);
+  $('againBtn').addEventListener('click', newRun);
+
+  refresh();
+})();
+</script>
+</body>
+</html>

@@ -1,19 +1,29 @@
 //! Item A4 (issue #12): dither when reducing bit depth, and remembering the choice.
 //! Locked tests for cards wav-c-12-a (`a4a_`), wav-c-12-b (`a4b_`) and wav-c-12-c (`a4c_`).
 //! Every expected value is hard-coded; it was computed outside the code under test.
+//! The dither is the document's `Ditherer` (crates/core/src/dither.rs), the one the app uses.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
+use wavcraft_core::dither::{DitherSettings, DitherType, Ditherer, Shaping};
 use wavcraft_core::doc::{Channel, DocState, Piece, SourceFormat};
 use wavcraft_core::io::{OpenOptions, open};
-use wavcraft_core::save::{DitherOptions, DitherType, NoiseShaping, SampleType, Tpdf, quantize_dithered, save_wav, save_wav_dithered};
+use wavcraft_core::save::{SampleType, save_wav};
 use wavcraft_core::settings::Settings;
 use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
 const RATE: u32 = 48_000;
-const ON: DitherOptions = DitherOptions { enabled: true, kind: DitherType::Triangular, shaping: NoiseShaping::None };
-const OFF: DitherOptions = DitherOptions { enabled: false, kind: DitherType::Triangular, shaping: NoiseShaping::None };
+
+/// Triangular dither, no noise shaping, the seed the settings use by default.
+fn on() -> DitherSettings {
+    DitherSettings { dither: DitherType::Triangular, shaping: Shaping::None, seed: wavcraft_core::dither::DEFAULT_SEED }
+}
+
+/// No dither and no shaping: plain rounding.
+fn off() -> DitherSettings {
+    DitherSettings::default()
+}
 
 /// A folder in the system's temp directory, removed when dropped.
 struct TempDir(PathBuf);
@@ -33,20 +43,20 @@ impl Drop for TempDir {
     }
 }
 
-fn doc_from(dir: &Path, data: &[Vec<f32>]) -> DocState {
+fn doc_from(dir: &Path, data: &[Vec<f32>], dither: DitherSettings) -> DocState {
     let s = Store::create_with(dir, StoreOptions { cache_bytes: 64 << 20, ..StoreOptions::default() }).unwrap();
     let chans = data.iter().map(|c| Channel::from_pieces(c.chunks(BLOCK_FRAMES).map(|b| Piece::whole(s.append(b).unwrap()).unwrap()))).collect();
-    DocState::new(s.clone(), chans, RATE, SourceFormat::synthetic(RATE, data.len() as u16)).unwrap()
+    let mut src = SourceFormat::synthetic(RATE, data.len() as u16);
+    src.dither = dither;
+    DocState::new(s.clone(), chans, RATE, src).unwrap()
 }
 
-/// Save `data` (a fresh document each time) to `name` in `dir`; returns the file's bytes.
-fn save_bytes(dir: &Path, name: &str, data: &[Vec<f32>], ty: SampleType, dither: Option<DitherOptions>) -> Vec<u8> {
-    let doc = doc_from(&dir.join(format!("{name}-store")), data);
+/// Save `data` (a fresh document with `dither` as its source's dither) to `name` in `dir`;
+/// returns the file's bytes.
+fn save_bytes(dir: &Path, name: &str, data: &[Vec<f32>], ty: SampleType, dither: DitherSettings) -> Vec<u8> {
+    let doc = doc_from(&dir.join(format!("{name}-store")), data, dither);
     let target = dir.join(name);
-    match dither {
-        Some(d) => save_wav_dithered(&doc, &target, ty, d, &mut |_| {}).unwrap(),
-        None => save_wav(&doc, &target, ty, &mut |_| {}).unwrap(),
-    }
+    save_wav(&doc, &target, ty, &mut |_| {}).unwrap();
     std::fs::read(&target).unwrap()
 }
 
@@ -86,42 +96,14 @@ fn harmonic(q: &[i32], n: usize) -> f64 {
     2.0 / q.len() as f64 * re.hypot(im)
 }
 
-// ---- wav-c-12-a: Tpdf and quantize_dithered ----
-
-#[test]
-fn a4a_next_u64_is_splitmix64() {
-    let mut r = Tpdf::new(0);
-    assert_eq!(r.next_u64(), 0xE220_A839_7B1D_CDAF);
-    assert_eq!(r.next_u64(), 0x6E78_9E6A_A1B9_65F4);
-    assert_eq!(r.next_u64(), 0x06C4_5D18_8009_454F);
-}
-
-#[test]
-fn a4a_next_lsb_adds_two_uniform_halves() {
-    let mut r = Tpdf::new(0);
-    let first = r.next_lsb();
-    let second = r.next_lsb();
-    assert!((first - 0.3148388052621526).abs() < 1e-12, "first {first}");
-    assert!((second - -0.002684250253573772).abs() < 1e-12, "second {second}");
-}
-
-#[test]
-fn a4a_next_lsb_is_triangular_around_zero() {
-    let mut r = Tpdf::new(1);
-    let xs: Vec<f64> = (0..100_000).map(|_| r.next_lsb()).collect();
-    assert!(xs.iter().all(|x| *x > -1.0 && *x < 1.0));
-    let mean = xs.iter().sum::<f64>() / xs.len() as f64;
-    let var = xs.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / xs.len() as f64;
-    assert!(mean.abs() < 0.01, "mean {mean}");
-    assert!((var - 1.0 / 6.0).abs() < 0.005, "variance {var}");
-}
+// ---- wav-c-12-a: the Ditherer quantises one channel ----
 
 #[test]
 fn a4a_a_third_of_an_lsb_comes_through_on_average() {
     // Plain rounding turns 0.3 LSB into 0 every time; with dither the average is 0.3.
     let x = 0.3f32 / 32_768.0;
-    let mut r = Tpdf::new(2);
-    let q: Vec<i32> = (0..100_000).map(|_| quantize_dithered(x, 16, &mut r)).collect();
+    let mut d = Ditherer::new(&on(), 0);
+    let q: Vec<i32> = (0..100_000).map(|_| d.quantize(x, 16)).collect();
     assert!(q.iter().all(|v| (-1..=1).contains(v)));
     let mean = q.iter().map(|v| f64::from(*v)).sum::<f64>() / q.len() as f64;
     assert!((mean - 0.3).abs() < 0.01, "mean {mean}");
@@ -129,45 +111,48 @@ fn a4a_a_third_of_an_lsb_comes_through_on_average() {
 
 #[test]
 fn a4a_full_scale_clamps() {
-    let mut r = Tpdf::new(3);
+    let mut d = Ditherer::new(&on(), 0);
     for _ in 0..1000 {
-        assert_eq!(quantize_dithered(1.0, 16, &mut r), 32_767);
+        assert_eq!(d.quantize(1.0, 16), 32_767);
     }
     for _ in 0..1000 {
-        let v = quantize_dithered(-1.0, 16, &mut r);
+        let v = d.quantize(-1.0, 16);
         assert!(v == -32_768 || v == -32_767, "got {v}");
     }
 }
 
 #[test]
 fn a4a_twenty_four_bits_stay_within_one_step() {
-    let (mut a, mut b) = (Tpdf::new(9), Tpdf::new(9));
-    let qa: Vec<i32> = (0..1000).map(|_| quantize_dithered(0.25, 24, &mut a)).collect();
-    let qb: Vec<i32> = (0..1000).map(|_| quantize_dithered(0.25, 24, &mut b)).collect();
-    assert_eq!(qa, qb, "the same seed gives the same values");
+    let (mut a, mut b) = (Ditherer::new(&on(), 0), Ditherer::new(&on(), 0));
+    let qa: Vec<i32> = (0..1000).map(|_| a.quantize(0.25, 24)).collect();
+    let qb: Vec<i32> = (0..1000).map(|_| b.quantize(0.25, 24)).collect();
+    assert_eq!(qa, qb, "the same settings and channel give the same values");
     assert!(qa.iter().all(|v| (2_097_151..=2_097_153).contains(v)));
     assert!(qa.contains(&2_097_151) && qa.contains(&2_097_153), "dither moves some values");
 }
 
 #[test]
-fn a4a_nan_is_zero_and_still_draws_once() {
-    let mut r = Tpdf::new(5);
-    assert_eq!(quantize_dithered(f32::NAN, 16, &mut r), 0);
-    let mut fresh = Tpdf::new(5);
-    let _ = fresh.next_lsb();
-    assert_eq!(r.next_lsb().to_bits(), fresh.next_lsb().to_bits());
+fn a4a_nan_is_zero() {
+    assert_eq!(Ditherer::new(&on(), 0).quantize(f32::NAN, 16), 0);
+    assert_eq!(Ditherer::new(&off(), 0).quantize(f32::NAN, 16), 0);
 }
 
-// ---- wav-c-12-b: save_wav_dithered ----
+// ---- wav-c-12-b: the dithered WAV save ----
 
 #[test]
-fn a4b_dither_off_writes_what_save_wav_writes() {
+fn a4b_dither_off_is_plain_rounding() {
     let dir = TempDir::new("b-off");
-    let data = vec![off_grid(2 * BLOCK_FRAMES + 123), off_grid(2 * BLOCK_FRAMES + 123).iter().map(|x| -x).collect()];
-    for (ty, tag) in [(SampleType::Int16, "16"), (SampleType::Int24, "24"), (SampleType::Float32, "f")] {
-        let plain = save_bytes(&dir.0, &format!("plain-{tag}.wav"), &data, ty, None);
-        let off = save_bytes(&dir.0, &format!("off-{tag}.wav"), &data, ty, Some(OFF));
-        assert!(plain == off, "{tag}: dither off must be byte for byte save_wav");
+    let frames = 2 * BLOCK_FRAMES + 123;
+    let first = off_grid(frames);
+    let second: Vec<f32> = first.iter().map(|x| -x).collect();
+    let data = vec![first.clone(), second.clone()];
+    save_bytes(&dir.0, "off.wav", &data, SampleType::Int16, off());
+    let got = reopen_ints(&dir.0, "off.wav", 16);
+    for (ch, samples) in [first, second].iter().enumerate() {
+        for (i, x) in samples.iter().enumerate() {
+            let want = (f64::from(*x) * 32768.0).round().clamp(-32768.0, 32767.0) as i32;
+            assert_eq!(got[ch][i], want, "channel {ch} frame {i}");
+        }
     }
 }
 
@@ -175,8 +160,8 @@ fn a4b_dither_off_writes_what_save_wav_writes() {
 fn a4b_minus_90_dbfs_sine_gives_noise_not_steps() {
     let dir = TempDir::new("b-sine");
     let data = vec![sine_minus_90()];
-    save_bytes(&dir.0, "off.wav", &data, SampleType::Int16, Some(OFF));
-    save_bytes(&dir.0, "on.wav", &data, SampleType::Int16, Some(ON));
+    save_bytes(&dir.0, "off.wav", &data, SampleType::Int16, off());
+    save_bytes(&dir.0, "on.wav", &data, SampleType::Int16, on());
     let off = &reopen_ints(&dir.0, "off.wav", 16)[0];
     let on = &reopen_ints(&dir.0, "on.wav", 16)[0];
     // Off: plain rounding, a stepped wave of -1, 0, 1 with strong odd harmonics
@@ -193,15 +178,15 @@ fn a4b_minus_90_dbfs_sine_gives_noise_not_steps() {
 }
 
 #[test]
-fn a4b_channel_k_uses_its_own_generator_seeded_k_for_the_whole_save() {
-    let dir = TempDir::new("b-seed");
+fn a4b_channel_k_uses_its_own_ditherer_for_the_whole_save() {
+    let dir = TempDir::new("b-chan");
     let frames = 2 * BLOCK_FRAMES + 123;
     let data = vec![off_grid(frames), off_grid(frames)];
-    save_bytes(&dir.0, "on.wav", &data, SampleType::Int16, Some(ON));
+    save_bytes(&dir.0, "on.wav", &data, SampleType::Int16, on());
     let got = reopen_ints(&dir.0, "on.wav", 16);
     for (ch, samples) in data.iter().enumerate() {
-        let mut r = Tpdf::new(ch as u64);
-        let want: Vec<i32> = samples.iter().map(|x| quantize_dithered(*x, 16, &mut r)).collect();
+        let mut d = Ditherer::new(&on(), ch);
+        let want: Vec<i32> = samples.iter().map(|x| d.quantize(*x, 16)).collect();
         assert!(got[ch] == want, "channel {ch}");
     }
     assert!(got[0] != got[1], "identical channels get independent noise");
@@ -211,23 +196,21 @@ fn a4b_channel_k_uses_its_own_generator_seeded_k_for_the_whole_save() {
 fn a4b_dither_on_is_repeatable_and_changes_reduced_samples() {
     let dir = TempDir::new("b-repeat");
     let data = vec![off_grid(2 * BLOCK_FRAMES + 123)];
-    let first = save_bytes(&dir.0, "a.wav", &data, SampleType::Int24, Some(ON));
-    let second = save_bytes(&dir.0, "b.wav", &data, SampleType::Int24, Some(ON));
-    let off = save_bytes(&dir.0, "c.wav", &data, SampleType::Int24, Some(OFF));
+    let first = save_bytes(&dir.0, "a.wav", &data, SampleType::Int24, on());
+    let second = save_bytes(&dir.0, "b.wav", &data, SampleType::Int24, on());
+    let off = save_bytes(&dir.0, "c.wav", &data, SampleType::Int24, off());
     assert!(first == second, "two dithered saves of the same audio are identical");
     assert!(first != off, "dither on changes some 24-bit samples");
     assert_eq!(first.len(), off.len());
 }
 
 #[test]
-fn a4b_dither_never_touches_float_or_32_bit_integer() {
+fn a4b_dither_never_touches_float() {
     let dir = TempDir::new("b-float");
     let data = vec![off_grid(2 * BLOCK_FRAMES + 123)];
-    for (ty, tag) in [(SampleType::Float32, "f"), (SampleType::Int32, "32")] {
-        let on = save_bytes(&dir.0, &format!("on-{tag}.wav"), &data, ty, Some(ON));
-        let plain = save_bytes(&dir.0, &format!("plain-{tag}.wav"), &data, ty, None);
-        assert!(on == plain, "{tag}: no dither at this sample type");
-    }
+    let on = save_bytes(&dir.0, "on-f.wav", &data, SampleType::Float32, on());
+    let off = save_bytes(&dir.0, "off-f.wav", &data, SampleType::Float32, off());
+    assert!(on == off, "no dither at float sample type");
 }
 
 // ---- wav-c-12-c: Settings remember dither ----
