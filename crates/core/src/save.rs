@@ -31,7 +31,7 @@ use std::time::{Duration, SystemTime};
 use craft_mp3::{Encoder as Mp3Encoder, EncoderConfig};
 use soundcraft_audio_io::SampleFormat;
 
-use crate::dither::Ditherer;
+use crate::dither::{DitherSettings, Ditherer};
 use crate::doc::edit::ChannelMask;
 use crate::doc::{ChunkInfo, DocState, SourceFormat};
 use crate::flac_enc::{BLOCK_SIZE, Encoder};
@@ -441,6 +441,8 @@ struct Hooks<'a> {
     transform: Option<&'a RefCell<Transform<'a>>>,
     /// MP3 only (A3.4): the bitrate and mono choices; the defaults for every other format.
     mp3: Mp3Options,
+    /// The Save As dither choice (A4.4), already resolved with [`save_dither_for`]; `None`: the document's own.
+    dither: Option<DitherSettings>,
 }
 
 fn no_hooks<'a>() -> Hooks<'a> {
@@ -458,6 +460,7 @@ fn no_hooks<'a>() -> Hooks<'a> {
         block_delay: Duration::ZERO,
         transform: None,
         mp3: Mp3Options::default(),
+        dither: None,
     }
 }
 
@@ -501,19 +504,27 @@ pub struct SaveOptions<'a> {
     pub cancel: Option<&'a AtomicBool>,
     /// Test only: wait this long after each 64 K-frame block, so a cancel can be tested.
     pub block_delay: Duration,
+    /// The Save As dither choice, resolved with [`save_dither_for`] (A4.4); `None`: the document's own.
+    pub dither: Option<DitherSettings>,
 }
 
 impl Default for SaveOptions<'_> {
     /// Metadata on, no extra chunks, no cancel, no delay: the same file [`save_wav`] writes.
     fn default() -> Self {
-        SaveOptions { include_metadata: true, extra_chunks: Vec::new(), cancel: None, block_delay: Duration::ZERO }
+        SaveOptions { include_metadata: true, extra_chunks: Vec::new(), cancel: None, block_delay: Duration::ZERO, dither: None }
     }
 }
 
 /// [`save_wav`] with options: metadata on or off, cancel, and the test delay.
 pub fn save_wav_with(doc: &DocState, target: &Path, ty: SampleType, opts: &SaveOptions, progress: &mut dyn FnMut(f64)) -> Result<(), SaveError> {
-    let hooks =
-        Hooks { metadata: opts.include_metadata, extra: &opts.extra_chunks, cancel: opts.cancel, block_delay: opts.block_delay, ..no_hooks() };
+    let hooks = Hooks {
+        metadata: opts.include_metadata,
+        extra: &opts.extra_chunks,
+        cancel: opts.cancel,
+        block_delay: opts.block_delay,
+        dither: opts.dither.map(|d| save_dither_for(doc, ty, d)),
+        ..no_hooks()
+    };
     save_inner(doc, target, SaveFormat::Wav, ty, &Part::whole(doc), progress, hooks)
 }
 
@@ -625,6 +636,36 @@ pub fn save_aiff_kind(
     progress: &mut dyn FnMut(f64),
 ) -> Result<(), SaveError> {
     save_inner(doc, target, format, ty, &Part::whole(doc), progress, Hooks { aiff, ..no_hooks() })
+}
+
+/// How many bits of precision a sample type holds, for comparing depths.
+fn depth_rank(ty: SampleType) -> u32 {
+    match ty {
+        SampleType::Int16 => 16,
+        SampleType::Int24 => 24,
+        SampleType::Int32 => 32,
+        SampleType::Float32 | SampleType::Float64 => 64,
+    }
+}
+
+/// The dither a save at `ty` uses (A4.4): the Save As `choice` when `ty` is lower than the file's
+/// own depth, else the document's own, so a save at the file's depth stays bit-identical.
+pub fn save_dither_for(doc: &DocState, ty: SampleType, choice: DitherSettings) -> DitherSettings {
+    if depth_rank(ty) < depth_rank(SampleType::for_source(doc.source())) { choice } else { doc.source().dither }
+}
+
+/// [`save_aiff_kind`] with the Save As dither choice (A4.4), used when `ty` is below the file's depth.
+pub fn save_dithered(
+    doc: &DocState,
+    target: &Path,
+    format: SaveFormat,
+    ty: SampleType,
+    aiff: AiffKind,
+    dither: DitherSettings,
+    progress: &mut dyn FnMut(f64),
+) -> Result<(), SaveError> {
+    let hooks = Hooks { aiff, dither: Some(save_dither_for(doc, ty, dither)), ..no_hooks() };
+    save_inner(doc, target, format, ty, &Part::whole(doc), progress, hooks)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -980,7 +1021,7 @@ fn write_stream(
         SaveFormat::Flac => {
             let bits = if ty == SampleType::Int16 { 16 } else { 24 };
             let mut enc = Encoder::new(&mut out, channels, doc.sample_rate(), bits, frames)?;
-            let mut dithers: Vec<Ditherer> = (0..channels).map(|ch| Ditherer::new(&doc.source().dither, ch)).collect();
+            let mut dithers: Vec<Ditherer> = (0..channels).map(|ch| Ditherer::new(&hooks.dither.unwrap_or(doc.source().dither), ch)).collect();
             stream_samples(doc, part, progress, hooks, |bufs, n| {
                 for start in (0..n).step_by(BLOCK_SIZE) {
                     let end = (start + BLOCK_SIZE).min(n);
@@ -1124,7 +1165,7 @@ fn write_pcm(
     let mut bytes = Vec::with_capacity(BLOCK_FRAMES * out_channels * ty.bytes());
     // A163: one quantiser per written channel for the whole file, so its noise and filter state
     // carry across blocks. With the document's dither off it is plain [`quantize`].
-    let mut dithers: Vec<Ditherer> = (0..out_channels).map(|ch| Ditherer::new(&doc.source().dither, ch)).collect();
+    let mut dithers: Vec<Ditherer> = (0..out_channels).map(|ch| Ditherer::new(&hooks.dither.unwrap_or(doc.source().dither), ch)).collect();
     stream_samples(doc, part, progress, hooks, |bufs, n| {
         let bufs: &[Vec<f32>] = match xf.as_mut() {
             Some(t) => {
