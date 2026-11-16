@@ -753,7 +753,7 @@ fn hiding_the_levels_strip_survives_a_settings_save_and_load() {
 
     let dir = TempDir::new("show-levels");
     let file = dir.0.join("settings.txt");
-    let s = Settings { show_levels: false, ..Settings::default() };
+    let mut s = Settings { show_levels: false, ..Settings::default() };
     s.save(&file).unwrap();
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.lines().any(|l| l == "show_levels = off"), "off is written: {text}");
@@ -765,7 +765,9 @@ fn hiding_the_levels_strip_survives_a_settings_save_and_load() {
     let mut fresh = Settings::default();
     assert!(fresh.set("show_levels", "banana").is_err(), "banana is refused");
     assert!(fresh.show_levels, "the value stays true");
-    fresh.set("show_levels", "on").unwrap();
-    fresh.save(&file).unwrap();
+
+    s.set("show_levels", "on").unwrap();
+    assert!(s.show_levels, "set on shows the strip again");
+    s.save(&file).unwrap();
     assert!(Settings::load(&file).show_levels, "shown again survives save and load");
 }

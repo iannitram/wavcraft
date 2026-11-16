@@ -120,7 +120,7 @@ pub const KEEP_DAYS_RANGE: std::ops::RangeInclusive<u32> = 1..=3650;
 pub const CACHE_MB_RANGE: std::ops::RangeInclusive<u64> = 64..=65_536;
 
 /// Every preference key, in the order the file lists them (`hidden_panels` belongs to the Window
-/// menu and is not one of them).
+/// menu and is not one of them; `show_levels`, also a Window-menu switch, is kept here).
 pub const KEYS: [&str; 47] = [
     KEY_SESSION_FOLDER,
     KEY_CUT_JOIN,
