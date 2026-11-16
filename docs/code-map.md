@@ -4,7 +4,7 @@ Describes `main` at `92d0f13` (2026-11-13). The file tables, Tests, the `app.rs`
 
 **Status words:** *present, wired* (on `main` and reached from the app or a binary); *present, core only* (on `main` with tests, but nothing in the app calls it yet); *present, out of v1* (on `main`, belongs to an after-1.0 feature); *stub* (the body is `todo!()` or `unimplemented!()`); *dead code* (no caller and no test).
 
-**Counts:** 492 files and folders described, 316 in the file tables and 176 in Tests (a test file counts as present, wired unless its row says otherwise): 330 present, wired, 114 present, core only, 43 present, out of v1, 4 stub, 1 dead code.
+**Counts:** 505 files and folders described, 324 in the file tables and 181 in Tests (a test file counts as present, wired unless its row says otherwise): 340 present, wired, 121 present, core only, 43 present, out of v1, 0 stub, 1 dead code.
 
 ## Contents
 

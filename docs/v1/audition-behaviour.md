@@ -133,10 +133,10 @@ Adobe advises removing DC offset first, or quiet passages may click. It also sug
 | Noise Floor display | High (most noise found per frequency), Low (least), Threshold (below this, reduction happens) | Threshold shown | *(not checked)* |
 | Scale | Log or linear frequency | Log | *(not checked)* |
 | Channel | Which channel the graph shows. Reduction is the same for all channels | First channel | *(not checked)* |
-| Noise Reduction % | How much of the reduction reaches the output. Too high can sound flanged | 80 % | 50 % (slider 0–100 %) |
-| Reduce By (dB) | How far noise is turned down. **6 to 30 dB** works well; lower it if you hear bubbles | 12 dB | 16 dB (slider 1–100 dB, logarithmic) |
+| Noise Reduction % | How much of the reduction reaches the output. Too high can sound flanged | 50 % (G2.1, #1403) | 50 % (slider 0–100 %) |
+| Reduce By (dB) | How far noise is turned down. **6 to 30 dB** works well; lower it if you hear bubbles | 16 dB (G2.1, #1403) | 16 dB (slider 1–100 dB, logarithmic) |
 | Output Noise Only | Play only what is being taken out | Off | *(not checked)* |
-| Spectral Decay Rate (%) | How much keeps being processed after audio drops below the floor. **40–75 %**; lower sounds bubbly, higher leaves noise | 60 % | 65 % (range *unconfirmed*) |
+| Spectral Decay Rate (%) | How much keeps being processed after audio drops below the floor. **40–75 %**; lower sounds bubbly, higher leaves noise | 65 % (G2.1, #1403) | 65 % (range *unconfirmed*) |
 | Smoothing | Allows for variance of noise per band. Up to about 2 reduces burbling but raises broadband noise | 1 | 1 (range *unconfirmed*) |
 | Precision Factor | **5–10** best, odd values ideal. 3 or less processes in large blocks (level dips), more than 10 gains nothing and is slower | 7 | 7 (range *unconfirmed*) |
 | Transition Width (dB) | The range between noise and wanted audio. 0 is a hard gate per band. Example: width 10, floor −60: −60 is untouched, −62 slightly reduced, −70 removed | 10 dB | 0 dB (range *unconfirmed*) |
