@@ -13,6 +13,8 @@ pub enum Answer {
     Cancel,
     /// A generator's Preview button (f21): play a short sample of the current settings.
     Preview,
+    /// An effect's Preview button: start or stop the live preview (E6.2, E6.3).
+    TogglePreview,
 }
 
 /// An open dialog: which effect (its index in [`effects::all`]) and the values being edited.
@@ -26,6 +28,11 @@ pub struct EffectDialog {
     /// Opened from the Effects Rack for this slot: OK stores the settings there instead of
     /// running the effect (f31).
     pub rack_slot: Option<usize>,
+    /// True while a live preview runs; the app sets it each frame. The Preview button then
+    /// reads Stop Preview.
+    pub preview_on: bool,
+    /// The values last reported through [`EffectDialog::take_changed_values`].
+    sent: Vec<f64>,
     /// The name typed in the Presets menu for saving.
     preset_name: String,
     /// What the last preset action said.
@@ -47,14 +54,32 @@ impl EffectDialog {
     pub fn new(index: u16, values: Option<Vec<f64>>) -> Option<EffectDialog> {
         let effect = effects::all().get(usize::from(index))?;
         let values = values.filter(|v| effects::validate(*effect, v).is_ok()).unwrap_or_else(|| effects::Params::defaults(*effect));
-        Some(EffectDialog { index, values, generator: false, rack_slot: None, preset_name: String::new(), note: String::new() })
+        Some(EffectDialog {
+            index,
+            sent: values.clone(),
+            values,
+            generator: false,
+            rack_slot: None,
+            preview_on: false,
+            preset_name: String::new(),
+            note: String::new(),
+        })
     }
 
     /// Open for the generator at `index` of [`generate::all`] (f21).
     pub fn new_generator(index: u16, values: Option<Vec<f64>>) -> Option<EffectDialog> {
         let g = generate::all().get(usize::from(index))?;
         let values = values.filter(|v| generate::validate(*g, v).is_ok()).unwrap_or_else(|| generate::defaults(*g));
-        Some(EffectDialog { index, values, generator: true, rack_slot: None, preset_name: String::new(), note: String::new() })
+        Some(EffectDialog {
+            index,
+            sent: values.clone(),
+            values,
+            generator: true,
+            rack_slot: None,
+            preview_on: false,
+            preset_name: String::new(),
+            note: String::new(),
+        })
     }
 
     /// The effect being edited. Panics for a generator dialog; see [`EffectDialog::id`].
@@ -78,6 +103,22 @@ impl EffectDialog {
     /// Back to the defaults.
     pub fn reset(&mut self) {
         self.values = self.descs().iter().map(|p| p.default).collect();
+    }
+
+    /// Whether the dialog offers the live Preview button. Every effect does; a generator keeps
+    /// its own one-shot Preview button instead.
+    pub fn offers_preview(&self) -> bool {
+        !self.generator
+    }
+
+    /// The values to send to the preview worker, when they differ from those last sent. Returns
+    /// `None` on an unchanged frame, so a slider drag, Reset or a preset load each give one message.
+    pub fn take_changed_values(&mut self) -> Option<Vec<f64>> {
+        if self.values == self.sent {
+            return None;
+        }
+        self.sent = self.values.clone();
+        Some(self.sent.clone())
     }
 
     /// Set the name the Presets menu saves under (what the user types there); the tests use it.
@@ -173,6 +214,9 @@ impl EffectDialog {
                 }
                 if self.generator && ui.button("Preview").clicked() {
                     answer = Some(Answer::Preview);
+                }
+                if self.offers_preview() && ui.button(if self.preview_on { "Stop Preview" } else { "Preview" }).clicked() {
+                    answer = Some(Answer::TogglePreview);
                 }
                 if !self.generator {
                     ui.menu_button("Presets", |ui| {
@@ -280,5 +324,26 @@ mod tests {
         let mut d = EffectDialog::new(gain_index(), Some(vec![-6.0])).unwrap();
         d.reset();
         assert_eq!(d.values, vec![0.0]);
+    }
+
+    #[test]
+    fn e6_every_effect_dialog_offers_preview() {
+        for i in 0..effects::all().len() {
+            let d = EffectDialog::new(i as u16, None).unwrap();
+            assert!(d.offers_preview(), "effect {} (index {i}) should offer Preview", d.id());
+        }
+        assert!(!EffectDialog::new_generator(0, None).unwrap().offers_preview());
+    }
+
+    #[test]
+    fn e6_a_changed_setting_sends_exactly_one_message() {
+        let mut d = EffectDialog::new(gain_index(), None).unwrap();
+        assert_eq!(d.take_changed_values(), None, "an unchanged dialog sends nothing");
+        d.values = vec![-6.0];
+        assert_eq!(d.take_changed_values(), Some(vec![-6.0]));
+        assert_eq!(d.take_changed_values(), None, "the same values are not sent twice");
+        d.reset();
+        assert_eq!(d.take_changed_values(), Some(vec![0.0]));
+        assert_eq!(d.take_changed_values(), None);
     }
 }
