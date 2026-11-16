@@ -73,6 +73,8 @@ fn mixed_tone(frames: usize) -> Vec<f32> {
 
 fn max_diff(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());
+    // f32::max drops NaN, so a NaN output would otherwise pass as a zero difference.
+    assert!(a.iter().chain(b.iter()).all(|v| v.is_finite()), "non-finite sample");
     a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
 }
 
@@ -151,6 +153,7 @@ fn deesser_multiband_matches_the_shared_plugin_on_two_channels() {
     let d = doc(&tmp.0, &[left.clone(), right.clone()]);
     let got = run("deesser", "frequency_hz=6000 threshold_db=-30 amount_db=10", &d);
     let want = plugin_reference(&[left, right]);
+    assert_eq!(got.len(), 2, "the de-esser gave the wrong channel count");
     for (c, (g, w)) in got.iter().zip(&want).enumerate() {
         let worst = max_diff(g, w);
         assert!(worst < TOL, "DeEsser channel {c} differs from the shared plugin by {worst}");
