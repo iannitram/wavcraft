@@ -438,6 +438,10 @@ pub const BINDINGS: &[Binding] = &[
     // Findings navigation (K3.2, moved by I3.3): F6 moves to the next finding, Shift+F6 to the previous.
     act(ActionId::CheckNext, key("F6")),
     act(ActionId::CheckPrev, shift("F6")),
+    // Transcript search (L5.4): Ctrl+F opens search, Ctrl+G next, Ctrl+Shift+G previous.
+    act(ActionId::TranscriptFind, cmd("F")),
+    act(ActionId::TranscriptFindNext, cmd("G")),
+    act(ActionId::TranscriptFindPrev, cmd_shift("G")),
     // Workspaces (f96): Alt+Shift+1..9 switch to the first nine, in menu order.
     bind(Command::Workspace(1), alt_shift("1")),
     bind(Command::Workspace(2), alt_shift("2")),
@@ -728,5 +732,18 @@ pub fn save(path: &Path, map: &Keymap) -> io::Result<()> {
 impl Default for Keymap {
     fn default() -> Keymap {
         Keymap::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Catches: keymap check failing with conflict or Ctrl+F not resolving to transcript.find.
+    #[test]
+    fn keymap_check_ok_and_ctrl_f_resolves_to_find() {
+        let map = Keymap::new();
+        assert_eq!(map.check(), Ok(()));
+        assert_eq!(map.resolve_text("Ctrl+F"), Ok(Command::Action(ActionId::TranscriptFind)));
     }
 }

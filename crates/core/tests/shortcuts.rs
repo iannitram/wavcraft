@@ -102,6 +102,9 @@ shortcuts! {
     maximize_panel_backtick: "`" => A(ActionId::WindowMaximizePanel);
     check_next_f6: "F6" => A(ActionId::CheckNext);
     check_prev_shift_f6: "Shift+F6" => A(ActionId::CheckPrev);
+    transcript_find_ctrl_f: "Ctrl+F" => A(ActionId::TranscriptFind);
+    transcript_find_next_ctrl_g: "Ctrl+G" => A(ActionId::TranscriptFindNext);
+    transcript_find_prev_ctrl_shift_g: "Ctrl+Shift+G" => A(ActionId::TranscriptFindPrev);
     convert_sample_type_shift_t: "Shift+T" => A(ActionId::ConvertSampleType);
     convert_sample_type_f11: "F11" => A(ActionId::ConvertSampleType);
     workspace_1_alt_shift_1: "Alt+Shift+1" => Command::Workspace(1);
@@ -128,6 +131,16 @@ fn findings_shortcuts_resolve_next_and_previous() {
     assert_eq!(map.check(), Ok(()));
     assert_eq!(map.resolve_text("F6"), Ok(A(ActionId::CheckNext)));
     assert_eq!(map.resolve_text("Shift+F6"), Ok(A(ActionId::CheckPrev)));
+}
+
+// Catches: transcript shortcuts not resolving to their corresponding ActionId commands.
+#[test]
+fn transcript_shortcuts_resolve() {
+    let map = Keymap::new();
+    assert_eq!(map.check(), Ok(()));
+    assert_eq!(map.resolve_text("Ctrl+F"), Ok(A(ActionId::TranscriptFind)));
+    assert_eq!(map.resolve_text("Ctrl+G"), Ok(A(ActionId::TranscriptFindNext)));
+    assert_eq!(map.resolve_text("Ctrl+Shift+G"), Ok(A(ActionId::TranscriptFindPrev)));
 }
 
 #[test]
