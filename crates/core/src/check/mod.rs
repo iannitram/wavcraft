@@ -34,7 +34,10 @@ pub mod summary;
 
 use std::f64::consts::PI;
 use std::io;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use soundcraft_dsp::meter::LoudnessMeter;
 
 use crate::doc::DocState;
 use crate::document::StoreChannel;
@@ -94,7 +97,8 @@ pub struct Finding {
     /// One past the last frame.
     pub end: u64,
     /// Clipping: the largest magnitude in the run (linear). True peak: the highest interpolated
-    /// peak (dBTP). DC offset: the mean over the region (linear). Dead air: the loudest sample in
+    /// peak over the finding (dBTP), measured by the soundcraft meter that `loudness::measure`
+    /// reads. DC offset: the mean over the region (linear). Dead air: the loudest sample in
     /// it (dBFS). Loudness drift: the largest distance of a short-term reading from the integrated
     /// loudness (LU), signed: positive when louder than the file, negative when quieter. Mains
     /// hum: the fundamental (Hz). Plosive: the loudest low-band frame RMS (dBFS).
@@ -284,6 +288,14 @@ pub fn scan_with(channels: &[&dyn Samples], cfg: &Config, cancel: &AtomicBool, p
     if let Some((s, top)) = silence.filter(|&(s, _)| len - s >= silence_min) {
         sink.push(dead_air_finding(s, len, top));
     }
+    // The true peak detector above finds the stretches; the value the finding reports is the
+    // meter's true peak over that stretch, the same code `loudness::measure` uses.
+    for finding in &mut sink.findings {
+        if finding.kind == Kind::TruePeak {
+            let Some(src) = finding.channel.and_then(|c| channels.get(c)) else { continue };
+            finding.value = true_peak_db_range(*src, finding.start..finding.end, cfg.sample_rate, cancel)?;
+        }
+    }
     // Each channel's DC, hum and plosive passes and the drift pass read the file once each.
     let total = len.saturating_mul(3 * channels.len() as u64 + 1);
     let mut tick = Ticker { cancel, progress, done: 0, total };
@@ -432,6 +444,27 @@ fn true_peak_at(buf: &[f32], at: usize, kernel: &[[f32; 2 * HALF_TAPS]; PHASES -
         best = best.max(y.abs());
     }
     best
+}
+
+/// The highest true peak (dBTP) in `range` of `src`, through the soundcraft meter [`measure`]
+/// reads. The frames are read [`CHUNK_FRAMES`] at a time, so the range never sits in memory.
+///
+/// [`measure`]: crate::loudness::measure
+fn true_peak_db_range(src: &dyn Samples, range: Range<u64>, sample_rate: u32, cancel: &AtomicBool) -> Option<f64> {
+    let mut meter = LoudnessMeter::new(sample_rate.max(1) as f32, 1);
+    let mut planar = vec![vec![0f32; CHUNK_FRAMES]];
+    let mut at = range.start;
+    while at < range.end {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let n = (range.end - at).min(CHUNK_FRAMES as u64) as usize;
+        let Some(buf) = planar.first_mut() else { break };
+        src.read(at as usize, &mut buf[..n]);
+        meter.process(&planar, n);
+        at += n as u64;
+    }
+    Some(f64::from(meter.true_peak_db()))
 }
 
 /// An open DC stretch: frames `start..end` whose window means share one sign.
