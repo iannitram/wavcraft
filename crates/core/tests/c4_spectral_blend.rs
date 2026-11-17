@@ -2,7 +2,7 @@
 
 use wavcraft_core::Selection;
 use wavcraft_core::stft::{Stft, blend_in_band};
-use wavcraft_core::view::{Band, SpectralSelection};
+use wavcraft_core::view::{Band, DEFAULT_FEATHER_HZ, DEFAULT_FEATHER_MS, SpectralSelection};
 
 const RATE: u32 = 48_000;
 const N: usize = 240_000;
@@ -69,6 +69,22 @@ fn the_tone_drops_and_the_noise_stays() {
     for i in 0..91_200 {
         assert_eq!(out[i].to_bits(), inp[i].to_bits(), "sample {i}");
     }
+}
+
+#[test]
+fn the_default_feather_leaves_no_click() {
+    const { assert!(DEFAULT_FEATHER_HZ > 0.0) };
+    const { assert!(DEFAULT_FEATHER_MS > 0.0) };
+    let sine: Vec<f32> = (0..N).map(|i| (std::f64::consts::TAU * 1000.0 * i as f64 / 48_000.0).sin() as f32).collect();
+    let processed: Vec<f32> = sine.iter().map(|v| v * 0.1).collect();
+    let mut band = Band::new(0.0, 24_000.0, 24_000.0);
+    band.feather_hz = DEFAULT_FEATHER_HZ;
+    band.feather_ms = DEFAULT_FEATHER_MS;
+    let sel = SpectralSelection { time: Selection { anchor: 48_000, head: 96_000 }, band, rate: RATE };
+    let stft = Stft::new(8192, 50).unwrap();
+    let out = blend_in_band(&stft, &sine, &processed, 0, RATE, |f, hz| sel.mask(f, hz)).unwrap();
+    let worst = out.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+    assert!(worst <= 0.1355, "largest sample-to-sample step {worst}");
 }
 
 #[test]

@@ -985,6 +985,11 @@ fn seconds_step(min_seconds: f64) -> f64 {
     STEPS.iter().copied().find(|s| *s >= min_seconds).unwrap_or(3600.0)
 }
 
+/// The Marquee tool's default frequency feather, Hz.
+pub const DEFAULT_FEATHER_HZ: f32 = 50.0;
+/// The Marquee tool's default time feather, milliseconds.
+pub const DEFAULT_FEATHER_MS: f32 = 20.0;
+
 /// A band of frequencies for a spectral selection (B135, B141): `lo_hz..hi_hz`, with an optional
 /// feather that falls off outside it.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
