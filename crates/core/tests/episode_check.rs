@@ -379,6 +379,29 @@ fn a_burst_over_hum_does_not_grow_over_the_hum() {
     assert!((p.end - p.start).abs_diff(frame(0.08)) <= frame(0.02), "length {} frames", p.end - p.start);
 }
 
+/// A burst followed straight away by voiced speech, no gap, must stop at the burst's end and not
+/// grow into the speech: a 100 Hz voice's low band passes the 10 % peak floor, but it is not
+/// low-dominant (K4.4a, the owner's ruling of 2026-11-17).
+#[test]
+fn a_burst_then_speech_does_not_grow_into_the_speech() {
+    for f0 in [100.0, 150.0] {
+        let (mut ch0, ch1) = (speechlike_for(1, f0, SECONDS, 0.0), speechlike_for(2, 150.0, SECONDS, 0.0));
+        // Quiet only before and under the burst; the voice resumes at 5.63 s, the burst's end.
+        set_noise_floor(&mut ch0, 3, 5.0, 5.63);
+        let (at, burst_end) = (frame(5.55), frame(5.63));
+        for n in 0..frame(0.08) as usize {
+            let t = n as f64 / f64::from(RATE);
+            ch0[at as usize + n] += (0.6 * (-t / 0.025).exp() * (2.0 * PI_F * 40.0 * t).sin()) as f32;
+        }
+        let plosives = of_kind(&scan(&ch0, &ch1), Kind::Plosive);
+        let near: Vec<_> = plosives.iter().filter(|p| p.channel == Some(0) && p.start < frame(6.5) && p.end > frame(5.0)).collect();
+        assert_eq!(near.len(), 1, "f0 {f0}: {near:?}");
+        let p = near[0];
+        assert!(p.start.abs_diff(at) <= frame(0.01), "f0 {f0}: start {} vs {at}", p.start);
+        assert!(p.end.abs_diff(burst_end) <= frame(0.01), "f0 {f0}: end {} vs burst end {burst_end}", p.end);
+    }
+}
+
 #[test]
 fn one_file_with_every_fault_reports_each_within_50_ms() {
     let (ch0, ch1, [clip, tp, dc, dead, hum, drift, plosive]) = every_fault();

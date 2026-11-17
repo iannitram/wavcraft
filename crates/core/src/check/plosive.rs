@@ -14,6 +14,10 @@ const NEIGHBOURS: usize = 50;
 /// (25 % would cut it at 50 ms), and the hum in `a_burst_over_hum_does_not_grow_over_the_hum` is
 /// 4 to 7.2 % of that burst's peak.
 const GROWTH_SHARE: f64 = 0.1;
+/// A grown frame must also be low-dominant: its low band at least this many times that same frame's
+/// band above, so a voice straight after a burst stops the growth (K4.4a; the owner's ruling of
+/// 2026-11-17).
+const GROWTH_DOMINANCE: f64 = 2.0;
 /// Low-band RMS under this (linear, about -45 dBFS) is not a plosive however it compares.
 const FLOOR: f64 = 0.005_6;
 
@@ -44,9 +48,10 @@ impl Filter {
 }
 
 /// Whether a frame next to a plosive run whose loudest low-band frame is `peak` belongs to the same
-/// burst: not clipped, and its low band at least [`GROWTH_SHARE`] of `peak`.
-fn grows((lo, _, clipped): (f64, f64, bool), peak: f64) -> bool {
-    !clipped && lo >= GROWTH_SHARE * peak
+/// burst: not clipped, its low band at least [`GROWTH_SHARE`] of `peak`, and at least
+/// [`GROWTH_DOMINANCE`] times its own band above.
+fn grows((lo, rest, clipped): (f64, f64, bool), peak: f64) -> bool {
+    !clipped && lo >= GROWTH_SHARE * peak && lo >= GROWTH_DOMINANCE * rest
 }
 
 /// `None` when the scan was cancelled.
