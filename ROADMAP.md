@@ -181,13 +181,13 @@ The Project Manager files these, in stage order, before an agent takes them (AGE
 **Rulings and leave:**
 
 - **Ruled on 2026-11-16** (Q11 in [docs/v1/questions-and-answers.md](docs/v1/questions-and-answers.md)): Alt+5 opens Match Loudness (G3.4); F8 is Add Marker and the finding keys move (I3.3); G2.9 measures at 50 %; yes to I7.2, C5.4, F2.2 and K4.6; a step may add its own rows to the locked Help-list test (I3.4, I3.5, L5.4; G3.4 added its Alt+5 row in #1413, B2.1 its Shift+D and F9 rows in #1456, A4.1 its F11 row in #1483, B2.3 its four Ctrl+Alt rows in #1519 and C4.6 its D row in #1547).
-- **Ruled on 2026-11-16 (Q12):** "the 8 GB Mac" is the M1 Mac mini (8 GB). Agents may run `hand` checks, and I5.4 and H3.2, on it and record them; the delete-to-picture limit holds there (#1590).
+- **Ruled on 2026-11-16** (Q12 in [docs/v1/questions-and-answers.md](docs/v1/questions-and-answers.md)): "the 8 GB Mac" is the M1 Mac mini (8 GB). Agents may run `hand` checks, and I5.4 and H3.2, on it and record them; the delete-to-picture limit holds there (#1590).
 
 **Hand checks only I can do (by ear, or on my machine):**
 
 - Windows build machine (10): A6.2, C5.7, C5.10, H3.3, E6.6, G2.2, G2.10, C6.1, I1.4, I5.2.
 - Linux handheld or the 64 GB Linux tablet (21): C5.8, C5.11, H3.4, J1.6, J2.2, J3.5, J4.5, J5.1, J6.5, J6.6, J7.1, E6.5, C6.2, K2.4, K4.10, L1.16, L2.9, L5.7, M4.7, I5.3, I5.5.
-- Mac (9): C5.9, H3.2, J6.7, J6.8, E6.7, M1.12, A3.8, I5.4, I5.6.
+- Mac (7): C5.9, J6.7, J6.8, E6.7, M1.12, A3.8, I5.6. (H3.2 and I5.4 are now agent runs on the M1 Mac mini, Q12.)
 - Any machine (3): G2.8 (my two recordings), L2.7 (a hand-labelled clip), A3.9 (the ABX run).
 
 **Script runs that need one of my machines:** F1.7, G2.9 and B1.5 (a release build on the Windows build machine; F1.7's binary, wavcraft-rack-bench, is merged, #1497; G2.9 runs nr-measure on the real kit and times a 1-hour stereo file, once G2.3 and G2.8 are done, and its timing line `nr_1h_stereo_seconds` is merged, #1531; B1.5 is the 3-hour frame-time run of `tools/alpha/b1-frames.py`, merged in #1527), I4.2 and I4.4 (`tools/alpha/f10.py` on a release build, on a Linux handheld and on the Windows build machine; the script is merged, #1523), K1.9 (the 64 GB Linux tablet, #1256), N1.7 (the recorded run of `tools/checks/1107-headless-window-parity.sh` on a Linux handheld with a real display; its code is merged, #1373), J1.5 (a recorded run of `tools/alpha/f25.py`, with the take open in the editor, mono 48 kHz; f25 passed on Linux under a virtual display in #1377, and the code is merged, #1374) and J6.9 (the Git Bash run of `tools/alpha/f25.sh` on the Windows build machine, which J6.4 does later; its code is merged, #1377).
