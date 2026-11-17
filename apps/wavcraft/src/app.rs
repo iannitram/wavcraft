@@ -1447,12 +1447,15 @@ impl WaveApp {
         self.meters.input_view = bars_source(self.rec.meter().map(|(p, _)| p), self.input.is_open(), self.player.is_playing(), [0.0; 2], [0.0; 2]).1;
     }
 
-    /// The peaks for this frame's bars: the take's while recording, else the input's while it is
-    /// open and nothing plays, else the player's.
-    fn meter_peaks(&self) -> [f32; 2] {
+    /// The peaks and energy for this frame's bars: the take's while recording, else the input's
+    /// while it is open and nothing plays, else the player's.
+    fn meter_peaks(&self) -> ([f32; 2], [(f32, u64); 2]) {
         let out = self.player.take_levels();
+        let energy = self.player.take_energy();
         let inp = if self.input.is_open() { self.input.tap.take_peaks() } else { [0.0, 0.0] };
-        bars_source(self.rec.meter().map(|(p, _)| p), self.input.is_open(), self.player.is_playing(), inp, out).0
+        let (peaks, source_is_take) = bars_source(self.rec.meter().map(|(p, _)| p), self.input.is_open(), self.player.is_playing(), inp, out);
+        let energy = if source_is_take { [(0.0, 0), (0.0, 0)] } else { energy };
+        (peaks, energy)
     }
 
     /// `MICCHECK <seconds>`: listen, then answer the control channel with the numbers.
@@ -9895,11 +9898,11 @@ impl WaveApp {
                     Some(_) => return "ERR METERS [PUSH <l> <r> | RESET]".to_string(),
                     None => {}
                 }
-                let peaks = self.meter_peaks();
-                self.meters.update(peaks);
+                let (peaks, energy) = self.meter_peaks();
+                self.meters.update(peaks, energy);
                 format!(
                     "{} view={} armed={} input_open={}",
-                    meters_ui::readings_line(&self.meters.levels),
+                    meters_ui::readings_line(&self.meters.levels, &self.meters.rms),
                     if self.meters.input_view { "input" } else { "output" },
                     u8::from(self.meter_input),
                     u8::from(self.input.is_open())
@@ -12657,8 +12660,8 @@ impl eframe::App for WaveApp {
         }
         self.diag.poll();
         self.sync_input();
-        let peaks = self.meter_peaks();
-        self.meters.update(peaks);
+        let (peaks, energy) = self.meter_peaks();
+        self.meters.update(peaks, energy);
         self.finish_match(ctx);
         self.poll_mic_check();
         if self.meters.animating() || self.matcher.animating() || self.player.is_playing() {
