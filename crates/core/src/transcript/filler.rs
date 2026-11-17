@@ -1,5 +1,7 @@
 //! The filler finder (L4.1, #1060): which words of a [`Transcript`] are fillers such as "um"
 //! or "uh". Case and punctuation are ignored, and only whole words match ("umbrella" is not "um").
+//! A stretched filler ("umm", "uhhh") matches its short form, and [`repeats`] finds a word said
+//! twice in a row ("the the").
 
 use std::ops::Range;
 
@@ -8,23 +10,56 @@ use super::Transcript;
 /// The filler words the finder looks for by default.
 pub const DEFAULT_FILLERS: [&str; 8] = ["um", "uh", "er", "erm", "ah", "hm", "hmm", "mm"];
 
-/// The letters and digits of `text`, lower-cased: the form two words are compared in.
-fn key(text: &str) -> String {
+/// `text` with a trailing run of one repeated character collapsed to a single one: "uhhh" is
+/// "uh", while "um" and a one-letter word are unchanged.
+fn collapse(text: &str) -> String {
+    let mut out = text.to_string();
+    if let Some(last) = out.chars().next_back() {
+        while out.chars().rev().nth(1) == Some(last) {
+            out.pop();
+        }
+    }
+    out
+}
+
+/// The letters and digits of `text`, lower-cased: the form words are compared in.
+fn word_key(text: &str) -> String {
     text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
-/// The index of every word in `t` whose key (see [`key`]) equals the key of one entry in
+/// The filler form of a word: its key with a trailing run of one repeated letter collapsed.
+/// "Ummm," gives "um".
+fn filler_key(text: &str) -> String {
+    collapse(&word_key(text))
+}
+
+/// The index of every word in `t` whose filler key (see [`filler_key`]) equals the key of one entry in
 /// `list`, in order. A word that is only punctuation has an empty key and matches nothing.
 pub fn fillers(t: &Transcript, list: &[&str]) -> Vec<usize> {
-    let keys: Vec<String> = list.iter().map(|f| key(f)).filter(|k| !k.is_empty()).collect();
+    let keys: Vec<String> = list.iter().map(|f| filler_key(f)).filter(|k| !k.is_empty()).collect();
     t.words
         .iter()
         .enumerate()
         .filter(|(_, w)| {
-            let k = key(&w.text);
+            let k = filler_key(&w.text);
             !k.is_empty() && keys.contains(&k)
         })
         .map(|(i, _)| i)
+        .collect()
+}
+
+/// The index of every word in `t` that repeats the word before it: the second word of each
+/// adjacent pair whose keys (see [`word_key`]) are equal, in order. Case and punctuation are ignored,
+/// so "The" followed by "the," is a repeat; a word that is only punctuation is not.
+pub fn repeats(t: &Transcript) -> Vec<usize> {
+    t.words
+        .windows(2)
+        .enumerate()
+        .filter(|(_, pair)| {
+            let k = word_key(&pair[0].text);
+            !k.is_empty() && k == word_key(&pair[1].text)
+        })
+        .map(|(i, _)| i + 1)
         .collect()
 }
 
@@ -78,6 +113,31 @@ mod tests {
     fn finds_fillers_through_case_and_punctuation() {
         let t = transcript(&["Um,", "the", "UH.", "umbrella", "uh"]);
         assert_eq!(fillers(&t, &DEFAULT_FILLERS), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn stretched_fillers_match_their_short_form() {
+        let t = transcript(&["Umm,", "the", "UHHH.", "umbrella", "hmmm"]);
+        assert_eq!(fillers(&t, &DEFAULT_FILLERS), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn immediate_repeats_are_found_at_the_second_word() {
+        let t = transcript(&["the", "the", "best", "best", "part"]);
+        assert_eq!(repeats(&t), vec![1, 3]);
+    }
+
+    #[test]
+    fn repeats_do_not_collapse_stretched_words() {
+        let t = transcript(&["well", "wel"]);
+        assert!(repeats(&t).is_empty());
+    }
+
+    #[test]
+    fn collapsing_leaves_um_and_a_one_letter_word_alone() {
+        assert_eq!(collapse("um"), "um");
+        assert_eq!(collapse("a"), "a");
+        assert_eq!(collapse("uhhh"), "uh");
     }
 
     #[test]

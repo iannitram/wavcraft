@@ -892,6 +892,8 @@ pub struct WaveApp {
     peak_report: Option<wavcraft_core::PeakReport>,
     /// Help › About is open (it shows the third-party notices).
     show_about: bool,
+    /// Help › Keyboard Shortcuts is open (it shows the action list's chords).
+    show_shortcuts: bool,
     /// Restore Preference Defaults asks first.
     confirm_reset_prefs: bool,
 }
@@ -1185,6 +1187,7 @@ impl WaveApp {
             peak_dir: std::env::var_os("WAVCRAFT_PEAK_CACHE_DIR").map_or_else(wavcraft_core::peakcache::default_dir, PathBuf::from),
             peak_report: None,
             show_about: false,
+            show_shortcuts: false,
             confirm_reset_prefs: false,
             control: {
                 let ctx = cc.egui_ctx.clone();
@@ -1455,12 +1458,15 @@ impl WaveApp {
         self.meters.input_view = bars_source(self.rec.meter().map(|(p, _)| p), self.input.is_open(), self.player.is_playing(), [0.0; 2], [0.0; 2]).1;
     }
 
-    /// The peaks for this frame's bars: the take's while recording, else the input's while it is
-    /// open and nothing plays, else the player's.
-    fn meter_peaks(&self) -> [f32; 2] {
+    /// The peaks and energy for this frame's bars: the take's while recording, else the input's
+    /// while it is open and nothing plays, else the player's.
+    fn meter_peaks(&self) -> ([f32; 2], [(f32, u64); 2]) {
         let out = self.player.take_levels();
+        let energy = self.player.take_energy();
         let inp = if self.input.is_open() { self.input.tap.take_peaks() } else { [0.0, 0.0] };
-        bars_source(self.rec.meter().map(|(p, _)| p), self.input.is_open(), self.player.is_playing(), inp, out).0
+        let (peaks, source_is_take) = bars_source(self.rec.meter().map(|(p, _)| p), self.input.is_open(), self.player.is_playing(), inp, out);
+        let energy = if source_is_take { [(0.0, 0), (0.0, 0)] } else { energy };
+        (peaks, energy)
     }
 
     /// `MICCHECK <seconds>`: listen, then answer the control channel with the numbers.
@@ -4812,6 +4818,14 @@ impl WaveApp {
         self.show_about = open;
     }
 
+    fn shortcut_help_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_shortcuts;
+        egui::Window::new("Keyboard Shortcuts").open(&mut open).collapsible(false).default_size(vec2(420.0, 560.0)).show(ctx, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| shortcut_help_content(ui, cfg!(target_os = "macos")));
+        });
+        self.show_shortcuts = open;
+    }
+
     fn toggle_play(&mut self) {
         if self.rec.is_active() {
             // Space while recording pauses and resumes the take (C029).
@@ -5407,6 +5421,15 @@ impl WaveApp {
             self.set_panel("match", shown);
             return Ok(false);
         }
+        // Backtick: maximise the panel under the pointer, or restore the maximised one (I3.5).
+        if id == ActionId::WindowMaximizePanel {
+            if self.layout.maximized(&self.panels).is_some() {
+                self.layout.restore();
+            } else if let Some(id) = self.hover {
+                self.layout.toggle_maximize(id);
+            }
+            return Ok(false);
+        }
         // The snapping switches are settings: they flip with no file open too.
         if self.editor.is_none() && actions::snap_flag_value(&self.settings.snap, id).is_some() {
             self.toggle_snap_menu(id);
@@ -5673,6 +5696,9 @@ impl WaveApp {
             },
             ActionId::Pause => self.pause_play(),
             ActionId::Stop => self.stop_play(),
+            ActionId::ShuttleBack => self.shuttle_key('j', ctx.input(|i| i.key_down(Key::K))),
+            ActionId::ShuttleStop => self.shuttle_key('k', false),
+            ActionId::ShuttleForward => self.shuttle_key('l', ctx.input(|i| i.key_down(Key::K))),
             ActionId::ToggleLoop => {
                 self.transport.looping = !self.transport.looping;
                 self.player.set_looping(self.transport.looping);
@@ -9243,6 +9269,15 @@ impl WaveApp {
                 self.show_about = true;
                 format!("OK notices_bytes={}", crate::notices::TEXT.len())
             }
+            // Open Help › Keyboard Shortcuts; answers with the number of rows it lists.
+            "HELP" => {
+                if rest.trim() == "shortcuts" {
+                    self.show_shortcuts = true;
+                    format!("OK rows={}", shortcut_help_rows(cfg!(target_os = "macos")).len())
+                } else {
+                    "ERR HELP shortcuts".to_string()
+                }
+            }
             "NOISE_PRINT" if rest.trim().is_empty() => match wavcraft_core::noise::current() {
                 Some(p) => format!("OK {}", Self::noise_print_summary(&p)),
                 None => "OK none".to_string(),
@@ -9908,11 +9943,11 @@ impl WaveApp {
                     Some(_) => return "ERR METERS [PUSH <l> <r> | RESET]".to_string(),
                     None => {}
                 }
-                let peaks = self.meter_peaks();
-                self.meters.update(peaks);
+                let (peaks, energy) = self.meter_peaks();
+                self.meters.update(peaks, energy);
                 format!(
                     "{} view={} armed={} input_open={}",
-                    meters_ui::readings_line(&self.meters.levels),
+                    meters_ui::readings_line(&self.meters.levels, &self.meters.rms),
                     if self.meters.input_view { "input" } else { "output" },
                     u8::from(self.meter_input),
                     u8::from(self.input.is_open())
@@ -10746,6 +10781,21 @@ impl WaveApp {
                 self.error = Some(e);
             }
         }
+        ui.separator();
+        for e in menus::effects_extra() {
+            match e {
+                Entry::Item(item) => {
+                    if ui.add_enabled(self.item_enabled(&item), egui::Button::new(item.label)).clicked()
+                        && let Cmd::Action(a) = item.cmd
+                    {
+                        chosen = Some((a, false));
+                    }
+                }
+                Entry::Sep => {
+                    ui.separator();
+                }
+            }
+        }
         if v1::offered(Feature::Diagnostics) && ui.button(Feature::Diagnostics.menu_text()).clicked() {
             self.diag.open = true;
             ui.close();
@@ -11249,6 +11299,10 @@ impl WaveApp {
                 });
             }
             ui.menu_button("Help", |ui| {
+                if ui.button("Keyboard Shortcuts").clicked() {
+                    self.show_shortcuts = true;
+                    ui.close();
+                }
                 if ui.button("About WavCraft…").clicked() {
                     self.show_about = true;
                 }
@@ -12658,8 +12712,8 @@ impl eframe::App for WaveApp {
         }
         self.diag.poll();
         self.sync_input();
-        let peaks = self.meter_peaks();
-        self.meters.update(peaks);
+        let (peaks, energy) = self.meter_peaks();
+        self.meters.update(peaks, energy);
         self.finish_match(ctx);
         self.poll_mic_check();
         if self.meters.animating() || self.matcher.animating() || self.player.is_playing() {
@@ -12778,17 +12832,9 @@ impl eframe::App for WaveApp {
                 self.history_refocus = Some(to);
             }
         }
-        // ` maximises the panel under the pointer (and restores); Ctrl+W closes it.
+        // Ctrl+W closes the panel under the pointer. Backtick (maximise) is a shortcut-table row.
         let typing = ctx.egui_wants_keyboard_input() || self.float_typing || self.float_other_focus;
-        let (grave, close) =
-            ctx.input_mut(|i| (!typing && i.consume_key(egui::Modifiers::NONE, Key::Backtick), i.consume_key(egui::Modifiers::COMMAND, Key::W)));
-        if grave {
-            if self.layout.maximized(&self.panels).is_some() {
-                self.layout.restore();
-            } else if let Some(id) = self.hover {
-                self.layout.toggle_maximize(id);
-            }
-        }
+        let close = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::W));
         if close && let Some(id) = self.hover {
             self.close_panel(id);
         }
@@ -12824,29 +12870,7 @@ impl eframe::App for WaveApp {
         }
         // The JKL shuttle (f36): J plays backward, K stops, L plays forward; K held with J or L crawls.
         if !typing {
-            let (presses, k_down, j_down, l_down) = ctx.input(|i| {
-                let presses: Vec<Key> = i
-                    .events
-                    .iter()
-                    .filter_map(|e| match e {
-                        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
-                            if matches!(key, Key::J | Key::K | Key::L) && !modifiers.command && !modifiers.alt && !modifiers.shift =>
-                        {
-                            Some(*key)
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                (presses, i.key_down(Key::K), i.key_down(Key::J), i.key_down(Key::L))
-            });
-            for key in presses {
-                let c = match key {
-                    Key::J => 'j',
-                    Key::L => 'l',
-                    _ => 'k',
-                };
-                self.shuttle_key(c, k_down && c != 'k');
-            }
+            let (j_down, l_down) = ctx.input(|i| (i.key_down(Key::J), i.key_down(Key::L)));
             let nudge = self.transport.shuttle.nudge;
             if nudge != 0 && !self.hold.ctl_nudge && !(if nudge > 0 { l_down } else { j_down }) {
                 self.release_nudge();
@@ -13047,6 +13071,7 @@ impl eframe::App for WaveApp {
         self.clear_history_prompt(&ctx);
         self.reset_prefs_prompt(&ctx);
         self.about_window(&ctx);
+        self.shortcut_help_window(&ctx);
         self.metadata_display_dialog(&ctx);
         self.batch.ui(&ctx);
         self.draw_hud(&ctx);
@@ -13266,8 +13291,17 @@ fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_fo
             if k.alt {
                 mods |= egui::Modifiers::ALT;
             }
-            // Play/Stop must not toggle again on auto-repeat during a long press.
-            let fresh = *command != Command::PlayStop
+            // Play/Stop and the JKL shuttle must not act again on auto-repeat during a long press.
+            let no_repeat =
+                matches!(command, Command::PlayStop | Command::Action(ActionId::ShuttleBack | ActionId::ShuttleStop | ActionId::ShuttleForward));
+            // egui matches a pattern without Alt even while Alt is held, so Alt+J/K/L would run the shuttle.
+            let shuttle = matches!(command, Command::Action(ActionId::ShuttleBack | ActionId::ShuttleStop | ActionId::ShuttleForward));
+            let alt_press =
+                |e: &egui::Event| matches!(e, egui::Event::Key { key: pressed, pressed: true, modifiers, .. } if *pressed == key && modifiers.alt);
+            if shuttle && !k.alt && (i.modifiers.alt || i.events.iter().any(alt_press)) {
+                return None;
+            }
+            let fresh = !no_repeat
                 || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
             (i.consume_key(mods, key) && fresh).then_some(*command)
         }));
@@ -13599,16 +13633,13 @@ fn split_seed(args: &str) -> (Result<u64, String>, String) {
     (seed, rest.join(" "))
 }
 
-// Used by the tests until I3.2 adds the Help window; remove the allowance then.
 /// The Help list's rows: the action table in menu order, one row per bound chord.
-#[allow(dead_code)]
 fn shortcut_help_rows(mac: bool) -> Vec<(&'static str, &'static str, String)> {
     let keymap = Keymap::new();
     TABLE.iter().flat_map(|action| keymap.chords(Command::Action(action.id)).map(move |chord| (action.name, action.menu, chord.text(mac)))).collect()
 }
 
 /// Draw the Help list's rows, each label and key as its own text.
-#[allow(dead_code)]
 fn shortcut_help_content(ui: &mut egui::Ui, mac: bool) {
     for (_, label, key) in shortcut_help_rows(mac) {
         ui.label(label);
@@ -14108,6 +14139,10 @@ mod h1_3_marker_selection_tests;
 #[cfg(test)]
 #[path = "i3_shortcut_help_tests.rs"]
 mod i3_shortcut_help_tests;
+
+#[cfg(test)]
+#[path = "i3_help_window_tests.rs"]
+mod i3_help_window_tests;
 
 #[cfg(test)]
 #[path = "j4_meter_tests.rs"]

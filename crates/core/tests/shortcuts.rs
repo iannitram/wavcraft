@@ -29,6 +29,9 @@ shortcuts! {
     save_ctrl_s: "Ctrl+S" => Save;
     save_as_ctrl_shift_s: "Ctrl+Shift+S" => SaveAs;
     play_stop_space: "Space" => PlayStop;
+    shuttle_back_j: "J" => A(ActionId::ShuttleBack);
+    shuttle_stop_k: "K" => A(ActionId::ShuttleStop);
+    shuttle_forward_l: "L" => A(ActionId::ShuttleForward);
     undo_ctrl_z: "Ctrl+Z" => A(ActionId::Undo);
     close_ctrl_w: "Ctrl+W" => Close;
     redo_ctrl_shift_z: "Ctrl+Shift+Z" => A(ActionId::Redo);
@@ -94,6 +97,7 @@ shortcuts! {
     tool_marquee_e: "E" => A(ActionId::ToolMarquee);
     tool_lasso_d: "D" => A(ActionId::ToolLasso);
     match_panel_alt_5: "Alt+5" => A(ActionId::ToggleMatchPanel);
+    maximize_panel_backtick: "`" => A(ActionId::WindowMaximizePanel);
     check_next_f8: "F8" => A(ActionId::CheckNext);
     check_prev_shift_f8: "Shift+F8" => A(ActionId::CheckPrev);
     convert_sample_type_shift_t: "Shift+T" => A(ActionId::ConvertSampleType);

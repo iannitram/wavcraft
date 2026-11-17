@@ -17,6 +17,8 @@ use crate::doc::history::History;
 use crate::effects::{self, EffectParams, FadeCurve, FadeDir};
 use crate::generate;
 use crate::snap::{self, SnapSettings};
+use crate::stft::{Stft, blend_in_band, read_padded};
+use crate::view::SpectralSelection;
 use std::sync::OnceLock;
 
 /// An action's id, as the menu, the keys and the control channel name it.
@@ -200,8 +202,14 @@ pub enum ActionId {
     Rewind,
     FastForward,
     ToggleRoll,
+    /// The JKL shuttle (I3.4): J, K and L; the window calls `shuttle_key`.
+    ShuttleBack,
+    ShuttleStop,
+    ShuttleForward,
     /// Window > Match Loudness: show or hide the panel (Alt+5).
     ToggleMatchPanel,
+    /// Window > Maximize Active Frame: maximise or restore the panel under the pointer (Backtick, I3.5; Audition acts on the active frame).
+    WindowMaximizePanel,
 }
 
 /// Which part of the program carries an action out.
@@ -386,7 +394,11 @@ pub const TABLE: &[Action] = &[
     window(ActionId::Rewind, "transport.rewind", "Rewind"),
     window(ActionId::FastForward, "transport.fastForward", "Fast Forward"),
     window(ActionId::ToggleRoll, "transport.roll", "Pre/Post-Roll"),
+    window(ActionId::ShuttleBack, "transport.shuttle.back", "Shuttle Back"),
+    window(ActionId::ShuttleStop, "transport.shuttle.stop", "Shuttle Stop"),
+    window(ActionId::ShuttleForward, "transport.shuttle.forward", "Shuttle Forward"),
     window(ActionId::ToggleMatchPanel, "panel.match.toggle", "Match Loudness"),
+    window(ActionId::WindowMaximizePanel, "window.maximizePanel", "Maximize Active Frame"),
 ];
 
 /// The Zoom to Time actions, slot 1 first (f69).
@@ -761,7 +773,8 @@ impl Editor {
             | ActionId::ToolZoom
             | ActionId::ToolMarquee
             | ActionId::ToolLasso
-            | ActionId::ToggleMatchPanel => true,
+            | ActionId::ToggleMatchPanel
+            | ActionId::WindowMaximizePanel => true,
             ActionId::SpectralResolutionUp
             | ActionId::SpectralResolutionDown
             | ActionId::SpectralScaleMoreLog
@@ -781,7 +794,10 @@ impl Editor {
             | ActionId::FollowCenter
             | ActionId::Rewind
             | ActionId::FastForward
-            | ActionId::ToggleRoll => true,
+            | ActionId::ToggleRoll
+            | ActionId::ShuttleBack
+            | ActionId::ShuttleStop
+            | ActionId::ShuttleForward => true,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -1166,6 +1182,52 @@ impl Editor {
         self.run_with(ActionId::Effect(i), selection, Some(params))
     }
 
+    /// Run the effect at index `i` of [`effects::all`] with these settings over the spectral
+    /// selection's time range (the whole file when empty), widened by the band's time feather,
+    /// blended through the selection's mask; one undo step named after the effect.
+    pub fn run_effect_in_band(&mut self, i: u16, params: Vec<f64>, spectral: &SpectralSelection) -> Result<Outcome, EditError> {
+        let len = self.len();
+        let mut range = (spectral.time.start() as u64).min(len)..(spectral.time.end() as u64).min(len);
+        let doc = self.history.current().clone();
+        if range.start >= range.end {
+            range = 0..len;
+        }
+        let Some(effect) = effects::all().get(usize::from(i)) else {
+            return Ok(Outcome { doc_changed: false, selection: range, message: None });
+        };
+        let pad = (spectral.band.feather_ms.max(0.0) * doc.sample_rate() as f32 / 1000.0).round() as u64;
+        let widened = range.start.saturating_sub(pad)..range.end.saturating_add(pad).min(len);
+        if widened.start >= widened.end {
+            return Ok(Outcome { doc_changed: false, selection: range, message: None });
+        }
+        let channels = self.channels.within(doc.channel_count());
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let effect_edit = effects::apply(*effect, &params, &doc, widened.clone(), channels, self.crossfades, &cancel)?;
+        let stft = Stft::new(8192, 50).map_err(EditError::Unsupported)?;
+        let active = channels.active(doc.channel_count());
+        let mut blended: Vec<Vec<f32>> = Vec::with_capacity(active.len());
+        for &channel in &active {
+            let count = (widened.end - widened.start) as usize;
+            let untouched = read_padded(&doc, channel, widened.start as i64, count).map_err(EditError::Io)?;
+            let processed = read_padded(&effect_edit.state, channel, widened.start as i64, count).map_err(EditError::Io)?;
+            let out = blend_in_band(&stft, &untouched, &processed, widened.start as i64, doc.sample_rate(), |frame, hz| spectral.mask(frame, hz))
+                .map_err(EditError::Unsupported)?;
+            blended.push(out);
+        }
+        let final_edit = edit::replace_range(&doc, widened.clone(), channels, effect.name(), self.crossfades, &cancel, |at, _input, output| {
+            let offset = (at - widened.start) as usize;
+            for (out, kept) in output.iter_mut().zip(&blended) {
+                let take = out.len().min(kept.len().saturating_sub(offset));
+                out[..take].copy_from_slice(&kept[offset..offset + take]);
+            }
+            Ok(())
+        })?;
+        let changed = !final_edit.is_noop();
+        let label = final_edit.label.clone();
+        self.history.push_edit(final_edit);
+        Ok(Outcome { doc_changed: changed, selection: range, message: changed.then_some(label) })
+    }
+
     /// Run Diagnostics › DeClipper with `[threshold_db, min_run]` (both inside the ranges of
     /// [`declip::Params`], or the call is refused and nothing changes) on `selection` (the whole
     /// file when empty); one undo step "DeClipper".
@@ -1481,6 +1543,9 @@ impl Editor {
             | ActionId::Rewind
             | ActionId::FastForward
             | ActionId::ToggleRoll
+            | ActionId::ShuttleBack
+            | ActionId::ShuttleStop
+            | ActionId::ShuttleForward
             | ActionId::ZoomAmpIn
             | ActionId::ZoomAmpOut
             | ActionId::ZoomAmpReset
@@ -1515,6 +1580,7 @@ impl Editor {
             | ActionId::CheckPrev
             | ActionId::TranscriptRun
             | ActionId::ToggleMatchPanel
+            | ActionId::WindowMaximizePanel
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft

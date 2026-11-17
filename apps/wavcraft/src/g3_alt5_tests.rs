@@ -25,3 +25,23 @@ fn alt_1_to_4_and_6_to_8_still_toggle_their_channels() {
         assert_eq!(alt_key(key), vec![Command::Action(ActionId::ToggleChannel(ch))], "{key:?}");
     }
 }
+
+fn plain_key(key: Key) -> Vec<Command> {
+    let ctx = egui::Context::default();
+    let events = vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }];
+    let mut found = Vec::new();
+    let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+        found = pressed_commands(ui.ctx(), &Keymap::new(), false);
+    });
+    output.textures_delta.clear();
+    found
+}
+
+/// I3.4 review: the shuttle is plain J, K and L only; Alt held leaves them alone, as before the table moved.
+#[test]
+fn alt_j_k_l_do_not_run_the_shuttle() {
+    for (key, shuttle) in [(Key::J, ActionId::ShuttleBack), (Key::K, ActionId::ShuttleStop), (Key::L, ActionId::ShuttleForward)] {
+        assert_eq!(plain_key(key), vec![Command::Action(shuttle)], "plain {key:?}");
+        assert!(!alt_key(key).contains(&Command::Action(shuttle)), "Alt+{key:?}");
+    }
+}
