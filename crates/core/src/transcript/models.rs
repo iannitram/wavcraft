@@ -1,8 +1,14 @@
 //! Catalogue of speech model files (L1.7, #1536).
 
 use std::fs::File;
+#[cfg(feature = "whisper")]
+use std::io::Write;
 use std::io::{self, Read};
 use std::path::Path;
+#[cfg(feature = "whisper")]
+use std::path::PathBuf;
+#[cfg(feature = "whisper")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use sha2::{Digest, Sha256};
 
@@ -41,6 +47,76 @@ impl Model {
     pub fn url(&self, file: &ModelFile) -> String {
         format!("https://huggingface.co/{}/resolve/{}/{}", self.repo, self.revision, file.name)
     }
+
+    /// A downloadable file from this model.
+    #[cfg(feature = "whisper")]
+    pub fn entry(&self, file: &ModelFile) -> DownloadEntry {
+        DownloadEntry { name: file.name, url: self.url(file), sha256: file.sha256 }
+    }
+}
+
+/// One model file to download and verify.
+#[cfg(feature = "whisper")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadEntry {
+    pub name: &'static str,
+    pub url: String,
+    pub sha256: &'static str,
+}
+
+/// Download an entry to `folder`, publishing it only after its SHA-256 matches.
+///
+/// The response is streamed to a temporary file beside the destination. Cancellation, network
+/// errors, and a bad hash remove that temporary file and never leave a partial destination.
+#[cfg(feature = "whisper")]
+pub fn download(entry: &DownloadEntry, folder: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(f64)) -> io::Result<PathBuf> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "model download cancelled"));
+    }
+    let name_path = Path::new(entry.name);
+    if entry.name.is_empty() || name_path.components().count() != 1 || name_path.file_name().and_then(|name| name.to_str()) != Some(entry.name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "model file name must be a single path component"));
+    }
+    std::fs::create_dir_all(folder)?;
+    let destination = folder.join(entry.name);
+    let temporary = folder.join(format!(".{}.{}.part", entry.name, crate::random::hex(16)?));
+    let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+
+    let result = (|| {
+        let response = ureq::get(&entry.url).call().map_err(io::Error::other)?;
+        let total = response.header("Content-Length").and_then(|length| length.parse::<u64>().ok());
+        let mut reader = response.into_reader();
+        let mut buffer = [0u8; 64 * 1024];
+        let mut downloaded = 0u64;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "model download cancelled"));
+            }
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            output.write_all(&buffer[..count])?;
+            downloaded = downloaded.saturating_add(count as u64);
+            if let Some(total) = total.filter(|total| *total > 0) {
+                progress((downloaded as f64 / total as f64).clamp(0.0, 1.0));
+            }
+        }
+        output.sync_all()?;
+        drop(output);
+        verify(&temporary, entry.sha256)?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "model download cancelled"));
+        }
+        std::fs::rename(&temporary, &destination)?;
+        progress(1.0);
+        Ok(destination.clone())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 /// Verify a file's SHA-256, reading it in bounded 64 KiB pieces.
