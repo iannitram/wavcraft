@@ -36,7 +36,7 @@ impl Feature {
         [Feature::Multitrack, Feature::CdLayout, Feature::Video, Feature::Batch, Feature::MixPaste, Feature::Diagnostics, Feature::Plugins];
 
     /// The menu text the feature is listed under.
-    pub fn menu_text(self) -> &'static str {
+    pub const fn menu_text(self) -> &'static str {
         match self {
             Feature::Multitrack => "Multitrack",
             Feature::CdLayout => "CD Layout",
@@ -97,6 +97,7 @@ pub fn command_offered_in(release: bool, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::menus;
     use wavcraft_core::panels::{self, PanelSet};
 
     #[test]
@@ -176,21 +177,6 @@ mod tests {
         "VST3",
     ];
 
-    /// What a build lists outside the menu bar's own text: the gated menu entries, the Window
-    /// list, the Tools panel, the Effects Rack's slot picker and the Keyboard Shortcuts list.
-    fn listed(release: bool) -> Vec<String> {
-        let mut v: Vec<String> = Feature::ALL.iter().filter(|f| offered_in(release, **f)).map(|f| f.menu_text().to_string()).collect();
-        let set = PanelSet::for_build(release);
-        v.extend(panels::REGISTRY.iter().filter(|p| set.offers(p.id)).map(|p| p.title.to_string()));
-        v.extend(super::super::menus::TOOLS.iter().filter(|t| tool_offered_in(release, t.name)).map(|t| t.label.to_string()));
-        // The Effects menu (the rack's slot picker no longer lists every effect, since F1.3).
-        v.extend(crate::app::WaveApp::effects_menu_rows(release).iter().map(|a| a.menu.to_string()));
-        v.extend(crate::rack_panel::slot_effects(release).iter().map(|e| e.name().to_string()));
-        v.extend(crate::rack_panel::slot_plugins(release));
-        v.extend(crate::shortcut_editor::listed(release).map(|c| c.label().to_string()));
-        v
-    }
-
     #[test]
     fn a_release_effects_menu_and_rack_list_no_dehummer_or_dereverb() {
         // Through the fn the Effects menu calls (app.rs `effects_menu`), not `effect_rows_in`.
@@ -209,7 +195,7 @@ mod tests {
 
     #[test]
     fn release_lists_nothing_deliberately_not_in_v1() {
-        let (release, debug) = (listed(true), listed(false));
+        let (release, debug) = (menus::bar_labels(true), menus::bar_labels(false));
         assert!(release.iter().any(|l| l == "Noise Reduction") && release.iter().any(|l| l == "Markers"), "{release:?}");
         for word in OUT {
             assert!(!release.iter().any(|l| l.contains(word)), "a release build lists {word}: {release:?}");
@@ -218,10 +204,24 @@ mod tests {
     }
 
     #[test]
+    fn release_menus_list_nothing_deliberately_not_in_v1() {
+        let (release, debug) = (menus::bar_labels(true), menus::bar_labels(false));
+        for word in OUT.iter().copied().chain(["Mixer panel", "Ogg"]) {
+            assert!(!release.iter().any(|label| label.contains(word)), "a release build lists {word}: {release:?}");
+            assert!(debug.iter().any(|label| label.contains(word)), "a debug build is missing {word}: {debug:?}");
+        }
+    }
+
+    #[test]
     fn the_mixer_panel_is_gated_behind_multitrack() {
         let lines: Vec<&str> = include_str!("app.rs").lines().collect();
-        let gate = "if v1::offered(Feature::Multitrack) {";
-        let checkbox: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.contains("\"Mixer panel\"")).map(|(i, _)| i).collect();
+        let gate = "if menus::bar::MIXER_PANEL.offered_in(v1::RELEASE) {";
+        let checkbox: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.contains("ui.checkbox(&mut self.show_mixer, menus::bar::MIXER_PANEL.label())"))
+            .map(|(i, _)| i)
+            .collect();
         assert_eq!(checkbox.len(), 1, "expected exactly one Mixer panel checkbox, found lines {checkbox:?}");
         let above = checkbox[0].checked_sub(1).and_then(|i| lines.get(i)).map(|l| l.trim()).unwrap_or("");
         assert_eq!(above, gate, "the Mixer panel checkbox is not directly under `{gate}`");
@@ -231,7 +231,9 @@ mod tests {
         let ungated = "if self.show_mixer {";
         assert!(!lines.iter().any(|l| l.trim() == ungated), "app.rs still draws the mixer panel with `{ungated}`");
 
-        assert!(offered_in(false, Feature::Multitrack), "a debug build keeps the Mixer panel checkbox");
-        assert!(!offered_in(true, Feature::Multitrack), "a release build hides the Mixer panel checkbox");
+        assert_eq!(menus::bar::MIXER_PANEL.label(), "Mixer panel");
+        assert_eq!(menus::bar::MIXER_PANEL.gate, Some(Feature::Multitrack));
+        assert!(menus::bar::MIXER_PANEL.offered_in(false), "a debug build keeps the Mixer panel checkbox");
+        assert!(!menus::bar::MIXER_PANEL.offered_in(true), "a release build hides the Mixer panel checkbox");
     }
 }

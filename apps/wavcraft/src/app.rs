@@ -4105,9 +4105,10 @@ impl WaveApp {
         }
         ui.separator();
         ui.horizontal(|ui| {
-            let edit = ui.add(egui::TextEdit::singleline(&mut self.workspace_name).hint_text("Name").desired_width(120.0));
+            let edit =
+                ui.add(egui::TextEdit::singleline(&mut self.workspace_name).hint_text(menus::bar::WORKSPACE_NAME.label()).desired_width(120.0));
             let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if (ui.button("Save as New Workspace").clicked() || enter) && !self.workspace_name.trim().is_empty() {
+            if (ui.button(menus::bar::SAVE_WORKSPACE.label()).clicked() || enter) && !self.workspace_name.trim().is_empty() {
                 result = self.workspace_command(&format!("save {}", self.workspace_name));
                 if result.is_ok() {
                     self.workspace_name.clear();
@@ -4115,14 +4116,14 @@ impl WaveApp {
                 done = true;
             }
         });
-        if ui.add_enabled(modified, egui::Button::new("Reset to Saved Layout")).clicked() {
+        if ui.add_enabled(modified, egui::Button::new(menus::bar::RESET_WORKSPACE.label())).clicked() {
             result = self.workspace_command(&format!("reset {current}"));
             done = true;
         }
-        ui.menu_button("Delete Workspace", |ui| {
+        ui.menu_button(menus::bar::DELETE_WORKSPACE.label(), |ui| {
             let others: Vec<String> = self.workspaces.names().into_iter().filter(|n| *n != current && !workspaces::is_builtin(n)).collect();
             if others.is_empty() {
-                ui.add_enabled(false, egui::Label::new("No other saved workspaces"));
+                ui.add_enabled(false, egui::Label::new(menus::bar::NO_WORKSPACES.label()));
             }
             for name in others {
                 if ui.button(&name).clicked() {
@@ -7738,7 +7739,9 @@ impl WaveApp {
                     let exts: &[&str] = if f == SaveFormat::Aiff { &["aiff", "aif"] } else { &[f.extension()] };
                     dialog = dialog.add_filter(f.name(), exts);
                 }
-                dialog = dialog.add_filter("Sony Wave64", &["w64"]).add_filter("Apple CAF", &["caf"]).add_filter("Sun/NeXT AU", &["au"]);
+                for &(label, extensions) in menus::SAVE_CONTAINER_FILTERS {
+                    dialog = dialog.add_filter(label, extensions);
+                }
                 if let Some(dir) = self.doc_path.parent().filter(|d| !d.as_os_str().is_empty()) {
                     dialog = dialog.set_directory(dir);
                 }
@@ -10552,7 +10555,7 @@ impl WaveApp {
                 ui.close();
             }
         };
-        ui.menu_button("Select", |ui| {
+        ui.menu_button(menus::bar::SELECT.label(), |ui| {
             for id in [
                 ActionId::SelectAll,
                 ActionId::SelectCurrentView,
@@ -10564,13 +10567,13 @@ impl WaveApp {
                 item(self, ui, id, &mut chosen);
             }
         });
-        ui.menu_button("Enable Channels", |ui| {
+        ui.menu_button(menus::bar::ENABLE_CHANNELS.label(), |ui| {
             for id in [ActionId::LeftChannel, ActionId::RightChannel, ActionId::BothChannels] {
                 item(self, ui, id, &mut chosen);
             }
             ui.separator();
             let mut on = self.settings.context_channel_editing;
-            if ui.checkbox(&mut on, "Select Channel by Drag Position").changed() {
+            if ui.checkbox(&mut on, menus::bar::SELECT_CHANNEL.label()).changed() {
                 self.settings.context_channel_editing = on;
                 if let Err(e) = self.save_settings() {
                     log::warn!(target: "wavcraft", "{e}");
@@ -10579,7 +10582,7 @@ impl WaveApp {
         });
         // Snapping (f09, f49): the same switches as View › Snapping and the ruler's menu.
         let mut snap_chosen = None;
-        ui.menu_button("Snapping", |ui| snap_chosen = snap_items(ui, &self.settings.snap));
+        ui.menu_button(menus::bar::SNAPPING.label(), |ui| snap_chosen = snap_items(ui, &self.settings.snap));
         if let Some(id) = snap_chosen {
             self.toggle_snap_menu(id);
         }
@@ -10592,8 +10595,8 @@ impl WaveApp {
             }
         }
         ui.separator();
-        if v1::offered(Feature::MixPaste)
-            && ui.add_enabled(self.editor.is_some() && self.saving.is_none(), egui::Button::new(Feature::MixPaste.menu_text())).clicked()
+        if menus::bar::MIX_PASTE.offered_in(v1::RELEASE)
+            && ui.add_enabled(self.editor.is_some() && self.saving.is_none(), egui::Button::new(menus::bar::MIX_PASTE.label())).clicked()
         {
             self.mix_paste = Some(mixpaste::Dialog::new());
             ui.close();
@@ -10612,10 +10615,10 @@ impl WaveApp {
             let _ = self.run_action(id, ui.ctx());
         }
         ui.separator();
-        if ui.button("Keyboard Shortcuts…").clicked() {
+        if ui.button(menus::bar::EDIT_SHORTCUTS.label()).clicked() {
             self.shortcut_dialog = Some(ShortcutDialog::default());
         }
-        if ui.add(egui::Button::new("Preferences…").shortcut_text(if mac { "⌘," } else { "Ctrl+," })).clicked() {
+        if ui.add(egui::Button::new(menus::bar::PREFERENCES.label()).shortcut_text(if mac { "⌘," } else { "Ctrl+," })).clicked() {
             self.open_preferences();
         }
     }
@@ -10793,14 +10796,14 @@ impl WaveApp {
             }
         }
         ui.separator();
-        if ui.button("Effects Rack…").clicked() {
+        if ui.button(menus::bar::EFFECTS_RACK.label()).clicked() {
             self.set_panel("rack", true);
             self.layout.activate("rack");
             self.layout_dirty = true;
             ui.close();
         }
         ui.separator();
-        if ui.add_enabled(wavcraft_core::noise::current().is_some(), egui::Button::new("Save Noise Print…")).clicked() {
+        if ui.add_enabled(wavcraft_core::noise::current().is_some(), egui::Button::new(menus::bar::SAVE_NOISE_PRINT.label())).clicked() {
             ui.close();
             if let Some(path) = rfd::FileDialog::new().add_filter("Noise print", &["wcnp"]).set_file_name("noise.wcnp").save_file()
                 && let Err(e) = self.save_noise_print(&path)
@@ -10808,7 +10811,7 @@ impl WaveApp {
                 self.error = Some(e);
             }
         }
-        if ui.button("Load Noise Print…").clicked() {
+        if ui.button(menus::bar::LOAD_NOISE_PRINT.label()).clicked() {
             ui.close();
             if let Some(path) = rfd::FileDialog::new().add_filter("Noise print", &["wcnp"]).pick_file()
                 && let Err(e) = self.load_noise_print(&path)
@@ -10831,18 +10834,18 @@ impl WaveApp {
                 }
             }
         }
-        if v1::offered(Feature::Diagnostics) && ui.button(Feature::Diagnostics.menu_text()).clicked() {
+        if menus::bar::DIAGNOSTICS.offered_in(v1::RELEASE) && ui.button(menus::bar::DIAGNOSTICS.label()).clicked() {
             self.diag.open = true;
             ui.close();
         }
         // Diagnostics: DeClipper runs at once with its defaults (no dialog yet).
-        if v1::offered(Feature::Diagnostics) {
+        if menus::bar::DIAGNOSTICS.offered_in(v1::RELEASE) {
             ui.separator();
             let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(ActionId::DeClip, &sel)) && self.saving.is_none() && self.running.is_none();
-            if ui.add_enabled(enabled, egui::Button::new("DeClipper (defaults)")).clicked() {
+            if ui.add_enabled(enabled, egui::Button::new(menus::bar::DECLIPPER.label())).clicked() {
                 chosen = Some((ActionId::DeClip, false));
             }
-            for (id, text) in [(ActionId::DeClick, "DeClicker (defaults)"), (ActionId::AutoClick, "Automatic Click Remover (defaults)")] {
+            for (id, text) in [(ActionId::DeClick, menus::bar::DECLICKER.label()), (ActionId::AutoClick, menus::bar::CLICK_REMOVER.label())] {
                 let enabled = self.editor.as_ref().is_some_and(|e| e.enabled(id, &sel)) && self.saving.is_none() && self.running.is_none();
                 if ui.add_enabled(enabled, egui::Button::new(text)).clicked() {
                     chosen = Some((id, false));
@@ -10889,7 +10892,7 @@ impl WaveApp {
     fn recent_menu(&mut self, ui: &mut egui::Ui) {
         let mut chosen = None;
         if self.recent.paths().is_empty() {
-            ui.add_enabled(false, egui::Button::new("(none)"));
+            ui.add_enabled(false, egui::Button::new(menus::bar::RECENT_NONE.label()));
         }
         for (i, p) in self.recent.paths().iter().enumerate() {
             let text = egui::RichText::new(path_name(p));
@@ -10901,7 +10904,7 @@ impl WaveApp {
             }
         }
         ui.separator();
-        if ui.add_enabled(!self.recent.paths().is_empty(), egui::Button::new("Clear Recent")).clicked() {
+        if ui.add_enabled(!self.recent.paths().is_empty(), egui::Button::new(menus::bar::CLEAR_RECENT.label())).clicked() {
             self.recent.clear();
             self.save_recent();
             ui.close();
@@ -10960,25 +10963,25 @@ impl WaveApp {
 
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button(tr("menu.file"), |ui| {
-                let open = format!("Open…  {}", self.keymap.menu_text(Command::Open, cfg!(target_os = "macos")));
+            ui.menu_button(menus::bar::FILE.label(), |ui| {
+                let open = format!("{}  {}", menus::bar::OPEN.label(), self.keymap.menu_text(Command::Open, cfg!(target_os = "macos")));
                 if ui.button(open).clicked() {
                     self.pick_file(ui.ctx());
                 }
-                ui.menu_button("Open Recent", |ui| self.recent_menu(ui));
-                ui.menu_button("Open Append", |ui| {
+                ui.menu_button(menus::bar::OPEN_RECENT.label(), |ui| self.recent_menu(ui));
+                ui.menu_button(menus::bar::OPEN_APPEND.label(), |ui| {
                     let free = self.appending.is_none() && self.making.is_none() && self.saving.is_none();
-                    if ui.add_enabled(self.editor.is_some() && free, egui::Button::new("To Current…")).clicked() {
+                    if ui.add_enabled(self.editor.is_some() && free, egui::Button::new(menus::bar::TO_CURRENT.label())).clicked() {
                         ui.close();
                         self.pick_append(false, ui.ctx());
                     }
-                    if ui.add_enabled(free, egui::Button::new("To New…")).clicked() {
+                    if ui.add_enabled(free, egui::Button::new(menus::bar::TO_NEW.label())).clicked() {
                         ui.close();
                         self.pick_append(true, ui.ctx());
                     }
                 });
-                ui.menu_button("New", |ui| {
-                    if ui.button("Audio File…").clicked() {
+                ui.menu_button(menus::bar::NEW.label(), |ui| {
+                    if ui.button(menus::bar::AUDIO_FILE.label()).clicked() {
                         self.new_audio = Some(NewAudio::default());
                         ui.close();
                     }
@@ -10986,149 +10989,156 @@ impl WaveApp {
                 let mac = cfg!(target_os = "macos");
                 let has_doc = self.editor.is_some() && self.saving.is_none();
                 let (save, save_as) = (self.keymap.menu_text(Command::Save, mac), self.keymap.menu_text(Command::SaveAs, mac));
-                if ui.add_enabled(has_doc, egui::Button::new(tr("file.save")).shortcut_text(save)).clicked()
+                if ui.add_enabled(has_doc, egui::Button::new(menus::bar::SAVE.label()).shortcut_text(save)).clicked()
                     && let Err(e) = self.save(ui.ctx(), false, None, false)
                 {
                     self.error = Some(e);
                 }
-                if ui.add_enabled(has_doc, egui::Button::new(tr("file.save_as")).shortcut_text(save_as)).clicked() {
+                if ui.add_enabled(has_doc, egui::Button::new(menus::bar::SAVE_AS.label()).shortcut_text(save_as)).clicked() {
                     self.open_export_dialog();
                     ui.close();
                 }
-                if ui.add_enabled(has_doc, egui::Button::new("Close").shortcut_text(self.keymap.menu_text(Command::Close, mac))).clicked() {
+                if ui
+                    .add_enabled(has_doc, egui::Button::new(menus::bar::CLOSE.label()).shortcut_text(self.keymap.menu_text(Command::Close, mac)))
+                    .clicked()
+                {
                     ui.close();
                     if let Err(e) = self.close_doc() {
                         self.error = Some(e);
                     }
                 }
-                ui.menu_button("Sample Type on Save", |ui| {
-                    ui.radio_value(&mut self.save_type, None, "Keep the file's own");
+                ui.menu_button(menus::bar::SAMPLE_TYPE.label(), |ui| {
+                    ui.radio_value(&mut self.save_type, None, menus::bar::KEEP_SAMPLE_TYPE.label());
                     for ty in [SampleType::Int16, SampleType::Int24, SampleType::Int32, SampleType::Float32] {
                         ui.radio_value(&mut self.save_type, Some(ty), ty.describe());
                     }
-                    ui.label("FLAC takes 16 or 24 bit; it uses 24 bit for the others.");
+                    ui.label(menus::bar::FLAC_NOTE.label());
                 });
                 let mut meta = self.include_meta;
                 if ui
-                    .add_enabled(has_doc, egui::Checkbox::new(&mut meta, "Include markers and other metadata"))
+                    .add_enabled(has_doc, egui::Checkbox::new(&mut meta, menus::bar::INCLUDE_METADATA.label()))
                     .on_hover_text("Applies to Save and Save As for this file (WAV); off writes only the audio")
                     .changed()
                 {
                     self.set_include_meta(meta);
                 }
                 let has_sel = has_doc && self.selection.start() < self.selection.end();
-                if ui.add_enabled(has_sel, egui::Button::new("Save Selection As…")).clicked()
+                if ui.add_enabled(has_sel, egui::Button::new(menus::bar::SAVE_SELECTION.label())).clicked()
                     && let Err(e) = self.save_copy(ui.ctx(), true, None)
                 {
                     self.error = Some(e);
                 }
-                if ui.add_enabled(has_doc, egui::Button::new("Close")).clicked()
+                if ui.add_enabled(has_doc, egui::Button::new(menus::bar::CLOSE.label())).clicked()
                     && let Err(e) = self.close_doc()
                 {
                     self.error = Some(e);
                 }
-                ui.menu_button("Import", |ui| {
-                    if ui.button("File…").on_hover_text("Add files to the Files panel without opening them").clicked() {
+                ui.menu_button(menus::bar::IMPORT.label(), |ui| {
+                    if ui.button(menus::bar::IMPORT_FILE.label()).on_hover_text("Add files to the Files panel without opening them").clicked() {
                         self.pick_import();
                         ui.close();
                     }
-                    if ui.button("Raw Data…").on_hover_text("Open a file with no header: say its rate, channels and sample format").clicked() {
+                    if ui
+                        .button(menus::bar::RAW_DATA.label())
+                        .on_hover_text("Open a file with no header: say its rate, channels and sample format")
+                        .clicked()
+                    {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
                             self.raw_import = Some(RawDialog::new(path));
                         }
                         ui.close();
                     }
                 });
-                ui.menu_button("Export", |ui| {
-                    if ui.add_enabled(has_doc, egui::Button::new("File…")).clicked()
+                ui.menu_button(menus::bar::EXPORT.label(), |ui| {
+                    if ui.add_enabled(has_doc, egui::Button::new(menus::bar::IMPORT_FILE.label())).clicked()
                         && let Err(e) = self.save_copy(ui.ctx(), false, None)
                     {
                         self.error = Some(e);
                     }
                 });
-                if v1::offered(Feature::Multitrack) {
-                    ui.menu_button("New", |ui| {
-                        if ui.button("Multitrack Session…").clicked() {
+                if menus::bar::NEW_SESSION.offered_in(v1::RELEASE) {
+                    ui.menu_button(menus::bar::NEW.label(), |ui| {
+                        if ui.button(menus::bar::NEW_SESSION.label()).clicked() {
                             self.mtv.open_dialog();
                             ui.close();
                         }
                     });
                     let has_session = self.mtv.mt.is_some();
-                    if ui.add_enabled(has_session, egui::Button::new("Save Session")).clicked() {
+                    if ui.add_enabled(has_session, egui::Button::new(menus::bar::SAVE_SESSION.label())).clicked() {
                         self.mtv.save_session_dialog(false);
                         ui.close();
                     }
-                    if ui.add_enabled(has_session, egui::Button::new("Save Session As…")).clicked() {
+                    if ui.add_enabled(has_session, egui::Button::new(menus::bar::SAVE_SESSION_AS.label())).clicked() {
                         self.mtv.save_session_dialog(true);
                         ui.close();
                     }
-                    if ui.button("Open Session…").clicked() {
+                    if ui.button(menus::bar::OPEN_SESSION.label()).clicked() {
                         self.mtv.open_session_dialog();
                         ui.close();
                     }
                 }
                 let busy = self.saving.is_some() || self.making.is_some() || self.save_all.is_some();
-                if ui.add_enabled(self.editor.is_some() && !busy, egui::Button::new("Save All")).clicked()
+                if ui.add_enabled(self.editor.is_some() && !busy, egui::Button::new(menus::bar::SAVE_ALL.label())).clicked()
                     && let Err(e) = self.save_all_docs(true)
                 {
                     self.error = Some(e);
                 }
-                if ui.add_enabled(self.editor.is_some() && !busy, egui::Button::new("Close All")).clicked()
+                if ui.add_enabled(self.editor.is_some() && !busy, egui::Button::new(menus::bar::CLOSE_ALL.label())).clicked()
                     && let Err(e) = self.close_all_docs(true)
                 {
                     self.error = Some(e);
                 }
-                if ui.add_enabled(self.editor.is_some() && !busy, egui::Button::new("Run Script…")).clicked() {
+                if ui.add_enabled(self.editor.is_some() && !busy, egui::Button::new(menus::bar::RUN_SCRIPT.label())).clicked() {
                     ui.close();
                     self.pick_run_script(ui.ctx());
                 }
                 ui.separator();
-                if v1::offered(Feature::Batch) && ui.button(Feature::Batch.menu_text()).clicked() {
+                if menus::bar::BATCH.offered_in(v1::RELEASE) && ui.button(menus::bar::BATCH.label()).clicked() {
                     self.batch.open = true;
                 }
                 ui.separator();
                 let idle = !self.rec.is_active() && self.opening.is_none() && self.saving.is_none();
-                if ui.add_enabled(idle, egui::Button::new("New Recording…")).clicked() {
+                if ui.add_enabled(idle, egui::Button::new(menus::bar::NEW_RECORDING.label())).clicked() {
                     self.rec.dialog = Some(self.rec.start_format(self.rec.device_channels()));
                 }
-                if ui.add_enabled(idle, egui::Button::new("Record Now").shortcut_text("Shift+Space")).clicked() {
+                if ui.add_enabled(idle, egui::Button::new(menus::bar::RECORD_NOW.label()).shortcut_text("Shift+Space")).clicked() {
                     let _ = self.quick_record();
                 }
                 ui.separator();
                 let now = tr_args("file.session_folder_tip", &[&self.sessions.path.display().to_string()]);
-                if ui.button(tr("file.session_folder")).on_hover_text(&now).clicked() {
+                if ui.button(menus::bar::SESSION_FOLDER.label()).on_hover_text(&now).clicked() {
                     self.pick_session_folder();
                 }
-                if ui.button(tr("file.default_session_folder")).on_hover_text(default_sessions_root().display().to_string()).clicked() {
+                if ui.button(menus::bar::DEFAULT_SESSION_FOLDER.label()).on_hover_text(default_sessions_root().display().to_string()).clicked() {
                     self.set_session_folder(None);
                 }
                 ui.separator();
-                if ui.button("Export Application Settings…").on_hover_text("Settings, shortcut changes and workspaces in one file").clicked()
+                if ui.button(menus::bar::EXPORT_SETTINGS.label()).on_hover_text("Settings, shortcut changes and workspaces in one file").clicked()
                     && let Some(path) = rfd::FileDialog::new().set_file_name("wavcraft-settings.wavset").save_file()
                     && let Err(e) = self.export_settings(&path)
                 {
                     self.error = Some(e);
                 }
-                if ui.button("Import Application Settings…").on_hover_text("The file is checked whole before anything is replaced").clicked()
+                if ui.button(menus::bar::IMPORT_SETTINGS.label()).on_hover_text("The file is checked whole before anything is replaced").clicked()
                     && let Some(path) = rfd::FileDialog::new().add_filter("WavCraft settings", &["wavset"]).pick_file()
                 {
                     let _ = self.import_settings(&path);
                 }
-                if ui.button("Restore Preference Defaults…").clicked() {
+                if ui.button(menus::bar::RESTORE_DEFAULTS.label()).clicked() {
                     self.confirm_reset_prefs = true;
                 }
                 ui.separator();
-                if ui.button(tr("file.quit")).clicked() {
+                if ui.button(menus::bar::QUIT.label()).clicked() {
                     ui.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
-            ui.menu_button(tr("menu.edit"), |ui| self.edit_menu(ui));
-            if v1::offered(Feature::Multitrack) {
-                ui.menu_button("Multitrack", |ui| {
+            ui.menu_button(menus::bar::EDIT.label(), |ui| self.edit_menu(ui));
+            if menus::bar::MULTITRACK.offered_in(v1::RELEASE) {
+                ui.menu_button(menus::bar::MULTITRACK.label(), |ui| {
                     let has = self.mtv.mt.as_ref().is_some_and(|m| m.clip_count() > 0);
                     let norm = self.mtv.mix_normalize.then_some(-1.0);
-                    ui.checkbox(&mut self.mtv.mix_normalize, "Normalize the mixdown to -1 dB");
-                    if ui.add_enabled(has, egui::Button::new("Mixdown Session to New File")).clicked() {
+                    ui.checkbox(&mut self.mtv.mix_normalize, menus::bar::NORMALIZE_MIXDOWN.label());
+                    if ui.add_enabled(has, egui::Button::new(menus::bar::MIXDOWN_SESSION.label())).clicked() {
                         if let Err(e) = self.start_mixdown(false, norm, ui.ctx()) {
                             self.error = Some(e);
                         }
@@ -11136,7 +11146,7 @@ impl WaveApp {
                     }
                     let picked = has && !self.mtv.sel_clips.is_empty();
                     if ui
-                        .add_enabled(picked, egui::Button::new("Mixdown Selected Clips to New File"))
+                        .add_enabled(picked, egui::Button::new(menus::bar::MIXDOWN_CLIPS.label()))
                         .on_hover_text("Click clips in the Multitrack editor to pick them")
                         .clicked()
                     {
@@ -11147,7 +11157,7 @@ impl WaveApp {
                     }
                 });
             }
-            ui.menu_button("Window", |ui| {
+            ui.menu_button(menus::bar::WINDOW.label(), |ui| {
                 let offered: Vec<&panels::PanelInfo> = panels::REGISTRY.iter().filter(|p| self.panels.offers(p.id)).collect();
                 for p in offered {
                     let mut shown = self.panels.is_shown(p.id);
@@ -11157,54 +11167,54 @@ impl WaveApp {
                     }
                 }
                 let editor_max = self.layout.maximized(&self.panels) == Some(panels::EDITOR);
-                if ui.button(if editor_max { "Restore Editor" } else { "Maximize Editor" }).clicked() {
+                if ui.button(if editor_max { menus::bar::RESTORE_EDITOR.label() } else { menus::bar::MAXIMIZE_EDITOR.label() }).clicked() {
                     self.layout.toggle_maximize(panels::EDITOR);
                     ui.close();
                 }
-                if v1::offered(Feature::Multitrack) {
-                    ui.checkbox(&mut self.show_mixer, "Mixer panel");
+                if menus::bar::MIXER_PANEL.offered_in(v1::RELEASE) {
+                    ui.checkbox(&mut self.show_mixer, menus::bar::MIXER_PANEL.label());
                 }
                 let mut levels = self.meters.show_levels;
-                if ui.checkbox(&mut levels, "Levels").changed() {
+                if ui.checkbox(&mut levels, menus::bar::LEVELS.label()).changed() {
                     self.set_show_levels(levels);
                 }
                 let mut on = self.meter_input;
                 if ui
-                    .checkbox(&mut on, "Meter Input Signal")
+                    .checkbox(&mut on, menus::bar::METER_INPUT.label())
                     .on_hover_text("Show the input device's level in the Levels panel while nothing plays. Nothing is recorded.")
                     .changed()
                 {
                     self.set_meter_input(on);
                 }
-                if ui.button("Mic Check…").clicked() {
+                if ui.button(menus::bar::MIC_CHECK.label()).clicked() {
                     self.mic_dialog.get_or_insert(MicDialog { secs: 5.0, result: None });
                     ui.close();
                 }
-                ui.checkbox(&mut self.meters.show_stats, "Amplitude/Loudness Statistics");
-                ui.add_enabled_ui(self.editor.is_some(), |ui| ui.checkbox(&mut self.stats.show, "Sample Statistics (RMS, clipping)"));
+                ui.checkbox(&mut self.meters.show_stats, menus::bar::AMPLITUDE_STATS.label());
+                ui.add_enabled_ui(self.editor.is_some(), |ui| ui.checkbox(&mut self.stats.show, menus::bar::SAMPLE_STATS.label()));
                 ui.separator();
-                ui.menu_button("Workspace", |ui| self.workspace_menu(ui));
-                if ui.button("Reset Panel Layout").clicked() {
+                ui.menu_button(menus::bar::WORKSPACE.label(), |ui| self.workspace_menu(ui));
+                if ui.button(menus::bar::RESET_PANELS.label()).clicked() {
                     self.layout = Layout::default();
                     self.save_panels();
                     ui.close();
                 }
             });
-            ui.menu_button("Effects", |ui| self.effects_menu(ui));
-            ui.menu_button("Favorites", |ui| self.favorites_menu(ui));
-            ui.menu_button("Generate", |ui| self.generate_menu(ui));
-            ui.menu_button(tr("menu.view"), |ui| {
-                let mut switched = ui.radio_value(&mut self.mtv.show, false, "Waveform editor").clicked();
-                if v1::offered(Feature::Multitrack) {
-                    switched |= ui.radio_value(&mut self.mtv.show, true, "Multitrack editor").clicked();
+            ui.menu_button(menus::bar::EFFECTS.label(), |ui| self.effects_menu(ui));
+            ui.menu_button(menus::bar::FAVORITES.label(), |ui| self.favorites_menu(ui));
+            ui.menu_button(menus::bar::GENERATE.label(), |ui| self.generate_menu(ui));
+            ui.menu_button(menus::bar::VIEW.label(), |ui| {
+                let mut switched = ui.radio_value(&mut self.mtv.show, false, menus::bar::WAVEFORM_EDITOR.label()).clicked();
+                if menus::bar::MULTITRACK_EDITOR.offered_in(v1::RELEASE) {
+                    switched |= ui.radio_value(&mut self.mtv.show, true, menus::bar::MULTITRACK_EDITOR.label()).clicked();
                 }
                 if switched {
                     self.cdv.show = false;
                 }
-                if v1::offered(Feature::CdLayout) {
-                    ui.radio_value(&mut self.cdv.show, true, "CD Layout");
+                if menus::bar::CD_LAYOUT.offered_in(v1::RELEASE) {
+                    ui.radio_value(&mut self.cdv.show, true, menus::bar::CD_LAYOUT.label());
                 }
-                if self.clip_edit.is_some() && ui.button("Return to session").clicked() {
+                if self.clip_edit.is_some() && ui.button(menus::bar::RETURN_TO_SESSION.label()).clicked() {
                     let r = self.return_to_session(ui.ctx()).map(|_| ());
                     self.report(r);
                 }
@@ -11212,9 +11222,9 @@ impl WaveApp {
                 self.frequency_scale_menu(ui);
                 self.spectral_menu(ui);
                 ui.separator();
-                ui.menu_button("Playback Resampling", |ui| {
+                ui.menu_button(menus::bar::PLAYBACK_RESAMPLING.label(), |ui| {
                     for q in [Quality::High, Quality::Fast] {
-                        let label = if q == Quality::High { "High quality" } else { "Fast" };
+                        let label = if q == Quality::High { menus::bar::HIGH_QUALITY.label() } else { menus::bar::FAST.label() };
                         if ui
                             .radio(self.settings.playback_quality == q, label)
                             .on_hover_text("Used when the file's sample rate differs from the output device's")
@@ -11243,7 +11253,7 @@ impl WaveApp {
                 }
                 // Zoom to Time (f69): recall a slot, or store the view's time in one.
                 let (open, mut set_slot) = (self.doc.is_some(), None);
-                ui.menu_button("Zoom to Time", |ui| {
+                ui.menu_button(menus::bar::ZOOM_TO_TIME.label(), |ui| {
                     for (slot, id) in actions::ZOOM_PRESET_ACTIONS.into_iter().enumerate() {
                         let secs = self.settings.zoom_presets.0[slot];
                         if ui.add_enabled(open, egui::Button::new(format!("Slot {}: {}", slot + 1, slot_text(secs)))).clicked() {
@@ -11265,14 +11275,14 @@ impl WaveApp {
                 }
                 // Snapping (f09, f49): one switch per target, shared with the ruler's menu.
                 let mut snap_chosen = None;
-                ui.menu_button("Snapping", |ui| snap_chosen = snap_items(ui, &self.settings.snap));
+                ui.menu_button(menus::bar::SNAPPING.label(), |ui| snap_chosen = snap_items(ui, &self.settings.snap));
                 if let Some(id) = snap_chosen {
                     self.toggle_snap_menu(id);
                 }
                 ui.separator();
                 let mut picked = None;
                 let mut open_custom = false;
-                ui.menu_button("Time Display", |ui| {
+                ui.menu_button(menus::bar::TIME_DISPLAY.label(), |ui| {
                     for f in TimeFormat::ALL {
                         let shown = if matches!(f, TimeFormat::Custom(_)) { TimeFormat::Custom(self.settings.custom_fps) } else { f };
                         if ui.radio(self.time_format.name() == f.name(), shown.menu_with_rate()).clicked() {
@@ -11291,12 +11301,12 @@ impl WaveApp {
                 if open_custom {
                     let _ = self.run_action(ActionId::TimeCustom, ui.ctx());
                 }
-                ui.checkbox(&mut self.show_metadata, "Metadata panel");
+                ui.checkbox(&mut self.show_metadata, menus::bar::METADATA_PANEL.label());
                 ui.separator();
                 for (id, label) in [
-                    (ActionId::ViewSyncSelection, "Synchronise Selection Across Files"),
-                    (ActionId::ViewSyncZoom, "Synchronise Zoom and Scroll Across Files"),
-                    (ActionId::ViewSyncPlayhead, "Synchronise Playhead Across Files"),
+                    (ActionId::ViewSyncSelection, menus::bar::SYNC_SELECTION.label()),
+                    (ActionId::ViewSyncZoom, menus::bar::SYNC_ZOOM.label()),
+                    (ActionId::ViewSyncPlayhead, menus::bar::SYNC_PLAYHEAD.label()),
                 ] {
                     let s = self.settings.sync;
                     let mut on = match id {
@@ -11310,7 +11320,7 @@ impl WaveApp {
                 }
                 ui.separator();
                 let mut chosen_language = None;
-                ui.menu_button(tr("menu.language"), |ui| {
+                ui.menu_button(menus::bar::LANGUAGE.label(), |ui| {
                     for code in i18n::language_codes() {
                         if ui.selectable_label(i18n::language() == code, tr(&format!("language.{code}"))).clicked() {
                             chosen_language = Some(code);
@@ -11322,60 +11332,70 @@ impl WaveApp {
                     self.set_language(code);
                 }
             });
-            if v1::offered(Feature::Video) {
-                ui.menu_button("Video", |ui| {
-                    if ui.add_enabled(self.editor.is_some(), egui::Button::new("Attach video file…")).clicked() {
+            if menus::bar::VIDEO.offered_in(v1::RELEASE) {
+                ui.menu_button(menus::bar::VIDEO.label(), |ui| {
+                    if ui.add_enabled(self.editor.is_some(), egui::Button::new(menus::bar::ATTACH_VIDEO.label())).clicked() {
                         self.pick_video(ui.ctx());
                     }
-                    if ui.add_enabled(self.video.is_some(), egui::Button::new("Detach video")).clicked() {
+                    if ui.add_enabled(self.video.is_some(), egui::Button::new(menus::bar::DETACH_VIDEO.label())).clicked() {
                         self.drop_video();
                     }
-                    ui.checkbox(&mut self.show_video, "Video panel");
+                    ui.checkbox(&mut self.show_video, menus::bar::VIDEO_PANEL.label());
                 });
             }
-            ui.menu_button("Help", |ui| {
-                if ui.button("Keyboard Shortcuts").clicked() {
+            ui.menu_button(menus::bar::HELP.label(), |ui| {
+                if ui.button(menus::bar::KEYBOARD_SHORTCUTS.label()).clicked() {
                     self.show_shortcuts = true;
                     ui.close();
                 }
-                if ui.button("About WavCraft…").clicked() {
+                if ui.button(menus::bar::ABOUT.label()).clicked() {
                     self.show_about = true;
                 }
             });
             let label = if self.player.is_playing() {
-                tr("transport.stop")
+                menus::bar::STOP.label()
             } else if self.transport.mode == Mode::Paused {
-                "▶ Resume".to_string()
+                menus::bar::RESUME.label()
             } else {
-                tr("transport.play")
+                menus::bar::PLAY.label()
             };
             if ui.add_enabled(!self.rec.is_active(), egui::Button::new(label)).on_hover_text("Space").clicked() {
                 self.toggle_play();
             }
             let mut m = self.player.metronome();
-            let mut changed =
-                ui.checkbox(&mut m.on, "Metronome").on_hover_text("A click on each beat of the document's tempo, in the playback only").changed();
+            let mut changed = ui
+                .checkbox(&mut m.on, menus::bar::METRONOME.label())
+                .on_hover_text("A click on each beat of the document's tempo, in the playback only")
+                .changed();
             if m.on {
-                changed |= ui.add(egui::DragValue::new(&mut m.volume).range(0.0..=1.0).speed(0.01).fixed_decimals(2).prefix("vol ")).changed();
-                changed |= ui.add(egui::DragValue::new(&mut m.count_in_bars).range(0..=16).suffix(" bar count-in")).changed();
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut m.volume)
+                            .range(0.0..=1.0)
+                            .speed(0.01)
+                            .fixed_decimals(2)
+                            .prefix(menus::bar::METRONOME_VOLUME.label()),
+                    )
+                    .changed();
+                changed |= ui.add(egui::DragValue::new(&mut m.count_in_bars).range(0..=16).suffix(menus::bar::METRONOME_COUNT_IN.label())).changed();
             }
             if changed {
                 self.set_metronome(m);
             }
             if self.rec.is_active() {
-                if ui.button("■ Stop Recording").clicked() {
+                if ui.button(menus::bar::STOP_RECORDING.label()).clicked() {
                     self.finish_recording(true, ui.ctx());
                 }
-                let label = if self.rec.is_paused() { "● Resume" } else { "❚❚ Pause" };
+                let label = if self.rec.is_paused() { menus::bar::RESUME_RECORDING.label() } else { menus::bar::PAUSE_RECORDING.label() };
                 if ui.button(label).on_hover_text("Space").clicked() {
                     self.rec.set_paused(!self.rec.is_paused());
                 }
             } else if self.rec.is_armed() {
-                if ui.button("Cancel Timed Recording").clicked() {
+                if ui.button(menus::bar::CANCEL_TIMED_RECORDING.label()).clicked() {
                     self.rec.disarm();
                 }
             } else if ui
-                .add_enabled(self.opening.is_none() && self.saving.is_none(), egui::Button::new("● Record"))
+                .add_enabled(self.opening.is_none() && self.saving.is_none(), egui::Button::new(menus::bar::RECORD.label()))
                 .on_hover_text("New Recording (Shift+Space records at once with the last settings)")
                 .clicked()
             {
