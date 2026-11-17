@@ -114,8 +114,14 @@ def main():
         check("DIVIDER drag answers OK", ans.startswith("OK "), ans)
         state["dragged"] = size_left(c)
         check("the left divider moved", state["dragged"] != state["first"], f"{state['first']} -> {state['dragged']}")
+        ans = c.ask("METERS show 0")
+        if not ans.startswith("OK "):
+            raise RuntimeError(f"METERS show 0 answered {ans!r}")
 
     def run2(c):
+        check("after a restart the Levels strip is still hidden (levels=0)", panels(c).get("levels") == "0")
+        ans = c.ask("METERS show 1")
+        check("METERS show 1 gives levels=1", ans.startswith("OK ") and panels(c).get("levels") == "1", ans)
         check("after a restart History is still hidden", panels(c).get("history") == "0", panels(c).get("history"))
         check("after a restart size.left is what the drag left", size_left(c) == state["dragged"],
               f"{size_left(c)} != {state['dragged']}")

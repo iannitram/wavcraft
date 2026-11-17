@@ -355,6 +355,9 @@ pub const BINDINGS: &[Binding] = &[
     bind(Command::Save, cmd("S")),
     bind(Command::SaveAs, cmd_shift("S")),
     bind(Command::PlayStop, key("Space")),
+    act(ActionId::ShuttleBack, key("J")),
+    act(ActionId::ShuttleStop, key("K")),
+    act(ActionId::ShuttleForward, key("L")),
     // Edit.
     act(ActionId::Undo, cmd("Z")),
     bind(Command::Close, cmd("W")),
@@ -408,6 +411,8 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::CursorToEnd, key("End")),
     act(ActionId::GotoTime, cmd("J")),
     act(ActionId::MarkerAdd, key("M")),
+    act(ActionId::MarkerAdd, key("F8")),
+    act(ActionId::MarkerAdd, shift("8")),
     act(ActionId::MarkerPrev, cmd_alt("ArrowLeft")),
     act(ActionId::MarkerNext, cmd_alt("ArrowRight")),
     act(ActionId::PlayheadPrev, alt("ArrowLeft")),
@@ -430,9 +435,9 @@ pub const BINDINGS: &[Binding] = &[
     act(ActionId::ToolLasso, key("D")),
     // Match Loudness panel (G3.4, Q11): Alt+5.
     act(ActionId::ToggleMatchPanel, alt("5")),
-    // Findings navigation (K3.2): F8 moves to the next finding, Shift+F8 to the previous.
-    act(ActionId::CheckNext, key("F8")),
-    act(ActionId::CheckPrev, shift("F8")),
+    // Findings navigation (K3.2, moved by I3.3): F6 moves to the next finding, Shift+F6 to the previous.
+    act(ActionId::CheckNext, key("F6")),
+    act(ActionId::CheckPrev, shift("F6")),
     // Workspaces (f96): Alt+Shift+1..9 switch to the first nine, in menu order.
     bind(Command::Workspace(1), alt_shift("1")),
     bind(Command::Workspace(2), alt_shift("2")),

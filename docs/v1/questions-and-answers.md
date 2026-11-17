@@ -104,3 +104,9 @@ Asked the evening of 2026-11-16, before an unattended run of the Dev Loop, so th
 - **The locked Help-list test** (`apps/wavcraft/src/i3_shortcut_help_tests.rs`): a step may add or change only the rows for its own keys, and never loosen a check. This covers A4.1, B2.1, B2.3, C4.6, I3.4, I3.5, L5.4 and G3.4.
 - **Hand checks:** a step whose code an agent can finish but whose Verify also needs my hand check is merged. Its row says "Code merged (#PR). Left: …" and the check joins my queue in Next up.
 - **The overnight run may:** file step issues; open one branch and PR per step; merge each once CI is green on all three systems and an agent review finds nothing blocking; close the issues listed under Tracker clean-up; delete the stale branches listed there; relabel and retitle as listed there.
+
+## Q12. Rulings during the overnight run (2026-11-16, in the Mac satellite session's question tool)
+
+- **"The 8 GB Mac"** in the roadmap (C5.9, H3.2, I5.6, L1.15 and others) is the M1 Mac mini with 8 GB, the machine I7 was measured on. My answer: "This M1 Mac mini (Recommended)".
+- **Delete-to-picture on the 8 GB Mac:** B2's 500 ms limit holds on the M1 Mac mini for 1.0. The 4369 ms delete measured by B2.6's script is a 1.0 bug (#1590). My answer: "File a 1.0 bug (Recommended)".
+- **Hand runs on this machine:** a hand check marked `hand` (not `hand, me`) may be run by an agent on the machine it names, through the control channel and background app control. The agent posts its evidence on the step's issue and the result counts as done; I spot-check later and reopen anything wrong. The same holds for I5.4 and H3.2 on the M1 Mac mini: H3.2 runs when I can approve full-screen control. My answers: "Yes, run and record (Recommended)", "Counts as done (Recommended)", "I5.4 now, H3.2 too (Recommended)".

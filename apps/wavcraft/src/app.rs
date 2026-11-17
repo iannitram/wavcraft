@@ -1194,6 +1194,7 @@ impl WaveApp {
                 control::start_from_env(move || ctx.request_repaint())
             },
         };
+        app.meters.show_levels = app.settings.show_levels;
         app.mtv.take_dir = app.sessions.path.join("takes");
         if app.reconcile_floats() {
             app.save_panels();
@@ -1425,6 +1426,13 @@ impl WaveApp {
         }
         self.save_profiles();
         outcome
+    }
+
+    /// Show or hide the Levels strip, and keep the choice in the settings file.
+    fn set_show_levels(&mut self, on: bool) {
+        self.settings.show_levels = on;
+        self.meters.show_levels = on;
+        self.persist_settings();
     }
 
     /// Turn the input meter on or off (opening or closing the input stream with it).
@@ -3849,7 +3857,7 @@ impl WaveApp {
     /// The answer to `PANELS` and `PANEL …`: which panels are shown, then the zones.
     fn panels_report(&self) -> String {
         let kind = self.float_kind.map_or(String::new(), |k| format!(" float_window={k}"));
-        format!("OK {} {}{kind}", self.panels.report(), self.layout.report(&self.panels))
+        format!("OK {} levels={} {}{kind}", self.panels.report(), u8::from(self.meters.show_levels), self.layout.report(&self.panels))
     }
 
     /// The body of a docked panel.
@@ -5688,6 +5696,9 @@ impl WaveApp {
             },
             ActionId::Pause => self.pause_play(),
             ActionId::Stop => self.stop_play(),
+            ActionId::ShuttleBack => self.shuttle_key('j', ctx.input(|i| i.key_down(Key::K))),
+            ActionId::ShuttleStop => self.shuttle_key('k', false),
+            ActionId::ShuttleForward => self.shuttle_key('l', ctx.input(|i| i.key_down(Key::K))),
             ActionId::ToggleLoop => {
                 self.transport.looping = !self.transport.looping;
                 self.player.set_looping(self.transport.looping);
@@ -9959,6 +9970,11 @@ impl WaveApp {
                         _ => return "ERR METERS PUSH <left> <right>, linear peaks".to_string(),
                     },
                     Some("RESET") => self.meters.levels.reset_clip(),
+                    Some("show") => match words.next() {
+                        Some("0") if words.next().is_none() => self.set_show_levels(false),
+                        Some("1") if words.next().is_none() => self.set_show_levels(true),
+                        _ => return "ERR METERS show <0|1>".to_string(),
+                    },
                     Some(_) => return "ERR METERS [PUSH <l> <r> | RESET]".to_string(),
                     None => {}
                 }
@@ -11148,7 +11164,10 @@ impl WaveApp {
                 if v1::offered(Feature::Multitrack) {
                     ui.checkbox(&mut self.show_mixer, "Mixer panel");
                 }
-                ui.checkbox(&mut self.meters.show_levels, "Levels");
+                let mut levels = self.meters.show_levels;
+                if ui.checkbox(&mut levels, "Levels").changed() {
+                    self.set_show_levels(levels);
+                }
                 let mut on = self.meter_input;
                 if ui
                     .checkbox(&mut on, "Meter Input Signal")
@@ -12886,29 +12905,7 @@ impl eframe::App for WaveApp {
         }
         // The JKL shuttle (f36): J plays backward, K stops, L plays forward; K held with J or L crawls.
         if !typing {
-            let (presses, k_down, j_down, l_down) = ctx.input(|i| {
-                let presses: Vec<Key> = i
-                    .events
-                    .iter()
-                    .filter_map(|e| match e {
-                        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
-                            if matches!(key, Key::J | Key::K | Key::L) && !modifiers.command && !modifiers.alt && !modifiers.shift =>
-                        {
-                            Some(*key)
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                (presses, i.key_down(Key::K), i.key_down(Key::J), i.key_down(Key::L))
-            });
-            for key in presses {
-                let c = match key {
-                    Key::J => 'j',
-                    Key::L => 'l',
-                    _ => 'k',
-                };
-                self.shuttle_key(c, k_down && c != 'k');
-            }
+            let (j_down, l_down) = ctx.input(|i| (i.key_down(Key::J), i.key_down(Key::L)));
             let nudge = self.transport.shuttle.nudge;
             if nudge != 0 && !self.hold.ctl_nudge && !(if nudge > 0 { l_down } else { j_down }) {
                 self.release_nudge();
@@ -13313,6 +13310,9 @@ fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_fo
                 .filter_map(|(ch, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(ch))))
                 .collect()
         };
+        // Shift+8 (Add Marker, I3.3) also types "*" on a top row: the chord adds the marker, so the
+        // text event below must not add a second one.
+        let mut shift_8_marker = false;
         pressed.extend(rows.iter().filter_map(|(command, k)| {
             let play_stop = *command == Command::PlayStop && !typing;
             if (typing || other_focus) && !play_stop && !matches!(command, Command::Save | Command::SaveAs | Command::Open) {
@@ -13329,17 +13329,30 @@ fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_fo
             if k.alt {
                 mods |= egui::Modifiers::ALT;
             }
-            // Play/Stop must not toggle again on auto-repeat during a long press.
-            let fresh = *command != Command::PlayStop
+            // Play/Stop and the JKL shuttle must not act again on auto-repeat during a long press.
+            let no_repeat =
+                matches!(command, Command::PlayStop | Command::Action(ActionId::ShuttleBack | ActionId::ShuttleStop | ActionId::ShuttleForward));
+            // egui matches a pattern without Alt even while Alt is held, so Alt+J/K/L would run the shuttle.
+            let shuttle = matches!(command, Command::Action(ActionId::ShuttleBack | ActionId::ShuttleStop | ActionId::ShuttleForward));
+            let alt_press =
+                |e: &egui::Event| matches!(e, egui::Event::Key { key: pressed, pressed: true, modifiers, .. } if *pressed == key && modifiers.alt);
+            if shuttle && !k.alt && (i.modifiers.alt || i.events.iter().any(alt_press)) {
+                return None;
+            }
+            let fresh = !no_repeat
                 || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
-            (i.consume_key(mods, key) && fresh).then_some(*command)
+            let fired = i.consume_key(mods, key) && fresh;
+            if fired && *command == Command::Action(ActionId::MarkerAdd) && k.shift && k.key == "8" {
+                shift_8_marker = true;
+            }
+            fired.then_some(*command)
         }));
         // egui 0.36 has no key for numpad multiply, so a typed "*" adds a marker (H1.1, #1178). The
         // text event is taken here, so nothing else reads it. With a text field focused it is typed.
         if !typing && !other_focus && !float_space_only {
             i.events.retain(|e| {
                 let star = matches!(e, egui::Event::Text(t) if t == "*");
-                if star {
+                if star && !shift_8_marker {
                     pressed.push(Command::Action(ActionId::MarkerAdd));
                 }
                 !star

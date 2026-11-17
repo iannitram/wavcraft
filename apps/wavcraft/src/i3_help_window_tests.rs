@@ -56,11 +56,18 @@ fn rendered_help_window(app: &mut WaveApp) -> Vec<String> {
     labels
 }
 
+/// One help row per bound chord of a table action, counted from the default keymap, so a new
+/// binding does not need this file changed.
+fn bound_chords() -> usize {
+    let table: Vec<ActionId> = TABLE.iter().map(|a| a.id).collect();
+    Keymap::new().bindings().iter().filter(|b| matches!(b.command, Command::Action(id) if table.contains(&id))).count()
+}
+
 #[test]
 fn help_shortcuts_answers_rows_and_opens_the_window() {
     let scratch = Scratch::new("opens");
     let mut app = a_window(&scratch);
-    assert_eq!(ask(&mut app, "HELP shortcuts"), "OK rows=67");
+    assert_eq!(ask(&mut app, "HELP shortcuts"), format!("OK rows={}", bound_chords()));
     assert!(app.show_shortcuts, "HELP shortcuts opens the window");
     let text = rendered_help_window(&mut app);
     let undo_chord = if cfg!(target_os = "macos") { "⌘Z" } else { "Ctrl+Z" };
@@ -72,7 +79,7 @@ fn help_shortcuts_answers_rows_and_opens_the_window() {
 #[test]
 fn the_first_help_row_is_undo_on_ctrl_z() {
     let rows = shortcut_help_rows(false);
-    assert_eq!(rows.len(), 67, "one row per bound chord at this commit");
+    assert_eq!(rows.len(), bound_chords(), "one row per bound chord");
     assert_eq!(rows[0], ("edit.undo", "Undo", "Ctrl+Z".to_string()));
     let mac = shortcut_help_rows(true);
     assert_eq!(mac[0].1, "Undo", "the first row's label is Undo on the Mac list too");
