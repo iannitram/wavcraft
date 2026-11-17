@@ -13275,6 +13275,9 @@ fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_fo
                 .filter_map(|(ch, key)| i.consume_key(egui::Modifiers::ALT, key).then_some(Command::Action(ActionId::ToggleChannel(ch))))
                 .collect()
         };
+        // Shift+8 (Add Marker, I3.3) also types "*" on a top row: the chord adds the marker, so the
+        // text event below must not add a second one.
+        let mut shift_8_marker = false;
         pressed.extend(rows.iter().filter_map(|(command, k)| {
             let play_stop = *command == Command::PlayStop && !typing;
             if (typing || other_focus) && !play_stop && !matches!(command, Command::Save | Command::SaveAs | Command::Open) {
@@ -13303,14 +13306,18 @@ fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_fo
             }
             let fresh = !no_repeat
                 || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
-            (i.consume_key(mods, key) && fresh).then_some(*command)
+            let fired = i.consume_key(mods, key) && fresh;
+            if fired && *command == Command::Action(ActionId::MarkerAdd) && k.shift && k.key == "8" {
+                shift_8_marker = true;
+            }
+            fired.then_some(*command)
         }));
         // egui 0.36 has no key for numpad multiply, so a typed "*" adds a marker (H1.1, #1178). The
         // text event is taken here, so nothing else reads it. With a text field focused it is typed.
         if !typing && !other_focus && !float_space_only {
             i.events.retain(|e| {
                 let star = matches!(e, egui::Event::Text(t) if t == "*");
-                if star {
+                if star && !shift_8_marker {
                     pressed.push(Command::Action(ActionId::MarkerAdd));
                 }
                 !star
