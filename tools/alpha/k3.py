@@ -122,7 +122,7 @@ def main():
         print("PASS CHECK list reports every finding kind and range", answer)
 
         clicked = c.ask(f"CHECK click {click_index}")
-        assert clicked.startswith("OK"), clicked
+        assert clicked.startswith("OK") and "playing=1" in clicked, clicked
         deadline = time.monotonic() + 2
         state = ""
         while time.monotonic() < deadline:
