@@ -223,6 +223,13 @@ pub fn lane_boxes(words: &[Word], view_start: u64, view_end: u64, width_px: u32)
         .collect()
 }
 
+/// Delete the words from `first` through `last`, inclusive, as one ordinary edit. The indices
+/// may be dragged in either direction; an invalid index gives the empty range and a no-op edit.
+pub fn delete_words(doc: &DocState, first: usize, last: usize, crossfades: Crossfades) -> Result<Edit, EditError> {
+    let range = doc.transcript().map_or(0..0, |transcript| transcript.range_of(first, last));
+    delete_ranges(doc, &[range], crossfades, edit::DELETE)
+}
+
 /// Cut several ranges from every channel as one [`Edit`], the way Delete Silence does, so
 /// removing every filler is one History step (L4.3, #1060). The ranges may come in any order and
 /// empty ranges are ignored: the rest are sorted by start, refused with
