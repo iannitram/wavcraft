@@ -234,11 +234,12 @@ mod tests {
         ];
         let mut origin = egui::Pos2::ZERO;
         let mut fill = egui::Color32::TRANSPARENT;
-        let output = ctx.run_ui(Default::default(), |ui| {
+        let mut output = ctx.run_ui(Default::default(), |ui| {
             origin = ui.available_rect_before_wrap().min;
             fill = ui.visuals().selection.bg_fill;
             findings_rows(ui, &rows, Some(1));
         });
+        output.textures_delta.clear();
         let highlighted = rects_filled(&output.shapes, fill);
         // Catches: removing the highlight from findings_rows paints no rectangle in the selection colour, so this fails.
         assert_eq!(highlighted.len(), 1, "exactly one row is highlighted");
@@ -246,9 +247,10 @@ mod tests {
         assert!(highlighted[0].min.y >= origin.y + 28.0, "the highlight is on the second row, not the first");
         assert!((highlighted[0].height() - 28.0).abs() < 0.01, "a highlight covers one 28 pt row");
 
-        let output = ctx.run_ui(Default::default(), |ui| {
+        let mut output = ctx.run_ui(Default::default(), |ui| {
             findings_rows(ui, &rows, None);
         });
+        output.textures_delta.clear();
         // Catches: a highlight drawn with no current row (current == None) makes this fail.
         assert!(rects_filled(&output.shapes, fill).is_empty(), "no row is highlighted when current is None");
     }
