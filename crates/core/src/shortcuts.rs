@@ -355,6 +355,9 @@ pub const BINDINGS: &[Binding] = &[
     bind(Command::Save, cmd("S")),
     bind(Command::SaveAs, cmd_shift("S")),
     bind(Command::PlayStop, key("Space")),
+    act(ActionId::ShuttleBack, key("J")),
+    act(ActionId::ShuttleStop, key("K")),
+    act(ActionId::ShuttleForward, key("L")),
     // Edit.
     act(ActionId::Undo, cmd("Z")),
     bind(Command::Close, cmd("W")),

@@ -204,4 +204,7 @@ action.transport.followCenter = Auto-Scroll Centered
 action.transport.rewind = Rewind
 action.transport.fastForward = Fast Forward
 action.transport.roll = Pre/Post-Roll
+action.transport.shuttle.back = Shuttle Back
+action.transport.shuttle.stop = Shuttle Stop
+action.transport.shuttle.forward = Shuttle Forward
 action.panel.match.toggle = Match Loudness
