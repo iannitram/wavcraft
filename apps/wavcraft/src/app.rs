@@ -518,12 +518,15 @@ struct HudState {
 }
 
 /// The amplitude HUD's approximate size, used to place it on a fresh start.
-const AMPLITUDE_HUD_SIZE: egui::Vec2 = egui::vec2(260.0, 90.0);
+fn amplitude_hud_size() -> egui::Vec2 {
+    let m = theme::metrics();
+    egui::vec2(m.amplitude_hud_width, m.amplitude_hud_height)
+}
 
 /// Place a fresh amplitude HUD near the waveform's top-left, keeping its full rectangle inside
 /// the editor and clear of the toolbar where the layout permits.
 fn amplitude_hud_default_rect(editor: Rect, toolbar: Option<Rect>, size: egui::Vec2) -> Rect {
-    let margin = 8.0;
+    let margin = theme::metrics().amplitude_hud_inset;
     let x_max = (editor.right() - size.x - margin).max(editor.left());
     let y_max = (editor.bottom() - size.y - margin).max(editor.top());
     let left = (editor.left() + margin).clamp(editor.left(), x_max);
@@ -1674,7 +1677,7 @@ impl WaveApp {
         }
         let mut open = true;
         let mut action: Option<PrefAction> = None;
-        egui::Window::new("Preferences").open(&mut open).collapsible(false).default_width(560.0).show(ctx, |ui| {
+        egui::Window::new("Preferences").open(&mut open).collapsible(false).default_width(theme::metrics().preferences_dialog_width).show(ctx, |ui| {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(130.0);
@@ -1685,7 +1688,7 @@ impl WaveApp {
                 ui.separator();
                 ui.vertical(|ui| {
                     ui.heading(page.title());
-                    ui.add_space(6.0);
+                    ui.add_space(theme::metrics().space_6);
                     match page {
                         PrefPage::General => {
                             ui.label("Session folder: where an opened file is kept while you work on it.");
@@ -1699,13 +1702,13 @@ impl WaveApp {
                                     action = Some(PrefAction::Set("session_folder", String::new()));
                                 }
                             });
-                            ui.add_space(12.0);
+                            ui.add_space(theme::metrics().space_l);
                             pref_number(ui, "Zoom In / Out factor", "zoom_factor", self.settings.zoom_factor, settings::MIN_ZOOM_FACTOR..=settings::MAX_ZOOM_FACTOR, "x", &mut action);
                             pref_choice(ui, "Extend selection from", "extend_selection", self.settings.extend_selection.name(), settings::ExtendSelection::ALL.iter().map(|c| c.name()), &mut action);
                             ui.label("Stored only for now: Shift-click extension is not on this branch.");
                             pref_check(ui, "Context-sensitive channel editing", "context_channel_editing", self.settings.context_channel_editing, &mut action);
                             ui.label("Stored only for now: per-channel pointer editing is not on this branch.");
-                            ui.add_space(12.0);
+                            ui.add_space(theme::metrics().space_l);
                             if ui.button("Reset all preferences").on_hover_text("The settings file is kept aside, not deleted").clicked() {
                                 action = Some(PrefAction::ResetAll);
                             }
@@ -1744,7 +1747,7 @@ impl WaveApp {
                                     action = Some(PrefAction::Set("session_folder", String::new()));
                                 }
                             });
-                            ui.add_space(8.0);
+                            ui.add_space(theme::metrics().space_m);
                             let mut custom = self.settings.cache_mb.is_some();
                             let current = self.settings.cache_mb.unwrap_or(self.settings.cache_bytes() >> 20);
                             ui.horizontal(|ui| {
@@ -1763,7 +1766,7 @@ impl WaveApp {
                             });
                             ui.label("A new cache size applies from the next file opened.");
                             if let Some(u) = &self.prefs_usage {
-                                ui.add_space(8.0);
+                                ui.add_space(theme::metrics().space_m);
                                 ui.label(format!(
                                     "Sessions on disk: {} using {}. {} can be recovered (never removed here); {} old enough to clean up ({}).",
                                     u.sessions,
@@ -1809,7 +1812,7 @@ impl WaveApp {
                                     }
                                 });
                             }
-                            ui.add_space(8.0);
+                            ui.add_space(theme::metrics().space_m);
                             ui.horizontal(|ui| {
                                 ui.label("Sample rate conversion quality");
                                 egui::ComboBox::from_id_salt("src_quality").selected_text(self.settings.src_quality.name()).show_ui(ui, |ui| {
@@ -1821,7 +1824,7 @@ impl WaveApp {
                                 });
                             });
                             ui.label("Stored only for now: nothing on this branch converts sample rates yet.");
-                            ui.add_space(8.0);
+                            ui.add_space(theme::metrics().space_m);
                             ui.label("Float headroom: files are held as 32-bit float, so a level over 0 dBFS inside the editor is kept, not clipped; it is only limited when written to a fixed-point file.");
                         }
                         PrefPage::MarkersMetadata => {
@@ -1830,7 +1833,7 @@ impl WaveApp {
                             if ui.checkbox(&mut v, "Include markers and other metadata").changed() {
                                 action = Some(PrefAction::Set("save_include_metadata", v.to_string()));
                             }
-                            ui.add_space(6.0);
+                            ui.add_space(theme::metrics().space_6);
                             ui.label("Marker name pattern ({n} is the marker's number):");
                             let id = ui.id().with("marker_pattern");
                             let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| self.settings.marker_name_pattern.clone());
@@ -1865,7 +1868,7 @@ impl WaveApp {
                             if std::env::var_os("WAVCRAFT_RECORD_DIR").is_some_and(|d| !d.is_empty()) {
                                 ui.label("WAVCRAFT_RECORD_DIR is set and takes the place of this folder.");
                             }
-                            ui.add_space(8.0);
+                            ui.add_space(theme::metrics().space_m);
                             ui.horizontal(|ui| {
                                 ui.label("Auto-scroll while playing");
                                 egui::ComboBox::from_id_salt("autoscroll").selected_text(self.settings.autoscroll.name()).show_ui(ui, |ui| {
@@ -1880,7 +1883,7 @@ impl WaveApp {
                                 ui.label("J/K/L speed steps");
                                 let id = ui.id().with("jkl_steps");
                                 let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| self.settings.get("jkl_speed_steps").unwrap_or_default());
-                                let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(160.0));
+                                let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(theme::metrics().text_field_wide_width));
                                 if r.lost_focus() {
                                     action = Some(PrefAction::Set("jkl_speed_steps", text.clone()));
                                     ui.data_mut(|d| d.remove::<String>(id));
@@ -1934,7 +1937,7 @@ impl WaveApp {
                             ui.separator();
                             ui.label("Presets:");
                             ui.horizontal(|ui| {
-                                ui.add(egui::TextEdit::singleline(&mut self.preset_name).hint_text("preset name").desired_width(140.0));
+                                ui.add(egui::TextEdit::singleline(&mut self.preset_name).hint_text("preset name").desired_width(theme::metrics().text_field_medium_width));
                                 if ui.button("Save").clicked() {
                                     action = Some(PrefAction::Preset("save", self.preset_name.clone()));
                                 }
@@ -2038,7 +2041,7 @@ impl WaveApp {
                                     ui.label("Looking for devices…");
                                 }
                             });
-                            ui.add_space(6.0);
+                            ui.add_space(theme::metrics().space_6);
                             match &self.player.error {
                                 Some(e) => ui.colored_label(theme::pal().cursor, format!("No sound: {e}")),
                                 None => ui.label(format!(
@@ -2082,7 +2085,7 @@ impl WaveApp {
                                     });
                                 });
                             }
-                            ui.add_space(10.0);
+                            ui.add_space(theme::metrics().space_10);
                             ui.label("Input: which record channel each device input is recorded to (used by recording).");
                             for i in 0..2usize {
                                 let now = self.settings.input_map.get(i);
@@ -2101,7 +2104,7 @@ impl WaveApp {
                                     });
                                 });
                             }
-                            ui.add_space(6.0);
+                            ui.add_space(theme::metrics().space_6);
                             if ui.button("Back to automatic").clicked() {
                                 action = Some(PrefAction::ClearMaps);
                             }
@@ -4033,7 +4036,10 @@ impl WaveApp {
             for side in [DockSide::Left, DockSide::Right] {
                 let Some(sr) = rect_of(side, &rects) else { continue };
                 let x = if side == DockSide::Left { sr.right() } else { sr.left() };
-                let spot = Rect::from_center_size(pos2(x, bottom.top()), egui::vec2(GRAB * 4.0, GRAB * 4.0));
+                let spot = Rect::from_center_size(
+                    pos2(x, bottom.top()),
+                    egui::vec2(theme::metrics().divider_corner_hit_size, theme::metrics().divider_corner_hit_size),
+                );
                 let r = ui.interact(spot, egui::Id::new(("divider-corner", side.name())), Sense::click_and_drag());
                 if r.hovered() || r.dragged() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
@@ -4067,7 +4073,7 @@ impl WaveApp {
                 .with_title(format!("WavCraft: {title}"))
                 .with_position(egui::pos2(f.pos[0], f.pos[1]))
                 .with_inner_size(vec2(f.size[0], f.size[1]))
-                .with_min_inner_size(vec2(160.0, 100.0));
+                .with_min_inner_size(vec2(theme::metrics().float_min_width, theme::metrics().float_min_height));
             let mut dock = false;
             let mut kind = "os";
             let mut rect: Option<([f32; 2], [f32; 2])> = None;
@@ -4157,8 +4163,11 @@ impl WaveApp {
         }
         ui.separator();
         ui.horizontal(|ui| {
-            let edit =
-                ui.add(egui::TextEdit::singleline(&mut self.workspace_name).hint_text(menus::bar::WORKSPACE_NAME.label()).desired_width(120.0));
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut self.workspace_name)
+                    .hint_text(menus::bar::WORKSPACE_NAME.label())
+                    .desired_width(theme::metrics().text_field_standard_width),
+            );
             let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if (ui.button(menus::bar::SAVE_WORKSPACE.label()).clicked() || enter) && !self.workspace_name.trim().is_empty() {
                 result = self.workspace_command(&format!("save {}", self.workspace_name));
@@ -4858,24 +4867,34 @@ impl WaveApp {
 
     fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_about;
-        egui::Window::new("About WavCraft").open(&mut open).default_size(vec2(640.0, 480.0)).show(ctx, |ui| {
-            ui.heading("WavCraft");
-            ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-            ui.label("WavCraft is free software built on the open-source libraries below, each under its own licence.");
-            ui.separator();
-            ui.strong("Third-party notices");
-            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-                ui.add(egui::Label::new(egui::RichText::new(crate::notices::TEXT).monospace().size(11.0)).wrap_mode(egui::TextWrapMode::Extend));
+        egui::Window::new("About WavCraft")
+            .open(&mut open)
+            .default_size(vec2(theme::metrics().about_dialog_width, theme::metrics().about_dialog_height))
+            .show(ctx, |ui| {
+                ui.heading("WavCraft");
+                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                ui.label("WavCraft is free software built on the open-source libraries below, each under its own licence.");
+                ui.separator();
+                ui.strong("Third-party notices");
+                egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(crate::notices::TEXT).monospace().size(theme::metrics().text_small))
+                            .wrap_mode(egui::TextWrapMode::Extend),
+                    );
+                });
             });
-        });
         self.show_about = open;
     }
 
     fn shortcut_help_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_shortcuts;
-        egui::Window::new("Keyboard Shortcuts").open(&mut open).collapsible(false).default_size(vec2(420.0, 560.0)).show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| shortcut_help_content(ui, cfg!(target_os = "macos")));
-        });
+        egui::Window::new("Keyboard Shortcuts")
+            .open(&mut open)
+            .collapsible(false)
+            .default_size(vec2(theme::metrics().shortcuts_dialog_width, theme::metrics().shortcuts_dialog_height))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| shortcut_help_content(ui, cfg!(target_os = "macos")));
+            });
         self.show_shortcuts = open;
     }
 
@@ -6100,7 +6119,11 @@ impl WaveApp {
             ui.label("Time");
             if let Some(typed) = self.goto.as_mut() {
                 // Go to Time: type a time in the chosen format, Enter moves the cursor, Escape drops it.
-                let r = ui.add(egui::TextEdit::singleline(typed).font(egui::FontId::monospace(34.0)).desired_width(260.0));
+                let r = ui.add(
+                    egui::TextEdit::singleline(typed)
+                        .font(egui::FontId::monospace(theme::metrics().text_large))
+                        .desired_width(theme::metrics().time_input_width),
+                );
                 if !r.has_focus() && !r.lost_focus() {
                     r.request_focus();
                 }
@@ -6114,7 +6137,9 @@ impl WaveApp {
                     self.goto = None;
                 }
             } else {
-                let r = ui.add(egui::Label::new(egui::RichText::new(&text).monospace().size(34.0)).sense(egui::Sense::click_and_drag()));
+                let r = ui.add(
+                    egui::Label::new(egui::RichText::new(&text).monospace().size(theme::metrics().text_large)).sense(egui::Sense::click_and_drag()),
+                );
                 let r = r.on_hover_text("Click to type a time; drag up or down across a digit group to scrub");
                 if self.doc.is_some() {
                     if r.clicked() {
@@ -6224,7 +6249,8 @@ impl WaveApp {
             return if rate == 0 { None } else { self.scrub_drag(&r, name, &shown, value, rate) };
         }
         let mut text = self.panel_edit.as_ref().map(|(_, t)| t.clone()).unwrap_or_default();
-        let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(120.0).font(egui::TextStyle::Monospace));
+        let r =
+            ui.add(egui::TextEdit::singleline(&mut text).desired_width(theme::metrics().text_field_standard_width).font(egui::TextStyle::Monospace));
         if r.changed() {
             self.panel_edit = Some((name, text.clone()));
         }
@@ -6756,7 +6782,7 @@ impl WaveApp {
                     }
                 }
             });
-            ui.add(egui::TextEdit::singleline(&mut self.meta_set_name).hint_text("set name").desired_width(80.0));
+            ui.add(egui::TextEdit::singleline(&mut self.meta_set_name).hint_text("set name").desired_width(theme::metrics().text_field_narrow_width));
             if ui.button("Save").clicked() && self.meta_sets.save(&self.meta_set_name, &all_keys).is_ok() {
                 sets_changed = true;
             }
@@ -6814,7 +6840,7 @@ impl WaveApp {
                 }
             }
             if let Some(why) = &src.meta.xmp_problem {
-                ui.add_space(4.0);
+                ui.add_space(theme::metrics().space_s);
                 ui.colored_label(
                     theme::pal().alert,
                     format!("The XMP packet could not be read ({why}). It is kept as it is and cannot be edited here."),
@@ -6822,7 +6848,7 @@ impl WaveApp {
             } else if let Some(x) = &src.meta.xmp {
                 let unknown = x.properties().iter().filter(|p| !p.known).count();
                 if unknown > 0 {
-                    ui.add_space(4.0);
+                    ui.add_space(theme::metrics().space_s);
                     ui.label(format!("{unknown} other XMP properties are kept as they are."));
                 }
             }
@@ -6835,7 +6861,7 @@ impl WaveApp {
                     ui.label(format!("{} = {}", r.label, r.value));
                 }
             }
-            ui.add_space(6.0);
+            ui.add_space(theme::metrics().space_6);
             apply = ui.button("Apply").clicked();
         });
         if apply {
@@ -8194,7 +8220,11 @@ impl WaveApp {
                             }
                         }
                     });
-                    ui.add(egui::TextEdit::singleline(&mut self.export_preset_name).hint_text("name").desired_width(120.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.export_preset_name)
+                            .hint_text("name")
+                            .desired_width(theme::metrics().text_field_standard_width),
+                    );
                     if ui.button("Save preset").clicked() {
                         save_preset = true;
                     }
@@ -11474,7 +11504,7 @@ impl WaveApp {
         // The whole bar answers a right-click with the menu of fields; registered first, so the
         // labels drawn after it keep their own hover text.
         let top = ui.available_rect_before_wrap();
-        let bar = Rect::from_min_size(top.min, vec2(top.width(), ui.spacing().interact_size.y + 2.0));
+        let bar = Rect::from_min_size(top.min, vec2(top.width(), ui.spacing().interact_size.y + theme::metrics().space_xs));
         let menu = ui.interact(bar, ui.id().with("status-menu"), Sense::click());
         let mut changed = false;
         menu.context_menu(|ui| {
@@ -11513,7 +11543,7 @@ impl WaveApp {
                 ui.spinner();
                 let progress = self.transcript_run.progress();
                 ui.label(format!("Transcribe… {:.0}%", progress * 100.0));
-                ui.add(egui::ProgressBar::new(progress).desired_width(120.0));
+                ui.add(egui::ProgressBar::new(progress).desired_width(theme::metrics().progress_width));
                 if ui.button("Cancel").clicked() {
                     self.transcript_run.cancel();
                 }
@@ -11521,7 +11551,7 @@ impl WaveApp {
                 ui.spinner();
                 let progress = self.check_run.progress();
                 ui.label(format!("Run Episode Check… {:.0}%", progress * 100.0));
-                ui.add(egui::ProgressBar::new(progress).desired_width(120.0));
+                ui.add(egui::ProgressBar::new(progress).desired_width(theme::metrics().progress_width));
                 if ui.button("Cancel").clicked() {
                     self.check_run.cancel();
                 }
@@ -11805,8 +11835,8 @@ impl WaveApp {
             return;
         }
         let default_pos = self.editor_screen_rect.map_or_else(
-            || ctx.content_rect().min + vec2(8.0, 8.0),
-            |editor| amplitude_hud_default_rect(editor, self.toolbar_rect, AMPLITUDE_HUD_SIZE).min,
+            || ctx.content_rect().min + vec2(theme::metrics().amplitude_hud_inset, theme::metrics().amplitude_hud_inset),
+            |editor| amplitude_hud_default_rect(editor, self.toolbar_rect, amplitude_hud_size()).min,
         );
         egui::Area::new(egui::Id::new("amplitude-hud")).default_pos(default_pos).movable(!self.hud.pinned).order(egui::Order::Foreground).show(
             ctx,
@@ -12023,7 +12053,7 @@ impl WaveApp {
         let lane_at = |y: f32| {
             spectrum_zone.map_or((0.5, 1.0), |a| {
                 let ch = (((y - a.top()) / (a.height() / channels as f32)).floor().max(0.0) as usize).min(channels - 1);
-                let l = lane(a, ch, channels).shrink2(vec2(0.0, 1.0));
+                let l = lane(a, ch, channels).shrink2(vec2(0.0, theme::metrics().line_width));
                 (((l.bottom() - y) / l.height().max(1.0)).clamp(0.0, 1.0), l.height().max(1.0))
             })
         };
@@ -12332,7 +12362,7 @@ impl WaveApp {
             };
             // The frequency at `pos` on lane `ch` (a drag keeps the lane it began in).
             let hz_at = |pos: Pos2, ch: usize| -> f32 {
-                let l = lane(area, ch, channels).shrink2(vec2(0.0, 1.0));
+                let l = lane(area, ch, channels).shrink2(vec2(0.0, theme::metrics().line_width));
                 axis.hz_at_fraction((1.0 - (pos.y - l.top()) / l.height().max(1.0)).clamp(0.0, 1.0))
             };
             if marquee_starts && let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
@@ -12495,7 +12525,11 @@ impl WaveApp {
                         // (a click on the only one picked gives all channels back). Shift or Ctrl adds or
                         // removes it.
                         let ch = lane_index;
-                        let chip = Rect::from_min_size(pos2(lane.left() + 2.0, lane.top() + 1.0), vec2(34.0, 14.0)).intersect(lane);
+                        let chip = Rect::from_min_size(
+                            pos2(lane.left() + theme::metrics().space_xs, lane.top() + theme::metrics().line_width),
+                            vec2(theme::metrics().channel_chip_width, theme::metrics().channel_chip_height),
+                        )
+                        .intersect(lane);
                         let hit = ui.interact(chip, ui.id().with(("lane-label", ch)), Sense::click());
                         let lit = editing.contains(ch);
                         chip_to_paint = Some((chip, lit, chip_label(name.map(String::as_str), &fallback[ch])));
@@ -12521,7 +12555,7 @@ impl WaveApp {
                             pos2(lane.left() + 4.0, lane.top() + 2.0),
                             egui::Align2::LEFT_TOP,
                             name,
-                            egui::FontId::proportional(12.0),
+                            egui::FontId::proportional(theme::metrics().text_12),
                             theme::pal().text_dim,
                         );
                     }
@@ -12548,7 +12582,7 @@ impl WaveApp {
                         chip.center(),
                         egui::Align2::CENTER_CENTER,
                         label,
-                        egui::FontId::monospace(10.0),
+                        egui::FontId::monospace(theme::metrics().text_10),
                         if lit { theme::pal().white } else { theme::pal().text_faint },
                     );
                 }
@@ -12557,7 +12591,13 @@ impl WaveApp {
                 // The channel buttons on the ruler: a click turns the channel on or off for edits.
                 for ch in first..last {
                     let row = (ch - first) as f32;
-                    let button = Rect::from_min_size(pos2(ruler_lane.left() + 2.0, ruler_lane.top() + 2.0 + row * 18.0), vec2(26.0, 16.0));
+                    let button = Rect::from_min_size(
+                        pos2(
+                            ruler_lane.left() + theme::metrics().space_xs,
+                            ruler_lane.top() + theme::metrics().space_xs + row * theme::metrics().control_height,
+                        ),
+                        vec2(theme::metrics().channel_button_width, theme::metrics().channel_button_height),
+                    );
                     if button.bottom() > ruler_lane.bottom() {
                         continue;
                     }
@@ -12570,7 +12610,7 @@ impl WaveApp {
                         button.center(),
                         egui::Align2::CENTER_CENTER,
                         &label,
-                        egui::FontId::monospace(10.0),
+                        egui::FontId::monospace(theme::metrics().text_10),
                         if on { theme::pal().black } else { theme::pal().text_dim },
                     );
                     if resp.on_hover_text(format!("Channel {label}: {} for edits (click to toggle)", if on { "on" } else { "off" })).clicked() {
@@ -12624,7 +12664,7 @@ impl WaveApp {
                 // made on the other scale can't be, and waits.
                 let (shown, drawn) = (self.freq_axis(), FreqAxis::from_params(&cache.job.params).clamped(rate));
                 for (ch, texture) in cache.textures.iter().enumerate() {
-                    let lane = lane(area, ch, channels).shrink2(vec2(0.0, 1.0));
+                    let lane = lane(area, ch, channels).shrink2(vec2(0.0, theme::metrics().line_width));
                     let y_of = |hz: f32| lane.bottom() - shown.fraction_of_hz(hz) * lane.height();
                     let (top, bottom) = (y_of(drawn.max_hz), y_of(drawn.min_hz));
                     if shown.scale() == drawn.scale() && top.is_finite() && bottom.is_finite() && bottom > top {
@@ -12641,7 +12681,7 @@ impl WaveApp {
                 let strip = Rect::from_min_size(area.min, vec2(theme::metrics().freq_ruler_width, area.height()));
                 let axis = self.freq_axis();
                 for ch in 0..channels {
-                    let lane = lane(strip, ch, channels).shrink2(vec2(0.0, 1.0));
+                    let lane = lane(strip, ch, channels).shrink2(vec2(0.0, theme::metrics().line_width));
                     spectral::draw_freq_ruler(&painter, lane, &axis);
                 }
             }
@@ -12652,7 +12692,7 @@ impl WaveApp {
             let (x0, x1) = (rect.left() + self.view.x_of(spectral.time.start() as f64), rect.left() + self.view.x_of(spectral.time.end() as f64));
             let axis = self.freq_axis();
             for ch in 0..channels {
-                let l = lane(area, ch, channels).shrink2(vec2(0.0, 1.0));
+                let l = lane(area, ch, channels).shrink2(vec2(0.0, theme::metrics().line_width));
                 let y = |hz: f32| {
                     let f = axis.fraction_of_hz(hz);
                     l.bottom() - if f.is_finite() { f.clamp(0.0, 1.0) } else { 0.0 } * l.height()
@@ -12707,7 +12747,7 @@ impl WaveApp {
                     playhead_colour,
                     Stroke::NONE,
                 ));
-                let galley = painter.layout_no_wrap(self.fmt_time(at), egui::FontId::monospace(11.0), playhead_colour);
+                let galley = painter.layout_no_wrap(self.fmt_time(at), egui::FontId::monospace(theme::metrics().text_small), playhead_colour);
                 let label_at = pos2((x + 9.0).min(rect.right() - galley.size().x - 4.0), top + 1.0);
                 painter.rect_filled(Rect::from_min_size(label_at, galley.size()).expand(2.0), 2.0, ground);
                 painter.galley(label_at, galley, playhead_colour);
@@ -12729,7 +12769,10 @@ impl WaveApp {
         let mut chosen = None;
         for (id, area) in [("waveform", wave_area), ("spectral", spectrum_area)] {
             if let Some(area) = area {
-                let at = Rect::from_min_size(pos2(area.right() - 28.0, area.top() + 2.0), vec2(26.0, 20.0));
+                let at = Rect::from_min_size(
+                    pos2(area.right() - theme::metrics().panel_menu_button_width - theme::metrics().space_xs, area.top() + theme::metrics().space_xs),
+                    vec2(theme::metrics().panel_menu_button_width, theme::metrics().panel_menu_button_height),
+                );
                 ui.scope_builder(egui::UiBuilder::new().max_rect(at), |ui| {
                     if let Some(item) = panel_menu_button(ui, self.layout.maximized(&self.panels) == Some(id), id) {
                         chosen = Some((id, item));
@@ -13074,16 +13117,16 @@ impl eframe::App for WaveApp {
                 if let Some(secs) = secs {
                     v.follow(secs);
                 }
-                egui::Panel::right("video").default_size(360.0).show(ui, |ui| v.ui(ui));
+                egui::Panel::right("video").default_size(theme::metrics().video_panel_width).show(ui, |ui| v.ui(ui));
             }
         }
         if self.show_metadata {
-            egui::Panel::right("metadata").default_size(260.0).show(ui, |ui| self.metadata_panel(ui));
+            egui::Panel::right("metadata").default_size(theme::metrics().metadata_panel_width).show(ui, |ui| self.metadata_panel(ui));
         }
         if self.show_mixer && v1::offered(Feature::Multitrack) {
             egui::Panel::bottom("mixer")
                 .resizable(true)
-                .default_size(260.0)
+                .default_size(theme::metrics().mixer_panel_height)
                 .show(ui, |ui| self.mixer.show(ui, self.mtv.mt.as_mut().map(|m| &mut m.session)));
         }
         self.mtv.dialog_ui(&ctx);
@@ -13540,7 +13583,7 @@ fn lane(area: Rect, ch: usize, channels: usize) -> Rect {
 fn draw_amp_ruler(painter: &egui::Painter, lane: Rect, scale: AmpScale, zoom: AmpZoom) {
     painter.rect_filled(lane, 0.0, theme::pal().ruler);
     let (mid, half) = (lane.center().y, lane.height() * 0.5 - 2.0);
-    let font = egui::FontId::monospace(10.0);
+    let font = egui::FontId::monospace(theme::metrics().text_10);
     let ink = theme::pal().text_dim;
     for tick in scale.ticks(zoom, half, 16.0) {
         let offset = tick.amp * zoom.get() * half;
@@ -13600,7 +13643,7 @@ fn draw_ruler(painter: &egui::Painter, rect: Rect, view: &Viewport, rate: u32, f
             pos2(x + 3.0, rect.top() + 3.0),
             egui::Align2::LEFT_TOP,
             fmt.format_tick_with(t, rate, tempo),
-            egui::FontId::monospace(11.0),
+            egui::FontId::monospace(theme::metrics().text_small),
             text,
         );
     }
@@ -13673,7 +13716,13 @@ fn draw_markers(painter: &egui::Painter, rect: Rect, view: &Viewport, markers: &
             color,
             Stroke::NONE,
         ));
-        painter.text(pos2(x0 + 10.0, rect.bottom() - 3.0), egui::Align2::LEFT_BOTTOM, &m.name, egui::FontId::proportional(10.0), color);
+        painter.text(
+            pos2(x0 + 10.0, rect.bottom() - 3.0),
+            egui::Align2::LEFT_BOTTOM,
+            &m.name,
+            egui::FontId::proportional(theme::metrics().text_10),
+            color,
+        );
     }
 }
 
@@ -14421,7 +14470,7 @@ mod amplitude_hud_layout_tests {
     fn fresh_hud_rect_is_inside_editor_and_clear_of_toolbar() {
         let toolbar = Rect::from_min_max(pos2(0.0, 40.0), pos2(1280.0, 92.0));
         let editor = Rect::from_min_max(pos2(0.0, 124.0), pos2(1280.0, 680.0));
-        let hud = amplitude_hud_default_rect(editor, Some(toolbar), AMPLITUDE_HUD_SIZE);
+        let hud = amplitude_hud_default_rect(editor, Some(toolbar), amplitude_hud_size());
 
         assert!(editor.contains_rect(hud));
         assert!(!hud.intersects(toolbar));
