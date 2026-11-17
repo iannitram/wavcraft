@@ -204,6 +204,48 @@ pub struct Metrics {
     pub space_s: f32,
     pub space_m: f32,
     pub space_l: f32,
+    /// Six-point spacing.
+    pub space_6: f32,
+    /// Ten-point spacing.
+    pub space_10: f32,
+    /// One-pixel hairline width.
+    pub line_width: f32,
+    /// Text sizes used by compact UI labels, standard text and the time readout.
+    pub text_10: f32,
+    pub text_12: f32,
+    pub text_large: f32,
+    /// Preferences dialog width.
+    pub preferences_dialog_width: f32,
+    /// Floating panel minimum size.
+    pub float_min_width: f32,
+    pub float_min_height: f32,
+    /// About and keyboard shortcuts dialog dimensions.
+    pub about_dialog_width: f32,
+    pub about_dialog_height: f32,
+    pub shortcuts_dialog_width: f32,
+    pub shortcuts_dialog_height: f32,
+    /// Widths of text inputs and progress bars.
+    pub text_field_narrow_width: f32,
+    pub text_field_standard_width: f32,
+    pub text_field_medium_width: f32,
+    pub text_field_wide_width: f32,
+    pub progress_width: f32,
+    /// Time readout input width.
+    pub time_input_width: f32,
+    /// Compact channel label and ruler button dimensions.
+    pub channel_chip_width: f32,
+    pub channel_chip_height: f32,
+    pub channel_button_width: f32,
+    pub channel_button_height: f32,
+    /// Right-side video and metadata panel widths and mixer panel height.
+    pub video_panel_width: f32,
+    pub metadata_panel_width: f32,
+    pub mixer_panel_height: f32,
+    /// The hit area at the intersection of dock dividers.
+    pub divider_corner_hit_size: f32,
+    /// Width of the menu button in an editor panel.
+    pub panel_menu_button_width: f32,
+    pub panel_menu_button_height: f32,
 }
 
 /// The sizes as drawn with Large controls off.
@@ -219,6 +261,35 @@ pub const DEFAULT_METRICS: Metrics = Metrics {
     space_s: 4.0,
     space_m: 8.0,
     space_l: 12.0,
+    space_6: 6.0,
+    space_10: 10.0,
+    line_width: 1.0,
+    text_10: 10.0,
+    text_12: 12.0,
+    text_large: 34.0,
+    preferences_dialog_width: 560.0,
+    float_min_width: 160.0,
+    float_min_height: 100.0,
+    about_dialog_width: 640.0,
+    about_dialog_height: 480.0,
+    shortcuts_dialog_width: 420.0,
+    shortcuts_dialog_height: 560.0,
+    text_field_narrow_width: 80.0,
+    text_field_standard_width: 120.0,
+    text_field_medium_width: 140.0,
+    text_field_wide_width: 160.0,
+    progress_width: 120.0,
+    time_input_width: 260.0,
+    channel_chip_width: 34.0,
+    channel_chip_height: 14.0,
+    channel_button_width: 26.0,
+    channel_button_height: 16.0,
+    video_panel_width: 360.0,
+    metadata_panel_width: 260.0,
+    mixer_panel_height: 260.0,
+    divider_corner_hit_size: 20.0,
+    panel_menu_button_width: 26.0,
+    panel_menu_button_height: 20.0,
 };
 
 /// The least size of a touch target with Large controls on (M4).
@@ -321,6 +392,25 @@ mod tests {
         assert_eq!(m.ruler_height, 22.0);
         assert_eq!(m.handle_grab, 6.0);
         assert_eq!(m.space_m, 8.0);
+        assert_eq!(m.space_6, 6.0);
+        assert_eq!(m.space_10, 10.0);
+        assert_eq!(m.line_width, 1.0);
+        assert_eq!((m.text_10, m.text_12, m.text_large), (10.0, 12.0, 34.0));
+        assert_eq!(m.preferences_dialog_width, 560.0);
+        assert_eq!((m.float_min_width, m.float_min_height), (160.0, 100.0));
+        assert_eq!((m.about_dialog_width, m.about_dialog_height), (640.0, 480.0));
+        assert_eq!((m.shortcuts_dialog_width, m.shortcuts_dialog_height), (420.0, 560.0));
+        assert_eq!((m.text_field_narrow_width, m.text_field_standard_width), (80.0, 120.0));
+        assert_eq!((m.text_field_medium_width, m.text_field_wide_width), (140.0, 160.0));
+        assert_eq!(m.progress_width, 120.0);
+        assert_eq!(m.time_input_width, 260.0);
+        assert_eq!((m.channel_chip_width, m.channel_chip_height), (34.0, 14.0));
+        assert_eq!((m.channel_button_width, m.channel_button_height), (26.0, 16.0));
+        assert_eq!(m.video_panel_width, 360.0);
+        assert_eq!(m.metadata_panel_width, 260.0);
+        assert_eq!(m.mixer_panel_height, 260.0);
+        assert_eq!(m.divider_corner_hit_size, 20.0);
+        assert_eq!((m.panel_menu_button_width, m.panel_menu_button_height), (26.0, 20.0));
         let all = [
             m.nav_height,
             m.ruler_height,
@@ -333,6 +423,35 @@ mod tests {
             m.space_s,
             m.space_m,
             m.space_l,
+            m.space_6,
+            m.space_10,
+            m.line_width,
+            m.text_10,
+            m.text_12,
+            m.text_large,
+            m.preferences_dialog_width,
+            m.float_min_width,
+            m.float_min_height,
+            m.about_dialog_width,
+            m.about_dialog_height,
+            m.shortcuts_dialog_width,
+            m.shortcuts_dialog_height,
+            m.text_field_narrow_width,
+            m.text_field_standard_width,
+            m.text_field_medium_width,
+            m.text_field_wide_width,
+            m.progress_width,
+            m.time_input_width,
+            m.channel_chip_width,
+            m.channel_chip_height,
+            m.channel_button_width,
+            m.channel_button_height,
+            m.video_panel_width,
+            m.metadata_panel_width,
+            m.mixer_panel_height,
+            m.divider_corner_hit_size,
+            m.panel_menu_button_width,
+            m.panel_menu_button_height,
         ];
         assert!(all.iter().all(|v| *v > 0.0), "every size is above 0: {all:?}");
         let _guard = SET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -492,7 +611,8 @@ mod tests {
 
     /// Each line of `src` (outside test modules and comments) that puts a non-zero float literal
     /// in a size or spacing call: `add_space`, `vec2`, `min_size`, `default_size`, `default_width`,
-    /// `desired_width`, `FontId::` or `.size(`. Not yet run on the UI sources (M3.4 onward do).
+    /// `desired_width`, `FontId::` or `.size(`. `moved_files_have_no_inline_sizes` runs it on UI
+    /// files moved onto metrics (starting with `app.rs` in M3.4).
     fn inline_sizes(src: &str) -> Vec<(usize, String)> {
         const SIZE_CALLS: [&str; 8] = ["add_space(", "vec2(", "min_size(", "default_size(", "default_width(", "desired_width(", "FontId::", ".size("];
         let mut found = Vec::new();
@@ -555,6 +675,20 @@ mod tests {
         assert_eq!(inline_sizes("a\nui.add_space(6.0);\n"), vec![(2, "ui.add_space(6.0);".to_string())]);
         assert!(inline_sizes("let x = ui.add_space(x1.5);").is_empty());
         assert_eq!(inline_sizes("ui.add_space(6.0f32);").len(), 1);
+    }
+
+    #[test]
+    fn moved_files_have_no_inline_sizes() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let files = ["app.rs"];
+        let mut bad = Vec::new();
+        for file in files {
+            let src = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+            for (line, text) in inline_sizes(&src) {
+                bad.push(format!("{file}:{line}: {text}"));
+            }
+        }
+        assert!(bad.is_empty(), "inline size values in moved UI files:\n{}", bad.join("\n"));
     }
 
     #[test]
