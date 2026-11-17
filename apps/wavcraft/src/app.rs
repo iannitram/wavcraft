@@ -3896,12 +3896,37 @@ impl WaveApp {
         let tabs: Vec<&'static str> = self.layout.visible(zone, &self.panels).into_iter().filter_map(|id| panels::by_id(id).map(|p| p.id)).collect();
         let Some(front) = self.layout.active_in(zone, &self.panels).and_then(panels::by_id).map(|p| p.id) else { return };
         let size = self.layout.effective_size(zone, &self.panels, self.window_size(ui.ctx()));
-        let panel = match zone {
-            DockSide::Left => egui::Panel::left("zone-left"),
-            DockSide::Bottom => egui::Panel::bottom("zone-bottom"),
-            _ => egui::Panel::right("zone-right"),
+        let max_w = self.layout.max_size(zone, &self.panels, self.window_size(ui.ctx()));
+        let size = if zone == DockSide::Right {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let pad = ui.style().spacing.button_padding.x * 2.0;
+            let item_space = ui.style().spacing.item_spacing.x;
+            let labels_w: f32 = tabs
+                .iter()
+                .map(|id| {
+                    let title = panels::by_id(id).map_or(*id, |p| p.title);
+                    ui.painter().layout_no_wrap(title.to_string(), font.clone(), ui.visuals().text_color()).size().x + pad
+                })
+                .sum();
+            let tab_needed = labels_w + item_space * tabs.len().saturating_sub(1) as f32 + 20.0;
+            let body_needed = match front {
+                "rack" => 460.0,
+                "match" => 340.0,
+                "findings" | "transcript" => 320.0,
+                "playlist" => 280.0,
+                _ => 240.0,
+            };
+            let needed = tab_needed.max(body_needed);
+            size.max(needed).min(max_w)
+        } else {
+            size
         };
-        let shown = panel.resizable(false).exact_size(size).show(ui, |ui| {
+        let panel = match zone {
+            DockSide::Left => egui::Panel::left("zone-left").resizable(false).exact_size(size),
+            DockSide::Bottom => egui::Panel::bottom("zone-bottom").resizable(false).exact_size(size),
+            _ => egui::Panel::right("zone-right").resizable(false).exact_size(size),
+        };
+        let shown = panel.show(ui, |ui| {
             // Fill the size the zone was given, so a short panel doesn't shrink the zone (A001: the size is part of the layout).
             ui.set_min_height(ui.available_height());
             let mut wheel = 0.0f32;
@@ -14417,3 +14442,7 @@ mod e5_repeat_dialog_tests;
 #[cfg(test)]
 #[path = "e6_effect_preview_tests.rs"]
 mod e6_effect_preview_tests;
+
+#[cfg(test)]
+#[path = "issue1594_tests.rs"]
+mod issue1594_tests;
