@@ -13249,6 +13249,13 @@ fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_fo
             // Play/Stop and the JKL shuttle must not act again on auto-repeat during a long press.
             let no_repeat =
                 matches!(command, Command::PlayStop | Command::Action(ActionId::ShuttleBack | ActionId::ShuttleStop | ActionId::ShuttleForward));
+            // egui matches a pattern without Alt even while Alt is held, so Alt+J/K/L would run the shuttle.
+            let shuttle = matches!(command, Command::Action(ActionId::ShuttleBack | ActionId::ShuttleStop | ActionId::ShuttleForward));
+            let alt_press =
+                |e: &egui::Event| matches!(e, egui::Event::Key { key: pressed, pressed: true, modifiers, .. } if *pressed == key && modifiers.alt);
+            if shuttle && !k.alt && (i.modifiers.alt || i.events.iter().any(alt_press)) {
+                return None;
+            }
             let fresh = !no_repeat
                 || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
             (i.consume_key(mods, key) && fresh).then_some(*command)
