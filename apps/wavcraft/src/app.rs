@@ -2259,7 +2259,12 @@ impl WaveApp {
             Err(TryRecvError::Disconnected) => Err("the decoder stopped unexpectedly".to_string()),
         };
         match result {
-            Ok(doc) => {
+            Ok(mut doc) => {
+                match wavcraft_core::transcript::load_beside(&doc.path) {
+                    Ok(Some(t)) => doc.state = doc.state.with_transcript(Some(Arc::new(t))),
+                    Ok(None) => {}
+                    Err(e) => log::warn!(target: "wavcraft", "the transcript beside {} was not read: {e}", doc.path.display()),
+                }
                 self.last_op = Some(("Open".to_string(), took));
                 // The document that was open stays open, parked; this one is added at the end.
                 let path = path.clone();
@@ -8013,6 +8018,12 @@ impl WaveApp {
                 Err(e) => self.error = Some(format!("Not written: {e}. {} is unchanged.", path.display())),
             }
             return;
+        }
+        if result.is_ok()
+            && let Some(t) = state.transcript()
+            && let Err(e) = wavcraft_core::transcript::save_beside(&path, t)
+        {
+            log::warn!(target: "wavcraft", "the transcript beside {} was not written: {e}", path.display());
         }
         match result {
             // Another file was opened while this one was being saved: the file on disk is
@@ -14353,6 +14364,10 @@ mod n3_mcp_window_tests;
 #[cfg(test)]
 #[path = "n4_run_script_tests.rs"]
 mod n4_run_script_tests;
+
+#[cfg(test)]
+#[path = "l1_12_sidecar_tests.rs"]
+mod l1_12_sidecar_tests;
 
 #[cfg(test)]
 #[path = "a3_mp3_tests.rs"]
