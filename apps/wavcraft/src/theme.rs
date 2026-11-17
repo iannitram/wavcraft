@@ -683,7 +683,7 @@ mod tests {
         let files = ["app.rs"];
         let mut bad = Vec::new();
         for file in files {
-            let src = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+            let src = std::fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("cannot read moved file {file}: {e}"));
             for (line, text) in inline_sizes(&src) {
                 bad.push(format!("{file}:{line}: {text}"));
             }
