@@ -526,7 +526,7 @@ fn amplitude_hud_size() -> egui::Vec2 {
 /// Place a fresh amplitude HUD near the waveform's top-left, keeping its full rectangle inside
 /// the editor and clear of the toolbar where the layout permits.
 fn amplitude_hud_default_rect(editor: Rect, toolbar: Option<Rect>, size: egui::Vec2) -> Rect {
-    let margin = 8.0;
+    let margin = theme::metrics().amplitude_hud_inset;
     let x_max = (editor.right() - size.x - margin).max(editor.left());
     let y_max = (editor.bottom() - size.y - margin).max(editor.top());
     let left = (editor.left() + margin).clamp(editor.left(), x_max);
