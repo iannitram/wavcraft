@@ -8,6 +8,9 @@ use crate::spectrogram::Samples;
 
 /// Frames either side of a frame whose median low-band level it is compared with (0.5 s).
 const NEIGHBOURS: usize = 50;
+/// A finding grows over adjacent frames whose low band is at least this multiple of their own
+/// band above, so it covers a decaying burst's tail (K4.4a).
+const GROWTH_RATIO: f64 = 2.0;
 /// Low-band RMS under this (linear, about -45 dBFS) is not a plosive however it compares.
 const FLOOR: f64 = 0.005_6;
 
@@ -35,6 +38,13 @@ impl Filter {
             y
         })
     }
+}
+
+/// Whether a frame next to a plosive run belongs to the same burst: not clipped, over the floor,
+/// and low-band heavy. The frame's own band above is the reference, not the neighbourhood median,
+/// which nearby speech can hold far above a burst's decaying tail.
+fn grows((lo, rest, clipped): (f64, f64, bool)) -> bool {
+    !clipped && lo >= FLOOR && lo >= GROWTH_RATIO * rest
 }
 
 /// `None` when the scan was cancelled.
@@ -89,17 +99,33 @@ pub(super) fn plosive_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink
         }
         let j = (i..burst.len()).find(|&j| !burst[j]).unwrap_or(burst.len());
         if j - i >= min_frames {
-            let top = frames[i..j].iter().map(|f| f.0).fold(0.0, f64::max);
+            let mut start = i;
+            while start > 0 {
+                if !grows(frames[start - 1]) {
+                    break;
+                }
+                start -= 1;
+            }
+            let mut end = j;
+            while end < frames.len() {
+                if !grows(frames[end]) {
+                    break;
+                }
+                end += 1;
+            }
+            let top = frames[start..end].iter().map(|f| f.0).fold(0.0, f64::max);
             sink.push(Finding {
                 kind: Kind::Plosive,
                 severity: Severity::Warning,
                 channel: Some(channel),
-                start: (i * frame) as u64,
-                end: (j * frame) as u64,
+                start: (start * frame) as u64,
+                end: (end * frame) as u64,
                 value: db(top),
             });
+            i = end;
+        } else {
+            i = j;
         }
-        i = j;
     }
     Some(())
 }

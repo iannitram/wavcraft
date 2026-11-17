@@ -345,6 +345,20 @@ fn every_fault() -> (Vec<f32>, Vec<f32>, [(u64, u64); 7]) {
 }
 
 #[test]
+fn the_every_fault_plosive_is_one_finding_over_the_whole_burst() {
+    let (ch0, ch1, [_, _, _, _, _, _, planted]) = every_fault();
+    let report = scan(&ch0, &ch1);
+    let plosives = of_kind(&report, Kind::Plosive);
+    assert_eq!(plosives.len(), 1, "{plosives:?}");
+    let plosive = plosives[0];
+    assert_eq!(plosive.channel, Some(0), "{plosive:?}");
+    let tolerance = frame(0.01);
+    assert!(plosive.start.abs_diff(planted.0) <= tolerance, "start {} vs {}", plosive.start, planted.0);
+    assert!(plosive.end.abs_diff(planted.1) <= tolerance, "end {} vs {}", plosive.end, planted.1);
+    assert!(plosive.end.abs_diff(plosive.start + frame(0.08)) <= tolerance, "length {} frames", plosive.end - plosive.start);
+}
+
+#[test]
 fn one_file_with_every_fault_reports_each_within_50_ms() {
     let (ch0, ch1, [clip, tp, dc, dead, hum, drift, plosive]) = every_fault();
     let report = scan(&ch0, &ch1);
