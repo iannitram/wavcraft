@@ -33,7 +33,7 @@ Adobe's table is labelled a *partial* list. These keys are confirmed on Adobe's 
 | Spectral display fully log / fully linear | Ctrl+Alt+PageUp / Ctrl+Alt+PageDown |
 | Spectral resolution up / down | Ctrl+Shift+Up / Ctrl+Shift+Down |
 | Step through History (History panel focused) | Up / Down |
-| Maximise the panel under the pointer, and back | `` ` `` |
+| Window > Maximize Active Frame, and back (WavCraft maximizes the panel under the pointer where Audition uses the active frame) | `` ` `` |
 | Wheel over ruler, navigator or waveform | zoom |
 | Shift+wheel over the spectral display | more log / more linear |
 | Middle-drag or horizontal scroll | scroll |

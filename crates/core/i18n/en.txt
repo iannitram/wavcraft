@@ -205,3 +205,4 @@ action.transport.rewind = Rewind
 action.transport.fastForward = Fast Forward
 action.transport.roll = Pre/Post-Roll
 action.panel.match.toggle = Match Loudness
+action.window.maximizePanel = Maximize Active Frame
