@@ -8585,7 +8585,42 @@ impl WaveApp {
                         self.check_run.checked().is_some_and(|c| self.editor.as_ref().is_none_or(|e| !Arc::ptr_eq(e.history.current(), &c.state)));
                     format!("OK running={running} progress={progress} findings={findings} stale={}", u8::from(stale))
                 }
-                _ => "ERR CHECK run|cancel|state".to_string(),
+                "list" => {
+                    let Some(doc) = self.doc.as_ref() else {
+                        return "ERR CHECK list|click needs a file open".to_string();
+                    };
+                    let Some(report) = self.check_run.report() else {
+                        return "ERR CHECK list|click needs a finished check".to_string();
+                    };
+                    let rows = wavcraft_core::check::list::rows(report, doc.sample_rate());
+                    let items =
+                        rows.iter().enumerate().map(|(i, row)| format!("{i},{},{},{}", row.kind, row.range.start, row.range.end)).collect::<Vec<_>>();
+                    if items.is_empty() { "OK rows=0".to_string() } else { format!("OK rows={} {}", items.len(), items.join(";")) }
+                }
+                command if command.starts_with("click") => {
+                    let Some(doc) = self.doc.as_ref() else {
+                        return "ERR CHECK list|click needs a file open".to_string();
+                    };
+                    let Some(report) = self.check_run.report() else {
+                        return "ERR CHECK list|click needs a finished check".to_string();
+                    };
+                    let rows = wavcraft_core::check::list::rows(report, doc.sample_rate());
+                    let row_index = command.strip_prefix("click ").and_then(|value| value.parse::<usize>().ok());
+                    let Some(row) = row_index.and_then(|i| rows.get(i)) else {
+                        let last = rows.len().checked_sub(1).map_or_else(|| "-1".to_string(), |i| i.to_string());
+                        return format!("ERR CHECK click <row>, 0 to {last}");
+                    };
+                    let frames = doc.frames() as u64;
+                    let start = row.range.start.min(frames) as usize;
+                    let end = row.range.end.min(frames) as usize;
+                    self.selection = Selection { anchor: start, head: end };
+                    if self.player.is_playing() {
+                        self.stop_play();
+                    }
+                    self.start_play();
+                    format!("OK selection={}-{} playing={}", self.selection.start(), self.selection.end(), u8::from(self.player.is_playing()))
+                }
+                _ => "ERR CHECK run|cancel|state|list|click <row>".to_string(),
             },
             "RUN_SCRIPT" => {
                 let path = rest.trim();
