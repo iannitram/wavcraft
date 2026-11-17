@@ -3924,7 +3924,7 @@ impl WaveApp {
         let panel = match zone {
             DockSide::Left => egui::Panel::left("zone-left").resizable(false).exact_size(size),
             DockSide::Bottom => egui::Panel::bottom("zone-bottom").resizable(false).exact_size(size),
-            _ => egui::Panel::right("zone-right").resizable(false).default_size(size).min_size(size).max_size(max_w),
+            _ => egui::Panel::right("zone-right").resizable(false).exact_size(size),
         };
         let shown = panel.show(ui, |ui| {
             // Fill the size the zone was given, so a short panel doesn't shrink the zone (A001: the size is part of the layout).
