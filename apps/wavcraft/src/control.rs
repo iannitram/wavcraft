@@ -172,6 +172,7 @@
 //! - `SETTINGS export <path>` / `SETTINGS import <path>` → `OK …` (the settings as one file; an import is checked whole first, `ERR …` changes nothing)
 //! - `PREF reset` → `OK …` (Restore Preference Defaults; the old settings file stays as `settings.txt.reset-N`, never overwritten; custom shortcuts are kept); `PREF show` → `OK session_folder=… source=… saved_session_folder=…`
 //! - `ABOUT` → `OK notices_bytes=<n>` (opens Help › About)
+//! - `HELP shortcuts` → `OK rows=<n>` (opens Help › Keyboard Shortcuts; n is one row per bound chord in the list)
 //!
 //! Anything else, or an action that fails, answers `ERR <why>`.
 
