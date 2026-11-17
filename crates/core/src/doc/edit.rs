@@ -858,10 +858,15 @@ fn finish(doc: &DocState, channels: Vec<Arc<Channel>>, label: &str, change: Chan
     let base = doc.markers().moved_by(&shift).map_or_else(|| doc.markers().clone(), Arc::new);
     let markers = base.clamped(state.len_frames()).map_or(base, Arc::new);
     state = state.with_markers(markers);
-    // The transcript's word times stay right while no audio moves. An edit that moves audio drops
-    // it until edits move words (L3); undo brings it back with the audio.
-    if matches!(shift, Shift::None) && state.len_frames() == doc.len_frames() {
-        state = state.with_transcript(doc.transcript().cloned());
+    // The transcript's words move with the audio by `Transcript::moved_by` (L3.3a), the same
+    // rules as the markers; a same-length edit keeps them, and undo brings them back with the
+    // audio.
+    if matches!(shift, Shift::None) {
+        if state.len_frames() == doc.len_frames() {
+            state = state.with_transcript(doc.transcript().cloned());
+        }
+    } else {
+        state = state.with_transcript(doc.transcript().map(|t| Arc::new(t.moved_by(&shift))));
     }
     Ok(Edit { state, label: label.to_string(), change })
 }
