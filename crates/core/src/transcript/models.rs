@@ -64,10 +64,22 @@ pub struct DownloadEntry {
     pub sha256: &'static str,
 }
 
+/// How long to wait for a connection, and for each read, before giving up. The read timeout
+/// bounds how long a stalled server can delay a cancel.
+#[cfg(feature = "whisper")]
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+#[cfg(feature = "whisper")]
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Download an entry to `folder`, publishing it only after its SHA-256 matches.
 ///
 /// The response is streamed to a temporary file beside the destination. Cancellation, network
 /// errors, and a bad hash remove that temporary file and never leave a partial destination.
+/// An existing destination is replaced by the verified file.
+///
+/// `progress` receives fractions in 0..=1 as bytes arrive, then 1.0 on success. When the server
+/// sends no usable `Content-Length` the total is unknown, so no intermediate progress is
+/// reported and only the final 1.0 arrives.
 #[cfg(feature = "whisper")]
 pub fn download(entry: &DownloadEntry, folder: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(f64)) -> io::Result<PathBuf> {
     if cancel.load(Ordering::Relaxed) {
@@ -83,7 +95,13 @@ pub fn download(entry: &DownloadEntry, folder: &Path, cancel: &AtomicBool, progr
     let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
 
     let result = (|| {
-        let response = ureq::get(&entry.url).call().map_err(io::Error::other)?;
+        let response = ureq::AgentBuilder::new()
+            .timeout_connect(CONNECT_TIMEOUT)
+            .timeout_read(READ_TIMEOUT)
+            .build()
+            .get(&entry.url)
+            .call()
+            .map_err(io::Error::other)?;
         let total = response.header("Content-Length").and_then(|length| length.parse::<u64>().ok());
         let mut reader = response.into_reader();
         let mut buffer = [0u8; 64 * 1024];

@@ -21,6 +21,8 @@ OUT = os.path.join(ROOT, "THIRD-PARTY-NOTICES.txt")
 ALLOWED_EXACT = {
     "MIT", "MIT-0", "Apache-2.0", "ISC", "Zlib", "MPL-2.0", "CC0-1.0", "0BSD", "Unlicense",
     "OFL-1.1", "Ubuntu-font-1.0", "BSL-1.0", "Unicode-3.0", "Unicode-DFS-2016",
+    # webpki-roots (ureq's tls, whisper feature): owner ruling 2026-11-17.
+    "CDLA-Permissive-2.0",
 }
 ALLOWED_PREFIX = ("BSD-",)
 # Licences that must never pass, even if someone adds them to the sets above by mistake.
@@ -112,8 +114,13 @@ def allowed(expr):
     return ok(node)
 
 
+# Optional features whose crates ship in a release build; cargo metadata skips optional
+# dependencies unless they are named here.
+FEATURES = "wavcraft-core/whisper"
+
+
 def metadata():
-    out = subprocess.run(["cargo", "metadata", "--format-version", "1", "--locked"], cwd=ROOT, capture_output=True, text=True)
+    out = subprocess.run(["cargo", "metadata", "--format-version", "1", "--locked", "--features", FEATURES], cwd=ROOT, capture_output=True, text=True)
     if out.returncode != 0:
         sys.exit(f"cargo metadata failed:\n{out.stderr[-2000:]}")
     return json.loads(out.stdout)

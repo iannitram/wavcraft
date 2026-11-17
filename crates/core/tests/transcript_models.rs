@@ -1,6 +1,6 @@
 #![cfg(feature = "whisper")]
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,13 +18,22 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn serve(body: Vec<u8>) -> (String, JoinHandle<()>) {
+    serve_status("200 OK", body)
+}
+
+fn serve_status(status: &'static str, body: Vec<u8>) -> (String, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let thread = thread::spawn(move || {
         let Ok((mut stream, _)) = listener.accept() else {
             return;
         };
-        let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).is_ok_and(|n| n == 1) {
+            request.push(byte[0]);
+        }
+        let header = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
         let _ = stream.write_all(header.as_bytes());
         let _ = stream.write_all(&body);
     });
@@ -83,5 +92,62 @@ fn cancel_leaves_no_file() {
     server.join().unwrap();
     assert!(result.is_err_and(|error| error.kind() == std::io::ErrorKind::Interrupted));
     assert!(files(&folder).is_empty());
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn a_cancel_set_before_the_download_makes_no_request_and_no_file() {
+    // Catches: a cancel flag already set must stop the download before any file is created.
+    let folder = temp_dir("pre-cancelled");
+    let result = models::download(&entry("http://127.0.0.1:1/model".to_string(), ABC_SHA256), &folder, &AtomicBool::new(true), &mut |_| {});
+
+    assert!(result.is_err_and(|error| error.kind() == std::io::ErrorKind::Interrupted));
+    assert!(files(&folder).is_empty());
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn a_name_that_escapes_the_folder_is_refused() {
+    // Catches: a model file name like '../x' must not be written outside the destination folder.
+    let folder = temp_dir("traversal");
+    let inner = folder.join("inner");
+    let mut bad = entry("http://127.0.0.1:1/model".to_string(), ABC_SHA256);
+    bad.name = "../x";
+    let result = models::download(&bad, &inner, &AtomicBool::new(false), &mut |_| {});
+
+    assert!(result.is_err_and(|error| error.kind() == std::io::ErrorKind::InvalidInput));
+    assert!(!folder.join("x").exists());
+    assert!(!inner.exists());
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn an_http_error_status_leaves_no_file() {
+    // Catches: a 404 error page must not be saved or published as the model file.
+    let folder = temp_dir("http-error");
+    let (url, server) = serve_status("404 Not Found", b"missing".to_vec());
+    let result = models::download(&entry(url, ABC_SHA256), &folder, &AtomicBool::new(false), &mut |_| {});
+
+    server.join().unwrap();
+    assert!(result.is_err());
+    assert!(files(&folder).is_empty());
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn an_existing_destination_is_replaced_by_the_verified_file() {
+    // Catches: a stale file at the destination is replaced, and a failed download leaves it untouched.
+    let folder = temp_dir("existing");
+    std::fs::write(folder.join("model.bin"), b"stale").unwrap();
+    let (url, server) = serve(b"abd".to_vec());
+    assert!(models::download(&entry(url, ABC_SHA256), &folder, &AtomicBool::new(false), &mut |_| {}).is_err());
+    server.join().unwrap();
+    assert_eq!(std::fs::read(folder.join("model.bin")).unwrap(), b"stale");
+
+    let (url, server) = serve(b"abc".to_vec());
+    models::download(&entry(url, ABC_SHA256), &folder, &AtomicBool::new(false), &mut |_| {}).unwrap();
+    server.join().unwrap();
+    assert_eq!(std::fs::read(folder.join("model.bin")).unwrap(), b"abc");
+    assert_eq!(files(&folder).len(), 1);
     std::fs::remove_dir_all(folder).unwrap();
 }

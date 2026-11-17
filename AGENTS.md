@@ -15,7 +15,7 @@ Everything you need to work here is in this repo. The full pipeline and rules li
 
 Read `README.md` for the layout, how to run it and the known limits. Its rules, in short:
 
-- **Clean room.** Audition's published behaviour and documentation are the only reference. Audacity is GPL: its code is never read or copied. No GPL, LGPL or AGPL code or dependencies (licences allowed: MIT, Apache-2.0, BSD, Zlib, ISC; plus `symphonia` MPL-2.0 and egui's fonts, unmodified, with a notices file).
+- **Clean room.** Audition's published behaviour and documentation are the only reference. Audacity is GPL: its code is never read or copied. No GPL, LGPL or AGPL code or dependencies (licences allowed: MIT, Apache-2.0, BSD, Zlib, ISC, CDLA-Permissive-2.0 (webpki-roots, via ureq's tls under the whisper feature; owner ruling 2026-11-17); plus `symphonia` MPL-2.0 and egui's fonts, unmodified, with a notices file).
 - **Never crash.** No `unwrap`, `expect` or `panic!` outside tests, no `unsafe`. Numbers from a file or the mouse are checked before use. The audio callback never blocks or allocates.
 - **Memory.** Never load a whole file into RAM: everything goes through the on-disk store (I7).
 - **Before a commit:** `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
