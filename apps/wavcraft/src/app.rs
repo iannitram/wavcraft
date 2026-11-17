@@ -675,6 +675,8 @@ pub struct WaveApp {
     editor: Option<Editor>,
     /// Episode Check worker and its report for the document state it scanned (K1.6).
     check_run: CheckRun,
+    /// The findings row check.next / check.prev or CHECK click last selected.
+    check_row: Option<usize>,
     /// Where the open file came from (kept while an edit leaves the document empty).
     doc_path: PathBuf,
     /// Names the current document (the save in flight belongs to one).
@@ -1095,6 +1097,7 @@ impl WaveApp {
             title: String::new(),
             editor: None,
             check_run: CheckRun::default(),
+            check_row: None,
             doc_path: PathBuf::new(),
             doc_id: 0,
             doc_serial: 0,
@@ -5480,6 +5483,47 @@ impl WaveApp {
         }
     }
 
+    /// `check.next` (`forward`) or `check.prev`: select the next or previous finding and play it.
+    fn goto_finding(&mut self, forward: bool) -> Result<bool, String> {
+        let Some(doc) = self.doc.as_ref() else {
+            return Err("no findings to go to".to_string());
+        };
+        let Some(report) = self.check_run.report() else {
+            return Err("no findings to go to".to_string());
+        };
+        let n = report.findings.len();
+        if n == 0 {
+            return Err("no findings to go to".to_string());
+        }
+        let from = self.selection.start() as u64;
+        let to = self.selection.end() as u64;
+        let current = self.check_row.filter(|&r| report.findings.get(r).is_some_and(|f| f.start == from && f.end == to));
+        let row = match (current, forward) {
+            (Some(r), true) => (r + 1) % n,
+            (Some(r), false) => (r + n - 1) % n,
+            (None, true) => match wavcraft_core::check::list::next_after(report, from) {
+                Some(r) => r,
+                None => return Err("no findings to go to".to_string()),
+            },
+            (None, false) => match wavcraft_core::check::list::prev_before(report, from) {
+                Some(r) => r,
+                None => return Err("no findings to go to".to_string()),
+            },
+        };
+        let frames = doc.frames() as u64;
+        let (start, end) = match report.findings.get(row) {
+            Some(f) => (f.start, f.end),
+            None => return Err("no findings to go to".to_string()),
+        };
+        self.selection = Selection { anchor: start.min(frames) as usize, head: end.min(frames) as usize };
+        self.check_row = Some(row);
+        if self.player.is_playing() {
+            self.stop_play();
+        }
+        self.start_play();
+        Ok(false)
+    }
+
     /// Run an action from the table on the open file (menu, key or control channel). Returns
     /// whether the document changed.
     fn run_action(&mut self, id: ActionId, ctx: &egui::Context) -> Result<bool, String> {
@@ -5492,6 +5536,9 @@ impl WaveApp {
             let Some(state) = self.editor.as_ref().map(|e| e.history.current().clone()) else { return Err("no file is open".to_string()) };
             self.check_run.start(state, ctx);
             return Ok(false);
+        }
+        if matches!(id, ActionId::CheckNext | ActionId::CheckPrev) {
+            return self.goto_finding(id == ActionId::CheckNext);
         }
         if id == ActionId::ToggleMatchPanel {
             let shown = !self.panels.is_shown("match");
@@ -8690,7 +8737,8 @@ impl WaveApp {
                     let findings = self.check_run.report().map_or(0, |r| r.findings.len());
                     let stale =
                         self.check_run.checked().is_some_and(|c| self.editor.as_ref().is_none_or(|e| !Arc::ptr_eq(e.history.current(), &c.state)));
-                    format!("OK running={running} progress={progress} findings={findings} stale={}", u8::from(stale))
+                    let row = self.check_row.map_or_else(|| "-".to_string(), |r| r.to_string());
+                    format!("OK running={running} progress={progress} findings={findings} stale={} row={row}", u8::from(stale))
                 }
                 "list" => {
                     let Some(doc) = self.doc.as_ref() else {
@@ -8721,6 +8769,7 @@ impl WaveApp {
                     let start = row.range.start.min(frames) as usize;
                     let end = row.range.end.min(frames) as usize;
                     self.selection = Selection { anchor: start, head: end };
+                    self.check_row = row_index;
                     if self.player.is_playing() {
                         self.stop_play();
                     }
@@ -14563,3 +14612,7 @@ mod e6_effect_preview_tests;
 #[cfg(test)]
 #[path = "issue1594_tests.rs"]
 mod issue1594_tests;
+
+#[cfg(test)]
+#[path = "k3_4_check_nav_tests.rs"]
+mod k3_4_check_nav_tests;
