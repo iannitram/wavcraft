@@ -165,6 +165,16 @@ pub enum ActionId {
     CheckPrev,
     /// Transcribe the open file on a worker thread (L1.11).
     TranscriptRun,
+    /// Find in transcript (L5.4).
+    TranscriptFind,
+    /// Next transcript match (L5.4).
+    TranscriptFindNext,
+    /// Previous transcript match (L5.4).
+    TranscriptFindPrev,
+    /// Export transcript as plain text (L5.4).
+    TranscriptExportText,
+    /// Export transcript as SubRip subtitles (L5.4).
+    TranscriptExportSrt,
     TimeDecimal,
     TimeCompact,
     TimeSamples,
@@ -359,6 +369,11 @@ pub const TABLE: &[Action] = &[
     window(ActionId::CheckNext, "check.next", "Next Finding"),
     window(ActionId::CheckPrev, "check.prev", "Previous Finding"),
     window(ActionId::TranscriptRun, "transcript.run", "Transcribe"),
+    window(ActionId::TranscriptFind, "transcript.find", "Find in Transcript"),
+    window(ActionId::TranscriptFindNext, "transcript.find_next", "Next Match"),
+    window(ActionId::TranscriptFindPrev, "transcript.find_prev", "Previous Match"),
+    window(ActionId::TranscriptExportText, "transcript.export_text", "Transcript as Text"),
+    window(ActionId::TranscriptExportSrt, "transcript.export_srt", "Transcript as SRT"),
     window(ActionId::TimeDecimal, "view.time_display.decimal", "Decimal (mm:ss.ddd)"),
     window(ActionId::TimeCompact, "view.time_display.compact", "Compact"),
     window(ActionId::TimeSamples, "view.time_display.samples", "Samples"),
@@ -752,7 +767,15 @@ impl Editor {
             ActionId::ConvertSampleType | ActionId::InterpretSampleRate => self.len() > 0,
             ActionId::ToggleChannel(n) => usize::from(n) < self.channel_count(),
             ActionId::StatsShow | ActionId::StatsGotoPeak | ActionId::StatsNextClip | ActionId::StatsPrevClip => self.len() > 0,
-            ActionId::EpisodeCheck | ActionId::CheckNext | ActionId::CheckPrev | ActionId::TranscriptRun => self.len() > 0,
+            ActionId::EpisodeCheck
+            | ActionId::CheckNext
+            | ActionId::CheckPrev
+            | ActionId::TranscriptRun
+            | ActionId::TranscriptFind
+            | ActionId::TranscriptFindNext
+            | ActionId::TranscriptFindPrev
+            | ActionId::TranscriptExportText
+            | ActionId::TranscriptExportSrt => self.len() > 0,
             ActionId::PlayheadPrev | ActionId::PlayheadNext => self.len() > 0,
             ActionId::MarkerAdd => self.len() > 0,
             ActionId::MarkerNext => self.history.current().markers().next_after(selection.start).is_some(),
@@ -1579,6 +1602,11 @@ impl Editor {
             | ActionId::CheckNext
             | ActionId::CheckPrev
             | ActionId::TranscriptRun
+            | ActionId::TranscriptFind
+            | ActionId::TranscriptFindNext
+            | ActionId::TranscriptFindPrev
+            | ActionId::TranscriptExportText
+            | ActionId::TranscriptExportSrt
             | ActionId::ToggleMatchPanel
             | ActionId::WindowMaximizePanel
             | ActionId::ZeroInward
@@ -1719,5 +1747,24 @@ mod episode_check_tests {
         assert_eq!(a.menu, "Transcribe");
         with_editor("transcript-empty", 0, |e| assert!(!e.enabled(ActionId::TranscriptRun, &(0..0)), "enabled on an empty document"));
         with_editor("transcript-one", 1, |e| assert!(e.enabled(ActionId::TranscriptRun, &(0..0)), "disabled on a 1-frame document"));
+    }
+
+    // Catches: missing transcript actions in the table, mismatched ActionId, or incorrect menu text.
+    #[test]
+    fn transcript_actions_are_in_the_table() {
+        let expected = [
+            ("transcript.find", ActionId::TranscriptFind, "Find in Transcript"),
+            ("transcript.find_next", ActionId::TranscriptFindNext, "Next Match"),
+            ("transcript.find_prev", ActionId::TranscriptFindPrev, "Previous Match"),
+            ("transcript.export_text", ActionId::TranscriptExportText, "Transcript as Text"),
+            ("transcript.export_srt", ActionId::TranscriptExportSrt, "Transcript as SRT"),
+        ];
+        for (name, id, menu) in expected {
+            let a = by_name(name).unwrap();
+            assert_eq!(a.id, id);
+            assert_eq!(a.menu, menu);
+            with_editor("transcript-act-empty", 0, |e| assert!(!e.enabled(id, &(0..0)), "enabled on an empty document"));
+            with_editor("transcript-act-one", 1, |e| assert!(e.enabled(id, &(0..0)), "disabled on a 1-frame document"));
+        }
     }
 }
