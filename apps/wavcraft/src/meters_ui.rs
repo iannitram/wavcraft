@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use egui::{Align2, FontId, Rect, Sense, Stroke, pos2, vec2};
 use wavcraft_core::DocState;
+use wavcraft_core::levels::rms::RmsLevels;
 use wavcraft_core::levels::{FLOOR_DB, Levels, Reading};
 use wavcraft_core::loudness::{self, Loudness};
 use wavcraft_core::meters::levels_scale::{RED_FROM_DB, YELLOW_FROM_DB, bar_fraction};
@@ -27,6 +28,7 @@ struct Running {
 /// Window state for the meters and the statistics window.
 pub struct MetersUi {
     pub levels: Levels,
+    pub rms: RmsLevels,
     /// The bars show the input device (f56), not playback.
     pub input_view: bool,
     last: Option<Instant>,
@@ -41,25 +43,39 @@ pub struct MetersUi {
 
 impl MetersUi {
     pub fn new() -> MetersUi {
-        MetersUi { levels: Levels::new(), input_view: false, last: None, show_levels: true, show_stats: false, running: None, done: None }
+        MetersUi {
+            levels: Levels::new(),
+            rms: RmsLevels::default(),
+            input_view: false,
+            last: None,
+            show_levels: true,
+            show_stats: false,
+            running: None,
+            done: None,
+        }
     }
 
-    /// Feed the bars the peaks taken from the player since the previous call.
-    pub fn update(&mut self, peaks: [f32; 2]) {
+    /// Feed the bars the peaks taken from the player since the previous call, and the RMS window
+    /// the energy beside them.
+    pub fn update(&mut self, peaks: [f32; 2], energy: [(f32, u64); 2]) {
         let now = Instant::now();
         let dt = self.last.map_or(0.0, |t| now.duration_since(t).as_secs_f32());
         self.last = Some(now);
+        for (ch, &(sum, frames)) in energy.iter().enumerate() {
+            self.rms.feed_energy(ch, f64::from(sum), frames as usize);
+        }
         self.levels.update(peaks, dt);
     }
 
     /// Whether the window should keep repainting for the bars (while they move).
     pub fn animating(&self) -> bool {
-        self.levels.active() || self.running.is_some()
+        self.levels.active() || self.rms.reading(0).rms_db > FLOOR_DB || self.rms.reading(1).rms_db > FLOOR_DB || self.running.is_some()
     }
 
     /// A new file: the old file's levels and statistics mean nothing now.
     pub fn new_file(&mut self) {
         self.levels.reset();
+        self.rms.reset();
         self.done = None;
         if let Some(r) = self.running.take() {
             r.cancel.store(true, Ordering::Relaxed);
@@ -230,10 +246,16 @@ fn stats_grid(ui: &mut egui::Ui, m: &Loudness) {
 }
 
 /// `METERS` on the control channel: the bars as numbers.
-pub fn readings_line(levels: &Levels) -> String {
+pub fn readings_line(levels: &Levels, rms: &RmsLevels) -> String {
     let f = |v: f32| if v > FLOOR_DB - 80.0 { format!("{v:.2}") } else { "-inf".to_string() };
     let one = |tag: &str, r: Reading| format!("{tag}={} {tag}_hold={} {tag}_clip={}", f(r.level_db), f(r.hold_db), u8::from(r.clipped));
-    format!("OK {} {}", one("l", levels.reading(0)), one("r", levels.reading(1)))
+    format!(
+        "OK {} {} l_rms={} r_rms={}",
+        one("l", levels.reading(0)),
+        one("r", levels.reading(1)),
+        f(rms.reading(0).rms_db),
+        f(rms.reading(1).rms_db)
+    )
 }
 
 #[cfg(test)]

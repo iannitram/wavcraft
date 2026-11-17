@@ -202,8 +202,14 @@ pub enum ActionId {
     Rewind,
     FastForward,
     ToggleRoll,
+    /// The JKL shuttle (I3.4): J, K and L; the window calls `shuttle_key`.
+    ShuttleBack,
+    ShuttleStop,
+    ShuttleForward,
     /// Window > Match Loudness: show or hide the panel (Alt+5).
     ToggleMatchPanel,
+    /// Window > Maximize Active Frame: maximise or restore the panel under the pointer (Backtick, I3.5; Audition acts on the active frame).
+    WindowMaximizePanel,
 }
 
 /// Which part of the program carries an action out.
@@ -388,7 +394,11 @@ pub const TABLE: &[Action] = &[
     window(ActionId::Rewind, "transport.rewind", "Rewind"),
     window(ActionId::FastForward, "transport.fastForward", "Fast Forward"),
     window(ActionId::ToggleRoll, "transport.roll", "Pre/Post-Roll"),
+    window(ActionId::ShuttleBack, "transport.shuttle.back", "Shuttle Back"),
+    window(ActionId::ShuttleStop, "transport.shuttle.stop", "Shuttle Stop"),
+    window(ActionId::ShuttleForward, "transport.shuttle.forward", "Shuttle Forward"),
     window(ActionId::ToggleMatchPanel, "panel.match.toggle", "Match Loudness"),
+    window(ActionId::WindowMaximizePanel, "window.maximizePanel", "Maximize Active Frame"),
 ];
 
 /// The Zoom to Time actions, slot 1 first (f69).
@@ -763,7 +773,8 @@ impl Editor {
             | ActionId::ToolZoom
             | ActionId::ToolMarquee
             | ActionId::ToolLasso
-            | ActionId::ToggleMatchPanel => true,
+            | ActionId::ToggleMatchPanel
+            | ActionId::WindowMaximizePanel => true,
             ActionId::SpectralResolutionUp
             | ActionId::SpectralResolutionDown
             | ActionId::SpectralScaleMoreLog
@@ -783,7 +794,10 @@ impl Editor {
             | ActionId::FollowCenter
             | ActionId::Rewind
             | ActionId::FastForward
-            | ActionId::ToggleRoll => true,
+            | ActionId::ToggleRoll
+            | ActionId::ShuttleBack
+            | ActionId::ShuttleStop
+            | ActionId::ShuttleForward => true,
             ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
@@ -1529,6 +1543,9 @@ impl Editor {
             | ActionId::Rewind
             | ActionId::FastForward
             | ActionId::ToggleRoll
+            | ActionId::ShuttleBack
+            | ActionId::ShuttleStop
+            | ActionId::ShuttleForward
             | ActionId::ZoomAmpIn
             | ActionId::ZoomAmpOut
             | ActionId::ZoomAmpReset
@@ -1563,6 +1580,7 @@ impl Editor {
             | ActionId::CheckPrev
             | ActionId::TranscriptRun
             | ActionId::ToggleMatchPanel
+            | ActionId::WindowMaximizePanel
             | ActionId::ZeroInward
             | ActionId::ZeroOutward
             | ActionId::ZeroLeftToLeft
