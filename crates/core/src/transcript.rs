@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use crate::doc::DocState;
+use crate::doc::edit::{self, Change, ChannelMask, Crossfades, Edit, EditError};
 use crate::markers::Shift;
 
 pub mod export;
@@ -219,6 +221,28 @@ pub fn lane_boxes(words: &[Word], view_start: u64, view_end: u64, width_px: u32)
         .filter(|(_, w)| w.end > view_start && w.start < view_end)
         .map(|(index, w)| (x(w.start.max(view_start)), x(w.end.min(view_end)), index))
         .collect()
+}
+
+/// Cut several ranges from every channel as one [`Edit`], the way Delete Silence does, so
+/// removing every filler is one History step (L4.3, #1060). The ranges may come in any order and
+/// empty ranges are ignored: the rest are sorted by start, refused with
+/// [`EditError::Unsupported`] when two overlap (touching edges do not overlap), and cut last to
+/// first through [`edit::delete`] so the frame numbers of the cuts still to come stay true. The
+/// result is a no-op edit when no non-empty range is left.
+pub fn delete_ranges(doc: &DocState, ranges: &[Range<u64>], crossfades: Crossfades, label: &str) -> Result<Edit, EditError> {
+    let mut cuts: Vec<Range<u64>> = ranges.iter().filter(|r| r.start < r.end).cloned().collect();
+    cuts.sort_by_key(|r| r.start);
+    for (a, b) in cuts.iter().zip(cuts.iter().skip(1)) {
+        if b.start < a.end {
+            return Err(EditError::Unsupported(format!("ranges {}..{} and {}..{} overlap", a.start, a.end, b.start, b.end)));
+        }
+    }
+    let mut state = doc.clone();
+    for r in cuts.iter().rev() {
+        state = edit::delete(&state, r.clone(), ChannelMask::ALL, crossfades)?.state;
+    }
+    let change = cuts.first().map_or(Change::None, |r| Change::LengthFrom { frame: r.start });
+    Ok(Edit { state, label: label.to_string(), change })
 }
 
 /// The largest sidecar [`load_beside`] reads: 64 MiB, hundreds of hours of words.
