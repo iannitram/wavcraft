@@ -43,7 +43,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 
 **75 items** (v1.md's 74 plus L0, the speech-to-text choice)**:** complete 23 · built, check not recorded 24 · partial 27 · not started 1.
 
-**174 steps remain** (165, plus Stage 6's nine added 2026-11-16)**:** 117 easy, 51 medium, 6 hard. 95 are proved by a script, 79 by hand (44 of those only by me).
+**173 steps remain** (164, plus Stage 6's nine added 2026-11-16)**:** 117 easy, 50 medium, 6 hard. 94 are proved by a script, 79 by hand (44 of those only by me). K3.5 (#1613, PR #1621) is in review and counted as done.
 
 | Stage | Items | Complete | Steps left | Done when |
 |---|---|---|---|---|
@@ -53,7 +53,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | Stage 2: Recording | 7 | 0 | 14 | I record a real 10-minute take on each machine, kill the app once mid-take, and get everything back. |
 | Stage 3: Repair | 14 | 7 | 14 | I clean a real episode end to end and prefer the result to my current tool's, by ear. |
 | Stage 4: Feel | 12 | 1 | 29 | I work without hunting for things. |
-| Stage 4b: Episode Check, transcript and faces | 16 | 1 | 80 | the Podcast face's user cleans a real episode in it without help. |
+| Stage 4b: Episode Check, transcript and faces | 16 | 1 | 79 | the Podcast face's user cleans a real episode in it without help. |
 | Alongside: the MP3 encoder | 1 | 0 | 4 | a 1-hour episode exports to MP3 and passes A3's Done check. |
 | Stage 5: Platform checks | 2 | 1 | 5 | the app is built, launched and checked by hand on Windows, Linux and the 8 GB Mac, and every hand step in the earlier stages that names a machine is recorded. |
 | Stage 6: Design pass | - | not started | 9 (S6.1 to S6.9), plus the `design-pass` issues the audits file | every panel, menu, dialog, face and state is audited for beauty and function, every `design-pass` issue is closed or moved after 1.0, and I sign off on S6.9 |
@@ -119,7 +119,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | J7 | After Stop the take opens in the editor | recording | 2 | built, check not recorded | 1 | none (steps only) |
 | K1 | Run Episode Check with progress and Cancel | episode-check | 4b | partial | 2 | #1049 |
 | K2 | Episode Check detectors (seven kinds) | episode-check | 4b | built, check not recorded | 1 | none (steps only) |
-| K3 | Findings panel, map pins, next and previous keys | episode-check | 4b | partial | 5 | #1053 |
+| K3 | Findings panel, map pins, next and previous keys | episode-check | 4b | partial | 4 | #1053 |
 | K4 | Suggested fix per finding, with Before/After | episode-check | 4b | partial | 6 | #1054 |
 | K5 | Ready to publish summary | episode-check | 4b | partial | 4 | #1055 |
 | L0 | Speech-to-text library, model and licence | transcript | 4b | complete | 0 | none |
@@ -852,11 +852,11 @@ My ruling, 2026-11-01: "Into v1". Order: M3 and M5 first; K1, K2 and L1 can star
 
 #### K3: Findings panel, map pins, next and previous keys (partial)
 
-- **On main:** The pure list logic in core: crates/core/src/check/list.rs has the row text and range, the next and previous wrap (K3.1), the map pin position pin_x (K3.6) and after_fix (K4.7, #1282). The panel and keys are registered (K3.2): `findings` (title "Episode Check", right dock) in crates/core/src/panels.rs, and actions `check.next` (F8) and `check.prev` (Shift+F8) in crates/core/src/actions.rs and shortcuts.rs. Nothing draws the panel yet (WaveApp::panel_body in apps/wavcraft/src/app.rs has no `findings` arm), and the window has no handler for the two actions. The Episode Map draws its class colours (M2.4) but no finding pins (M2.7). Merged 2026-11-12: K3.1 (#1245), K3.6 (#1278), K3.2 (#1320).
+- **On main:** The pure list logic in core: crates/core/src/check/list.rs has the row text and range, the next and previous wrap (K3.1), the map pin position pin_x (K3.6) and after_fix (K4.7, #1282). The panel and keys are registered (K3.2): `findings` (title "Episode Check", right dock) in crates/core/src/panels.rs, and actions `check.next` (F8) and `check.prev` (Shift+F8) in crates/core/src/actions.rs and shortcuts.rs. The panel draws its rows (K3.5, PR #1621, in review): the `findings` arm of WaveApp::panel_body in apps/wavcraft/src/app.rs calls check_panel.rs `findings_rows` inside a vertical ScrollArea, and the current row is highlighted. The window has no handler for the two actions. The Episode Map draws its class colours (M2.4) but no finding pins (M2.7). Merged 2026-11-12: K3.1 (#1245), K3.6 (#1278), K3.2 (#1320).
 - **Done check:** Clicking a row selects exactly the finding's range.
 - **Recorded so far:** not recorded
 - **Item issue:** #1053
-- **Start in:** K3.3 is next (K1.6 and K3.1 are on main); it has no issue yet. `CHECK list` and `CHECK click` go beside `CHECK run|cancel|state` in WaveApp::control_request (apps/wavcraft/src/app.rs) and in the header of apps/wavcraft/src/control.rs; the rows come from check::list::rows over CheckRun::report (apps/wavcraft/src/check_panel.rs); tools/alpha/k3.py is new, with tools/alpha/k1.py as the model. K3.4 handles ActionId::CheckNext and CheckPrev in the window with check::list::next_after and prev_before. K3.5 adds the `findings` arm to WaveApp::panel_body and its test to check_panel.rs, in the pattern of apps/wavcraft/src/issue1000_tests.rs. K3.7 also waits for M2.7's pins in WaveApp::navigator.
+- **Start in:** K3.3 is next (K1.6 and K3.1 are on main); it has no issue yet. `CHECK list` and `CHECK click` go beside `CHECK run|cancel|state` in WaveApp::control_request (apps/wavcraft/src/app.rs) and in the header of apps/wavcraft/src/control.rs; the rows come from check::list::rows over CheckRun::report (apps/wavcraft/src/check_panel.rs); tools/alpha/k3.py is new, with tools/alpha/k1.py as the model. K3.4 handles ActionId::CheckNext and CheckPrev in the window with check::list::next_after and prev_before. K3.5 (PR #1621) is in review: the `findings` arm of WaveApp::panel_body and its tests in check_panel.rs are written. K3.7 also waits for M2.7's pins in WaveApp::navigator.
 
 | Step | What | Verify | Size | Kind | By | Blocked by | Issue |
 |---|---|---|---|---|---|---|---|

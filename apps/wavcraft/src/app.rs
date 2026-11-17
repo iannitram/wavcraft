@@ -3928,7 +3928,11 @@ impl WaveApp {
                 let rows = wavcraft_core::check::list::rows(report, doc.sample_rate());
                 let selection = self.selection.start() as u64..self.selection.end() as u64;
                 let current = rows.iter().position(|row| row.range == selection);
-                if let Some(index) = crate::check_panel::findings_rows(ui, &rows, current) {
+                let clicked = egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| crate::check_panel::findings_rows(ui, &rows, current))
+                    .inner;
+                if let Some(index) = clicked {
                     let _ = self.control_request(&format!("CHECK click {index}"), ui.ctx());
                 }
             }
