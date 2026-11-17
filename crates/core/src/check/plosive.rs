@@ -8,6 +8,16 @@ use crate::spectrogram::Samples;
 
 /// Frames either side of a frame whose median low-band level it is compared with (0.5 s).
 const NEIGHBOURS: usize = 50;
+/// A finding grows over adjacent frames whose low band is at least this share of the run's loudest
+/// low-band frame, so it covers a decaying burst's tail but not steady hum under it (K4.4a). 10 %
+/// (-20 dB), not 25 %: `every_fault()`'s burst is still 13.5 % of its peak in its 60 to 70 ms frame
+/// (25 % would cut it at 50 ms), and the hum in `a_burst_over_hum_does_not_grow_over_the_hum` is
+/// 4 to 7.2 % of that burst's peak.
+const GROWTH_SHARE: f64 = 0.1;
+/// A grown frame must also be low-dominant: its low band at least this many times that same frame's
+/// band above, so a voice straight after a burst stops the growth (K4.4a; the owner's ruling of
+/// 2026-11-17).
+const GROWTH_DOMINANCE: f64 = 2.0;
 /// Low-band RMS under this (linear, about -45 dBFS) is not a plosive however it compares.
 const FLOOR: f64 = 0.005_6;
 
@@ -35,6 +45,13 @@ impl Filter {
             y
         })
     }
+}
+
+/// Whether a frame next to a plosive run whose loudest low-band frame is `peak` belongs to the same
+/// burst: not clipped, its low band at least [`GROWTH_SHARE`] of `peak`, and at least
+/// [`GROWTH_DOMINANCE`] times its own band above.
+fn grows((lo, rest, clipped): (f64, f64, bool), peak: f64) -> bool {
+    !clipped && lo >= GROWTH_SHARE * peak && lo >= GROWTH_DOMINANCE * rest
 }
 
 /// `None` when the scan was cancelled.
@@ -81,6 +98,8 @@ pub(super) fn plosive_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink
         .collect();
 
     let min_frames = (cfg.ms(cfg.plosive_min_ms) as usize).div_ceil(frame).max(1);
+    // The end of the last finding: a later run's growth stops there, so findings never overlap.
+    let mut done = 0;
     let mut i = 0;
     while i < burst.len() {
         if !burst[i] {
@@ -89,17 +108,28 @@ pub(super) fn plosive_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink
         }
         let j = (i..burst.len()).find(|&j| !burst[j]).unwrap_or(burst.len());
         if j - i >= min_frames {
-            let top = frames[i..j].iter().map(|f| f.0).fold(0.0, f64::max);
+            let peak = frames[i..j].iter().map(|f| f.0).fold(0.0, f64::max);
+            let mut start = i;
+            while start > done && grows(frames[start - 1], peak) {
+                start -= 1;
+            }
+            let mut end = j;
+            while end < frames.len() && grows(frames[end], peak) {
+                end += 1;
+            }
+            let top = frames[start..end].iter().map(|f| f.0).fold(0.0, f64::max);
             sink.push(Finding {
                 kind: Kind::Plosive,
                 severity: Severity::Warning,
                 channel: Some(channel),
-                start: (i * frame) as u64,
-                end: (j * frame) as u64,
+                start: (start * frame) as u64,
+                end: (end * frame) as u64,
                 value: db(top),
             });
+            (i, done) = (end, end);
+        } else {
+            i = j;
         }
-        i = j;
     }
     Some(())
 }
