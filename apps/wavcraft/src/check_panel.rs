@@ -176,7 +176,7 @@ mod tests {
             check::list::Row { kind: "True peak", time: "0:09.000".to_string(), severity: "Error", range: 432_000..432_480 },
         ];
         let mut origin = egui::Pos2::ZERO;
-        let _ = ctx.run_ui(Default::default(), |ui| origin = ui.available_rect_before_wrap().min);
+        ctx.run_ui(Default::default(), |ui| origin = ui.available_rect_before_wrap().min).textures_delta.clear();
         let pos = egui::pos2(origin.x + 12.0, origin.y + 42.0);
         let events = vec![
             egui::Event::PointerMoved(pos),
