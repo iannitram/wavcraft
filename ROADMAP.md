@@ -32,7 +32,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 - **built, check not recorded**: the code is on `main`, but part of the Done check (a measurement, a test or a by-hand check) is not written down yet. The steps say which part.
 - **partial**: part of the item is on `main`; the steps build the rest.
 - **not started**: nothing of the item is on `main`.
-- A **step** is one change with one check. Its id is `<item>.<n>` (for example `C5.3`); Stage 6's steps have no v1 item and are numbered `S6.<n>` by stage (`D6` is the v1 item for zero-crossing adjust) and is the start of its issue's title. **Verify** names the test, measurement or by-hand check that proves it. A number dropped during the audit is not reused, so H1.2, J3.4 and F3.1 do not exist.
+- A **step** is one change with one check. Its id is `<item>.<n>` (for example `C5.3`) and is the start of its issue's title. Stage 6's steps have no v1 item and are numbered `S6.<n>` by stage (`D6` is the v1 item for zero-crossing adjust). **Verify** names the test, measurement or by-hand check that proves it. A number dropped during the audit is not reused, so H1.2, J3.4 and F3.1 do not exist.
 - **By**: `script` means an automated test or tool proves it; `hand` means someone runs the app; `hand, me` means only I can do it (by ear, or on a machine only I have). An operating system after it means the step needs that system.
 - Sizes (`easy`, `medium`, `hard`) and kinds follow the pipeline's rubric. Each step gets one issue on the `1.0` milestone with one `feature:` label from the block above; the Issue column is filled when it is filed. At `92d0f13` only 12 of the 259 steps have one, so a step's issue is filed before an agent takes it (AGENTS.md rule 2).
 - **Start in** (under each item with steps left) names the files, functions and tests its steps touch, checked at `92d0f13`. The code map's [Index by v1 item](docs/code-map.md#index-by-v1-item) lists every file per item.
@@ -1113,7 +1113,7 @@ Like the rest of Stage 6, these steps wait for every stage above (R04): S6.1 is 
 | S6.8 | Audit the states: empty (no file), busy (long effect, scan, save), error (bad file, full disk, missing device) and disabled controls, on every surface where they occur, in `states.md`. | As S6.3, for each state in the S6.2 inventory. | medium | docs | hand | S6.2 | |
 | S6.9 | My review of the cleaned-up build: I walk every surface in the S6.2 inventory after the `design-pass` issues are built, and say it looks right and I find everything without hunting. | Recorded by me on this step's issue, with any last findings filed as `design-pass` issues. | medium | docs | hand, me | S6.3 to S6.8 and their `design-pass` issues | |
 
-**Done when** every `design-pass` issue is closed or moved after 1.0. Then [PIPELINE.md](PIPELINE.md) moves to Prototype / Beta, and I call 1.0.
+**Done when** every panel, menu, dialog, face and state is audited for beauty and function, every `design-pass` issue is closed or moved after 1.0, and I sign off on S6.9. Then [PIPELINE.md](PIPELINE.md) moves to Prototype / Beta, and I call 1.0.
 
 ## After 1.0
 
