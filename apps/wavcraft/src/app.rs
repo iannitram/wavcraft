@@ -517,6 +517,9 @@ struct HudState {
     drag_start_db: Option<f64>,
 }
 
+/// The amplitude HUD's approximate size, used to place it on a fresh start.
+const AMPLITUDE_HUD_SIZE: egui::Vec2 = egui::vec2(260.0, 90.0);
+
 /// Place a fresh amplitude HUD near the waveform's top-left, keeping its full rectangle inside
 /// the editor and clear of the toolbar where the layout permits.
 fn amplitude_hud_default_rect(editor: Rect, toolbar: Option<Rect>, size: egui::Vec2) -> Rect {
@@ -11758,7 +11761,7 @@ impl WaveApp {
         }
         let default_pos = self.editor_screen_rect.map_or_else(
             || ctx.content_rect().min + vec2(8.0, 8.0),
-            |editor| amplitude_hud_default_rect(editor, self.toolbar_rect, vec2(0.0, 0.0)).min,
+            |editor| amplitude_hud_default_rect(editor, self.toolbar_rect, AMPLITUDE_HUD_SIZE).min,
         );
         egui::Area::new(egui::Id::new("amplitude-hud")).default_pos(default_pos).movable(!self.hud.pinned).order(egui::Order::Foreground).show(
             ctx,
@@ -14373,7 +14376,7 @@ mod amplitude_hud_layout_tests {
     fn fresh_hud_rect_is_inside_editor_and_clear_of_toolbar() {
         let toolbar = Rect::from_min_max(pos2(0.0, 40.0), pos2(1280.0, 92.0));
         let editor = Rect::from_min_max(pos2(0.0, 124.0), pos2(1280.0, 680.0));
-        let hud = amplitude_hud_default_rect(editor, Some(toolbar), vec2(260.0, 90.0));
+        let hud = amplitude_hud_default_rect(editor, Some(toolbar), AMPLITUDE_HUD_SIZE);
 
         assert!(editor.contains_rect(hud));
         assert!(!hud.intersects(toolbar));
