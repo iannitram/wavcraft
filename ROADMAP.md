@@ -56,7 +56,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | Stage 4b: Episode Check, transcript and faces | 16 | 1 | 80 | the Podcast face's user cleans a real episode in it without help. |
 | Alongside: the MP3 encoder | 1 | 0 | 4 | a 1-hour episode exports to MP3 and passes A3's Done check. |
 | Stage 5: Platform checks | 2 | 1 | 5 | the app is built, launched and checked by hand on Windows, Linux and the 8 GB Mac, and every hand step in the earlier stages that names a machine is recorded. |
-| Stage 6: Design pass | - | not started | filed when it runs | every `design-pass` issue is closed or moved after 1.0 |
+| Stage 6: Design pass | - | not started | 9 (S6.1 to S6.9), plus the `design-pass` issues the audits file | every panel, menu, dialog, face and state is audited for beauty and function, every `design-pass` issue is closed or moved after 1.0, and I sign off on S6.9 |
 
 ## Status of every v1 item
 
@@ -1093,6 +1093,25 @@ Also taken here: the Mac steps of J6 and M1 (M1.12), and A3 working on each mach
 ### Stage 6: Design pass (the last stage before 1.0)
 
 When every stage above is done, the Project Manager runs the design skill on the running build, screen by screen, against the one design system all my apps share. Each difference that matters (layout, spacing, type, colour, components, states) is filed as an issue labelled `design-pass` and `kind:ui`, linked to its mockup under `docs/design/<date>/`. M3's named sizes and spacing must be in first, so the pass changes values in one place.
+
+**Added 2026-11-16 at my request: audit every panel and menu and clean up the interface, for beauty and for function.** The pass covers every surface a user can reach, not only the main window: each panel, each menu and submenu, each dialog, the toolbar and tools, the editor, both faces, and the empty, busy, error and disabled states. Each surface is judged on two axes:
+
+- **Beauty:** alignment and spacing on M3's named metrics, type sizes and weights, colour and contrast against the shared design system (light and dark), icon and glyph consistency, visual hierarchy (what the eye lands on first), and density at 100 % and 200 % scale.
+- **Function:** Audition's names for menus, panels and commands (AGENTS.md rule 7), every control reachable by keyboard and shown with its shortcut, sensible defaults, clear disabled and busy states, error text that says what to do, no dead or duplicate entries, and nothing that needs hunting for (Stage 4's Done when).
+
+Steps S6.1 and S6.2 can be built now. S6.3 to S6.9 wait for the surfaces they audit to be in their 1.0 form, so the clean-up is not redone. Each finding becomes its own `design-pass` issue (one change, one check), filed from the audit report rather than listed here.
+
+| Step | What | Verify | Size | Kind | By | Blocked by | Issue |
+|---|---|---|---|---|---|---|---|
+| S6.1 | A capture script that opens every surface through the control channel and saves a screenshot of each: every panel docked and floated, every top-level menu and submenu opened, every dialog, the toolbar, the editor in waveform and spectral views, both faces, and the empty, busy, error and disabled states, at 100 % and 200 % scale in light and dark. | `python3 tools/alpha/design-shots.py --exe <release build> --out <folder>` writes one PNG per surface and state and a `manifest.json` listing each with its name and the control commands that opened it; a surface it cannot open is listed as `missing`, never skipped; exit 0 only when nothing is missing. | medium | wiring | script | - | |
+| S6.2 | The surface inventory: `docs/design/surfaces.md` lists every panel, menu, submenu, dialog and state from the code (panel registry, `menus.rs`, every `egui::Window`), each with its Audition name and the S6.1 capture that shows it. | A test in `apps/wavcraft/src/` compares the inventory with the registry, the menu tables and the window titles, and fails on any surface missing from the doc or from S6.1's manifest. | easy | docs | script | S6.1 | |
+| S6.3 | Audit the menus and the toolbar: run the design skill on the S6.1 captures against the shared design system, and write the findings (beauty and function, as above) to `docs/design/<date>/menus.md`, one finding per row with its severity and the mockup it refers to. | The report covers every menu, submenu and toolbar entry in the S6.2 inventory; every finding marked "must" is filed as a `design-pass` issue linked from its row. | medium | docs | hand | S6.2, Stage 4 | |
+| S6.4 | Audit the editor: waveform, spectral display, rulers, navigator or Episode Map, selection, markers, and the HUD. Same method and report shape as S6.3, in `editor.md`. | As S6.3, for the editor surfaces. | medium | docs | hand | S6.2, Stage 4 | |
+| S6.5 | Audit every panel (Files, Markers, History, Levels, Selection/View, Effects Rack, Episode Check, Transcript, Diagnostics, Frequency Analysis, Amplitude Statistics, Playlist, Batch, Favorites, Metadata, Time, Zoom and any panel added before 1.0), docked and floated, in `panels.md`. | As S6.3, for every panel in the S6.2 inventory. | hard | docs | hand | S6.2, Stage 4b | |
+| S6.6 | Audit every dialog (Preferences, Save As / Export, New Audio File, Keyboard Shortcuts, About, Mix Paste, Import Raw Data, Edit Tempo, Mic Check, Metadata Display, Custom frame rate, Restore Preference Defaults and any added before 1.0), in `dialogs.md`. | As S6.3, for every dialog in the S6.2 inventory. | medium | docs | hand | S6.2, Stage 4b | |
+| S6.7 | Audit the Studio and Podcast faces and the theme as a whole: light and dark, 100 % and 200 %, the 8 GB Mac's window sizes and the handheld screen, in `faces.md`. | As S6.3, for both faces at each scale and theme. | medium | docs | hand | S6.2, Stage 4b | |
+| S6.8 | Audit the states: empty (no file), busy (long effect, scan, save), error (bad file, full disk, missing device) and disabled controls, on every surface where they occur, in `states.md`. | As S6.3, for each state in the S6.2 inventory. | medium | docs | hand | S6.2, Stage 4b | |
+| S6.9 | My review of the cleaned-up build: I walk every surface in the S6.2 inventory after the `design-pass` issues are built, and say it looks right and I find everything without hunting. | Recorded by me on this step's issue, with any last findings filed as `design-pass` issues. | medium | docs | hand, me | S6.3 to S6.8 and their `design-pass` issues | |
 
 **Done when** every `design-pass` issue is closed or moved after 1.0. Then [PIPELINE.md](PIPELINE.md) moves to Prototype / Beta, and I call 1.0.
 
