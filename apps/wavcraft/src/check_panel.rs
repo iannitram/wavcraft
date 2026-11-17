@@ -176,15 +176,34 @@ mod tests {
             check::list::Row { kind: "True peak", time: "0:09.000".to_string(), severity: "Error", range: 432_000..432_480 },
         ];
         let mut origin = egui::Pos2::ZERO;
-        ctx.run_ui(Default::default(), |ui| origin = ui.available_rect_before_wrap().min).textures_delta.clear();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            origin = ui.available_rect_before_wrap().min;
+            findings_rows(ui, &rows, Some(0));
+        });
+        output.textures_delta.clear();
         let pos = egui::pos2(origin.x + 12.0, origin.y + 42.0);
-        let events = vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
-            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
-        ];
         let mut clicked = None;
-        let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| clicked = findings_rows(ui, &rows, Some(0)));
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                ],
+                ..Default::default()
+            },
+            |ui| clicked = findings_rows(ui, &rows, Some(0)),
+        );
+        output.textures_delta.clear();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+                ],
+                ..Default::default()
+            },
+            |ui| clicked = findings_rows(ui, &rows, Some(0)),
+        );
         output.textures_delta.clear();
         // Catches: clicking the second finding's row rectangle returns its list index.
         assert_eq!(clicked, Some(1));
