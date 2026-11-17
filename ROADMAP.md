@@ -181,7 +181,7 @@ The Project Manager files these, in stage order, before an agent takes them (AGE
 **Rulings and leave:**
 
 - **Ruled on 2026-11-16** (Q11 in [docs/v1/questions-and-answers.md](docs/v1/questions-and-answers.md)): Alt+5 opens Match Loudness (G3.4); F8 is Add Marker and the finding keys move (I3.3); G2.9 measures at 50 %; yes to I7.2, C5.4, F2.2 and K4.6; a step may add its own rows to the locked Help-list test (I3.4, I3.5, L5.4; G3.4 added its Alt+5 row in #1413, B2.1 its Shift+D and F9 rows in #1456, A4.1 its F11 row in #1483, B2.3 its four Ctrl+Alt rows in #1519 and C4.6 its D row in #1547).
-- **Still open:** which machine "the 8 GB Mac" is. I7 was measured on the M1 Mac mini, which has 8 GB; C5.9, H3.2, I5.6 and L1.15 name "the 8 GB Mac".
+- **Ruled on 2026-11-16 (Q12):** "the 8 GB Mac" is the M1 Mac mini (8 GB). Agents may run `hand` checks, and I5.4 and H3.2, on it and record them; the delete-to-picture limit holds there (#1590).
 
 **Hand checks only I can do (by ear, or on my machine):**
 
