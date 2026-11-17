@@ -10,6 +10,33 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use wavcraft_core::DocState;
 use wavcraft_core::check::{self, Report};
 
+/// Draw one selectable row per finding and return the index of a clicked row.
+pub fn findings_rows(ui: &mut egui::Ui, rows: &[check::list::Row], current: Option<usize>) -> Option<usize> {
+    let mut clicked = None;
+    for (index, row) in rows.iter().enumerate() {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
+        if current == Some(index) {
+            ui.painter().rect_filled(rect, 0.0, ui.visuals().selection.bg_fill);
+        }
+        let color = ui.visuals().text_color();
+        let left = rect.left() + 8.0;
+        let center_y = rect.center().y;
+        ui.painter().text(egui::pos2(left, center_y), egui::Align2::LEFT_CENTER, row.kind, egui::FontId::proportional(14.0), color);
+        ui.painter().text(egui::pos2(rect.center().x, center_y), egui::Align2::CENTER_CENTER, &row.time, egui::FontId::proportional(14.0), color);
+        ui.painter().text(
+            egui::pos2(rect.right() - 8.0, center_y),
+            egui::Align2::RIGHT_CENTER,
+            row.severity,
+            egui::FontId::proportional(14.0),
+            color,
+        );
+        if response.clicked() {
+            clicked = Some(index);
+        }
+    }
+    clicked
+}
+
 /// Progress is kept in thousandths.
 const STEPS: u32 = 1000;
 
@@ -140,6 +167,27 @@ mod tests {
     use wavcraft_core::store::{BLOCK_FRAMES, Store, StoreOptions};
 
     const RATE: u32 = 48_000;
+
+    #[test]
+    fn clicking_a_row_returns_its_index() {
+        let ctx = egui::Context::default();
+        let rows = vec![
+            check::list::Row { kind: "Clipping", time: "0:03.000".to_string(), severity: "Error", range: 144_000..144_480 },
+            check::list::Row { kind: "True peak", time: "0:09.000".to_string(), severity: "Error", range: 432_000..432_480 },
+        ];
+        let origin = ctx.run_ui(Default::default(), |ui| ui.available_rect_before_wrap().min);
+        let pos = egui::pos2(origin.x + 12.0, origin.y + 42.0);
+        let events = vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+        ];
+        let mut clicked = None;
+        let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| clicked = findings_rows(ui, &rows, Some(0)));
+        output.textures_delta.clear();
+        // Catches: clicking the second finding's row rectangle returns its list index.
+        assert_eq!(clicked, Some(1));
+    }
 
     struct TempDir(PathBuf);
     impl TempDir {

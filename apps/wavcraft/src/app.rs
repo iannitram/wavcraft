@@ -3911,6 +3911,22 @@ impl WaveApp {
             "transport" => self.transport_panel(ui),
             "match" => self.match_panel(ui),
             "files" => self.files_panel(ui),
+            "findings" => {
+                let Some(doc) = self.doc.as_ref() else {
+                    ui.label("Run Episode Check to see findings.");
+                    return;
+                };
+                let Some(report) = self.check_run.report() else {
+                    ui.label("Run Episode Check to see findings.");
+                    return;
+                };
+                let rows = wavcraft_core::check::list::rows(report, doc.sample_rate());
+                let selection = self.selection.start() as u64..self.selection.end() as u64;
+                let current = rows.iter().position(|row| row.range == selection);
+                if let Some(index) = crate::check_panel::findings_rows(ui, &rows, current) {
+                    let _ = self.control_request(&format!("CHECK click {index}"), ui.ctx());
+                }
+            }
             "rack" => {
                 let can_apply = self.editor.is_some() && self.saving.is_none() && self.running.is_none();
                 let playing = self.player.is_playing();
