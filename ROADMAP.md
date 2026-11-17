@@ -32,7 +32,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 - **built, check not recorded**: the code is on `main`, but part of the Done check (a measurement, a test or a by-hand check) is not written down yet. The steps say which part.
 - **partial**: part of the item is on `main`; the steps build the rest.
 - **not started**: nothing of the item is on `main`.
-- A **step** is one change with one check. Its id is `<item>.<n>` (for example `C5.3`) and is the start of its issue's title. **Verify** names the test, measurement or by-hand check that proves it. A number dropped during the audit is not reused, so H1.2, J3.4 and F3.1 do not exist.
+- A **step** is one change with one check. Its id is `<item>.<n>` (for example `C5.3`) and is the start of its issue's title. Stage 6's steps have no v1 item and are numbered `S6.<n>` by stage (`D6` is the v1 item for zero-crossing adjust). **Verify** names the test, measurement or by-hand check that proves it. A number dropped during the audit is not reused, so H1.2, J3.4 and F3.1 do not exist.
 - **By**: `script` means an automated test or tool proves it; `hand` means someone runs the app; `hand, me` means only I can do it (by ear, or on a machine only I have). An operating system after it means the step needs that system.
 - Sizes (`easy`, `medium`, `hard`) and kinds follow the pipeline's rubric. Each step gets one issue on the `1.0` milestone with one `feature:` label from the block above; the Issue column is filled when it is filed. At `92d0f13` only 12 of the 259 steps have one, so a step's issue is filed before an agent takes it (AGENTS.md rule 2).
 - **Start in** (under each item with steps left) names the files, functions and tests its steps touch, checked at `92d0f13`. The code map's [Index by v1 item](docs/code-map.md#index-by-v1-item) lists every file per item.
@@ -43,7 +43,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 
 **75 items** (v1.md's 74 plus L0, the speech-to-text choice)**:** complete 23 · built, check not recorded 24 · partial 27 · not started 1.
 
-**165 steps remain:** 116 easy, 44 medium, 5 hard. 93 are proved by a script, 72 by hand (43 of those only by me).
+**174 steps remain** (165, plus Stage 6's nine added 2026-11-16)**:** 117 easy, 51 medium, 6 hard. 95 are proved by a script, 79 by hand (44 of those only by me).
 
 | Stage | Items | Complete | Steps left | Done when |
 |---|---|---|---|---|
@@ -56,7 +56,7 @@ The plan from here to 1.0, rewritten 2026-11-11 from an audit of `main` at `11e4
 | Stage 4b: Episode Check, transcript and faces | 16 | 1 | 80 | the Podcast face's user cleans a real episode in it without help. |
 | Alongside: the MP3 encoder | 1 | 0 | 4 | a 1-hour episode exports to MP3 and passes A3's Done check. |
 | Stage 5: Platform checks | 2 | 1 | 5 | the app is built, launched and checked by hand on Windows, Linux and the 8 GB Mac, and every hand step in the earlier stages that names a machine is recorded. |
-| Stage 6: Design pass | - | not started | filed when it runs | every `design-pass` issue is closed or moved after 1.0 |
+| Stage 6: Design pass | - | not started | 9 (S6.1 to S6.9), plus the `design-pass` issues the audits file | every panel, menu, dialog, face and state is audited for beauty and function, every `design-pass` issue is closed or moved after 1.0, and I sign off on S6.9 |
 
 ## Status of every v1 item
 
@@ -181,13 +181,13 @@ The Project Manager files these, in stage order, before an agent takes them (AGE
 **Rulings and leave:**
 
 - **Ruled on 2026-11-16** (Q11 in [docs/v1/questions-and-answers.md](docs/v1/questions-and-answers.md)): Alt+5 opens Match Loudness (G3.4); F8 is Add Marker and the finding keys move (I3.3); G2.9 measures at 50 %; yes to I7.2, C5.4, F2.2 and K4.6; a step may add its own rows to the locked Help-list test (I3.4, I3.5, L5.4; G3.4 added its Alt+5 row in #1413, B2.1 its Shift+D and F9 rows in #1456, A4.1 its F11 row in #1483, B2.3 its four Ctrl+Alt rows in #1519 and C4.6 its D row in #1547).
-- **Still open:** which machine "the 8 GB Mac" is. I7 was measured on the M1 Mac mini, which has 8 GB; C5.9, H3.2, I5.6 and L1.15 name "the 8 GB Mac".
+- **Ruled on 2026-11-16** (Q12 in [docs/v1/questions-and-answers.md](docs/v1/questions-and-answers.md)): "the 8 GB Mac" is the M1 Mac mini (8 GB). Agents may run `hand` checks, and I5.4 and H3.2, on it and record them; the delete-to-picture limit holds there (#1590).
 
 **Hand checks only I can do (by ear, or on my machine):**
 
 - Windows build machine (10): A6.2, C5.7, C5.10, H3.3, E6.6, G2.2, G2.10, C6.1, I1.4, I5.2.
 - Linux handheld or the 64 GB Linux tablet (21): C5.8, C5.11, H3.4, J1.6, J2.2, J3.5, J4.5, J5.1, J6.5, J6.6, J7.1, E6.5, C6.2, K2.4, K4.10, L1.16, L2.9, L5.7, M4.7, I5.3, I5.5.
-- Mac (9): C5.9, H3.2, J6.7, J6.8, E6.7, M1.12, A3.8, I5.4, I5.6.
+- Mac (7): C5.9, J6.7, J6.8, E6.7, M1.12, A3.8, I5.6. (H3.2 and I5.4 are now agent runs on the M1 Mac mini, Q12.)
 - Any machine (3): G2.8 (my two recordings), L2.7 (a hand-labelled clip), A3.9 (the ABX run).
 
 **Script runs that need one of my machines:** F1.7, G2.9 and B1.5 (a release build on the Windows build machine; F1.7's binary, wavcraft-rack-bench, is merged, #1497; G2.9 runs nr-measure on the real kit and times a 1-hour stereo file, once G2.3 and G2.8 are done, and its timing line `nr_1h_stereo_seconds` is merged, #1531; B1.5 is the 3-hour frame-time run of `tools/alpha/b1-frames.py`, merged in #1527), I4.2 and I4.4 (`tools/alpha/f10.py` on a release build, on a Linux handheld and on the Windows build machine; the script is merged, #1523), K1.9 (the 64 GB Linux tablet, #1256), N1.7 (the recorded run of `tools/checks/1107-headless-window-parity.sh` on a Linux handheld with a real display; its code is merged, #1373), J1.5 (a recorded run of `tools/alpha/f25.py`, with the take open in the editor, mono 48 kHz; f25 passed on Linux under a virtual display in #1377, and the code is merged, #1374) and J6.9 (the Git Bash run of `tools/alpha/f25.sh` on the Windows build machine, which J6.4 does later; its code is merged, #1377).
@@ -1086,7 +1086,7 @@ Also taken here: the Mac steps of J6 and M1 (M1.12), and A3 working on each mach
 |---|---|---|---|---|---|---|---|
 | I5.2 | Hand check on the Windows build machine: release build, launch, open a copy of a real episode, scrub, make one delete, Save As, reopen. | cargo build --release -p wavcraft succeeds; the window opens; the episode shows a waveform; scrubbing end to end has no stutter; the saved file reopens with the shorter length. I write the commit, date and what I saw into the Windows section of docs/checklists/I5.md. | easy | docs | hand, me, windows | I5.1 |  |
 | I5.3 | Hand check on the first Linux handheld in SteamOS Desktop Mode: release build in the build container, launch under Wayland, open the real episode with File Open, scrub, make one delete, save. | The window opens and the episode shows a waveform and plays. Dragging the playhead across the full episode at three zoom levels (whole file, about 10 minutes wide, about 10 seconds wide) shows no stutter in sound or picture. One delete saves and the file reopens shorter. I write commit, date and what I saw into the first Linux section of docs/checklists/I5.md. | easy | docs | hand, me, linux | I5.1 |  |
-| I5.4 | Hand check on the M1 Mac mini: release build, launch, open a test WAV, make one delete, save, reopen. | On the M1 Mac mini cargo build --release -p wavcraft succeeds, the window opens, a test WAV shows a waveform, one delete saves and the file reopens shorter. I write commit, date and what I saw into the M1 Mac mini section of docs/checklists/I5.md. | easy | docs | hand, me, mac | I5.1, J3.1, the M1 Mac mini is set up |  |
+| I5.4 | Hand check on the M1 Mac mini: release build, launch, open a test WAV, make one delete, save, reopen. | On the M1 Mac mini cargo build --release -p wavcraft succeeds, the window opens, a test WAV shows a waveform, one delete saves and the file reopens shorter. The agent on the M1 Mac mini writes commit, date and what it saw into the M1 Mac mini section of docs/checklists/I5.md (Q12). | easy | docs | hand, mac | I5.1, J3.1, the M1 Mac mini is set up |  |
 | I5.5 | Hand check on the second Linux handheld in SteamOS Desktop Mode: release build in the build container, launch under Wayland, open a WAV with File Open, make one delete, save. | cargo build --release -p wavcraft succeeds in the build container; the window opens; the file shows a waveform and plays; one delete saves and the file reopens shorter. I write commit, date and what I saw into the second Linux section of docs/checklists/I5.md. | easy | docs | hand, me, linux | I5.1 |  |
 | I5.6 | Hand check on the 8 GB Mac: launch the release build, open the same real episode as on the first Linux handheld, make one delete, save, reopen. | On the 8 GB Mac the window opens, the real episode shows a waveform, one delete is saved and the saved file reopens shorter by the deleted length. I write commit, date and what I saw into the 8 GB Mac section of docs/checklists/I5.md. No episode name goes in the file. | easy | docs | hand, me, mac | I5.4, a scheduled session on the 8 GB Mac |  |
 
@@ -1094,7 +1094,26 @@ Also taken here: the Mac steps of J6 and M1 (M1.12), and A3 working on each mach
 
 When every stage above is done, the Project Manager runs the design skill on the running build, screen by screen, against the one design system all my apps share. Each difference that matters (layout, spacing, type, colour, components, states) is filed as an issue labelled `design-pass` and `kind:ui`, linked to its mockup under `docs/design/<date>/`. M3's named sizes and spacing must be in first, so the pass changes values in one place.
 
-**Done when** every `design-pass` issue is closed or moved after 1.0. Then [PIPELINE.md](PIPELINE.md) moves to Prototype / Beta, and I call 1.0.
+**Added 2026-11-16 at my request: audit every panel and menu and clean up the interface, for beauty and for function.** The pass covers every surface a user can reach, not only the main window: each panel, each menu and submenu, each dialog, the toolbar and tools, the editor, both faces, and the empty, busy, error and disabled states. Each surface is judged on two axes:
+
+- **Beauty:** alignment and spacing on M3's named metrics, type sizes and weights, colour and contrast against the shared design system (light and dark), icon and glyph consistency, visual hierarchy (what the eye lands on first), and density at 100 % and 200 % scale.
+- **Function:** Audition's names for menus, panels and commands (AGENTS.md rule 7), every control reachable by keyboard and shown with its shortcut, sensible defaults, clear disabled and busy states, error text that says what to do, no dead or duplicate entries, and nothing that needs hunting for (Stage 4's Done when).
+
+Like the rest of Stage 6, these steps wait for every stage above (R04): S6.1 is blocked by Stages 1 to 5, so the surfaces it captures are in their 1.0 form (Stage 4b's K1.7 changes the menus and toolbar, and M1 to M4 add the Episode Map and the faces), and the audits come after it, so the clean-up is not redone. Each finding becomes its own `design-pass` issue (one change, one check), filed from the audit report rather than listed here.
+
+| Step | What | Verify | Size | Kind | By | Blocked by | Issue |
+|---|---|---|---|---|---|---|---|
+| S6.1 | A capture script that opens every surface a release build shows (M5 hides the out-of-v1 ones; they are not captured) through the control channel and saves a screenshot of each: every panel docked and floated, every top-level menu and submenu opened, every dialog, the toolbar, the editor in waveform and spectral views, both faces, and the empty, busy, error and disabled states, at 100 % and 200 % scale in light and dark. | `python3 tools/alpha/design-shots.py --exe <release build> --out <folder>` writes one PNG per surface and state and a `manifest.json` listing each with its name and the control commands that opened it; a surface it cannot open is listed as `missing`, never skipped; exit 0 only when nothing is missing. | medium | wiring | script | Stages 1 to 5 | |
+| S6.2 | The surface inventory: `docs/design/surfaces.md` lists every panel, menu, submenu, dialog and state a release build shows, from the code (panel registry, `menus.rs`, every `egui::Window`, less what M5 hides), each with its name (Audition's, from docs/v1/audition-behaviour.md or v1.md, else marked as a WavCraft name) and the S6.1 capture that shows it. | A test in `apps/wavcraft/src/` compares the inventory with the registry, the menu tables and the window titles, and fails on any surface missing from the doc or from S6.1's manifest. | easy | wiring | script | S6.1 | |
+| S6.3 | Audit the menus and the toolbar: run the design skill on the S6.1 captures against the shared design system, and write the findings (beauty and function, as above) to `docs/design/<date>/menus.md`, one finding per row with its severity and the mockup it refers to. | The report covers every menu, submenu and toolbar entry in the S6.2 inventory; every finding marked "must" is filed as a `design-pass` issue linked from its row. | medium | docs | hand | S6.2 | |
+| S6.4 | Audit the editor: waveform, spectral display, rulers, navigator or Episode Map, selection, markers, and the HUD. Same method and report shape as S6.3, in `editor.md`. | As S6.3, for the editor surfaces. | medium | docs | hand | S6.2 | |
+| S6.5 | Audit every panel a release build shows (today: Files, Markers, History, Levels, Selection/View, Effects Rack, Episode Check, Transcript, Amplitude Statistics, Favorites, Metadata, Time, Zoom, and any panel added before 1.0), docked and floated, in `panels.md`. | As S6.3, for every panel in the S6.2 inventory. | hard | docs | hand | S6.2 | |
+| S6.6 | Audit every dialog a release build shows (today: Preferences, Save As / Export, and these WavCraft names: New Audio File, Keyboard Shortcuts, About WavCraft, Import Raw Data, Edit Tempo, Mic Check, Metadata Display, Custom frame rate, Restore Preference Defaults; and any added before 1.0), in `dialogs.md`. | As S6.3, for every dialog in the S6.2 inventory. | medium | docs | hand | S6.2 | |
+| S6.7 | Audit the Studio and Podcast faces and the theme as a whole: light and dark, 100 % and 200 %, the 8 GB Mac's window sizes and the handheld screen, in `faces.md`. | As S6.3, for both faces at each scale and theme. | medium | docs | hand | S6.2 | |
+| S6.8 | Audit the states: empty (no file), busy (long effect, scan, save), error (bad file, full disk, missing device) and disabled controls, on every surface where they occur, in `states.md`. | As S6.3, for each state in the S6.2 inventory. | medium | docs | hand | S6.2 | |
+| S6.9 | My review of the cleaned-up build: I walk every surface in the S6.2 inventory after the `design-pass` issues are built, and say it looks right and I find everything without hunting. | Recorded by me on this step's issue, with any last findings filed as `design-pass` issues. | medium | docs | hand, me | S6.3 to S6.8 and their `design-pass` issues | |
+
+**Done when** every panel, menu, dialog, face and state is audited for beauty and function, every `design-pass` issue is closed or moved after 1.0, and I sign off on S6.9. Then [PIPELINE.md](PIPELINE.md) moves to Prototype / Beta, and I call 1.0.
 
 ## After 1.0
 

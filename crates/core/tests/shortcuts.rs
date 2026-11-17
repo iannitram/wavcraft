@@ -29,6 +29,9 @@ shortcuts! {
     save_ctrl_s: "Ctrl+S" => Save;
     save_as_ctrl_shift_s: "Ctrl+Shift+S" => SaveAs;
     play_stop_space: "Space" => PlayStop;
+    shuttle_back_j: "J" => A(ActionId::ShuttleBack);
+    shuttle_stop_k: "K" => A(ActionId::ShuttleStop);
+    shuttle_forward_l: "L" => A(ActionId::ShuttleForward);
     undo_ctrl_z: "Ctrl+Z" => A(ActionId::Undo);
     close_ctrl_w: "Ctrl+W" => Close;
     redo_ctrl_shift_z: "Ctrl+Shift+Z" => A(ActionId::Redo);
@@ -76,6 +79,8 @@ shortcuts! {
     cursor_to_end_end: "End" => A(ActionId::CursorToEnd);
     goto_time_ctrl_j: "Ctrl+J" => A(ActionId::GotoTime);
     marker_add_m: "M" => A(ActionId::MarkerAdd);
+    marker_add_f8: "F8" => A(ActionId::MarkerAdd);
+    marker_add_shift_8: "Shift+8" => A(ActionId::MarkerAdd);
     marker_prev_ctrl_alt_left: "Ctrl+Alt+ArrowLeft" => A(ActionId::MarkerPrev);
     marker_next_ctrl_alt_right: "Ctrl+Alt+ArrowRight" => A(ActionId::MarkerNext);
     playhead_prev_alt_left: "Alt+ArrowLeft" => A(ActionId::PlayheadPrev);
@@ -95,8 +100,8 @@ shortcuts! {
     tool_lasso_d: "D" => A(ActionId::ToolLasso);
     match_panel_alt_5: "Alt+5" => A(ActionId::ToggleMatchPanel);
     maximize_panel_backtick: "`" => A(ActionId::WindowMaximizePanel);
-    check_next_f8: "F8" => A(ActionId::CheckNext);
-    check_prev_shift_f8: "Shift+F8" => A(ActionId::CheckPrev);
+    check_next_f6: "F6" => A(ActionId::CheckNext);
+    check_prev_shift_f6: "Shift+F6" => A(ActionId::CheckPrev);
     convert_sample_type_shift_t: "Shift+T" => A(ActionId::ConvertSampleType);
     convert_sample_type_f11: "F11" => A(ActionId::ConvertSampleType);
     workspace_1_alt_shift_1: "Alt+Shift+1" => Command::Workspace(1);
@@ -121,8 +126,8 @@ fn the_default_table_has_no_chord_on_two_commands() {
 fn findings_shortcuts_resolve_next_and_previous() {
     let map = Keymap::new();
     assert_eq!(map.check(), Ok(()));
-    assert_eq!(map.resolve_text("F8"), Ok(A(ActionId::CheckNext)));
-    assert_eq!(map.resolve_text("Shift+F8"), Ok(A(ActionId::CheckPrev)));
+    assert_eq!(map.resolve_text("F6"), Ok(A(ActionId::CheckNext)));
+    assert_eq!(map.resolve_text("Shift+F6"), Ok(A(ActionId::CheckPrev)));
 }
 
 #[test]
