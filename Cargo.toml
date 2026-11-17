@@ -94,6 +94,9 @@ getrandom = "0.4"
 # format); serde is already in Cargo.lock through soundcraft-audio-io (MIT OR Apache-2.0).
 serde = "1"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
+# #1617: model downloads for the whisper feature (wavcraft-core, optional there). ureq 2.12.1,
+# MIT OR Apache-2.0, default features off; tls brings rustls and webpki-roots (CDLA-Permissive-2.0).
+ureq = { version = "=2.12.1", default-features = false, features = ["tls"] }
 
 # Roadmap A152/A153 (feature f12, 2026-10-20): Copy puts the audio on the OS clipboard as a WAV
 # file entry, Paste takes one. arboard 3.6.1, MIT OR Apache-2.0, already in Cargo.lock through

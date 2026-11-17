@@ -80,6 +80,10 @@ const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// `progress` receives fractions in 0..=1 as bytes arrive, then 1.0 on success. When the server
 /// sends no usable `Content-Length` the total is unknown, so no intermediate progress is
 /// reported and only the final 1.0 arrives.
+///
+/// `cancel` is checked before each read. The read timeout applies to each read, not to the
+/// whole download, so a slow but live server never times out; a stalled one delays a cancel by
+/// at most one read timeout, and cancel takes effect between reads.
 #[cfg(feature = "whisper")]
 pub fn download(entry: &DownloadEntry, folder: &Path, cancel: &AtomicBool, progress: &mut dyn FnMut(f64)) -> io::Result<PathBuf> {
     if cancel.load(Ordering::Relaxed) {

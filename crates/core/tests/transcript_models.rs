@@ -123,9 +123,10 @@ fn a_name_that_escapes_the_folder_is_refused() {
 
 #[test]
 fn an_http_error_status_leaves_no_file() {
-    // Catches: a 404 error page must not be saved or published as the model file.
+    // Catches: a 404 treated as success. The 404 body is b"abc", which matches ABC_SHA256, so that
+    // mutation would pass the hash check and publish model.bin; the empty-folder assertion catches it.
     let folder = temp_dir("http-error");
-    let (url, server) = serve_status("404 Not Found", b"missing".to_vec());
+    let (url, server) = serve_status("404 Not Found", b"abc".to_vec());
     let result = models::download(&entry(url, ABC_SHA256), &folder, &AtomicBool::new(false), &mut |_| {});
 
     server.join().unwrap();
