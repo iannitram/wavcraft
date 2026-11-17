@@ -1,13 +1,259 @@
-//! The right-click menus, the toolbar and the Tools panel (A351, A014, A035) as plain data.
+//! The menu bar, right-click menus, toolbar, Tools panel and Save As filters as plain data.
 //!
-//! Nothing here has logic of its own: an entry is either a row of the action table
-//! (`wavcraft_core::actions::TABLE`, so the label, the key and the way it runs are the Edit and
-//! View menus') or one of the few app commands the table does not hold (open, save, play/stop,
-//! the tools). The app turns an entry into a click, a control-channel line or a drawn button.
+//! The app turns entries into clicks, control-channel lines or drawn buttons. Fixed menu-bar
+//! rows also hold their v1 feature gates; the test inventory uses those same rows and the
+//! existing action, panel, effect, tool, shortcut and save-format sources.
 
 use wavcraft_core::actions::{self, ActionId};
 
 use crate::app::Tool;
+use crate::v1::{self, Feature};
+
+/// A fixed menu-bar label and the feature that offers it. Translated rows hold i18n keys,
+/// so the inventory and the UI resolve the same text in the current language.
+#[derive(Clone, Copy)]
+pub struct BarEntry {
+    text: &'static str,
+    translated: bool,
+    pub gate: Option<Feature>,
+}
+
+impl BarEntry {
+    pub fn label(self) -> String {
+        if self.translated { wavcraft_core::i18n::tr(self.text) } else { self.text.to_string() }
+    }
+
+    pub fn offered_in(self, release: bool) -> bool {
+        self.gate.is_none_or(|feature| v1::offered_in(release, feature))
+    }
+}
+
+// Declare each row once: the UI names the row and the inventory walks the same rows.
+macro_rules! bar_entries {
+    ($($name:ident: ($text:expr, $translated:expr, $gate:expr)),* $(,)?) => {
+        pub mod bar {
+            use super::{BarEntry, Feature};
+            $(pub const $name: BarEntry = BarEntry { text: $text, translated: $translated, gate: $gate };)*
+        }
+        #[cfg(test)]
+        const BAR_ENTRIES: &[BarEntry] = &[$(bar::$name),*];
+    };
+}
+
+bar_entries! {
+    FILE: ("menu.file", true, None),
+    OPEN: ("Open…", false, None),
+    OPEN_RECENT: ("Open Recent", false, None),
+    OPEN_APPEND: ("Open Append", false, None),
+    TO_CURRENT: ("To Current…", false, None),
+    TO_NEW: ("To New…", false, None),
+    NEW: ("New", false, None),
+    AUDIO_FILE: ("Audio File…", false, None),
+    SAVE: ("file.save", true, None),
+    SAVE_AS: ("file.save_as", true, None),
+    CLOSE: ("Close", false, None),
+    SAMPLE_TYPE: ("Sample Type on Save", false, None),
+    KEEP_SAMPLE_TYPE: ("Keep the file's own", false, None),
+    FLAC_NOTE: ("FLAC takes 16 or 24 bit; it uses 24 bit for the others.", false, None),
+    INCLUDE_METADATA: ("Include markers and other metadata", false, None),
+    SAVE_SELECTION: ("Save Selection As…", false, None),
+    IMPORT: ("Import", false, None),
+    IMPORT_FILE: ("File…", false, None),
+    RAW_DATA: ("Raw Data…", false, None),
+    EXPORT: ("Export", false, None),
+    NEW_SESSION: ("Multitrack Session…", false, Some(Feature::Multitrack)),
+    SAVE_SESSION: ("Save Session", false, Some(Feature::Multitrack)),
+    SAVE_SESSION_AS: ("Save Session As…", false, Some(Feature::Multitrack)),
+    OPEN_SESSION: ("Open Session…", false, Some(Feature::Multitrack)),
+    SAVE_ALL: ("Save All", false, None),
+    CLOSE_ALL: ("Close All", false, None),
+    RUN_SCRIPT: ("Run Script…", false, None),
+    BATCH: (Feature::Batch.menu_text(), false, Some(Feature::Batch)),
+    NEW_RECORDING: ("New Recording…", false, None),
+    RECORD_NOW: ("Record Now", false, None),
+    SESSION_FOLDER: ("file.session_folder", true, None),
+    DEFAULT_SESSION_FOLDER: ("file.default_session_folder", true, None),
+    EXPORT_SETTINGS: ("Export Application Settings…", false, None),
+    IMPORT_SETTINGS: ("Import Application Settings…", false, None),
+    RESTORE_DEFAULTS: ("Restore Preference Defaults…", false, None),
+    QUIT: ("file.quit", true, None),
+    EDIT: ("menu.edit", true, None),
+    MULTITRACK: (Feature::Multitrack.menu_text(), false, Some(Feature::Multitrack)),
+    NORMALIZE_MIXDOWN: ("Normalize the mixdown to -1 dB", false, Some(Feature::Multitrack)),
+    MIXDOWN_SESSION: ("Mixdown Session to New File", false, Some(Feature::Multitrack)),
+    MIXDOWN_CLIPS: ("Mixdown Selected Clips to New File", false, Some(Feature::Multitrack)),
+    WINDOW: ("Window", false, None),
+    RESTORE_EDITOR: ("Restore Editor", false, None),
+    MAXIMIZE_EDITOR: ("Maximize Editor", false, None),
+    MIXER_PANEL: ("Mixer panel", false, Some(Feature::Multitrack)),
+    LEVELS: ("Levels", false, None),
+    METER_INPUT: ("Meter Input Signal", false, None),
+    MIC_CHECK: ("Mic Check…", false, None),
+    AMPLITUDE_STATS: ("Amplitude/Loudness Statistics", false, None),
+    SAMPLE_STATS: ("Sample Statistics (RMS, clipping)", false, None),
+    WORKSPACE: ("Workspace", false, None),
+    RESET_PANELS: ("Reset Panel Layout", false, None),
+    EFFECTS: ("Effects", false, None),
+    FAVORITES: ("Favorites", false, None),
+    GENERATE: ("Generate", false, None),
+    VIEW: ("menu.view", true, None),
+    WAVEFORM_EDITOR: ("Waveform editor", false, None),
+    MULTITRACK_EDITOR: ("Multitrack editor", false, Some(Feature::Multitrack)),
+    CD_LAYOUT: (Feature::CdLayout.menu_text(), false, Some(Feature::CdLayout)),
+    RETURN_TO_SESSION: ("Return to session", false, None),
+    PLAYBACK_RESAMPLING: ("Playback Resampling", false, None),
+    HIGH_QUALITY: ("High quality", false, None),
+    FAST: ("Fast", false, None),
+    ZOOM_TO_TIME: ("Zoom to Time", false, None),
+    SNAPPING: ("Snapping", false, None),
+    TIME_DISPLAY: ("Time Display", false, None),
+    METADATA_PANEL: ("Metadata panel", false, None),
+    SYNC_SELECTION: ("Synchronise Selection Across Files", false, None),
+    SYNC_ZOOM: ("Synchronise Zoom and Scroll Across Files", false, None),
+    SYNC_PLAYHEAD: ("Synchronise Playhead Across Files", false, None),
+    LANGUAGE: ("menu.language", true, None),
+    VIDEO: (Feature::Video.menu_text(), false, Some(Feature::Video)),
+    ATTACH_VIDEO: ("Attach video file…", false, Some(Feature::Video)),
+    DETACH_VIDEO: ("Detach video", false, Some(Feature::Video)),
+    VIDEO_PANEL: ("Video panel", false, Some(Feature::Video)),
+    HELP: ("Help", false, None),
+    KEYBOARD_SHORTCUTS: ("Keyboard Shortcuts", false, None),
+    ABOUT: ("About WavCraft…", false, None),
+    STOP: ("transport.stop", true, None),
+    RESUME: ("▶ Resume", false, None),
+    PLAY: ("transport.play", true, None),
+    METRONOME: ("Metronome", false, None),
+    METRONOME_VOLUME: ("vol ", false, None),
+    METRONOME_COUNT_IN: (" bar count-in", false, None),
+    STOP_RECORDING: ("■ Stop Recording", false, None),
+    RESUME_RECORDING: ("● Resume", false, None),
+    PAUSE_RECORDING: ("❚❚ Pause", false, None),
+    CANCEL_TIMED_RECORDING: ("Cancel Timed Recording", false, None),
+    RECORD: ("● Record", false, None),
+    SELECT: ("Select", false, None),
+    ENABLE_CHANNELS: ("Enable Channels", false, None),
+    SELECT_CHANNEL: ("Select Channel by Drag Position", false, None),
+    MIX_PASTE: (Feature::MixPaste.menu_text(), false, Some(Feature::MixPaste)),
+    EDIT_SHORTCUTS: ("Keyboard Shortcuts…", false, None),
+    PREFERENCES: ("Preferences…", false, None),
+    EFFECTS_RACK: ("Effects Rack…", false, None),
+    SAVE_NOISE_PRINT: ("Save Noise Print…", false, None),
+    LOAD_NOISE_PRINT: ("Load Noise Print…", false, None),
+    DIAGNOSTICS: (Feature::Diagnostics.menu_text(), false, Some(Feature::Diagnostics)),
+    DECLIPPER: ("DeClipper (defaults)", false, Some(Feature::Diagnostics)),
+    DECLICKER: ("DeClicker (defaults)", false, Some(Feature::Diagnostics)),
+    CLICK_REMOVER: ("Automatic Click Remover (defaults)", false, Some(Feature::Diagnostics)),
+    RECENT_NONE: ("(none)", false, None),
+    CLEAR_RECENT: ("Clear Recent", false, None),
+    WORKSPACE_NAME: ("Name", false, None),
+    SAVE_WORKSPACE: ("Save as New Workspace", false, None),
+    RESET_WORKSPACE: ("Reset to Saved Layout", false, None),
+    DELETE_WORKSPACE: ("Delete Workspace", false, None),
+    NO_WORKSPACES: ("No other saved workspaces", false, None),
+}
+
+/// Extra Save As container filters, after the format filters, in dialog order.
+pub const SAVE_CONTAINER_FILTERS: &[(&str, &[&str])] = &[("Sony Wave64", &["w64"]), ("Apple CAF", &["caf"]), ("Sun/NeXT AU", &["au"])];
+
+/// Every fixed label the menu bar and its submenus can draw in this build, plus the Window
+/// list, Tools panel, rack slot picker, Keyboard Shortcuts list and Save As filters (M5.5).
+/// Effect-dialog ellipses are markers, so effects retain their action-table labels.
+/// Recent-file names, workspace names, Zoom to Time slot times, language names and Undo/Redo
+/// history steps are user data: only their fixed entries and submenu titles are included.
+/// Other live values (FFT size, custom frame rate and metronome values) are omitted too.
+#[cfg(test)]
+pub fn bar_labels(release: bool) -> Vec<String> {
+    use wavcraft_core::i18n::tr;
+    use wavcraft_core::panels::{self, PanelSet};
+    use wavcraft_core::save::{SampleType, SaveFormat};
+    use wavcraft_core::view::TimeFormat;
+
+    let mut labels: Vec<String> = BAR_ENTRIES.iter().filter(|row| row.offered_in(release)).map(|row| row.label()).collect();
+    let panels = PanelSet::for_build(release);
+    labels.extend(panels::REGISTRY.iter().filter(|panel| panels.offers(panel.id)).map(|panel| panel.title.to_string()));
+    labels.extend(TOOLS.iter().filter(|tool| v1::tool_offered_in(release, tool.name)).map(|tool| tool.label.to_string()));
+    labels.extend(crate::app::WaveApp::effects_menu_rows(release).iter().map(|action| action.menu.to_string()));
+    labels.extend(crate::rack_panel::slot_effects(release).iter().map(|effect| effect.name().to_string()));
+    labels.extend(crate::rack_panel::slot_plugins(release));
+    if v1::offered_in(release, Feature::Plugins) {
+        // Unlike scanned plugin names, this rack button exists even before a scan has run.
+        labels.push("Scan VST3".to_string());
+    }
+    labels.extend(crate::shortcut_editor::listed(release).map(|command| command.label().to_string()));
+    labels.extend(v1::save_formats_in(release, SaveFormat::Wav).iter().map(|format| format.name().to_string()));
+    labels.extend(SAVE_CONTAINER_FILTERS.iter().map(|(label, _)| (*label).to_string()));
+
+    // Edit and View use translations; Markers and the grouped Edit items use action.menu.
+    for action in actions::TABLE {
+        let grouped = matches!(
+            action.id,
+            ActionId::SelectAll
+                | ActionId::DeselectAll
+                | ActionId::ClearTimeSelection
+                | ActionId::LeftChannel
+                | ActionId::RightChannel
+                | ActionId::BothChannels
+        );
+        if (action.name.starts_with("edit.") && !grouped)
+            || (action.name.starts_with("view.")
+                && !action.name.starts_with("view.time_display.")
+                && !action.name.starts_with("view.snap.")
+                && !action.name.starts_with("view.zoom.preset."))
+            || action.name.starts_with("tool.")
+        {
+            labels.push(tr(&format!("action.{}", action.name)));
+        }
+        if action.name.starts_with("marker.")
+            || action.name.starts_with("view.snap.")
+            || matches!(
+                action.id,
+                ActionId::SelectAll
+                    | ActionId::SelectCurrentView
+                    | ActionId::DeselectAll
+                    | ActionId::ClearTimeSelection
+                    | ActionId::SelectToStart
+                    | ActionId::SelectToEnd
+                    | ActionId::LeftChannel
+                    | ActionId::RightChannel
+                    | ActionId::BothChannels
+            )
+        {
+            labels.push(action.menu.to_string());
+        }
+    }
+    labels.extend(effects_extra().into_iter().filter_map(|entry| match entry {
+        Entry::Item(item) => Some(item.label.to_string()),
+        Entry::Sep => None,
+    }));
+    labels.extend(FAVORITES.iter().filter(|favorite| favorite_action(favorite).is_some()).map(|favorite| format!("{}…", favorite.label)));
+    labels.extend(wavcraft_core::generate::all().iter().map(|generator| format!("{}…", generator.name().trim_start_matches("Generate "))));
+    labels.extend([SampleType::Int16, SampleType::Int24, SampleType::Int32, SampleType::Float32].iter().map(|ty| ty.describe().to_string()));
+    labels.extend(TimeFormat::ALL.into_iter().map(|format| match format {
+        TimeFormat::Custom(_) => format.menu().to_string(),
+        _ => format.menu_with_rate(),
+    }));
+    for slot in 1..=wavcraft_core::view::ZOOM_SLOTS {
+        labels.push(format!("Set Slot {slot} from View"));
+    }
+    // The ungated View submenus implemented in app/spectral.rs.
+    labels.extend(
+        [
+            "Frequency scale",
+            "Linear",
+            "Logarithmic (above 1 kHz)",
+            "Logarithmic (full)",
+            "Reset frequency range",
+            "Spectral display",
+            "Resolution up",
+            "Resolution down",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    labels.extend(wavcraft_core::settings::SpecWindow::ALL.iter().map(|window| window.name().to_string()));
+    labels.extend([40, 60, 80, 100, 120, 140, 160].into_iter().map(|db| format!("{db} dB range")));
+    labels
+}
 
 /// What an entry does when chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
