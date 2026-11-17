@@ -446,6 +446,7 @@ pub const BINDINGS: &[Binding] = &[
     bind(Command::Workspace(7), alt_shift("7")),
     bind(Command::Workspace(8), alt_shift("8")),
     bind(Command::Workspace(9), alt_shift("9")),
+    act(ActionId::WindowMaximizePanel, key("Backtick")),
 ];
 
 /// Chords bound to more than one command in `bindings`, as `(chord, first, second)`.

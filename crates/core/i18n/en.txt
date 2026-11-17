@@ -208,3 +208,4 @@ action.transport.shuttle.back = Shuttle Back
 action.transport.shuttle.stop = Shuttle Stop
 action.transport.shuttle.forward = Shuttle Forward
 action.panel.match.toggle = Match Loudness
+action.window.maximizePanel = Maximize Active Frame

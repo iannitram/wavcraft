@@ -973,10 +973,17 @@ impl Player {
         self.shared.levels.take()
     }
 
+    /// The energy since the last call, as `(sum of squares, frames)` per channel, and start over.
+    pub fn take_energy(&self) -> [(f32, u64); 2] {
+        self.shared.levels.take_energy()
+    }
+
     /// Record a block's peaks as if the callback had sent them (the control channel's `METERS PUSH`).
     pub fn push_levels(&self, peaks: [f32; 2]) {
         self.shared.levels.record(0, peaks[0]);
         self.shared.levels.record(1, peaks[1]);
+        self.shared.levels.record_energy(0, peaks[0] * peaks[0], 1);
+        self.shared.levels.record_energy(1, peaks[1] * peaks[1], 1);
     }
 
     /// The frame being played right now (where a paused play will carry on).
@@ -1301,16 +1308,23 @@ where
     f32: cpal::FromSample<T>,
 {
     let mut peak = [0.0f32; 2];
+    let mut sum = [0.0f64; 2];
+    let mut frames = 0u32;
     if channels > 0 {
         for frame in out.chunks(channels) {
-            let left = f32::from_sample(frame[0]).abs();
-            let right = if channels > 1 { f32::from_sample(frame[1]).abs() } else { left };
-            peak[0] = peak[0].max(left);
-            peak[1] = peak[1].max(right);
+            let left = f32::from_sample(frame[0]);
+            let right = if channels > 1 { f32::from_sample(frame[1]) } else { left };
+            peak[0] = peak[0].max(left.abs());
+            peak[1] = peak[1].max(right.abs());
+            sum[0] += f64::from(left) * f64::from(left);
+            sum[1] += f64::from(right) * f64::from(right);
+            frames = frames.saturating_add(1);
         }
     }
     shared.levels.record(0, peak[0]);
     shared.levels.record(1, peak[1]);
+    shared.levels.record_energy(0, sum[0] as f32, frames);
+    shared.levels.record_energy(1, sum[1] as f32, frames);
 }
 
 /// Build and park the rack for an output. An inactive configuration removes the rack.

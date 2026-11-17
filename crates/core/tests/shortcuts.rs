@@ -97,6 +97,7 @@ shortcuts! {
     tool_marquee_e: "E" => A(ActionId::ToolMarquee);
     tool_lasso_d: "D" => A(ActionId::ToolLasso);
     match_panel_alt_5: "Alt+5" => A(ActionId::ToggleMatchPanel);
+    maximize_panel_backtick: "`" => A(ActionId::WindowMaximizePanel);
     check_next_f8: "F8" => A(ActionId::CheckNext);
     check_prev_shift_f8: "Shift+F8" => A(ActionId::CheckPrev);
     convert_sample_type_shift_t: "Shift+T" => A(ActionId::ConvertSampleType);

@@ -344,6 +344,7 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("transport.shuttle.stop", "Shuttle Stop", "K".to_string()),
         ("transport.shuttle.forward", "Shuttle Forward", "L".to_string()),
         ("panel.match.toggle", "Match Loudness", "Alt+5".to_string()),
+        ("window.maximizePanel", "Maximize Active Frame", "Backtick".to_string()),
     ]);
 }
 
