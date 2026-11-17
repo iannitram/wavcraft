@@ -358,6 +358,27 @@ fn the_every_fault_plosive_is_one_finding_over_the_whole_burst() {
     assert!(plosive.end.abs_diff(plosive.start + frame(0.08)) <= tolerance, "length {} frames", plosive.end - plosive.start);
 }
 
+/// A burst in a gap with 50 Hz hum under it must not grow over the hum. The burst is 0.6, twice
+/// `every_fault()`'s: at 0.3 it does not trigger here, and at 0.6 its tail stays over the hum
+/// (about 0.018 low-band RMS) to the end of its 80 ms.
+#[test]
+fn a_burst_over_hum_does_not_grow_over_the_hum() {
+    let (mut ch0, ch1) = (speechlike_for(1, 120.0, SECONDS, 0.0), speechlike_for(2, 150.0, SECONDS, 0.0));
+    set_noise_floor(&mut ch0, 3, 5.5, 6.0);
+    add_hum(&mut ch0, 50.0, 5.3, 6.2);
+    let at = frame(5.55);
+    for n in 0..frame(0.08) as usize {
+        let t = n as f64 / f64::from(RATE);
+        ch0[at as usize + n] += (0.6 * (-t / 0.025).exp() * (2.0 * PI_F * 40.0 * t).sin()) as f32;
+    }
+    let plosives = of_kind(&scan(&ch0, &ch1), Kind::Plosive);
+    assert_eq!(plosives.len(), 1, "{plosives:?}");
+    let p = plosives[0];
+    assert_eq!(p.channel, Some(0), "{p:?}");
+    assert!(p.start.abs_diff(at) <= frame(0.01), "start {} vs {at}", p.start);
+    assert!((p.end - p.start).abs_diff(frame(0.08)) <= frame(0.02), "length {} frames", p.end - p.start);
+}
+
 #[test]
 fn one_file_with_every_fault_reports_each_within_50_ms() {
     let (ch0, ch1, [clip, tp, dc, dead, hum, drift, plosive]) = every_fault();

@@ -42,7 +42,12 @@ impl Filter {
 
 /// Whether a frame next to a plosive run belongs to the same burst: not clipped, over the floor,
 /// and low-band heavy. The frame's own band above is the reference, not the neighbourhood median,
-/// which nearby speech can hold far above a burst's decaying tail.
+/// which nearby speech can hold far above a burst's decaying tail. The run loop also asks that the
+/// low band fall away from the run (each frame no higher than its neighbour nearer the run), so
+/// steady low-band content such as hum does not grow it. There is no margin on that test: a 0.98x
+/// margin would drop the onset frame of `every_fault()`'s burst (0.987x the next), and steady hum
+/// is not flat per frame anyway (50 Hz hum swings about 1.8x between frames), so no margin tells it
+/// from a tail.
 fn grows((lo, rest, clipped): (f64, f64, bool)) -> bool {
     !clipped && lo >= FLOOR && lo >= GROWTH_RATIO * rest
 }
@@ -91,6 +96,8 @@ pub(super) fn plosive_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink
         .collect();
 
     let min_frames = (cfg.ms(cfg.plosive_min_ms) as usize).div_ceil(frame).max(1);
+    // The end of the last finding: a later run's growth stops there, so findings never overlap.
+    let mut done = 0;
     let mut i = 0;
     while i < burst.len() {
         if !burst[i] {
@@ -100,17 +107,11 @@ pub(super) fn plosive_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink
         let j = (i..burst.len()).find(|&j| !burst[j]).unwrap_or(burst.len());
         if j - i >= min_frames {
             let mut start = i;
-            while start > 0 {
-                if !grows(frames[start - 1]) {
-                    break;
-                }
+            while start > done && grows(frames[start - 1]) && frames[start - 1].0 <= frames[start].0 {
                 start -= 1;
             }
             let mut end = j;
-            while end < frames.len() {
-                if !grows(frames[end]) {
-                    break;
-                }
+            while end < frames.len() && grows(frames[end]) && frames[end].0 <= frames[end - 1].0 {
                 end += 1;
             }
             let top = frames[start..end].iter().map(|f| f.0).fold(0.0, f64::max);
@@ -122,7 +123,7 @@ pub(super) fn plosive_pass(src: &dyn Samples, channel: usize, cfg: &Config, sink
                 end: (end * frame) as u64,
                 value: db(top),
             });
-            i = end;
+            (i, done) = (end, end);
         } else {
             i = j;
         }
