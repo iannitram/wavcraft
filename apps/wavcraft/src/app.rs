@@ -517,6 +517,28 @@ struct HudState {
     drag_start_db: Option<f64>,
 }
 
+/// The amplitude HUD's approximate size, used to place it on a fresh start.
+const AMPLITUDE_HUD_SIZE: egui::Vec2 = egui::vec2(260.0, 90.0);
+
+/// Place a fresh amplitude HUD near the waveform's top-left, keeping its full rectangle inside
+/// the editor and clear of the toolbar where the layout permits.
+fn amplitude_hud_default_rect(editor: Rect, toolbar: Option<Rect>, size: egui::Vec2) -> Rect {
+    let margin = 8.0;
+    let x_max = (editor.right() - size.x - margin).max(editor.left());
+    let y_max = (editor.bottom() - size.y - margin).max(editor.top());
+    let left = (editor.left() + margin).clamp(editor.left(), x_max);
+    let top = (editor.top() + margin).clamp(editor.top(), y_max);
+    let positions = [pos2(left, top), pos2(x_max, top), pos2(left, y_max), pos2(x_max, y_max)];
+    let min = positions
+        .into_iter()
+        .find(|min| {
+            let candidate = Rect::from_min_size(*min, size);
+            toolbar.is_none_or(|toolbar| !candidate.intersects(toolbar))
+        })
+        .unwrap_or(pos2(left, top));
+    Rect::from_min_size(min, size)
+}
+
 impl Tool {
     /// The tools whose clicks and drags are the Time Selection tool's: the Lasso does the same
     /// until its drag is built (C4.7).
@@ -619,6 +641,9 @@ pub struct WaveApp {
     last_op: Option<(String, std::time::Duration)>,
     /// The editor's geometry as last painted, for the pointer readout and `HOVER` (A079).
     editor_layout: Option<EditorLayout>,
+    /// Screen rectangles used to place the amplitude HUD on a fresh start.
+    editor_screen_rect: Option<Rect>,
+    toolbar_rect: Option<Rect>,
     /// What is under the pointer now (A079); `None` when it is not over the editor.
     pointer: Option<Readout>,
     renderer: Renderer,
@@ -1044,6 +1069,8 @@ impl WaveApp {
             free_space: None,
             last_op: None,
             editor_layout: None,
+            editor_screen_rect: None,
+            toolbar_rect: None,
             pointer: None,
             renderer: Renderer::new(&cc.egui_ctx, initial_colours),
             opening: None,
@@ -11777,31 +11804,38 @@ impl WaveApp {
         if !actions::hud_visible(self.hud.hidden, self.hud.only_for_selection, !self.selection.is_empty()) {
             return;
         }
-        egui::Area::new(egui::Id::new("amplitude-hud")).movable(!self.hud.pinned).order(egui::Order::Foreground).show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(format!("Gain {:.1} dB", self.hud.gain_db));
-                    if ui.button(if self.hud.pinned { "Unpin" } else { "Pin" }).clicked() {
-                        self.hud.pinned = !self.hud.pinned;
+        let default_pos = self.editor_screen_rect.map_or_else(
+            || ctx.content_rect().min + vec2(8.0, 8.0),
+            |editor| amplitude_hud_default_rect(editor, self.toolbar_rect, AMPLITUDE_HUD_SIZE).min,
+        );
+        egui::Area::new(egui::Id::new("amplitude-hud")).default_pos(default_pos).movable(!self.hud.pinned).order(egui::Order::Foreground).show(
+            ctx,
+            |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Gain {:.1} dB", self.hud.gain_db));
+                        if ui.button(if self.hud.pinned { "Unpin" } else { "Pin" }).clicked() {
+                            self.hud.pinned = !self.hud.pinned;
+                        }
+                        if ui.button("Hide").clicked() {
+                            self.hud.hidden = true;
+                        }
+                    });
+                    let drag = ui.add(egui::Label::new("Drag vertically to change").sense(Sense::drag()));
+                    if drag.drag_started() {
+                        self.hud.drag_start_db = Some(self.hud.gain_db);
                     }
-                    if ui.button("Hide").clicked() {
-                        self.hud.hidden = true;
+                    if drag.dragged() {
+                        let start = self.hud.drag_start_db.unwrap_or(self.hud.gain_db);
+                        self.hud.gain_db = actions::hud_drag_gain_db(start, -f64::from(drag.drag_delta().y));
                     }
+                    if drag.drag_stopped() {
+                        self.hud.drag_start_db = None;
+                    }
+                    ui.checkbox(&mut self.hud.only_for_selection, "Show only for selections");
                 });
-                let drag = ui.add(egui::Label::new("Drag vertically to change").sense(Sense::drag()));
-                if drag.drag_started() {
-                    self.hud.drag_start_db = Some(self.hud.gain_db);
-                }
-                if drag.dragged() {
-                    let start = self.hud.drag_start_db.unwrap_or(self.hud.gain_db);
-                    self.hud.gain_db = actions::hud_drag_gain_db(start, -f64::from(drag.drag_delta().y));
-                }
-                if drag.drag_stopped() {
-                    self.hud.drag_start_db = None;
-                }
-                ui.checkbox(&mut self.hud.only_for_selection, "Show only for selections");
-            });
-        });
+            },
+        );
     }
 
     /// Whether an editor display (waveform, spectral) is drawn: shown, and not hidden by another
@@ -11947,6 +11981,7 @@ impl WaveApp {
     fn editor(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let full = response.rect;
+        self.editor_screen_rect = Some(full);
         let c = &self.settings.colors;
         let ground = c.background.map_or(theme::pal().background, |[r, g, b]| theme::rgb(r, g, b));
         painter.rect_filled(full, 0.0, contrast(brighten(ground, self.brightness), self.contrast));
@@ -12996,7 +13031,10 @@ impl eframe::App for WaveApp {
         if self.docs.len(self.editor.is_some()) > 1 {
             egui::Panel::top("docs").show(ui, |ui| self.doc_tabs(ui));
         }
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        self.editor_screen_rect = None;
+        self.toolbar_rect = None;
+        let toolbar = egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        self.toolbar_rect = Some(toolbar.response.rect);
         egui::Panel::top("tools").show(ui, |ui| self.tools_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
         if self.meters.show_levels {
@@ -14372,6 +14410,21 @@ mod look_tests {
         assert_eq!(theme::pal(), &theme::LIGHT);
 
         theme::set_dark(true);
+    }
+}
+
+#[cfg(test)]
+mod amplitude_hud_layout_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_hud_rect_is_inside_editor_and_clear_of_toolbar() {
+        let toolbar = Rect::from_min_max(pos2(0.0, 40.0), pos2(1280.0, 92.0));
+        let editor = Rect::from_min_max(pos2(0.0, 124.0), pos2(1280.0, 680.0));
+        let hud = amplitude_hud_default_rect(editor, Some(toolbar), AMPLITUDE_HUD_SIZE);
+
+        assert!(editor.contains_rect(hud));
+        assert!(!hud.intersects(toolbar));
     }
 }
 
