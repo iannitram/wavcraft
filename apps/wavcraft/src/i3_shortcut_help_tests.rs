@@ -261,13 +261,13 @@ shortcut_case!(
 #[rustfmt::skip]
 shortcut_case!(
     i3_help_next_finding, CheckNext, "check.next", "Next Finding",
-    F8, false, false, "F8", "F8"
+    F6, false, false, "F6", "F6"
 );
 
 #[rustfmt::skip]
 shortcut_case!(
     i3_help_prev_finding, CheckPrev, "check.prev", "Previous Finding",
-    F8, false, true, "Shift+F8", "⇧F8"
+    F6, false, true, "Shift+F6", "⇧F6"
 );
 
 #[test]
@@ -312,6 +312,8 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("view.cursorToStart", "Playhead to Start", "Home".to_string()),
         ("view.cursorToEnd", "Playhead to End", "End".to_string()),
         ("marker.add", "Add Marker", "M".to_string()),
+        ("marker.add", "Add Marker", "F8".to_string()),
+        ("marker.add", "Add Marker", "Shift+8".to_string()),
         ("marker.prev", "Playhead to Previous Marker", "Ctrl+Alt+ArrowLeft".to_string()),
         ("marker.next", "Playhead to Next Marker", "Ctrl+Alt+ArrowRight".to_string()),
         ("view.playhead.prev", "Move Playhead to Previous", "Alt+ArrowLeft".to_string()),
@@ -335,8 +337,8 @@ fn i3_help_rows_are_in_menu_order_with_no_unbound_or_extra_rows() {
         ("tool.zoom", "Zoom Tool", "Z".to_string()),
         ("tool.marquee", "Marquee Selection Tool", "E".to_string()),
         ("tool.lasso", "Lasso Selection Tool", "D".to_string()),
-        ("check.next", "Next Finding", "F8".to_string()),
-        ("check.prev", "Previous Finding", "Shift+F8".to_string()),
+        ("check.next", "Next Finding", "F6".to_string()),
+        ("check.prev", "Previous Finding", "Shift+F6".to_string()),
         ("view.gotoTime", "Go to Time…", "Ctrl+J".to_string()),
         ("view.snap.toggle", "Snapping", "S".to_string()),
         ("transport.returnOnStop", "Return to Start Position on Stop", "Shift+X".to_string()),
