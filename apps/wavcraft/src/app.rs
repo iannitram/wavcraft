@@ -1194,6 +1194,7 @@ impl WaveApp {
                 control::start_from_env(move || ctx.request_repaint())
             },
         };
+        app.meters.show_levels = app.settings.show_levels;
         app.mtv.take_dir = app.sessions.path.join("takes");
         if app.reconcile_floats() {
             app.save_panels();
@@ -1425,6 +1426,13 @@ impl WaveApp {
         }
         self.save_profiles();
         outcome
+    }
+
+    /// Show or hide the Levels strip, and keep the choice in the settings file.
+    fn set_show_levels(&mut self, on: bool) {
+        self.settings.show_levels = on;
+        self.meters.show_levels = on;
+        self.persist_settings();
     }
 
     /// Turn the input meter on or off (opening or closing the input stream with it).
@@ -3849,7 +3857,7 @@ impl WaveApp {
     /// The answer to `PANELS` and `PANEL …`: which panels are shown, then the zones.
     fn panels_report(&self) -> String {
         let kind = self.float_kind.map_or(String::new(), |k| format!(" float_window={k}"));
-        format!("OK {} {}{kind}", self.panels.report(), self.layout.report(&self.panels))
+        format!("OK {} levels={} {}{kind}", self.panels.report(), u8::from(self.meters.show_levels), self.layout.report(&self.panels))
     }
 
     /// The body of a docked panel.
@@ -9927,6 +9935,11 @@ impl WaveApp {
                         _ => return "ERR METERS PUSH <left> <right>, linear peaks".to_string(),
                     },
                     Some("RESET") => self.meters.levels.reset_clip(),
+                    Some("show") => match words.next() {
+                        Some("0") if words.next().is_none() => self.set_show_levels(false),
+                        Some("1") if words.next().is_none() => self.set_show_levels(true),
+                        _ => return "ERR METERS show <0|1>".to_string(),
+                    },
                     Some(_) => return "ERR METERS [PUSH <l> <r> | RESET]".to_string(),
                     None => {}
                 }
@@ -11116,7 +11129,10 @@ impl WaveApp {
                 if v1::offered(Feature::Multitrack) {
                     ui.checkbox(&mut self.show_mixer, "Mixer panel");
                 }
-                ui.checkbox(&mut self.meters.show_levels, "Levels");
+                let mut levels = self.meters.show_levels;
+                if ui.checkbox(&mut levels, "Levels").changed() {
+                    self.set_show_levels(levels);
+                }
                 let mut on = self.meter_input;
                 if ui
                     .checkbox(&mut on, "Meter Input Signal")
