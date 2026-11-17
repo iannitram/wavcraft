@@ -84,6 +84,12 @@ def main():
         with open(token_path, encoding="utf-8") as token_file:
             c = Control(token_file.read().strip())
 
+        c.ask("ACTION window.hide.findings")
+        assert "findings=0" in c.ask("PANELS").split()
+        c.ask("ACTION window.show.findings")
+        assert "findings=1" in c.ask("PANELS").split()
+        print("PASS findings panel can be hidden and shown")
+
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             state = c.ask("STATE")
