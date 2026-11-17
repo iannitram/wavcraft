@@ -29,6 +29,9 @@ shortcuts! {
     save_ctrl_s: "Ctrl+S" => Save;
     save_as_ctrl_shift_s: "Ctrl+Shift+S" => SaveAs;
     play_stop_space: "Space" => PlayStop;
+    shuttle_back_j: "J" => A(ActionId::ShuttleBack);
+    shuttle_stop_k: "K" => A(ActionId::ShuttleStop);
+    shuttle_forward_l: "L" => A(ActionId::ShuttleForward);
     undo_ctrl_z: "Ctrl+Z" => A(ActionId::Undo);
     close_ctrl_w: "Ctrl+W" => Close;
     redo_ctrl_shift_z: "Ctrl+Shift+Z" => A(ActionId::Redo);

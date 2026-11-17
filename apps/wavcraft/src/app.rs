@@ -5688,6 +5688,9 @@ impl WaveApp {
             },
             ActionId::Pause => self.pause_play(),
             ActionId::Stop => self.stop_play(),
+            ActionId::ShuttleBack => self.shuttle_key('j', ctx.input(|i| i.key_down(Key::K))),
+            ActionId::ShuttleStop => self.shuttle_key('k', false),
+            ActionId::ShuttleForward => self.shuttle_key('l', ctx.input(|i| i.key_down(Key::K))),
             ActionId::ToggleLoop => {
                 self.transport.looping = !self.transport.looping;
                 self.player.set_looping(self.transport.looping);
@@ -12851,29 +12854,7 @@ impl eframe::App for WaveApp {
         }
         // The JKL shuttle (f36): J plays backward, K stops, L plays forward; K held with J or L crawls.
         if !typing {
-            let (presses, k_down, j_down, l_down) = ctx.input(|i| {
-                let presses: Vec<Key> = i
-                    .events
-                    .iter()
-                    .filter_map(|e| match e {
-                        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
-                            if matches!(key, Key::J | Key::K | Key::L) && !modifiers.command && !modifiers.alt && !modifiers.shift =>
-                        {
-                            Some(*key)
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                (presses, i.key_down(Key::K), i.key_down(Key::J), i.key_down(Key::L))
-            });
-            for key in presses {
-                let c = match key {
-                    Key::J => 'j',
-                    Key::L => 'l',
-                    _ => 'k',
-                };
-                self.shuttle_key(c, k_down && c != 'k');
-            }
+            let (j_down, l_down) = ctx.input(|i| (i.key_down(Key::J), i.key_down(Key::L)));
             let nudge = self.transport.shuttle.nudge;
             if nudge != 0 && !self.hold.ctl_nudge && !(if nudge > 0 { l_down } else { j_down }) {
                 self.release_nudge();
@@ -13294,8 +13275,17 @@ fn command_key_pass(ctx: &egui::Context, keymap: &Keymap, typing: bool, other_fo
             if k.alt {
                 mods |= egui::Modifiers::ALT;
             }
-            // Play/Stop must not toggle again on auto-repeat during a long press.
-            let fresh = *command != Command::PlayStop
+            // Play/Stop and the JKL shuttle must not act again on auto-repeat during a long press.
+            let no_repeat =
+                matches!(command, Command::PlayStop | Command::Action(ActionId::ShuttleBack | ActionId::ShuttleStop | ActionId::ShuttleForward));
+            // egui matches a pattern without Alt even while Alt is held, so Alt+J/K/L would run the shuttle.
+            let shuttle = matches!(command, Command::Action(ActionId::ShuttleBack | ActionId::ShuttleStop | ActionId::ShuttleForward));
+            let alt_press =
+                |e: &egui::Event| matches!(e, egui::Event::Key { key: pressed, pressed: true, modifiers, .. } if *pressed == key && modifiers.alt);
+            if shuttle && !k.alt && (i.modifiers.alt || i.events.iter().any(alt_press)) {
+                return None;
+            }
+            let fresh = !no_repeat
                 || i.events.iter().any(|e| matches!(e, egui::Event::Key { key: pressed, pressed: true, repeat: false, .. } if *pressed == key));
             (i.consume_key(mods, key) && fresh).then_some(*command)
         }));
