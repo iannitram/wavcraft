@@ -224,6 +224,10 @@ pub struct Metrics {
     pub about_dialog_height: f32,
     pub shortcuts_dialog_width: f32,
     pub shortcuts_dialog_height: f32,
+    /// The amplitude HUD's approximate size and its fallback inset from the window corner.
+    pub amplitude_hud_width: f32,
+    pub amplitude_hud_height: f32,
+    pub amplitude_hud_inset: f32,
     /// Widths of text inputs and progress bars.
     pub text_field_narrow_width: f32,
     pub text_field_standard_width: f32,
@@ -274,6 +278,9 @@ pub const DEFAULT_METRICS: Metrics = Metrics {
     about_dialog_height: 480.0,
     shortcuts_dialog_width: 420.0,
     shortcuts_dialog_height: 560.0,
+    amplitude_hud_width: 260.0,
+    amplitude_hud_height: 90.0,
+    amplitude_hud_inset: 8.0,
     text_field_narrow_width: 80.0,
     text_field_standard_width: 120.0,
     text_field_medium_width: 140.0,
@@ -403,6 +410,7 @@ mod tests {
         assert_eq!((m.text_field_narrow_width, m.text_field_standard_width), (80.0, 120.0));
         assert_eq!((m.text_field_medium_width, m.text_field_wide_width), (140.0, 160.0));
         assert_eq!(m.progress_width, 120.0);
+        assert_eq!((m.amplitude_hud_width, m.amplitude_hud_height, m.amplitude_hud_inset), (260.0, 90.0, 8.0));
         assert_eq!(m.time_input_width, 260.0);
         assert_eq!((m.channel_chip_width, m.channel_chip_height), (34.0, 14.0));
         assert_eq!((m.channel_button_width, m.channel_button_height), (26.0, 16.0));
