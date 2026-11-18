@@ -20,6 +20,7 @@ use crate::doc::DocState;
 use crate::doc::edit::{self, Change, ChannelMask, Crossfades, Edit, EditError};
 use crate::markers::Shift;
 
+pub mod align;
 pub mod export;
 pub mod filler;
 pub mod mel;
