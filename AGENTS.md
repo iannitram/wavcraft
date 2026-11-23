@@ -20,3 +20,5 @@ Read `README.md` for the layout, how to run it and the known limits. Its rules, 
 - **Memory.** Never load a whole file into RAM: everything goes through the on-disk store (I7).
 - **Before a commit:** `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 - **SoundCraft pin.** All `soundcraft-*` crates share one commit; bump them together (README, "The SoundCraft dependency").
+
+**Upstream and peers:** see `PEERS.md` at the repo root. When I say "upstream", I mean the repo in its Upstream section; reuse a peer's code only as that file allows.
