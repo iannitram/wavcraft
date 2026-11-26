@@ -59,10 +59,11 @@ fn a_take_is_in_state_with_no_document_open() {
         let state = app.control_request("STATE", &ctx);
         let recording = field(&state, "recording").as_deref() == Some("1");
         let frames = field(&state, "rec_frames").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-        if recording && frames > 0 {
+        let bytes = field(&state, "rec_bytes").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        if recording && frames > 0 && bytes > 44 {
             break state;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for recording frames: {state}");
+        assert!(Instant::now() < deadline, "timed out waiting for recording frames and bytes: {state}");
         std::thread::sleep(Duration::from_millis(20));
     };
     assert_eq!(field(&during, "recording").as_deref(), Some("1"), "during a take: {during}");
