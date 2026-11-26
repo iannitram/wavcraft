@@ -8,7 +8,7 @@
 //! Hook-up, in apps/wavcraft/src/app.rs: `#[cfg(test)] #[path = "j6_9_state_tests.rs"] mod j6_9_state_tests;`
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::*;
 
@@ -53,9 +53,19 @@ fn a_take_is_in_state_with_no_document_open() {
 
     let start = app.control_request("RECORD start", &ctx);
     assert!(start.starts_with("OK path="), "RECORD start: {start}");
-    std::thread::sleep(Duration::from_millis(400));
 
-    let during = app.control_request("STATE", &ctx);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let during = loop {
+        let state = app.control_request("STATE", &ctx);
+        let recording = field(&state, "recording").as_deref() == Some("1");
+        let frames = field(&state, "rec_frames").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        let bytes = field(&state, "rec_bytes").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        if recording && frames > 0 && bytes > 44 {
+            break state;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for recording frames and bytes: {state}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_eq!(field(&during, "recording").as_deref(), Some("1"), "during a take: {during}");
     let frames = field(&during, "rec_frames").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
     assert!(frames > 0, "rec_frames grows during a take: {during}");
